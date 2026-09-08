@@ -41,6 +41,7 @@ AllowedAction = Literal["BUY", "SELL", "HOLD"]
 NormalizationStatus = Literal["NORMALIZED", "FAILED"]
 DecisionContextStatus = Literal["COMPLETE", "INCOMPLETE"]
 FutureEvaluationStatus = Literal["PENDING", "RESOLVED"]
+DecisionReferenceStatus = Literal["AVAILABLE", "UNAVAILABLE", "INVALID_TEMPORAL"]
 
 _RATING_TO_ACTION: dict[str, AllowedAction] = {
     PortfolioRating.BUY.value: "BUY",
@@ -306,6 +307,24 @@ class ShadowTradeDecision:
     valid_until: datetime | None = None
     executed: bool = False
     decision_context_status: DecisionContextStatus = "INCOMPLETE"
+    # Explicit temporal evidence added for Phase 5.  These fields are
+    # defaulted at the end so existing callers that construct Phase 4
+    # decisions positionally remain compatible.
+    analysis_snapshot_timestamp: datetime | None = None
+    analysis_snapshot_bid: float | None = None
+    analysis_snapshot_ask: float | None = None
+    analysis_snapshot_spread: float | None = None
+    analysis_snapshot_spread_points: float | None = None
+    decision_completed_timestamp: datetime | None = None
+    analysis_latency_seconds: float | None = None
+    decision_reference_timestamp: datetime | None = None
+    decision_reference_bid: float | None = None
+    decision_reference_ask: float | None = None
+    decision_reference_spread: float | None = None
+    decision_reference_spread_points: float | None = None
+    decision_reference_status: DecisionReferenceStatus = "UNAVAILABLE"
+    decision_reference_delay_seconds: float | None = None
+    decision_reference_error: str | None = None
 
     def __post_init__(self) -> None:
         if self.executed is not False:
@@ -337,6 +356,97 @@ class ShadowTradeDecision:
             raise ValueError("action must be BUY, SELL, HOLD, or None")
         _parse_utc_datetime(self.snapshot_timestamp)
         _parse_utc_datetime(self.created_at)
+
+        # Phase 4's snapshot/reference fields are the analysis quote.  Fill
+        # the explicit analysis fields from those aliases for old callers and
+        # old rows, while retaining the actual values for new decisions.
+        analysis_timestamp = self.analysis_snapshot_timestamp or self.snapshot_timestamp
+        analysis_timestamp = _parse_utc_datetime(analysis_timestamp)
+        object.__setattr__(self, "analysis_snapshot_timestamp", analysis_timestamp)
+        for explicit_name, legacy_name in (
+            ("analysis_snapshot_bid", "reference_bid"),
+            ("analysis_snapshot_ask", "reference_ask"),
+            ("analysis_snapshot_spread", "spread"),
+            ("analysis_snapshot_spread_points", "spread_points"),
+        ):
+            value = getattr(self, explicit_name)
+            if value is None:
+                value = getattr(self, legacy_name)
+                object.__setattr__(self, explicit_name, value)
+
+        if self.decision_completed_timestamp is not None:
+            completed = _parse_utc_datetime(self.decision_completed_timestamp)
+            object.__setattr__(self, "decision_completed_timestamp", completed)
+            computed_latency = (
+                completed - analysis_timestamp
+            ).total_seconds()
+            if computed_latency < 0:
+                raise ValueError("decision_completed_timestamp cannot precede analysis snapshot")
+            if self.analysis_latency_seconds is None:
+                object.__setattr__(self, "analysis_latency_seconds", computed_latency)
+            elif not math.isclose(
+                float(self.analysis_latency_seconds), computed_latency, rel_tol=0.0, abs_tol=1e-6
+            ):
+                raise ValueError("analysis_latency_seconds does not match decision timestamps")
+        elif self.analysis_latency_seconds is not None:
+            raise ValueError("analysis_latency_seconds requires decision_completed_timestamp")
+
+        if self.decision_reference_status not in (
+            "AVAILABLE",
+            "UNAVAILABLE",
+            "INVALID_TEMPORAL",
+        ):
+            raise ValueError(
+                "decision_reference_status must be AVAILABLE, UNAVAILABLE, or INVALID_TEMPORAL"
+            )
+        if self.decision_reference_timestamp is not None:
+            reference_timestamp = _parse_utc_datetime(self.decision_reference_timestamp)
+            object.__setattr__(self, "decision_reference_timestamp", reference_timestamp)
+        if self.decision_reference_status == "UNAVAILABLE":
+            if any(
+                value is not None
+                for value in (
+                    self.decision_reference_timestamp,
+                    self.decision_reference_bid,
+                    self.decision_reference_ask,
+                    self.decision_reference_spread,
+                    self.decision_reference_spread_points,
+                )
+            ):
+                raise ValueError("unavailable decision references must not include quote values")
+            if self.decision_reference_delay_seconds is not None:
+                raise ValueError("unavailable decision references must not include delay")
+        else:
+            if self.decision_reference_timestamp is None:
+                raise ValueError("available or invalid decision references require a timestamp")
+            if any(
+                value is None
+                for value in (
+                    self.decision_reference_bid,
+                    self.decision_reference_ask,
+                    self.decision_reference_spread,
+                    self.decision_reference_spread_points,
+                )
+            ):
+                raise ValueError("decision references require a complete quote set")
+            if self.decision_completed_timestamp is None:
+                raise ValueError("decision references require decision_completed_timestamp")
+            computed_delay = (
+                self.decision_reference_timestamp - self.decision_completed_timestamp
+            ).total_seconds()
+            if self.decision_reference_delay_seconds is None:
+                object.__setattr__(self, "decision_reference_delay_seconds", computed_delay)
+            elif not math.isclose(
+                float(self.decision_reference_delay_seconds),
+                computed_delay,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            ):
+                raise ValueError("decision_reference_delay_seconds does not match reference timestamps")
+            if self.decision_reference_status == "AVAILABLE" and computed_delay < 0:
+                raise ValueError("AVAILABLE decision references cannot precede completion")
+            if self.decision_reference_status == "INVALID_TEMPORAL" and computed_delay >= 0:
+                raise ValueError("INVALID_TEMPORAL references must precede completion")
         if self.valid_until is not None:
             valid_until = _parse_utc_datetime(self.valid_until)
             expected = _parse_utc_datetime(self.snapshot_timestamp) + timedelta(
@@ -351,10 +461,34 @@ class ShadowTradeDecision:
         else:
             _json_safe(self.snapshot_json)
         _json_safe(self.raw_portfolio_manager_result)
-        for field_name in ("confidence", "reference_bid", "reference_ask", "reference_mid", "spread", "spread_points", "outcome_raw", "outcome_alpha"):
+        for field_name in (
+            "confidence",
+            "reference_bid",
+            "reference_ask",
+            "reference_mid",
+            "spread",
+            "spread_points",
+            "analysis_snapshot_bid",
+            "analysis_snapshot_ask",
+            "analysis_snapshot_spread",
+            "analysis_snapshot_spread_points",
+            "analysis_latency_seconds",
+            "decision_reference_bid",
+            "decision_reference_ask",
+            "decision_reference_spread",
+            "decision_reference_spread_points",
+            "decision_reference_delay_seconds",
+            "outcome_raw",
+            "outcome_alpha",
+        ):
             value = getattr(self, field_name)
             if isinstance(value, float) and not math.isfinite(value):
                 raise ValueError(f"{field_name} must be finite when provided")
+        for prefix in ("analysis_snapshot", "decision_reference"):
+            bid = getattr(self, f"{prefix}_bid")
+            ask = getattr(self, f"{prefix}_ask")
+            if bid is not None and ask is not None and ask < bid:
+                raise ValueError(f"{prefix} ask must be greater than or equal to bid")
 
     @property
     def raw_portfolio_manager_result_json(self) -> str:
@@ -436,6 +570,25 @@ class ShadowDecisionStore:
                     "TEXT NOT NULL DEFAULT 'INCOMPLETE' "
                     "CHECK (decision_context_status IN ('COMPLETE','INCOMPLETE'))"
                 ),
+                "analysis_snapshot_timestamp": "TEXT",
+                "analysis_snapshot_bid": "REAL",
+                "analysis_snapshot_ask": "REAL",
+                "analysis_snapshot_spread": "REAL",
+                "analysis_snapshot_spread_points": "REAL",
+                "decision_completed_timestamp": "TEXT",
+                "analysis_latency_seconds": "REAL",
+                "decision_reference_timestamp": "TEXT",
+                "decision_reference_bid": "REAL",
+                "decision_reference_ask": "REAL",
+                "decision_reference_spread": "REAL",
+                "decision_reference_spread_points": "REAL",
+                "decision_reference_status": (
+                    "TEXT NOT NULL DEFAULT 'UNAVAILABLE' "
+                    "CHECK (decision_reference_status IN "
+                    "('AVAILABLE','UNAVAILABLE','INVALID_TEMPORAL'))"
+                ),
+                "decision_reference_delay_seconds": "REAL",
+                "decision_reference_error": "TEXT",
             }
             for column, declaration in migrations.items():
                 if column not in existing_columns:
@@ -488,6 +641,21 @@ class ShadowDecisionStore:
             "outcome_resolved_at",
             "reflection",
             "source_run_id",
+            "analysis_snapshot_timestamp",
+            "analysis_snapshot_bid",
+            "analysis_snapshot_ask",
+            "analysis_snapshot_spread",
+            "analysis_snapshot_spread_points",
+            "decision_completed_timestamp",
+            "analysis_latency_seconds",
+            "decision_reference_timestamp",
+            "decision_reference_bid",
+            "decision_reference_ask",
+            "decision_reference_spread",
+            "decision_reference_spread_points",
+            "decision_reference_status",
+            "decision_reference_delay_seconds",
+            "decision_reference_error",
         ]
         placeholders = ", ".join(["?"] * len(columns))
         with sqlite3.connect(self.path) as conn:
@@ -541,6 +709,31 @@ class ShadowDecisionStore:
                     .replace("+00:00", "Z"),
                     decision.reflection,
                     decision.source_run_id,
+                    _parse_utc_datetime(decision.analysis_snapshot_timestamp)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    decision.analysis_snapshot_bid,
+                    decision.analysis_snapshot_ask,
+                    decision.analysis_snapshot_spread,
+                    decision.analysis_snapshot_spread_points,
+                    None
+                    if decision.decision_completed_timestamp is None
+                    else _parse_utc_datetime(decision.decision_completed_timestamp)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    decision.analysis_latency_seconds,
+                    None
+                    if decision.decision_reference_timestamp is None
+                    else _parse_utc_datetime(decision.decision_reference_timestamp)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
+                    decision.decision_reference_bid,
+                    decision.decision_reference_ask,
+                    decision.decision_reference_spread,
+                    decision.decision_reference_spread_points,
+                    decision.decision_reference_status,
+                    decision.decision_reference_delay_seconds,
+                    decision.decision_reference_error,
                 ),
             )
 
@@ -648,4 +841,82 @@ class ShadowDecisionStore:
             reflection=row["reflection"],
             source_run_id=row["source_run_id"],
             executed=bool(row["executed"]),
+            analysis_snapshot_timestamp=(
+                None
+                if "analysis_snapshot_timestamp" not in row_keys
+                or row["analysis_snapshot_timestamp"] is None
+                else _parse_utc_datetime(row["analysis_snapshot_timestamp"])
+            ),
+            analysis_snapshot_bid=(
+                row["analysis_snapshot_bid"]
+                if "analysis_snapshot_bid" in row_keys
+                else None
+            ),
+            analysis_snapshot_ask=(
+                row["analysis_snapshot_ask"]
+                if "analysis_snapshot_ask" in row_keys
+                else None
+            ),
+            analysis_snapshot_spread=(
+                row["analysis_snapshot_spread"]
+                if "analysis_snapshot_spread" in row_keys
+                else None
+            ),
+            analysis_snapshot_spread_points=(
+                row["analysis_snapshot_spread_points"]
+                if "analysis_snapshot_spread_points" in row_keys
+                else None
+            ),
+            decision_completed_timestamp=(
+                None
+                if "decision_completed_timestamp" not in row_keys
+                or row["decision_completed_timestamp"] is None
+                else _parse_utc_datetime(row["decision_completed_timestamp"])
+            ),
+            analysis_latency_seconds=(
+                row["analysis_latency_seconds"]
+                if "analysis_latency_seconds" in row_keys
+                else None
+            ),
+            decision_reference_timestamp=(
+                None
+                if "decision_reference_timestamp" not in row_keys
+                or row["decision_reference_timestamp"] is None
+                else _parse_utc_datetime(row["decision_reference_timestamp"])
+            ),
+            decision_reference_bid=(
+                row["decision_reference_bid"]
+                if "decision_reference_bid" in row_keys
+                else None
+            ),
+            decision_reference_ask=(
+                row["decision_reference_ask"]
+                if "decision_reference_ask" in row_keys
+                else None
+            ),
+            decision_reference_spread=(
+                row["decision_reference_spread"]
+                if "decision_reference_spread" in row_keys
+                else None
+            ),
+            decision_reference_spread_points=(
+                row["decision_reference_spread_points"]
+                if "decision_reference_spread_points" in row_keys
+                else None
+            ),
+            decision_reference_status=(
+                row["decision_reference_status"]
+                if "decision_reference_status" in row_keys
+                else "UNAVAILABLE"
+            ),
+            decision_reference_delay_seconds=(
+                row["decision_reference_delay_seconds"]
+                if "decision_reference_delay_seconds" in row_keys
+                else None
+            ),
+            decision_reference_error=(
+                row["decision_reference_error"]
+                if "decision_reference_error" in row_keys
+                else None
+            ),
         )

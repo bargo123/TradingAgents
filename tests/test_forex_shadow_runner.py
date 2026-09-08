@@ -6,6 +6,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
 from tradingagents.dataflows.mt5.models import (
     ForexMarketSnapshot,
@@ -519,3 +521,182 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
 
     assert provider.initialize_calls == 0
     assert provider.shutdown_calls == 0
+
+# Phase 5 temporal/reference tests
+from tradingagents.dataflows.mt5.models import Mt5Spread, Mt5SymbolInfo
+from tradingagents.forex import runner as runner_module
+
+ANALYSIS_TIMESTAMP = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
+COMPLETION_TIMESTAMP = datetime(2026, 9, 8, 0, 0, 41, tzinfo=timezone.utc)
+BROKER_REFERENCE_TIMESTAMP = datetime(2026, 9, 8, 0, 0, 42, 250_000, tzinfo=timezone.utc)
+
+
+def _temporal_snapshot() -> ForexMarketSnapshot:
+    bar = Mt5Bar(
+        timestamp=ANALYSIS_TIMESTAMP,
+        open=1.1,
+        high=1.101,
+        low=1.099,
+        close=1.1005,
+        tick_volume=10,
+    )
+    return ForexMarketSnapshot(
+        timestamp=ANALYSIS_TIMESTAMP,
+        symbol="EURUSDm",
+        bid=1.1,
+        ask=1.1002,
+        spread=0.0002,
+        spread_points=2.0,
+        m1_candles=(bar,),
+        m5_candles=(bar,),
+        m15_candles=(bar,),
+        h1_candles=(bar,),
+        account=None,
+        positions=(),
+        symbol_info=Mt5SymbolInfo(name="EURUSDm", digits=5, point=0.00001),
+    )
+
+
+class _TemporalProvider:
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        spread_error: Exception | None = None,
+        old_timestamp: bool = False,
+    ):
+        self.events = events
+        self.spread_error = spread_error
+        self.old_timestamp = old_timestamp
+        self.market_snapshot_calls = 0
+
+    def initialize(self) -> bool:
+        self.events.append("initialize")
+        return True
+
+    def shutdown(self) -> None:
+        self.events.append("shutdown")
+
+    def ensure_symbol(self, symbol: str) -> str:
+        self.events.append("ensure_symbol")
+        return "EURUSDm"
+
+    def get_market_snapshot(self, symbol: str, count: int = 100) -> ForexMarketSnapshot:
+        self.events.append("snapshot")
+        self.market_snapshot_calls += 1
+        return _temporal_snapshot()
+
+    def get_spread(self, symbol: str) -> Mt5Spread:
+        self.events.append("spread")
+        if self.spread_error is not None:
+            raise self.spread_error
+        timestamp = ANALYSIS_TIMESTAMP if self.old_timestamp else BROKER_REFERENCE_TIMESTAMP
+        return Mt5Spread(
+            symbol="EURUSDm",
+            bid=1.1004,
+            ask=1.1006,
+            price=0.0002,
+            points=2.0,
+            timestamp=timestamp,
+        )
+
+
+class _TemporalPropagator:
+    def create_initial_state(self, *args, **kwargs):
+        return {}
+
+    def get_graph_args(self, **kwargs):
+        return {}
+
+
+class _TemporalGraph:
+    def __init__(self, events: list[str]):
+        self.events = events
+        self.propagator = _TemporalPropagator()
+        self.config = {"llm_provider": "fake", "quick_think_llm": "quick"}
+
+    def invoke(self, initial_state, **kwargs):
+        self.events.append("graph")
+        return {
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "final_trade_decision": "Hold",
+        }
+
+
+def _run_temporal(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    spread_error: Exception | None = None,
+    old_timestamp: bool = False,
+):
+    events: list[str] = []
+    provider = _TemporalProvider(
+        events,
+        spread_error=spread_error,
+        old_timestamp=old_timestamp,
+    )
+    graph = _TemporalGraph(events)
+    monkeypatch.setattr(runner_module, "_utc_now", lambda: COMPLETION_TIMESTAMP)
+    result = ForexShadowRunner(
+        provider_factory=lambda terminal_path=None: provider,
+        graph_factory=lambda **kwargs: graph,
+    ).run(
+        symbol="EURUSD",
+        count=1,
+        analysis_date=date(2026, 9, 8),
+        db_path=tmp_path / "shadow.db",
+    )
+    return provider, result, events
+
+
+def test_runner_persists_broker_timestamp_after_graph_without_extra_llm_call(
+    tmp_path: Path, monkeypatch
+) -> None:
+    provider, result, events = _run_temporal(tmp_path, monkeypatch)
+
+    assert events.index("spread") > events.index("graph")
+    assert events.count("spread") == 1
+    assert events.count("graph") == 1
+    assert provider.market_snapshot_calls == 1
+    decision = result.decision
+    assert decision.decision_completed_timestamp == COMPLETION_TIMESTAMP
+    assert decision.decision_reference_timestamp == BROKER_REFERENCE_TIMESTAMP
+    assert decision.decision_reference_timestamp != decision.decision_completed_timestamp
+    assert decision.decision_reference_bid == pytest.approx(1.1004)
+    assert decision.decision_reference_ask == pytest.approx(1.1006)
+    assert decision.decision_reference_spread == pytest.approx(0.0002)
+    assert decision.decision_reference_spread_points == pytest.approx(2.0)
+    assert decision.analysis_latency_seconds == pytest.approx(41.0)
+    assert decision.decision_reference_delay_seconds == pytest.approx(1.25)
+    assert decision.decision_reference_status == "AVAILABLE"
+
+
+def test_runner_persists_analysis_when_fresh_quote_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, result, events = _run_temporal(
+        tmp_path,
+        monkeypatch,
+        spread_error=RuntimeError("temporary quote failure"),
+    )
+
+    decision = result.decision
+    assert events.count("spread") == 1
+    assert decision.decision_reference_timestamp is None
+    assert decision.decision_reference_bid is None
+    assert decision.decision_reference_status == "UNAVAILABLE"
+    assert "temporary quote failure" in (decision.decision_reference_error or "")
+    assert decision.analysis_snapshot_timestamp == ANALYSIS_TIMESTAMP
+
+
+def test_runner_marks_older_broker_quote_temporally_invalid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, result, _ = _run_temporal(tmp_path, monkeypatch, old_timestamp=True)
+
+    decision = result.decision
+    assert decision.decision_reference_timestamp == ANALYSIS_TIMESTAMP
+    assert decision.decision_reference_status == "INVALID_TEMPORAL"
+    assert decision.decision_reference_delay_seconds == pytest.approx(-41.0)
+    assert decision.decision_reference_bid == pytest.approx(1.1004)

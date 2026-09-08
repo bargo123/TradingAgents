@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import math
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -26,6 +27,69 @@ from tradingagents.forex.tools import MT5ToolAdapter
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _normalize_utc_timestamp(value: Any) -> datetime:
+    """Normalize a provider timestamp while requiring an explicit UTC value."""
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError("MT5 reference timestamp must be timezone-aware UTC")
+    if value.utcoffset() != timezone.utc.utcoffset(value):
+        raise ValueError("MT5 reference timestamp must be UTC")
+    return value.astimezone(timezone.utc)
+
+
+def _fresh_reference_quote(
+    provider: Any,
+    resolved_symbol: str,
+    completed_timestamp: datetime,
+) -> dict[str, Any]:
+    """Read one fresh quote and retain its broker tick timestamp.
+
+    ``Mt5Spread`` already carries the timestamp from ``symbol_info_tick``.  A
+    provider implementation that cannot expose that field may use its
+    read-only ``get_tick`` seam as a fallback; the application completion time
+    is never used as a market timestamp.
+    """
+    spread = provider.get_spread(resolved_symbol)
+    timestamp = getattr(spread, "timestamp", None)
+    tick = None
+    if timestamp is None:
+        get_tick = getattr(provider, "get_tick", None)
+        if not callable(get_tick):
+            raise ValueError("fresh MT5 spread did not include a broker timestamp")
+        tick = get_tick(resolved_symbol)
+        timestamp = getattr(tick, "timestamp", None)
+    reference_timestamp = _normalize_utc_timestamp(timestamp)
+    bid = getattr(tick, "bid", getattr(spread, "bid", None))
+    ask = getattr(tick, "ask", getattr(spread, "ask", None))
+    spread_price = getattr(spread, "price", None)
+    if spread_price is None and bid is not None and ask is not None:
+        spread_price = float(ask) - float(bid)
+    points = getattr(spread, "points", None)
+    values = (bid, ask, spread_price, points)
+    if any(value is None for value in values):
+        raise ValueError("fresh MT5 quote did not include a complete bid/ask/spread set")
+    try:
+        bid = float(bid)
+        ask = float(ask)
+        spread_price = float(spread_price)
+        points = float(points)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("fresh MT5 quote contains non-numeric values") from exc
+    if not all(math.isfinite(value) for value in (bid, ask, spread_price, points)):
+        raise ValueError("fresh MT5 quote contains non-finite values")
+    if ask < bid or spread_price < 0 or points < 0:
+        raise ValueError("fresh MT5 quote contains invalid spread values")
+    delay = (reference_timestamp - completed_timestamp).total_seconds()
+    return {
+        "timestamp": reference_timestamp,
+        "bid": bid,
+        "ask": ask,
+        "spread": spread_price,
+        "spread_points": points,
+        "delay": delay,
+        "status": "AVAILABLE" if delay >= 0 else "INVALID_TEMPORAL",
+    }
 
 
 def _as_date(value: date | str | None) -> date:
@@ -267,6 +331,10 @@ class ForexShadowRunner:
             if not isinstance(final_state, Mapping):
                 raise TypeError("compiled forex graph must return a mapping state")
             final_state = dict(final_state)
+            # This is an application completion timestamp, captured as soon
+            # as the structured graph result is available.  It is deliberately
+            # distinct from the broker timestamp in the fresh reference quote.
+            decision_completed_timestamp = _utc_now()
             context_integrity = evaluate_context_integrity(
                 final_state,
                 trace=state_trace,
@@ -295,6 +363,17 @@ class ForexShadowRunner:
                         raw_result=normalized.raw_result,
                     )
 
+            decision_reference: dict[str, Any] | None = None
+            decision_reference_error: str | None = None
+            try:
+                decision_reference = _fresh_reference_quote(
+                    provider,
+                    resolved_symbol,
+                    decision_completed_timestamp,
+                )
+            except Exception as exc:  # preserve analysis evidence on quote failure
+                decision_reference_error = str(exc)
+
             valid_for_seconds = None
             valid_until = None
             if normalized.normalization_status == "NORMALIZED":
@@ -319,7 +398,7 @@ class ForexShadowRunner:
                 investment_debate_state = {}
             decision = ShadowTradeDecision(
                 decision_id=str(uuid.uuid4()),
-                created_at=_utc_now(),
+                created_at=decision_completed_timestamp,
                 snapshot_timestamp=snapshot.timestamp,
                 analysis_date=parsed_date,
                 requested_symbol=symbol,
@@ -348,6 +427,41 @@ class ForexShadowRunner:
                 analysis_profile=profile.name,
                 valid_for_seconds=valid_for_seconds,
                 valid_until=valid_until,
+                analysis_snapshot_timestamp=snapshot.timestamp,
+                analysis_snapshot_bid=snapshot.bid,
+                analysis_snapshot_ask=snapshot.ask,
+                analysis_snapshot_spread=snapshot.spread,
+                analysis_snapshot_spread_points=snapshot.spread_points,
+                decision_completed_timestamp=decision_completed_timestamp,
+                analysis_latency_seconds=(
+                    decision_completed_timestamp - snapshot.timestamp
+                ).total_seconds(),
+                decision_reference_timestamp=(
+                    None if decision_reference is None else decision_reference["timestamp"]
+                ),
+                decision_reference_bid=(
+                    None if decision_reference is None else decision_reference["bid"]
+                ),
+                decision_reference_ask=(
+                    None if decision_reference is None else decision_reference["ask"]
+                ),
+                decision_reference_spread=(
+                    None if decision_reference is None else decision_reference["spread"]
+                ),
+                decision_reference_spread_points=(
+                    None
+                    if decision_reference is None
+                    else decision_reference["spread_points"]
+                ),
+                decision_reference_status=(
+                    "UNAVAILABLE"
+                    if decision_reference is None
+                    else decision_reference["status"]
+                ),
+                decision_reference_delay_seconds=(
+                    None if decision_reference is None else decision_reference["delay"]
+                ),
+                decision_reference_error=decision_reference_error,
             )
             self.store.record(decision)
             elapsed_seconds = time.perf_counter() - started

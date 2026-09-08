@@ -224,6 +224,65 @@ def test_shadow_decision_requires_snapshot_timestamp_round_trip() -> None:
     assert decision.snapshot_timestamp == snapshot_timestamp
 
 
+def test_shadow_decision_round_trips_separate_temporal_quote_sets(tmp_path: Path) -> None:
+    analysis_timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
+    completed_timestamp = analysis_timestamp + timedelta(seconds=41)
+    reference_timestamp = completed_timestamp + timedelta(milliseconds=250)
+    decision = make_decision(
+        snapshot_timestamp=analysis_timestamp,
+        reference_bid=1.1004,
+        reference_ask=1.1006,
+        reference_mid=1.1005,
+        spread=0.0002,
+        spread_points=2.0,
+        analysis_snapshot_timestamp=analysis_timestamp,
+        analysis_snapshot_bid=1.1000,
+        analysis_snapshot_ask=1.1002,
+        analysis_snapshot_spread=0.0002,
+        analysis_snapshot_spread_points=2.0,
+        decision_completed_timestamp=completed_timestamp,
+        analysis_latency_seconds=41.0,
+        decision_reference_timestamp=reference_timestamp,
+        decision_reference_bid=1.1004,
+        decision_reference_ask=1.1006,
+        decision_reference_spread=0.0002,
+        decision_reference_spread_points=2.0,
+        decision_reference_status="AVAILABLE",
+        decision_reference_delay_seconds=0.25,
+    )
+
+    store = ShadowDecisionStore(tmp_path / "temporal.db")
+    store.record(decision)
+    restored = store.get(decision.decision_id)
+
+    assert restored.analysis_snapshot_timestamp == analysis_timestamp
+    assert restored.analysis_snapshot_bid == pytest.approx(1.1000)
+    assert restored.analysis_snapshot_ask == pytest.approx(1.1002)
+    assert restored.decision_completed_timestamp == completed_timestamp
+    assert restored.analysis_latency_seconds == pytest.approx(41.0)
+    assert restored.decision_reference_timestamp == reference_timestamp
+    assert restored.decision_reference_bid == pytest.approx(1.1004)
+    assert restored.decision_reference_ask == pytest.approx(1.1006)
+    assert restored.decision_reference_spread == pytest.approx(0.0002)
+    assert restored.decision_reference_spread_points == pytest.approx(2.0)
+    assert restored.decision_reference_status == "AVAILABLE"
+    assert restored.decision_reference_delay_seconds == pytest.approx(0.25)
+
+
+def test_legacy_shadow_row_exposes_analysis_alias_and_unknown_reference(tmp_path: Path) -> None:
+    store = ShadowDecisionStore(tmp_path / "legacy-temporal.db")
+    decision = make_decision()
+    store.record(decision)
+
+    restored = store.get(decision.decision_id)
+
+    assert restored.analysis_snapshot_timestamp == decision.snapshot_timestamp
+    assert restored.analysis_snapshot_bid == pytest.approx(decision.reference_bid)
+    assert restored.analysis_snapshot_ask == pytest.approx(decision.reference_ask)
+    assert restored.decision_reference_timestamp is None
+    assert restored.decision_reference_status == "UNAVAILABLE"
+
+
 def test_shadow_decision_round_trips_intraday_validity() -> None:
     snapshot_timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
     decision = make_decision(
