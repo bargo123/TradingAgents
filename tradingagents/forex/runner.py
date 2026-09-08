@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from tradingagents.agents.utils.agent_utils import build_instrument_context
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.shadow import (
     ShadowDecisionStore,
@@ -79,7 +80,10 @@ class ForexShadowRunner:
     ) -> None:
         self.provider_factory = provider_factory or self._default_provider_factory
         self.graph_factory = graph_factory
-        self.config = dict(config or {})
+        # Keep programmatic/CLI overrides partial and non-secret while still
+        # supplying every setting required by TradingAgentsGraph.
+        self.config = dict(DEFAULT_CONFIG)
+        self.config.update(config or {})
         self.store = store or ShadowDecisionStore(
             Path(self.config.get("data_cache_dir", "data_cache"))
             / "shadow_decisions.db"
@@ -117,6 +121,10 @@ class ForexShadowRunner:
         selected = tuple(analysts)
         if not selected:
             raise ValueError("at least one forex analyst is required")
+        if any(not isinstance(name, str) or not name for name in selected):
+            raise ValueError("analysts must contain non-empty string names")
+        if len(set(selected)) != len(selected):
+            raise ValueError("analysts must not contain duplicates")
         allowed = {"market", "news"}
         invalid = [name for name in selected if name not in allowed]
         if invalid:
@@ -136,7 +144,7 @@ class ForexShadowRunner:
             # empty placeholder when the PM node returns a structured result.
             # Empty placeholders are the one case where the structured final
             # field is a safe fallback; a non-empty raw field always wins.
-            if raw_result not in (None, ""):
+            if raw_result is not None and raw_result != "" and raw_result != {}:
                 return raw_result
         final_result = final_state.get("final_trade_decision")
         if isinstance(final_result, (Mapping,)):
@@ -161,20 +169,28 @@ class ForexShadowRunner:
         count: int = 100,
         analysis_date: date | str | None = None,
         terminal_path: str | None = None,
-        analysts: Sequence[str] = ("market", "news"),
+        analysts: Sequence[str] | None = None,
         *,
         db_path: str | Path | None = None,
     ) -> ForexShadowRunResult:
         started = time.perf_counter()
-        provider = self.provider_factory(terminal_path=terminal_path)
+        provider: Any | None = None
         if db_path is not None:
             self.store = ShadowDecisionStore(db_path)
 
         try:
-            parsed_date = self._validate_inputs(symbol, count, analysis_date, analysts)
-            if provider.initialize() is False:
+            selected_analysts = (
+                self.selected_analysts if analysts is None else tuple(analysts)
+            )
+            parsed_date = self._validate_inputs(
+                symbol, count, analysis_date, selected_analysts
+            )
+            provider = self.provider_factory(terminal_path=terminal_path)
+            if not provider.initialize():
                 raise RuntimeError("MT5 provider initialization failed")
             resolved_symbol = provider.ensure_symbol(symbol)
+            if not isinstance(resolved_symbol, str) or not resolved_symbol.strip():
+                raise RuntimeError("MT5 provider returned an invalid resolved symbol")
             snapshot = provider.get_market_snapshot(resolved_symbol, count=count)
             snapshot_json = snapshot_to_dict(snapshot)
             market_context = build_forex_market_context(snapshot)
@@ -183,7 +199,7 @@ class ForexShadowRunner:
 
             graph_factory = self.graph_factory or self._default_graph_factory
             graph = graph_factory(
-                selected_analysts=tuple(analysts),
+                selected_analysts=selected_analysts,
                 market_data_mode="forex_mt5",
                 mt5_tools=adapter,
                 config=self.config,
@@ -250,7 +266,7 @@ class ForexShadowRunner:
                 "provider_snapshot_calls": getattr(provider, "market_snapshot_calls", 1),
                 "elapsed_seconds": elapsed_seconds,
                 "market_data_mode": "forex_mt5",
-                "selected_analysts": tuple(analysts),
+                "selected_analysts": selected_analysts,
             }
             return ForexShadowRunResult(
                 decision=decision,
@@ -261,6 +277,6 @@ class ForexShadowRunner:
                 metrics=metrics,
             )
         finally:
-            shutdown = getattr(provider, "shutdown", None)
+            shutdown = getattr(provider, "shutdown", None) if provider is not None else None
             if callable(shutdown):
                 shutdown()

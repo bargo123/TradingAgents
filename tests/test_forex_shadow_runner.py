@@ -266,6 +266,43 @@ def test_runner_prefers_raw_structured_result_over_rendered_prose(tmp_path):
     assert store.get(result.decision.decision_id).normalization_status == "NORMALIZED"
 
 
+def test_runner_uses_configured_analyst_default_and_empty_placeholder_falls_back(
+    tmp_path,
+):
+    runner, provider, graph, _ = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": {"rating": "Hold"},
+            # Propagator initializes this field to an empty mapping.  A graph
+            # wrapper that preserves that placeholder must not hide the
+            # structured final result.
+            "portfolio_manager_raw_result": {},
+            "trader_investment_plan": "",
+            "investment_plan": "",
+            "market_report": "",
+            "news_report": "",
+            "fundamentals_report": "",
+            "risk_debate_state": {},
+        },
+    )
+    runner.selected_analysts = ("market",)
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.decision.action == "HOLD"
+    assert graph.invocations
+    assert provider.shutdown_calls == 1
+
+
+def test_runner_merges_partial_runtime_config_with_graph_defaults():
+    runner = ForexShadowRunner(config={"llm_provider": "ollama"})
+
+    assert runner.config["llm_provider"] == "ollama"
+    assert runner.config["quick_think_llm"]
+    assert runner.config["deep_think_llm"]
+    assert runner.config["max_debate_rounds"] >= 0
+
+
 def test_runner_persists_failed_normalization_without_guessing(tmp_path):
     runner, provider, _, store = _make_runner(
         tmp_path,
@@ -354,4 +391,4 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
             raise AssertionError("invalid runner input should raise ValueError")
 
     assert provider.initialize_calls == 0
-    assert provider.shutdown_calls == 2
+    assert provider.shutdown_calls == 0
