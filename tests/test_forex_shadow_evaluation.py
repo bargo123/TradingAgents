@@ -12,6 +12,9 @@ from tradingagents.forex.evaluation import (
     EvaluationBasis,
     EvaluationConfig,
     EvaluationStatus,
+    ShadowDecisionEvaluationResult,
+    ShadowEvaluationBatchResult,
+    ShadowOutcomeEvaluator,
     ShadowEvaluationStore,
     build_horizon_evaluation,
     decision_source_eligibility,
@@ -20,7 +23,7 @@ from tradingagents.forex.evaluation import (
     evaluation_target,
     first_valid_tick,
 )
-from tradingagents.forex.shadow import ShadowTradeDecision
+from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
 
 
 ANCHOR = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
@@ -372,3 +375,190 @@ def test_evaluation_store_migrates_legacy_single_key_table(tmp_path: Path) -> No
     assert rows[0].training_eligibility_reason == "SOURCE_CONTEXT_INELIGIBLE"
     assert rows[0].evaluation_status == "DATA_UNAVAILABLE"
     assert rows[0].previous_unavailable_reason is None
+
+
+class _CountingEvaluationProvider:
+    def __init__(self, ticks: tuple[Mt5Tick, ...] = (), *, init_error: Exception | None = None):
+        self.ticks = ticks
+        self.init_error = init_error
+        self.initialize_calls = 0
+        self.shutdown_calls = 0
+        self.range_calls: list[tuple[str, datetime, datetime]] = []
+
+    def initialize(self) -> bool:
+        self.initialize_calls += 1
+        if self.init_error is not None:
+            raise self.init_error
+        return True
+
+    def shutdown(self) -> None:
+        self.shutdown_calls += 1
+
+    def get_ticks_range(self, symbol: str, start: datetime, end: datetime, *, flags=None):
+        self.range_calls.append((symbol, start, end))
+        return self.ticks
+
+
+def _evaluator(
+    tmp_path: Path,
+    provider: _CountingEvaluationProvider,
+    *,
+    decision: ShadowTradeDecision | None = None,
+    config: EvaluationConfig | None = None,
+) -> tuple[ShadowOutcomeEvaluator, ShadowTradeDecision]:
+    decision = decision or _decision()
+    decision_store = ShadowDecisionStore(tmp_path / "decisions.db")
+    decision_store.record(decision)
+    evaluation_store = ShadowEvaluationStore(tmp_path / "decisions.db")
+    evaluator = ShadowOutcomeEvaluator(
+        decision_store=decision_store,
+        evaluation_store=evaluation_store,
+        config=config or EvaluationConfig(horizons_seconds=(300,), observation_tolerance_seconds=30),
+        provider_factory=lambda terminal_path=None: provider,
+    )
+    return evaluator, decision
+
+
+def test_evaluator_keeps_horizons_pending_before_tolerance_without_mt5_read(tmp_path: Path) -> None:
+    provider = _CountingEvaluationProvider()
+    evaluator, decision = _evaluator(tmp_path, provider)
+    result = evaluator.evaluate_decision(
+        decision.decision_id,
+        now=ANCHOR + timedelta(seconds=329),
+    )
+
+    assert isinstance(result, ShadowDecisionEvaluationResult)
+    assert provider.initialize_calls == 0
+    assert result.metrics["llm_calls"] == 0
+    assert result.status_by_basis == {
+        "ANALYSIS_SNAPSHOT": "PENDING",
+        "DECISION_REFERENCE": "PENDING",
+    }
+    assert all(row.evaluation_status == "PENDING" for row in result.evaluations)
+
+
+def test_evaluator_uses_one_shared_historical_range_and_separates_bases(tmp_path: Path) -> None:
+    analysis_target = ANCHOR + timedelta(seconds=300)
+    reference_target = REFERENCE + timedelta(seconds=300)
+    provider = _CountingEvaluationProvider(
+        (
+            _tick(analysis_target + timedelta(seconds=1), 1.1004, 1.1006),
+            _tick(reference_target + timedelta(seconds=1), 1.1007, 1.1009),
+        )
+    )
+    evaluator, decision = _evaluator(tmp_path, provider)
+    result = evaluator.evaluate_decision(
+        decision.decision_id,
+        now=REFERENCE + timedelta(seconds=3600),
+    )
+
+    assert provider.initialize_calls == 1
+    assert provider.shutdown_calls == 1
+    assert len(provider.range_calls) == 1
+    symbol, start, end = provider.range_calls[0]
+    assert symbol == "EURUSDm"
+    assert start == ANCHOR
+    assert end == reference_target + timedelta(seconds=30)
+    assert result.metrics["historical_ticks_processed"] == 2
+    assert result.metrics["llm_calls"] == 0
+    assert result.status_by_basis == {
+        "ANALYSIS_SNAPSHOT": "COMPLETE",
+        "DECISION_REFERENCE": "COMPLETE",
+    }
+    rows = {(row.evaluation_basis, row.horizon_seconds): row for row in result.evaluations}
+    assert rows[("ANALYSIS_SNAPSHOT", 300)].entry_timestamp == ANCHOR
+    assert rows[("DECISION_REFERENCE", 300)].entry_timestamp == REFERENCE
+    assert rows[("ANALYSIS_SNAPSHOT", 300)].future_bid == pytest.approx(1.1004)
+    assert rows[("DECISION_REFERENCE", 300)].future_bid == pytest.approx(1.1007)
+
+
+def test_evaluator_does_not_fallback_when_reference_quote_is_missing(tmp_path: Path) -> None:
+    decision = _decision(
+        decision_reference_timestamp=None,
+        decision_reference_bid=None,
+        decision_reference_ask=None,
+        decision_reference_spread=None,
+        decision_reference_spread_points=None,
+        decision_reference_status="UNAVAILABLE",
+        decision_reference_delay_seconds=None,
+    )
+    target = ANCHOR + timedelta(seconds=300)
+    provider = _CountingEvaluationProvider((_tick(target + timedelta(seconds=1), 1.1004, 1.1006),))
+    evaluator, _ = _evaluator(tmp_path, provider, decision=decision)
+    result = evaluator.evaluate_decision(decision.decision_id, now=ANCHOR + timedelta(hours=1))
+
+    rows = {(row.evaluation_basis, row.horizon_seconds): row for row in result.evaluations}
+    assert rows[("ANALYSIS_SNAPSHOT", 300)].evaluation_status == "COMPLETE"
+    assert rows[("DECISION_REFERENCE", 300)].evaluation_status == "DATA_UNAVAILABLE"
+    assert rows[("DECISION_REFERENCE", 300)].entry_timestamp is None
+    assert provider.initialize_calls == 1
+    assert len(provider.range_calls) == 1
+
+
+def test_evaluator_provider_failure_leaves_unresolved_horizons_pending(tmp_path: Path) -> None:
+    provider = _CountingEvaluationProvider(init_error=RuntimeError("MT5 unavailable"))
+    evaluator, decision = _evaluator(tmp_path, provider)
+    result = evaluator.evaluate_decision(decision.decision_id, now=REFERENCE + timedelta(hours=1))
+
+    assert provider.initialize_calls == 1
+    assert result.errors and "MT5 unavailable" in result.errors[0]
+    assert all(row.evaluation_status == "PENDING" for row in result.evaluations)
+
+
+def test_evaluator_recovers_data_unavailable_after_later_successful_read(tmp_path: Path) -> None:
+    target = ANCHOR + timedelta(seconds=300)
+    first_provider = _CountingEvaluationProvider(())
+    evaluator, decision = _evaluator(tmp_path, first_provider)
+    first = evaluator.evaluate_decision(decision.decision_id, now=ANCHOR + timedelta(hours=1))
+    first_row = next(row for row in first.evaluations if row.evaluation_basis == "ANALYSIS_SNAPSHOT")
+    assert first_row.evaluation_status == "DATA_UNAVAILABLE"
+
+    second_provider = _CountingEvaluationProvider(
+        (_tick(target + timedelta(seconds=1), 1.1004, 1.1006),)
+    )
+    evaluator.provider_factory = lambda terminal_path=None: second_provider
+    second = evaluator.evaluate_decision(decision.decision_id, now=ANCHOR + timedelta(hours=1))
+    recovered = next(row for row in second.evaluations if row.evaluation_basis == "ANALYSIS_SNAPSHOT")
+
+    assert recovered.evaluation_status == "COMPLETE"
+    assert recovered.created_at == first_row.created_at
+    assert recovered.recovered_from_unavailable_at == recovered.evaluated_at
+    assert recovered.previous_unavailable_reason == first_row.unavailable_reason
+
+
+def test_evaluator_ineligible_decision_never_initializes_mt5(tmp_path: Path) -> None:
+    provider = _CountingEvaluationProvider()
+    decision = _decision(decision_context_status="INCOMPLETE")
+    evaluator, _ = _evaluator(tmp_path, provider, decision=decision)
+    result = evaluator.evaluate_decision(decision.decision_id, now=ANCHOR + timedelta(hours=1))
+
+    assert provider.initialize_calls == 0
+    assert len(result.evaluations) == 2
+    assert all(row.evaluation_status == "INELIGIBLE" for row in result.evaluations)
+    assert result.metrics["llm_calls"] == 0
+
+
+def test_evaluator_pending_batch_reuses_one_provider_lifecycle(tmp_path: Path) -> None:
+    provider = _CountingEvaluationProvider(
+        (_tick(ANCHOR + timedelta(seconds=301), 1.1004, 1.1006),)
+    )
+    decision_store = ShadowDecisionStore(tmp_path / "batch.db")
+    first = _decision(decision_id="batch-1")
+    second = _decision(decision_id="batch-2", snapshot_timestamp=ANCHOR + timedelta(seconds=10))
+    decision_store.record(first)
+    decision_store.record(second)
+    evaluator = ShadowOutcomeEvaluator(
+        decision_store=decision_store,
+        evaluation_store=ShadowEvaluationStore(tmp_path / "batch.db"),
+        config=EvaluationConfig(horizons_seconds=(300,), observation_tolerance_seconds=30),
+        provider_factory=lambda terminal_path=None: provider,
+    )
+
+    result = evaluator.evaluate_pending(now=ANCHOR + timedelta(hours=1))
+
+    assert isinstance(result, ShadowEvaluationBatchResult)
+    assert result.metrics["decisions_scanned"] == 2
+    assert result.metrics["llm_calls"] == 0
+    assert provider.initialize_calls == 1
+    assert provider.shutdown_calls == 1
+    assert len(provider.range_calls) == 2

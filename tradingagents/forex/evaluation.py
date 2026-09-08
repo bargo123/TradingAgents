@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 import sqlite3
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1024,6 +1025,377 @@ def _parse_db_timestamp(value: str | None) -> datetime | None:
     return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
 
 
+@dataclass(frozen=True, slots=True)
+class ShadowDecisionEvaluationResult:
+    decision: ShadowTradeDecision
+    evaluations: tuple[ShadowOutcomeEvaluation, ...]
+    status_by_basis: Mapping[EvaluationBasis, str]
+    errors: tuple[str, ...]
+    metrics: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ShadowEvaluationBatchResult:
+    decisions: tuple[ShadowTradeDecision, ...]
+    evaluations: tuple[ShadowOutcomeEvaluation, ...]
+    status_by_basis: Mapping[EvaluationBasis, str]
+    status_by_decision: Mapping[str, Mapping[EvaluationBasis, str]]
+    errors: tuple[str, ...]
+    metrics: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class _MatureRequest:
+    basis: EvaluationBasis
+    horizon_seconds: int
+    anchor_timestamp: datetime
+    target_timestamp: datetime
+    deadline_timestamp: datetime
+    existing_status: EvaluationStatus | None
+
+
+def _aggregate_status(records: Sequence[ShadowOutcomeEvaluation]) -> str:
+    if not records:
+        return "PENDING"
+    statuses = [record.evaluation_status for record in records]
+    if any(status == "INELIGIBLE" for status in statuses):
+        return "INELIGIBLE"
+    if any(status == "PENDING" for status in statuses):
+        return "PARTIAL" if any(status != "PENDING" for status in statuses) else "PENDING"
+    if any(status == "COMPLETE" for status in statuses):
+        return "COMPLETE"
+    return "DATA_UNAVAILABLE"
+
+
+class ShadowOutcomeEvaluator:
+    """Evaluate persisted decisions with one bounded, read-only MT5 read."""
+
+    def __init__(
+        self,
+        *,
+        decision_store: Any,
+        evaluation_store: ShadowEvaluationStore | None = None,
+        config: EvaluationConfig | None = None,
+        provider_factory: Callable[..., Any] | None = None,
+    ) -> None:
+        self.decision_store = decision_store
+        self.evaluation_store = evaluation_store or ShadowEvaluationStore(
+            decision_store.path
+        )
+        self.config = config or EvaluationConfig()
+        self.provider_factory = provider_factory or self._default_provider_factory
+
+    @staticmethod
+    def _default_provider_factory(terminal_path: str | None = None) -> Any:
+        from tradingagents.dataflows.mt5.provider import MT5Provider
+
+        return MT5Provider(terminal_path=terminal_path)
+
+    def _prepare_decision(
+        self,
+        decision: ShadowTradeDecision,
+        now: datetime,
+    ) -> tuple[list[ShadowOutcomeEvaluation], list[_MatureRequest]]:
+        existing = {
+            (row.evaluation_basis, row.horizon_seconds): row
+            for row in self.evaluation_store.list_for_decision(decision.decision_id)
+        }
+        records: list[ShadowOutcomeEvaluation] = []
+        mature: list[_MatureRequest] = []
+        eligibility = decision_source_eligibility(decision)
+        for basis in _BASIS_VALUES:
+            for horizon in self.config.horizons_seconds:
+                key = (basis, horizon)
+                current = existing.get(key)
+                if current is not None and current.evaluation_status in (
+                    "COMPLETE",
+                    "INELIGIBLE",
+                ):
+                    records.append(current)
+                    continue
+                if not eligibility.eligible:
+                    records.append(
+                        build_horizon_evaluation(
+                            decision,
+                            evaluation_basis=basis,
+                            horizon_seconds=horizon,
+                            now=now,
+                            ticks=(),
+                            config=self.config,
+                        )
+                    )
+                    continue
+                entry = _entry_quote(decision, basis)
+                if entry is None:
+                    records.append(
+                        build_horizon_evaluation(
+                            decision,
+                            evaluation_basis=basis,
+                            horizon_seconds=horizon,
+                            now=now,
+                            ticks=(),
+                            config=self.config,
+                        )
+                    )
+                    continue
+                anchor, _, _, _, _ = entry
+                target, deadline = evaluation_target(
+                    anchor,
+                    horizon,
+                    tolerance_seconds=self.config.observation_tolerance_seconds,
+                )
+                if now < deadline:
+                    records.append(
+                        build_horizon_evaluation(
+                            decision,
+                            evaluation_basis=basis,
+                            horizon_seconds=horizon,
+                            now=now,
+                            ticks=(),
+                            config=self.config,
+                        )
+                    )
+                    continue
+                mature.append(
+                    _MatureRequest(
+                        basis=basis,
+                        horizon_seconds=horizon,
+                        anchor_timestamp=anchor,
+                        target_timestamp=target,
+                        deadline_timestamp=deadline,
+                        existing_status=(None if current is None else current.evaluation_status),
+                    )
+                )
+                if current is not None and current.evaluation_status == "DATA_UNAVAILABLE":
+                    records.append(current)
+                else:
+                    records.append(
+                        _pending_evaluation(
+                            decision,
+                            basis,
+                            horizon,
+                            self.config,
+                            now,
+                        )
+                    )
+        return records, mature
+
+    def _new_provider(self, terminal_path: str | None) -> Any:
+        return self.provider_factory(terminal_path=terminal_path)
+
+    @staticmethod
+    def _initialize_provider(provider: Any) -> None:
+        if not callable(getattr(provider, "initialize", None)):
+            raise RuntimeError("MT5 provider does not expose initialize()")
+        if not provider.initialize():
+            raise RuntimeError("MT5 provider initialization failed")
+
+    def _evaluate_one(
+        self,
+        decision: ShadowTradeDecision,
+        *,
+        now: datetime,
+        terminal_path: str | None,
+        provider: Any | None,
+        provider_initialized: bool,
+    ) -> tuple[ShadowDecisionEvaluationResult, Any | None, bool]:
+        started = time.perf_counter()
+        db_seconds = 0.0
+        mt5_seconds = 0.0
+        errors: list[str] = []
+        db_started = time.perf_counter()
+        records, mature = self._prepare_decision(decision, now)
+        db_seconds += time.perf_counter() - db_started
+        db_started = time.perf_counter()
+        self.evaluation_store.upsert(records)
+        db_seconds += time.perf_counter() - db_started
+        if mature:
+            if provider is None:
+                try:
+                    provider = self._new_provider(terminal_path)
+                except Exception as exc:
+                    errors.append(str(exc))
+            if provider is not None and not provider_initialized and not errors:
+                try:
+                    self._initialize_provider(provider)
+                    provider_initialized = True
+                except Exception as exc:
+                    errors.append(str(exc))
+            if provider is not None and provider_initialized and not errors:
+                start = min(item.anchor_timestamp for item in mature)
+                end = max(item.deadline_timestamp for item in mature)
+                try:
+                    mt5_started = time.perf_counter()
+                    ticks = tuple(
+                        provider.get_ticks_range(
+                            decision.resolved_symbol,
+                            start,
+                            end,
+                        )
+                    )
+                    mt5_seconds += time.perf_counter() - mt5_started
+                    evaluated = [
+                        build_horizon_evaluation(
+                            decision,
+                            evaluation_basis=item.basis,
+                            horizon_seconds=item.horizon_seconds,
+                            now=now,
+                            ticks=ticks,
+                            config=self.config,
+                        )
+                        for item in mature
+                    ]
+                    db_started = time.perf_counter()
+                    self.evaluation_store.upsert(evaluated)
+                    db_seconds += time.perf_counter() - db_started
+                except Exception as exc:
+                    errors.append(str(exc))
+        db_started = time.perf_counter()
+        final_records = tuple(self.evaluation_store.list_for_decision(decision.decision_id))
+        db_seconds += time.perf_counter() - db_started
+        status_by_basis = {
+            basis: _aggregate_status(
+                [row for row in final_records if row.evaluation_basis == basis]
+            )
+            for basis in _BASIS_VALUES
+        }
+        metrics = {
+            "decisions_scanned": 1,
+            "horizons_evaluated": len(mature),
+            "historical_ticks_processed": 0 if not mature or errors else len(ticks),
+            "database_seconds": db_seconds,
+            "mt5_read_seconds": mt5_seconds,
+            "total_runtime_seconds": time.perf_counter() - started,
+            "llm_calls": 0,
+        }
+        return (
+            ShadowDecisionEvaluationResult(
+                decision=decision,
+                evaluations=final_records,
+                status_by_basis=status_by_basis,
+                errors=tuple(errors),
+                metrics=metrics,
+            ),
+            provider,
+            provider_initialized,
+        )
+
+    def evaluate_decision(
+        self,
+        decision_id: str,
+        *,
+        now: datetime | None = None,
+        terminal_path: str | None = None,
+    ) -> ShadowDecisionEvaluationResult:
+        decision = self.decision_store.get(decision_id)
+        provider: Any | None = None
+        try:
+            result, provider, _ = self._evaluate_one(
+                decision,
+                now=_utc(now or _utc_now()),
+                terminal_path=terminal_path,
+                provider=None,
+                provider_initialized=False,
+            )
+            return result
+        finally:
+            shutdown = getattr(provider, "shutdown", None) if provider is not None else None
+            if callable(shutdown):
+                shutdown()
+
+    def evaluate_pending(
+        self,
+        *,
+        now: datetime | None = None,
+        terminal_path: str | None = None,
+    ) -> ShadowEvaluationBatchResult:
+        started = time.perf_counter()
+        now = _utc(now or _utc_now())
+        db_started = time.perf_counter()
+        decisions = tuple(self.decision_store.list_pending())
+        database_seconds = time.perf_counter() - db_started
+        provider: Any | None = None
+        provider_initialized = False
+        all_evaluations: list[ShadowOutcomeEvaluation] = []
+        all_errors: list[str] = []
+        statuses: dict[str, Mapping[EvaluationBasis, str]] = {}
+        horizons_evaluated = 0
+        ticks_processed = 0
+        mt5_seconds = 0.0
+        try:
+            for decision in decisions:
+                result, provider, provider_initialized = self._evaluate_one(
+                    decision,
+                    now=now,
+                    terminal_path=terminal_path,
+                    provider=provider,
+                    provider_initialized=provider_initialized,
+                )
+                all_evaluations.extend(result.evaluations)
+                all_errors.extend(result.errors)
+                statuses[decision.decision_id] = result.status_by_basis
+                horizons_evaluated += int(result.metrics["horizons_evaluated"])
+                ticks_processed += int(result.metrics["historical_ticks_processed"])
+                database_seconds += float(result.metrics["database_seconds"])
+                mt5_seconds += float(result.metrics["mt5_read_seconds"])
+        finally:
+            shutdown = getattr(provider, "shutdown", None) if provider is not None else None
+            if callable(shutdown):
+                shutdown()
+        status_by_basis = {
+            basis: _aggregate_status(
+                [row for row in all_evaluations if row.evaluation_basis == basis]
+            )
+            for basis in _BASIS_VALUES
+        }
+        return ShadowEvaluationBatchResult(
+            decisions=decisions,
+            evaluations=tuple(all_evaluations),
+            status_by_basis=status_by_basis,
+            status_by_decision=statuses,
+            errors=tuple(all_errors),
+            metrics={
+                "decisions_scanned": len(decisions),
+                "horizons_evaluated": horizons_evaluated,
+                "historical_ticks_processed": ticks_processed,
+                "database_seconds": database_seconds,
+                "mt5_read_seconds": mt5_seconds,
+                "total_runtime_seconds": time.perf_counter() - started,
+                "llm_calls": 0,
+            },
+        )
+
+
+def _pending_evaluation(
+    decision: ShadowTradeDecision,
+    basis: EvaluationBasis,
+    horizon_seconds: int,
+    config: EvaluationConfig,
+    now: datetime,
+) -> ShadowOutcomeEvaluation:
+    entry = _entry_quote(decision, basis)
+    target = None
+    if entry is not None:
+        target, _ = evaluation_target(
+            entry[0],
+            horizon_seconds,
+            tolerance_seconds=config.observation_tolerance_seconds,
+        )
+    return ShadowOutcomeEvaluation(
+        **_base_fields(
+            decision,
+            basis,
+            horizon_seconds,
+            config,
+            target_timestamp=target,
+            entry=entry,
+            status="PENDING",
+            reason=None,
+            now=now,
+        )
+    )
+
+
 __all__ = [
     "AllowedAction",
     "BestCounterfactualAction",
@@ -1034,6 +1406,9 @@ __all__ = [
     "EvaluationStatus",
     "ExcursionMetrics",
     "ShadowOutcomeEvaluation",
+    "ShadowDecisionEvaluationResult",
+    "ShadowEvaluationBatchResult",
+    "ShadowOutcomeEvaluator",
     "ShadowEvaluationStore",
     "build_horizon_evaluation",
     "decision_source_eligibility",
