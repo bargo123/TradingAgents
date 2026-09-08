@@ -9,7 +9,17 @@ from pathlib import Path
 from typing import Any
 
 import yfinance as yf
-from langgraph.prebuilt import ToolNode
+
+try:  # pragma: no cover - fallback for minimal test environments
+    from langgraph.prebuilt import ToolNode
+except ModuleNotFoundError:  # pragma: no cover
+    class ToolNode:
+        def __init__(self, tools):
+            self.tools = list(tools)
+            self.tools_by_name = {
+                getattr(tool, "name", getattr(tool, "__name__", str(i))): tool
+                for i, tool in enumerate(self.tools)
+            }
 
 # Import the abstract tool methods from agent_utils
 from tradingagents.agents.utils.agent_utils import (
@@ -43,6 +53,8 @@ from .setup import GraphSetup
 from .signal_processing import SignalProcessor
 
 logger = logging.getLogger(__name__)
+
+SUPPORTED_MARKET_DATA_MODES = frozenset({"stock", "forex_mt5"})
 
 
 def _coerce_max_retries(value):
@@ -85,6 +97,8 @@ class TradingAgentsGraph:
         debug=False,
         config: dict[str, Any] = None,
         callbacks: list | None = None,
+        market_data_mode: str = "stock",
+        mt5_tools: Any | None = None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -94,9 +108,22 @@ class TradingAgentsGraph:
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
         """
+        if market_data_mode not in SUPPORTED_MARKET_DATA_MODES:
+            raise ValueError(
+                "market_data_mode must be one of: stock, forex_mt5"
+            )
+        if market_data_mode == "forex_mt5" and mt5_tools is None:
+            raise ValueError("forex_mt5 market_data_mode requires an MT5 adapter")
+        if market_data_mode == "forex_mt5" and not callable(
+            getattr(mt5_tools, "as_tools", None)
+        ):
+            raise ValueError("forex_mt5 market_data_mode requires an MT5 adapter with as_tools()")
+
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         self.callbacks = callbacks or []
+        self.market_data_mode = market_data_mode
+        self.mt5_tools = mt5_tools
 
         # Update the interface's config
         set_config(self.config)
@@ -143,6 +170,8 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            market_data_mode=self.market_data_mode,
+            mt5_tools=self.mt5_tools,
         )
 
         self.propagator = Propagator(
@@ -209,6 +238,18 @@ class TradingAgentsGraph:
 
     def _create_tool_nodes(self) -> dict[str, ToolNode]:
         """Create tool nodes for different data sources using abstract methods."""
+        # Keep this method callable on the class for stock-tool regression tests
+        # and older integrations that use ``_create_tool_nodes(None)``.
+        market_data_mode = getattr(self, "market_data_mode", "stock") if self is not None else "stock"
+        mt5_tools = getattr(self, "mt5_tools", None) if self is not None else None
+        if market_data_mode == "forex_mt5":
+            if mt5_tools is None:
+                raise ValueError("forex_mt5 market_data_mode requires an MT5 adapter")
+            forex_tools = mt5_tools.as_tools()
+            return {
+                "market": ToolNode(list(forex_tools)),
+                "news": ToolNode([get_global_news]),
+            }
         return {
             "market": ToolNode(
                 [
@@ -399,6 +440,7 @@ class TradingAgentsGraph:
             f"debate={self.config['max_debate_rounds']}",
             f"risk={self.config['max_risk_discuss_rounds']}",
             f"asset={asset_type}",
+            f"market_data_mode={getattr(self, 'market_data_mode', 'stock')}",
         ])
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):

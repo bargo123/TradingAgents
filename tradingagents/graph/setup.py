@@ -2,8 +2,33 @@
 
 from typing import Any
 
-from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode
+try:  # pragma: no cover - fallback for minimal test environments
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.prebuilt import ToolNode
+except ModuleNotFoundError:  # pragma: no cover
+    END = "END"
+    START = "START"
+
+    class ToolNode:
+        def __init__(self, tools):
+            self.tools = list(tools)
+            self.tools_by_name = {getattr(tool, "name", getattr(tool, "__name__", str(i))): tool for i, tool in enumerate(self.tools)}
+
+    class StateGraph:
+        def __init__(self, state_type):
+            self.state_type = state_type
+
+        def add_node(self, *args, **kwargs):
+            return None
+
+        def add_edge(self, *args, **kwargs):
+            return None
+
+        def add_conditional_edges(self, *args, **kwargs):
+            return None
+
+        def compile(self):
+            return self
 
 from tradingagents.agents import (
     create_aggressive_debator,
@@ -51,12 +76,26 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        market_data_mode: str = "stock",
+        mt5_tools: Any | None = None,
     ):
         """Initialize with required components."""
+        if market_data_mode not in {"stock", "forex_mt5"}:
+            raise ValueError("market_data_mode must be one of: stock, forex_mt5")
+        if market_data_mode == "forex_mt5" and mt5_tools is None:
+            raise ValueError("forex_mt5 market_data_mode requires an MT5 adapter")
+        if market_data_mode == "forex_mt5" and not callable(
+            getattr(mt5_tools, "as_tools", None)
+        ):
+            raise ValueError(
+                "forex_mt5 market_data_mode requires an MT5 adapter with as_tools()"
+            )
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        self.market_data_mode = market_data_mode
+        self.mt5_tools = mt5_tools
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "fundamentals")
@@ -70,14 +109,33 @@ class GraphSetup:
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
         """
+        if self.market_data_mode == "forex_mt5":
+            forbidden = [name for name in selected_analysts if name in {"social", "fundamentals"}]
+            if forbidden:
+                raise ValueError(
+                    f"Forex mode does not allow these analysts: {', '.join(forbidden)}"
+                )
         plan = build_analyst_execution_plan(selected_analysts)
 
-        analyst_factories = {
-            "market": lambda: create_market_analyst(self.quick_thinking_llm),
-            "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
-            "news": lambda: create_news_analyst(self.quick_thinking_llm),
-            "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
-        }
+        if self.market_data_mode == "forex_mt5":
+            analyst_factories = {
+                "market": lambda: create_market_analyst(
+                    self.quick_thinking_llm,
+                    market_data_mode="forex_mt5",
+                    mt5_tools=self.mt5_tools,
+                ),
+                "news": lambda: create_news_analyst(
+                    self.quick_thinking_llm,
+                    market_data_mode="forex_mt5",
+                ),
+            }
+        else:
+            analyst_factories = {
+                "market": lambda: create_market_analyst(self.quick_thinking_llm),
+                "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
+                "news": lambda: create_news_analyst(self.quick_thinking_llm),
+                "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
+            }
 
         # Create researcher and manager nodes
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)

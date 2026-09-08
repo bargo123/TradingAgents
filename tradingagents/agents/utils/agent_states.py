@@ -1,6 +1,10 @@
 from typing import Annotated
 
-from langgraph.graph import MessagesState
+try:  # pragma: no cover - fallback for minimal test environments
+    from langgraph.graph import MessagesState
+except ModuleNotFoundError:  # pragma: no cover - exercised in this environment
+    class MessagesState(dict):
+        pass
 from typing_extensions import TypedDict
 
 
@@ -48,6 +52,8 @@ class AgentState(MessagesState):
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
+    market_data_mode: Annotated[str, "Market data mode such as stock or forex_mt5"]
+    market_context: Annotated[str, "Compact normalized market context from the current data source"]
     trade_date: Annotated[str, "What date we are trading at"]
 
     sender: Annotated[str, "Agent that sent this message"]
@@ -73,4 +79,7 @@ class AgentState(MessagesState):
         RiskDebateState, "Current state of the debate on evaluating risk"
     ]
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
+    portfolio_manager_raw_result: Annotated[str, "Raw structured Portfolio Manager result for shadow mode"]
+    normalization_status: Annotated[str, "Normalization status for shadow mode"]
+    normalization_error: Annotated[str, "Normalization error for shadow mode"]
     past_context: Annotated[str, "Memory log context injected at run start (same-ticker decisions + cross-ticker lessons)"]

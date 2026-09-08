@@ -48,6 +48,8 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+_MAX_MARKET_CONTEXT_CHARS = 4096
+
 
 def get_language_instruction() -> str:
     """Return a prompt instruction for the configured output language.
@@ -194,11 +196,34 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     """
     context = state.get("instrument_context")
     if isinstance(context, str) and context.strip():
-        return context
-    return build_instrument_context(
-        str(state["company_of_interest"]),
-        state.get("asset_type", "stock"),
-    )
+        base_context = context
+    else:
+        base_context = build_instrument_context(
+            str(state["company_of_interest"]),
+            state.get("asset_type", "stock"),
+        )
+    market_context = state.get("market_context")
+    if isinstance(market_context, str) and market_context.strip():
+        market_context = market_context.strip()
+        context_lines = market_context.splitlines()
+        base_lines = base_context.splitlines()
+        # A serialized MT5 context starts with a SOURCE line. If the caller
+        # already persisted that block in instrument_context, retain its
+        # source marker once and append only the new bounded details.
+        if (
+            context_lines
+            and context_lines[0].strip().startswith("SOURCE:")
+            and any(line.strip().startswith("SOURCE:") for line in base_lines)
+        ):
+            context_lines = context_lines[1:]
+        if any(line.strip().startswith("SOURCE:") for line in base_lines):
+            context_lines = [
+                line for line in context_lines if not line.strip().startswith("SOURCE:")
+            ]
+        bounded_market_context = "\n".join(context_lines).strip()[:_MAX_MARKET_CONTEXT_CHARS].rstrip()
+        if bounded_market_context and bounded_market_context not in base_context:
+            return f"{base_context}\n{bounded_market_context}"
+    return base_context
 
 
 def create_msg_delete():

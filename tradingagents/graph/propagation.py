@@ -22,6 +22,8 @@ class Propagator:
         asset_type: str = "stock",
         past_context: str = "",
         instrument_context: str = "",
+        market_data_mode: str = "stock",
+        market_context: str = "",
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -36,6 +38,8 @@ class Propagator:
             "company_of_interest": company_name,
             "asset_type": asset_type,
             "instrument_context": instrument_context,
+            "market_data_mode": market_data_mode,
+            "market_context": market_context,
             "trade_date": str(trade_date),
             "past_context": past_context,
             "investment_debate_state": InvestDebateState(
@@ -66,6 +70,9 @@ class Propagator:
             "fundamentals_report": "",
             "sentiment_report": "",
             "news_report": "",
+            "portfolio_manager_raw_result": "",
+            "normalization_status": "",
+            "normalization_error": "",
         }
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:
