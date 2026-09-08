@@ -96,7 +96,9 @@ def test_phase4_sources_define_no_mutation_methods() -> None:
         root / "tradingagents" / "forex" / "runner.py",
         root / "tradingagents" / "forex" / "shadow.py",
         root / "tradingagents" / "forex" / "tools.py",
+        root / "tradingagents" / "forex" / "evaluation.py",
         root / "tradingagents" / "dataflows" / "mt5" / "provider.py",
+        root / "cli" / "forex_evaluate.py",
     )
     forbidden = set(FORBIDDEN_MUTATION_METHODS)
     for source_path in production_sources:
