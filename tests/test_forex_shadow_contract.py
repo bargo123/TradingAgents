@@ -32,51 +32,50 @@ structured = load_module(
 StructuredOutputRequiredError = structured.StructuredOutputRequiredError
 invoke_structured_only = structured.invoke_structured_only
 
-from tradingagents.forex.shadow import (
+from tradingagents.forex.shadow import (  # noqa: E402  # isolated helper import must run first
     PortfolioDecision,
     PortfolioRating,
     ShadowDecisionStore,
-    ShadowNormalization,
     ShadowTradeDecision,
     normalize_portfolio_manager_result,
 )
 
 
 def make_decision(**overrides):
-    base = dict(
-        decision_id="decision-001",
-        created_at=datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc),
-        snapshot_timestamp=datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc),
-        analysis_date=date(2026, 9, 8),
-        requested_symbol="EURUSD",
-        resolved_symbol="EURUSDm",
-        action="HOLD",
-        raw_portfolio_manager_result={"rating": "Hold"},
-        normalization_status="NORMALIZED",
-        normalization_error=None,
-        confidence=0.75,
-        reference_bid=1.1,
-        reference_ask=1.1002,
-        reference_mid=1.1001,
-        spread=0.0002,
-        spread_points=2.0,
-        analysis_timeframe="M15",
-        trader_summary="x",
-        portfolio_manager_summary="y",
-        bull_summary=None,
-        bear_summary=None,
-        llm_provider="local",
-        quick_model="qwen",
-        deep_model=None,
-        snapshot_json={"symbol": "EURUSD"},
-        future_evaluation_status="PENDING",
-        outcome_raw=None,
-        outcome_alpha=None,
-        outcome_resolved_at=None,
-        reflection=None,
-        source_run_id="run-001",
-        executed=False,
-    )
+    base = {
+        "decision_id": "decision-001",
+        "created_at": datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc),
+        "snapshot_timestamp": datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc),
+        "analysis_date": date(2026, 9, 8),
+        "requested_symbol": "EURUSD",
+        "resolved_symbol": "EURUSDm",
+        "action": "HOLD",
+        "raw_portfolio_manager_result": {"rating": "Hold"},
+        "normalization_status": "NORMALIZED",
+        "normalization_error": None,
+        "confidence": 0.75,
+        "reference_bid": 1.1,
+        "reference_ask": 1.1002,
+        "reference_mid": 1.1001,
+        "spread": 0.0002,
+        "spread_points": 2.0,
+        "analysis_timeframe": "M15",
+        "trader_summary": "x",
+        "portfolio_manager_summary": "y",
+        "bull_summary": None,
+        "bear_summary": None,
+        "llm_provider": "local",
+        "quick_model": "qwen",
+        "deep_model": None,
+        "snapshot_json": {"symbol": "EURUSD"},
+        "future_evaluation_status": "PENDING",
+        "outcome_raw": None,
+        "outcome_alpha": None,
+        "outcome_resolved_at": None,
+        "reflection": None,
+        "source_run_id": "run-001",
+        "executed": False,
+    }
     base.update(overrides)
     return ShadowTradeDecision(**base)
 
@@ -212,10 +211,9 @@ def test_store_rejects_invalid_future_evaluation_status_via_sql(
 ) -> None:
     store = ShadowDecisionStore(tmp_path / "shadow.db")
     store.initialize()
-    with pytest.raises(sqlite3.IntegrityError):
-        with sqlite3.connect(store.path) as conn:
-            conn.execute(
-                """
+    with pytest.raises(sqlite3.IntegrityError), sqlite3.connect(store.path) as conn:
+        conn.execute(
+            """
                 INSERT INTO shadow_decisions (
                     decision_id,
                     created_at,
@@ -254,41 +252,41 @@ def test_store_rejects_invalid_future_evaluation_status_via_sql(
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
-                (
-                    "bad-status",
-                    "2026-09-08T00:00:00Z",
-                    "2026-09-08",
-                    "EURUSD",
-                    "EURUSDm",
-                    "2026-09-08T00:00:00Z",
-                    "HOLD",
-                    "NORMALIZED",
-                    None,
-                    json.dumps({"rating": "Hold"}),
-                    0.1,
-                    1.1,
-                    1.1002,
-                    1.1001,
-                    0.0002,
-                    2.0,
-                    "M15",
-                    "x",
-                    "y",
-                    None,
-                    None,
-                    "local",
-                    "qwen",
-                    None,
-                    json.dumps({"symbol": "EURUSD"}),
-                    0,
-                    "BROKEN",
-                    None,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-            )
+            (
+                "bad-status",
+                "2026-09-08T00:00:00Z",
+                "2026-09-08",
+                "EURUSD",
+                "EURUSDm",
+                "2026-09-08T00:00:00Z",
+                "HOLD",
+                "NORMALIZED",
+                None,
+                json.dumps({"rating": "Hold"}),
+                0.1,
+                1.1,
+                1.1002,
+                1.1001,
+                0.0002,
+                2.0,
+                "M15",
+                "x",
+                "y",
+                None,
+                None,
+                "local",
+                "qwen",
+                None,
+                json.dumps({"symbol": "EURUSD"}),
+                0,
+                "BROKEN",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
     with sqlite3.connect(store.path) as conn:
         conn.execute(
             """
