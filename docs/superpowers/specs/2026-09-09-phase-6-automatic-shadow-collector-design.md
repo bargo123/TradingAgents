@@ -1294,6 +1294,9 @@ the proposed implementation file map for a later, separately approved plan.
 - `tradingagents/forex/shadow.py` — read-only
   `find_by_source_run_id()` query seam for crash reconciliation only; no
   mutation behavior change.
+- `cli/forex_evaluate.py` — refuse evaluation with
+  `WATCHER_ALREADY_RUNNING` when a non-expired watcher lease owns the database;
+  no other Phase 5 behavior change.
 - `tradingagents/forex/__init__.py` — re-export watcher contracts if useful;
   no stock imports or registration.
 - `pyproject.toml` — add only
