@@ -317,6 +317,64 @@ class MT5Provider:
         except (TypeError, ValueError, OSError, ZeroDivisionError) as exc:
             raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
 
+    def get_ticks_range(
+        self,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        flags: int | None = None,
+    ) -> tuple[Mt5Tick, ...]:
+        """Return normalized historical ticks without mutating the terminal."""
+        self._require_connected()
+        if not isinstance(start, datetime) or start.tzinfo is None:
+            raise ValueError("start must be timezone-aware")
+        if not isinstance(end, datetime) or end.tzinfo is None:
+            raise ValueError("end must be timezone-aware")
+        if start.utcoffset() != timezone.utc.utcoffset(start):
+            start = start.astimezone(timezone.utc)
+        else:
+            start = start.astimezone(timezone.utc)
+        if end.utcoffset() != timezone.utc.utcoffset(end):
+            end = end.astimezone(timezone.utc)
+        else:
+            end = end.astimezone(timezone.utc)
+        if end < start:
+            raise ValueError("end must be greater than or equal to start")
+
+        resolved = self.ensure_symbol(symbol)
+        api_flags = (
+            flags
+            if flags is not None
+            else getattr(self._api, "COPY_TICKS_ALL", -1)
+        )
+        copy_ticks_range = getattr(self._api, "copy_ticks_range", None)
+        if not callable(copy_ticks_range):
+            raise Mt5DataError("MT5 copy_ticks_range is unavailable")
+        try:
+            rows = copy_ticks_range(resolved, start, end, api_flags)
+        except Exception as exc:
+            raise Mt5DataError(
+                f"MT5 copy_ticks_range failed for {resolved!r}: {self._last_error()!r}"
+            ) from exc
+        if rows is None:
+            raise self._failed_collection("copy_ticks_range")
+        try:
+            return tuple(
+                Mt5Tick(
+                    symbol=resolved,
+                    timestamp=_utc_timestamp(row, prefer_msc=True),
+                    bid=float(_field(row, "bid")),
+                    ask=float(_field(row, "ask")),
+                    last=_field(row, "last"),
+                    volume=_field(row, "volume"),
+                    volume_real=_field(row, "volume_real"),
+                )
+                for row in rows
+            )
+        except (TypeError, ValueError, OSError) as exc:
+            raise Mt5DataError(f"Invalid tick range data for {resolved!r}") from exc
+
     def get_market_snapshot(self, symbol: str, count: int = 100) -> ForexMarketSnapshot:
         """Capture a normalized, read-only multi-timeframe market snapshot."""
         self._require_connected()

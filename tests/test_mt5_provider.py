@@ -1,6 +1,6 @@
 """RED tests defining the read-only MT5 provider contract."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +15,7 @@ from tradingagents.dataflows.mt5.provider import MT5Provider
 
 
 class FakeMT5:
+    COPY_TICKS_ALL = -1
     TIMEFRAME_M1 = 1
     TIMEFRAME_M5 = 5
     TIMEFRAME_M15 = 15
@@ -30,6 +31,8 @@ class FakeMT5:
         self.shutdown_called = False
         self.tick_time_msc = 1_700_000_000_123
         self.rate_timeframes = []
+        self.tick_ranges = []
+        self.tick_range_result = ()
         self.symbol_records = [
             self.symbol("EURUSD.a"),
             self.symbol("EURUSDm"),
@@ -122,6 +125,10 @@ class FakeMT5:
             }
             for index in range(start_pos, start_pos + count)
         )
+
+    def copy_ticks_range(self, name, start, end, flags):
+        self.tick_ranges.append((name, start, end, flags))
+        return self.tick_range_result
 
     def positions_get(self, **kwargs):
         return (
@@ -269,6 +276,76 @@ def test_tick_falls_back_to_second_timestamp(fake_api):
     assert provider.get_tick("USDJPY").timestamp == datetime.fromtimestamp(
         1_700_000_000, tz=timezone.utc
     )
+
+
+@pytest.mark.unit
+def test_historical_ticks_prefer_milliseconds_and_normalize_utc(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("mEURUSD")]
+    fake_api.tick_range_result = (
+        {
+            "time": 1_700_000_000,
+            "time_msc": 1_700_000_000_123,
+            "bid": 1.1000,
+            "ask": 1.1002,
+            "last": 1.1001,
+            "volume": 3,
+        },
+        {
+            "time": 1_700_000_001,
+            "time_msc": None,
+            "bid": 1.1001,
+            "ask": 1.1003,
+            "last": 1.1002,
+            "volume": 4,
+        },
+    )
+    provider = initialized_provider(fake_api)
+    start = datetime(2023, 11, 14, 2, 0, tzinfo=timezone.utc)
+    end = datetime(2023, 11, 14, 2, 1, tzinfo=timezone.utc)
+
+    ticks = provider.get_ticks_range("EURUSD", start, end)
+
+    assert len(ticks) == 2
+    assert ticks[0].symbol == "mEURUSD"
+    assert ticks[0].timestamp == datetime.fromtimestamp(
+        1_700_000_000.123, tz=timezone.utc
+    )
+    assert ticks[1].timestamp == datetime.fromtimestamp(1_700_000_001, tz=timezone.utc)
+    assert fake_api.tick_ranges == [("mEURUSD", start, end, fake_api.COPY_TICKS_ALL)]
+
+
+@pytest.mark.unit
+def test_historical_ticks_normalize_non_utc_inputs_and_use_flags(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("EURUSD.raw")]
+    fake_api.tick_range_result = ()
+    provider = initialized_provider(fake_api)
+    start = datetime(2023, 11, 14, 4, 0, tzinfo=timezone(timedelta(hours=2)))
+    end = datetime(2023, 11, 14, 4, 1, tzinfo=timezone(timedelta(hours=2)))
+
+    assert provider.get_ticks_range("EURUSD", start, end, flags=7) == ()
+    name, actual_start, actual_end, flags = fake_api.tick_ranges[-1]
+    assert name == "EURUSD.raw"
+    assert actual_start == datetime(2023, 11, 14, 2, 0, tzinfo=timezone.utc)
+    assert actual_end == datetime(2023, 11, 14, 2, 1, tzinfo=timezone.utc)
+    assert flags == 7
+
+
+@pytest.mark.unit
+def test_historical_ticks_reject_invalid_ranges_and_bad_rows(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("EURUSD")]
+    provider = initialized_provider(fake_api)
+    aware = datetime(2023, 11, 14, 2, 0, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        provider.get_ticks_range("EURUSD", datetime(2023, 11, 14, 2, 0), aware)
+    with pytest.raises(ValueError, match="end"):
+        provider.get_ticks_range("EURUSD", aware, aware - timedelta(seconds=1))
+
+    fake_api.tick_range_result = None
+    with pytest.raises(Mt5DataError, match="copy_ticks_range"):
+        provider.get_ticks_range("EURUSD", aware, aware)
+    fake_api.tick_range_result = ({"time": None, "time_msc": None, "bid": 1.1, "ask": 1.2},)
+    with pytest.raises(Mt5DataError, match="tick range"):
+        provider.get_ticks_range("EURUSD", aware, aware)
 
 
 @pytest.mark.unit
