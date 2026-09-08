@@ -327,3 +327,71 @@ correctness proof. The standalone command remains read-only, no execution API
 was added, and every persisted decision continues to enforce
 `executed=False`. Phase 5 evaluation, outcome labeling, training, RAG, ONNX,
 and order execution remain out of scope.
+
+## Phase 5 deterministic outcome evaluation
+
+Phase 5 adds the separate `forex-evaluate` command. It reads persisted
+`ShadowTradeDecision` rows and historical quotes through the read-only
+`MT5Provider`; it does not invoke an LLM, rerun the graph, or send an order.
+The safety banner is printed on every run:
+
+```text
+MT5 FOREX — OUTCOME EVALUATION (READ ONLY)
+NO ORDER WILL BE SENT
+```
+
+Each decision retains two temporal quote sets. `analysis_snapshot_timestamp`
+and its bid/ask/spread values are the market state seen before analysis.
+`decision_completed_timestamp` is the application UTC time at which the
+structured Portfolio Manager result became available, and
+`analysis_latency_seconds` is the elapsed analysis time. After that result,
+the runner performs one fresh read-only quote. Its
+`decision_reference_timestamp` comes from the broker tick timestamp exposed
+by `Mt5Spread.timestamp` (never from the application completion clock), with
+the corresponding reference bid, ask, spread, spread-points, and an explicit
+completion-relative delay. A missing or older quote is retained as
+`UNAVAILABLE` or `INVALID_TEMPORAL`; it is never substituted with the analysis
+quote.
+
+The evaluator stores one row per decision, evaluation basis, and horizon in
+`shadow_decision_evaluations`. `ANALYSIS_SNAPSHOT` measures signal/reasoning
+quality from the analyzed quote; `DECISION_REFERENCE` measures an actionable
+counterfactual from the fresh post-completion quote. The two bases have
+independent target/observation timestamps and statuses, so a slow analysis is
+not presented as live execution-quality evidence. Defaults are 300, 900,
+1800, and 3600 seconds with a 30-second observation tolerance. A row remains
+`PENDING` until `target + tolerance`; only the first valid MT5 tick inside the
+closed interval is accepted. No interpolation, later-session jump, or
+lookahead is allowed.
+
+Both BUY and SELL are calculated with executable sides:
+
+```text
+BUY  = future_bid - entry_ask
+SELL = entry_bid - future_ask
+```
+
+For HOLD, selected trading PnL is zero and the opportunity cost is
+`max(0, buy_net_points, sell_net_points)`. Directional counterfactuals remain
+stored even when both lose. Cost-aware MFE/MAE uses ticks from the basis anchor
+through the exact target, excluding the tolerance tail. Because entry spread
+is included, cost-aware MFE can remain negative when price never moves far
+enough to overcome that spread; it is not floored to zero.
+
+Evaluation rows keep `source_context_eligible` separate from nullable
+`training_eligible`; Phase 5 never assigns a training label. `COMPLETE` and
+`INELIGIBLE` rows are immutable. `PENDING` may become `COMPLETE` or
+`DATA_UNAVAILABLE`, and a later successful historical read may recover
+`DATA_UNAVAILABLE` to `COMPLETE` while preserving the original creation time,
+evaluation/recovery timestamps, data-source/version provenance, and prior
+unavailable reason. The legacy decision outcome columns are not modified.
+
+Run one decision or all legacy-pending decisions with:
+
+```powershell
+forex-evaluate --decision-id <decision-id> --db-path data_cache/shadow_decisions.db
+forex-evaluate --pending --db-path data_cache/shadow_decisions.db
+```
+
+The command reports both basis statuses, per-run horizon/tick counts, timing,
+and `LLM CALLS: 0`. It accepts no provider credentials or execution options.
