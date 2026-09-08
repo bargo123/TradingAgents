@@ -232,6 +232,43 @@ def test_runner_fetches_one_snapshot_and_persists_normalized_decision(tmp_path):
     assert graph.invocations[0][0]["market_data_mode"] == "forex_mt5"
 
 
+def test_runner_passes_callbacks_and_reports_llm_metrics(tmp_path):
+    callback = type(
+        "Callback",
+        (),
+        {
+            "get_stats": lambda self: {
+                "llm_calls": 17,
+                "tool_calls": 4,
+                "tokens_in": 100,
+                "tokens_out": 50,
+            }
+        },
+    )()
+    runner, provider, graph, _ = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": {"rating": "Hold"},
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "investment_debate_state": {"bull_history": "bull", "bear_history": "bear"},
+            "risk_debate_state": {},
+        },
+    )
+
+    result = runner.run(
+        symbol="EURUSD",
+        analysis_date="2026-09-08",
+        callbacks=[callback],
+    )
+
+    assert graph.invocations[0][1]["config"]["callbacks"] == [callback]
+    assert result.metrics["llm_calls"] == 17
+    assert result.metrics["tool_calls"] == 4
+    assert result.metrics["tokens_in"] == 100
+    assert result.metrics["tokens_out"] == 50
+    assert result.elapsed_seconds >= 0
+
+
 def test_runner_prefers_raw_structured_result_over_rendered_prose(tmp_path):
     runner, provider, graph, store = _make_runner(
         tmp_path,

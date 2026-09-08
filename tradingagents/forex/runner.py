@@ -47,6 +47,32 @@ def _identifier(value: Any) -> str:
     return text or "unknown"
 
 
+def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
+    """Read optional callback statistics without making telemetry required."""
+    metrics: dict[str, Any] = {
+        "llm_calls": 0,
+        "tool_calls": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+    }
+    for callback in callbacks:
+        getter = getattr(callback, "get_stats", None)
+        if not callable(getter):
+            continue
+        try:
+            reported = getter()
+        except Exception:  # noqa: BLE001 — telemetry must not alter analysis
+            continue
+        if not isinstance(reported, Mapping):
+            continue
+        for key in metrics:
+            value = reported.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metrics[key] = value
+        break
+    return metrics
+
+
 def _failed_normalization(exc: Exception) -> ShadowNormalization:
     return ShadowNormalization(
         action=None,
@@ -178,9 +204,11 @@ class ForexShadowRunner:
         analysts: Sequence[str] | None = None,
         *,
         db_path: str | Path | None = None,
+        callbacks: Sequence[Any] | None = None,
     ) -> ForexShadowRunResult:
         started = time.perf_counter()
         provider: Any | None = None
+        callback_list = list(callbacks or ())
         if db_path is not None:
             self.store = ShadowDecisionStore(db_path)
 
@@ -209,7 +237,7 @@ class ForexShadowRunner:
                 market_data_mode="forex_mt5",
                 mt5_tools=adapter,
                 config=self.config,
-                callbacks=[],
+                callbacks=callback_list,
             )
             initial_state = graph.propagator.create_initial_state(
                 resolved_symbol,
@@ -220,7 +248,7 @@ class ForexShadowRunner:
                 market_data_mode="forex_mt5",
                 market_context=market_context,
             )
-            graph_args = graph.propagator.get_graph_args(callbacks=[])
+            graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
             # The runner deliberately calls the already compiled graph. The
             # stock propagate helper performs Yahoo identity/memory-log work.
             final_state = self._invoke_compiled_graph(graph, initial_state, graph_args)
@@ -281,11 +309,13 @@ class ForexShadowRunner:
             )
             self.store.record(decision)
             elapsed_seconds = time.perf_counter() - started
+            callback_metrics = _callback_metrics(callback_list)
             metrics = {
                 "provider_snapshot_calls": getattr(provider, "market_snapshot_calls", 1),
                 "elapsed_seconds": elapsed_seconds,
                 "market_data_mode": "forex_mt5",
                 "selected_analysts": selected_analysts,
+                **callback_metrics,
             }
             return ForexShadowRunResult(
                 decision=decision,
