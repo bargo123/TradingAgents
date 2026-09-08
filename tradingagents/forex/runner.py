@@ -41,6 +41,12 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else str(value)
 
 
+def _identifier(value: Any) -> str:
+    """Return an explicit evidence label even when a test graph omits config."""
+    text = _text(value).strip()
+    return text or "unknown"
+
+
 def _failed_normalization(exc: Exception) -> ShadowNormalization:
     return ShadowNormalization(
         action=None,
@@ -228,10 +234,23 @@ class ForexShadowRunner:
             except Exception as exc:  # malformed structured output fails closed
                 normalized = _failed_normalization(exc)
 
+            if normalized.normalization_status == "FAILED":
+                state_error = final_state.get("normalization_error")
+                if isinstance(state_error, str) and state_error.strip():
+                    normalized = ShadowNormalization(
+                        action=None,
+                        normalization_status="FAILED",
+                        normalization_error=state_error.strip(),
+                        raw_result=normalized.raw_result,
+                    )
+
             source_run_id = str(uuid.uuid4())
             graph_config = getattr(graph, "config", {})
             effective_config = dict(graph_config) if isinstance(graph_config, Mapping) else {}
             effective_config.update(self.config)
+            investment_debate_state = final_state.get("investment_debate_state", {})
+            if not isinstance(investment_debate_state, Mapping):
+                investment_debate_state = {}
             decision = ShadowTradeDecision(
                 decision_id=str(uuid.uuid4()),
                 created_at=_utc_now(),
@@ -252,11 +271,11 @@ class ForexShadowRunner:
                 analysis_timeframe="M15",
                 trader_summary=_text(final_state.get("trader_investment_plan")),
                 portfolio_manager_summary=_text(final_state.get("final_trade_decision")),
-                bull_summary=_text(final_state.get("investment_plan")) or None,
-                bear_summary=_text(final_state.get("news_report")) or None,
-                llm_provider=effective_config.get("llm_provider"),
-                quick_model=effective_config.get("quick_think_llm"),
-                deep_model=effective_config.get("deep_think_llm"),
+                bull_summary=_text(investment_debate_state.get("bull_history")) or None,
+                bear_summary=_text(investment_debate_state.get("bear_history")) or None,
+                llm_provider=_identifier(effective_config.get("llm_provider")),
+                quick_model=_identifier(effective_config.get("quick_think_llm")),
+                deep_model=_identifier(effective_config.get("deep_think_llm")),
                 snapshot_json=dict(snapshot_json),
                 source_run_id=source_run_id,
             )
