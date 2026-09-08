@@ -7,15 +7,18 @@ pip install -e ".[mt5]"
 python scripts/test_mt5_connection.py --symbol EURUSD
 ```
 
-The provider captures normalized M1, M5, M15, and H1 candles, UTC tick/spread
-data, account information, and positions for the selected symbol.
+The provider captures normalized M1, M5, M15, M30, H1, H4, and D1 candles, UTC
+tick/spread data, account information, and positions for the selected symbol.
 
 | Timeframe | MT5 series |
 | --- | --- |
 | M1 | 1-minute candles |
 | M5 | 5-minute candles |
 | M15 | 15-minute candles |
+| M30 | 30-minute candles |
 | H1 | 1-hour candles |
+| H4 | 4-hour candles |
+| D1 | daily candles |
 
 Symbol resolution first uses an exact case-insensitive match. If there is no
 exact match, a single flexible prefix/suffix broker decoration around the
