@@ -22,6 +22,7 @@ from .models import (
     Mt5TerminalInfo,
     Mt5Tick,
 )
+from .provider import MT5Provider, Mt5Provider
 from .timeframes import (
     SUPPORTED_TIMEFRAMES,
     TIMEFRAME_ATTRIBUTES,
@@ -29,4 +30,4 @@ from .timeframes import (
     resolve_timeframe,
 )
 
-__all__ = [name for name in globals() if name.startswith("Mt5") or name == "ForexMarketSnapshot"] + ["SUPPORTED_TIMEFRAMES", "TIMEFRAME_ATTRIBUTES", "normalize_timeframe", "resolve_timeframe"]
+__all__ = [name for name in globals() if name.startswith("Mt5") or name == "ForexMarketSnapshot"] + ["MT5Provider", "SUPPORTED_TIMEFRAMES", "TIMEFRAME_ATTRIBUTES", "normalize_timeframe", "resolve_timeframe"]
