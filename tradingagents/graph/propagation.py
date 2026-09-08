@@ -24,6 +24,7 @@ class Propagator:
         instrument_context: str = "",
         market_data_mode: str = "stock",
         market_context: str = "",
+        forex_analysis_profile: str | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -33,7 +34,7 @@ class Propagator:
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
         """
-        return {
+        state = {
             "messages": [("human", company_name)],
             "company_of_interest": company_name,
             "asset_type": asset_type,
@@ -74,6 +75,9 @@ class Propagator:
             "normalization_status": "",
             "normalization_error": "",
         }
+        if asset_type == "forex" or market_data_mode == "forex_mt5":
+            state["forex_analysis_profile"] = forex_analysis_profile or "INTRADAY"
+        return state
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:
         """Get arguments for the graph invocation.

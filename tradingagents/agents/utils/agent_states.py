@@ -54,6 +54,7 @@ class AgentState(MessagesState):
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
     market_data_mode: Annotated[str, "Market data mode such as stock or forex_mt5"]
     market_context: Annotated[str, "Compact normalized market context from the current data source"]
+    forex_analysis_profile: Annotated[str, "Forex-only analysis profile when asset_type is forex"]
     trade_date: Annotated[str, "What date we are trading at"]
 
     sender: Annotated[str, "Agent that sent this message"]

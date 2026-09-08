@@ -1,6 +1,14 @@
 """Standalone forex shadow-mode helpers."""
 
 from .context import build_forex_market_context, snapshot_to_dict
+from .profile import (
+    INTRADAY_PROFILE,
+    MACRO_EVENT_UNAVAILABLE,
+    ForexAnalysisProfile,
+    build_forex_profile_context,
+    calculate_timeframe_features,
+    resolve_forex_profile,
+)
 from .runner import ForexShadowRunner, ForexShadowRunResult
 from .shadow import (
     ShadowDecisionStore,
@@ -20,4 +28,10 @@ __all__ = [
     "snapshot_to_dict",
     "ForexShadowRunResult",
     "ForexShadowRunner",
+    "ForexAnalysisProfile",
+    "INTRADAY_PROFILE",
+    "MACRO_EVENT_UNAVAILABLE",
+    "build_forex_profile_context",
+    "calculate_timeframe_features",
+    "resolve_forex_profile",
 ]
