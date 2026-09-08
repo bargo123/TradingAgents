@@ -122,7 +122,28 @@ class FakeMT5:
         )
 
     def positions_get(self, **kwargs):
-        return ()
+        return (
+            SimpleNamespace(
+                ticket=101,
+                symbol="USDJPY",
+                type=0,
+                volume=0.10,
+                price_open=150.100,
+                price_current=150.123,
+                profit=2.30,
+                time=1_700_000_000,
+            ),
+            SimpleNamespace(
+                ticket=202,
+                symbol="EURUSD.a",
+                type=1,
+                volume=0.20,
+                price_open=1.10020,
+                price_current=1.10000,
+                profit=-4.00,
+                time=1_700_000_000,
+            ),
+        )
 
     def orders_get(self, **kwargs):
         return ()
@@ -248,6 +269,48 @@ def test_bars_account_and_spread_are_normalized(fake_api):
     assert account.balance == 10_000.0 and account.free_margin == 9_500.0
     assert spread.price == pytest.approx(0.003)
     assert spread.points == pytest.approx(3.0)
+
+
+@pytest.mark.unit
+def test_market_snapshot_contains_required_series_and_symbol_positions(fake_api):
+    provider = initialized_provider(fake_api)
+    snapshot = provider.get_market_snapshot("USDJPY", count=2)
+
+    assert snapshot.symbol == "USDJPY"
+    assert snapshot.timestamp == datetime.fromtimestamp(
+        1_700_000_000.123, tz=timezone.utc
+    )
+    assert snapshot.timestamp.tzinfo == timezone.utc
+    assert snapshot.bid == pytest.approx(150.123)
+    assert snapshot.ask == pytest.approx(150.126)
+    assert snapshot.spread == pytest.approx(0.003)
+    assert snapshot.spread_points == pytest.approx(3.0)
+    assert len(snapshot.m1_candles) == 2
+    assert len(snapshot.m5_candles) == 2
+    assert len(snapshot.m15_candles) == 2
+    assert len(snapshot.h1_candles) == 2
+    assert all(
+        candle.timestamp.tzinfo == timezone.utc
+        for candles in (
+            snapshot.m1_candles,
+            snapshot.m5_candles,
+            snapshot.m15_candles,
+            snapshot.h1_candles,
+        )
+        for candle in candles
+    )
+    assert snapshot.account.login == 123456
+    assert snapshot.account.server == "Fake-Demo"
+    assert snapshot.account.currency == "USD"
+    assert snapshot.account.balance == pytest.approx(10_000.0)
+    assert snapshot.account.equity == pytest.approx(9_900.0)
+    assert snapshot.account.profit == pytest.approx(-100.0)
+    assert snapshot.account.margin == pytest.approx(400.0)
+    assert snapshot.account.free_margin == pytest.approx(9_500.0)
+    assert snapshot.account.leverage == 100
+    assert len(snapshot.positions) == 1
+    assert all(position.symbol == "USDJPY" for position in snapshot.positions)
+    assert snapshot.positions[0].ticket == 101
 
 
 @pytest.mark.unit
