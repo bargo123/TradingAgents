@@ -17,13 +17,17 @@ class FakeMT5:
     TIMEFRAME_M1 = 1
     TIMEFRAME_M5 = 5
     TIMEFRAME_M15 = 15
+    TIMEFRAME_M30 = 30
     TIMEFRAME_H1 = 60
+    TIMEFRAME_H4 = 240
+    TIMEFRAME_D1 = 1440
 
     def __init__(self):
         self.initialize_result = True
         self.error = (0, "")
         self.connected = False
         self.tick_time_msc = 1_700_000_000_123
+        self.rate_timeframes = []
         self.symbol_records = [
             self.symbol("EURUSD.a"),
             self.symbol("EURUSDm"),
@@ -98,6 +102,7 @@ class FakeMT5:
         )
 
     def copy_rates_from_pos(self, name, timeframe, start_pos, count):
+        self.rate_timeframes.append(timeframe)
         is_jpy = name.upper().endswith("USDJPY")
         base = 150.123 if is_jpy else 1.10000
         step = 0.001 if is_jpy else 0.00001
@@ -202,6 +207,27 @@ def test_tick_falls_back_to_second_timestamp(fake_api):
     assert provider.get_tick("USDJPY").timestamp == datetime.fromtimestamp(
         1_700_000_000, tz=timezone.utc
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("timeframe_name", "expected_constant"),
+    [
+        ("M1", FakeMT5.TIMEFRAME_M1),
+        ("M5", FakeMT5.TIMEFRAME_M5),
+        ("M15", FakeMT5.TIMEFRAME_M15),
+        ("M30", FakeMT5.TIMEFRAME_M30),
+        ("H1", FakeMT5.TIMEFRAME_H1),
+        ("H4", FakeMT5.TIMEFRAME_H4),
+        ("D1", FakeMT5.TIMEFRAME_D1),
+    ],
+)
+def test_get_bars_resolves_each_supported_timeframe(
+    fake_api, timeframe_name, expected_constant
+):
+    provider = initialized_provider(fake_api)
+    provider.get_bars("USDJPY", timeframe_name, 1)
+    assert fake_api.rate_timeframes[-1] == expected_constant
 
 
 @pytest.mark.unit
