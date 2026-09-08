@@ -33,10 +33,11 @@ python scripts/test_mt5_connection.py --symbol EURUSD --terminal-path "C:\\Path\
 
 The CLI accepts `--count N` (which must be positive). It accepts no credentials
 and always shuts down the provider after the check. For the optional live
-integration test, set the project integration-test environment switch and run:
+integration test, set the guard and run the dedicated integration test:
 
 ```powershell
-pytest -m integration tests/test_mt5_provider.py
+$env:RUN_MT5_INTEGRATION = "1"
+pytest tests/test_mt5_integration.py -m integration
 ```
 
 **Phase 3 is read-only and does not register LangGraph tools.**

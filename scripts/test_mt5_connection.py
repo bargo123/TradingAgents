@@ -17,7 +17,11 @@ def _format_bar(bar: Mt5Bar) -> str:
     )
 
 
-def render_report(snapshot: ForexMarketSnapshot, terminal_name: str | None = None) -> str:
+def render_report(
+    snapshot: ForexMarketSnapshot,
+    terminal_name: str | None = None,
+    requested_symbol: str | None = None,
+) -> str:
     """Render a deterministic, credential-free human-readable report."""
     account = snapshot.account
     lines = [
@@ -28,16 +32,12 @@ def render_report(snapshot: ForexMarketSnapshot, terminal_name: str | None = Non
         f"Balance: {account.balance if account else 'None'}",
         f"Equity: {account.equity if account else 'None'}",
         f"Free margin: {account.free_margin if account else 'None'}",
-        f"Requested symbol: {snapshot.symbol}",
+        f"Requested symbol: {requested_symbol or snapshot.symbol}",
         f"Resolved symbol: {snapshot.symbol}",
         f"Bid: {snapshot.bid:g}",
         f"Ask: {snapshot.ask:g}",
         f"Spread: {snapshot.spread:g}",
         f"Spread points: {snapshot.spread_points:g}",
-        f"M1: {_format_bar(snapshot.m1_candles[-1])}",
-        f"M5: {_format_bar(snapshot.m5_candles[-1])}",
-        f"M15: {_format_bar(snapshot.m15_candles[-1])}",
-        f"H1: {_format_bar(snapshot.h1_candles[-1])}",
         f"Last candle: {_format_bar(snapshot.m5_candles[-1])}",
         "Open positions:",
     ]
@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
         provider.initialize()
         snapshot = provider.get_market_snapshot(args.symbol, count=args.count)
         terminal = provider.get_terminal_info()
-        print(render_report(snapshot, terminal_name=terminal.name))
+        print(render_report(snapshot, terminal_name=terminal.name, requested_symbol=args.symbol))
         return 0
     except Mt5ProviderError as exc:
         print(f"MT5 ERROR: {exc}", file=sys.stderr)

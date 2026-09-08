@@ -71,15 +71,17 @@ def snapshot_fixture():
 
 @pytest.mark.unit
 def test_render_report_is_secret_free(snapshot_fixture):
-    output = render_report(snapshot_fixture, terminal_name="MetaTrader 5")
+    output = render_report(
+        snapshot_fixture, terminal_name="MetaTrader 5", requested_symbol="EURUSD"
+    )
     assert "MT5 CONNECTED" in output
-    assert "Resolved symbol:" in output
-    assert "M1:" in output and "1.10020" in output
-    assert "M5:" in output and "1.10040" in output
-    assert "M15:" in output and "1.10060" in output
-    assert "H1:" in output and "1.10080" in output
+    assert "Requested symbol: EURUSD" in output
+    assert "Resolved symbol: EURUSD.a" in output
+    assert "Bid: 1.1" in output and "Ask: 1.1002" in output
     assert "Last candle:" in output
+    assert "C=1.10040" in output
     assert "Balance:" in output and "Free margin:" in output
+    assert "M1:" not in output and "M15:" not in output and "H1:" not in output
     output_lower = output.lower()
     for credential in ("password", "token", "secret", "api key"):
         assert credential not in output_lower
