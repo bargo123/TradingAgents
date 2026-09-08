@@ -116,3 +116,40 @@ Qwen models. Both attempts reached the graph but exceeded the bounded local
 model wait window before persistence; no decision row was written. This is
 recorded as unverified for the LLM-backed decision path, not treated as a
 successful recommendation.
+
+## Phase 4.1 complete shadow validation (2026-09-08)
+
+A complete real validation run was then executed through `ForexShadowRunner`,
+the production runner invoked by this CLI, with the same one-snapshot and
+forex-safe graph path. The runtime-only optimization used one global-news
+query/article and `count=1`; the required Market, News, Bull, Bear, Research
+Manager, Trader, three Risk Analysts, and strict Portfolio Manager stages all
+remained enabled. Existing environment/config precedence selected Ollama with
+Qwen 2B for both models (no hosted API key was available in the project
+configuration).
+
+Evidence from the persisted row:
+
+```text
+provider=ollama
+quick_model=qwen3.5:2b
+deep_model=qwen3.5:2b
+requested_symbol=EURUSD
+resolved_symbol=EURUSD
+snapshot_timestamp=2026-09-08T18:03:18.145Z
+bid=1.16304 ask=1.16305 spread=0.00001 spread_points=1
+llm_calls=14 tool_calls=3 runtime_seconds=2595.45
+portfolio_manager_rating=Hold
+normalized_action=HOLD
+normalization_status=NORMALIZED
+executed=False
+decision_id=b8104eac-d1b7-40cd-91fb-2055f1ecd45f
+database=data_cache/phase41-probe-20260908-180317.db
+positions_before=[] positions_after=[]
+orders_before=[] orders_after=[]
+```
+
+The raw structured Portfolio Manager result is retained in SQLite, including
+its executive summary, investment thesis, price target, rating, and time
+horizon. The before/after account checks remained empty and no mutation API is
+available in the provider, adapter, runner, or graph tool set.
