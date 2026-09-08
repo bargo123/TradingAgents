@@ -135,6 +135,10 @@ The watcher is a small coordinator with explicit injected boundaries:
 - `LeaseHeartbeat` renews the watcher lease and records active-run heartbeat
   and soft-timeout metadata while the worker is running. It is a named,
   observable component, not an unbounded background queue.
+- `Mt5OperationGate` is a non-reentrant injected guard around the read-only
+  probe, the runner call, and the Phase 5 evaluator. The coordinator never
+  waits on it while `ANALYZING`; the gate exists to make the one-operation
+  invariant testable and to fail closed if a future code path attempts overlap.
 - `OutcomeCoordinator` calls the existing `ShadowOutcomeEvaluator`; it never
   imports `MetaTrader5`, invokes an LLM, or reimplements outcome formulas.
 - `StatusReporter` runs the same read-only SQL summary for the CLI and for
@@ -145,6 +149,17 @@ single worker exists only so the foreground loop can observe bar closes and
 record skips during a 40-minute analysis. There is never more than one active
 runner task in a watcher instance, and the SQLite lease prevents a second
 watcher instance from becoming active for the same database.
+
+The Phase 6 v1 MT5 serialization invariant is **at most one MT5-using
+operation at a time**. While the lifecycle is `ANALYZING`, the foreground loop
+may renew the lease, observe schedule buckets, and record skipped opportunities,
+but it must not run `ReadOnlyMarketProbe`, create another MT5 provider/session,
+or invoke `ShadowOutcomeEvaluator`. A due evaluation is retained as a durable
+pending fact and is run immediately after the analysis worker has returned and
+its runner-owned MT5 session has shut down, before any next analysis preflight
+or submission. A small injected operation gate is used as a defensive assertion
+around probe, runner, and evaluator calls; it is not a queue and never permits
+overlap.
 
 ### 4.2 Why one bounded worker instead of a queue
 
@@ -181,9 +196,11 @@ callbacks, terminal path, database path, and watcher run ID.
    the source run ID, and the persisted row. It records safe provenance and
    marks the opportunity `DECISION_SAVED` (or the run `SUCCEEDED_SLOW` when the
    soft runtime threshold was exceeded).
-8. If evaluation is due, the coordinator invokes the existing
-   `ShadowOutcomeEvaluator`. This read is independent of analysis action and
-   does not trigger another LLM call.
+8. If the runner returned, finalize its run first. If evaluation was due while
+   the worker was active, clear the retained pending flag only after the
+   existing `ShadowOutcomeEvaluator` completes (or records an evaluation
+   error). The evaluator runs before any next analysis preflight/submission and
+   makes zero LLM calls.
 9. The next loop reports current state and considers only a current, unseen
    bar opportunity after cooldown. It never replays old timer events.
 
@@ -389,7 +406,10 @@ training labels.
    time. Acquire the singleton lease in `BEGIN IMMEDIATE` transaction.
 4. If a non-expired owner exists, exit with `WATCHER_ALREADY_RUNNING`; do not
    probe MT5 or start an LLM.
-5. Reconcile expired/stale runs before setting lifecycle state to `IDLE`.
+5. If the lease is expired but the exact old same-host process is provably
+   alive, exit with `WATCHER_OPERATOR_REVIEW_REQUIRED`; do not start a second
+   watcher. Otherwise reconcile expired/stale runs before setting lifecycle
+   state to `IDLE`.
 6. Start the explicit heartbeat and scheduler components; emit a safe
    `WATCHER_STARTED` event.
 
@@ -401,14 +421,22 @@ On each injected-clock poll:
 2. Materialize newly observed completed buckets, bounded by the recovery cap.
 3. Mark opportunities that occurred while the slot was occupied as
    `SKIPPED / ANALYSIS_ALREADY_RUNNING`.
-4. If evaluation is due and no analysis is being submitted, call the existing
-   evaluator once for the configured database.
-5. If an analysis future completed, finalize its run and linked opportunity.
-6. If the circuit is open, do not submit analysis; retain status and continue
-   zero-LLM evaluation when configured.
-7. Otherwise select only the newest eligible current opportunity, run the
+4. If an analysis future is active, do not run any probe or evaluator and do
+   not create another MT5 provider/session. If an evaluation interval elapsed,
+   set `evaluation_due_pending=1`; the loop does only heartbeat, schedule
+   observation, and skip recording until the worker returns.
+5. If an analysis future completed, finalize its run and linked opportunity,
+   then run the retained/due zero-LLM evaluator immediately, before considering
+   another analysis.
+6. If no analysis is active and evaluation is due, run the evaluator before any
+   new probe or analysis submission; clear `evaluation_due_pending` only after
+   the evaluator returns or records a bounded error.
+7. If the circuit is open, do not submit analysis; retain status and continue
+   only the serialized zero-LLM evaluation path when no runner is active.
+8. Otherwise select only the newest eligible current opportunity, run the
    read-only market probe, claim it atomically, and submit it to the empty
-   analysis slot.
+   analysis slot. The probe must finish and release its provider/session before
+   the runner starts.
 
 ### 8.3 Analysis running and another schedule tick
 
@@ -417,6 +445,10 @@ new M15 bucket closes, it creates the deterministic opportunity row and marks
 it `SKIPPED / ANALYSIS_ALREADY_RUNNING`. The row is not retained as a job and
 is never submitted after the 40-minute analysis finishes. This gives an
 auditable reason for the missing example without using a stale market quote.
+During this interval, an evaluation deadline is recorded as
+`evaluation_due_pending=1`, but no historical MT5 read is started. Once the
+runner returns (and its provider has shut down), the coordinator evaluates
+pending decisions before starting another probe or runner.
 
 ### 8.4 Runner/LLM/MT5 failures
 
@@ -462,9 +494,16 @@ Lease acquisition is an atomic SQLite transaction:
 
 1. lock the database with `BEGIN IMMEDIATE`;
 2. read the singleton lease;
-3. accept only if no owner exists, the owner is expired, or a best-effort local
-   process-liveness check says the owner PID is gone;
-4. write a new random owner token and expiry;
+3. if an owner exists and `lease_expires_at > now`, return
+   `WATCHER_ALREADY_RUNNING` regardless of PID/process-liveness observations;
+   do not probe MT5, reconcile runs, or start an LLM;
+4. only when there is no owner or the lease has expired may takeover/recovery
+   begin. For an expired same-host lease, compare the recorded PID and exact
+   process-start identity when the platform can prove them. If that exact old
+   process is still provably alive, return
+   `WATCHER_OPERATOR_REVIEW_REQUIRED` and fail closed rather than starting a
+   second watcher. If the process is proven dead or cannot be proven alive,
+   reconcile stale runs and write a new random owner token and expiry;
 5. commit before any MT5 or LLM operation.
 
 Every watcher status/run update includes the owner token. A stale owner cannot
@@ -472,9 +511,13 @@ overwrite a newly acquired owner's state. If a heartbeat write cannot commit,
 the owner does not start any new analysis; it continues only the already
 active runner and exits/degrades when the lease is definitively lost.
 
-The process-liveness check is only an optimization for crash recovery; expiry
-is authoritative. PID reuse or a host clock anomaly must not permit a second
-active owner before the lease is expired.
+Lease expiry is the gate for every takeover. Process-liveness is supplemental
+evidence used only after expiry: it can block a takeover when the exact
+same-host PID plus process-start identity is provably still alive, but it can
+never bypass a valid lease or justify stealing one. A missing, unverifiable, or
+reused PID after expiry is not proof of a live owner; the expired lease may be
+reconciled with the stored owner token and run IDs. PID reuse and host clock
+anomalies must not permit a second active owner while the lease remains valid.
 
 ### 9.2 Heartbeat behavior
 
@@ -492,8 +535,10 @@ selects or claims new opportunities.
 
 ### 9.3 Crash reconciliation
 
-On startup, any `RUNNING` run whose owner lease is stale is reconciled before
-new scheduling:
+After the lease has expired and takeover safety checks permit recovery, any
+`RUNNING` run whose owner lease is stale is reconciled before new scheduling.
+The old process-start identity check is part of lease acquisition, not a reason
+to bypass a non-expired lease:
 
 1. Query `ShadowDecisionStore` by the run's unique `source_run_id`.
 2. If exactly one decision exists, verify `executed=False`, link its decision
@@ -587,6 +632,7 @@ CREATE TABLE forex_watcher_state (
     next_eligible_at TEXT,
     last_evaluation_at TEXT,
     last_evaluation_status TEXT,
+    evaluation_due_pending INTEGER NOT NULL DEFAULT 0 CHECK (evaluation_due_pending IN (0,1)),
     last_error_code TEXT,
     last_error TEXT,
     circuit_reason TEXT,
@@ -729,18 +775,24 @@ reuse the same database path, clock, terminal path, and lifecycle policy. It
 calls `ShadowOutcomeEvaluator.evaluate_pending()` only when:
 
 - the evaluation interval has elapsed;
-- there is no analysis submission in the same poll; and
+- no analysis worker is active (if one is active, it records
+  `evaluation_due_pending=1` instead); and
 - the collector lease is still owned.
 
 The coordinator never calls the graph or an LLM. If a long analysis is active,
-the evaluator waits until the foreground loop reaches an evaluation point;
-there is no second MT5 reader competing with the runner in the default
-single-slot process.
+the evaluator waits without opening a historical MT5 read; immediately after
+the runner returns and releases its MT5 session, the coordinator runs the
+evaluator before any next probe or runner. A shared injected MT5 operation gate
+asserts that probe, runner, and evaluator calls cannot overlap. There is no
+second MT5 reader competing with the runner in the default single-slot process.
 
 The existing `forex-evaluate` command remains the independent recovery/manual
-path. It can evaluate a database after the watcher is stopped or after a crash.
-Both paths use the same Phase 5 store/upsert rules; duplicate evaluation reads
-are idempotent, and terminal rows cannot be overwritten.
+path. It can evaluate a database after the watcher is stopped or after a crash;
+it must refuse with `WATCHER_ALREADY_RUNNING` when a non-expired watcher lease
+owns that database, so an external evaluator cannot race the active runner.
+Both paths use the same Phase 5 store/upsert rules;
+duplicate evaluation reads are idempotent, and terminal rows cannot be
+overwritten.
 
 ### 12.2 Maturity and evidence semantics
 
@@ -852,11 +904,13 @@ construction. A successful probe is not persisted as the analysis quote; the
 runner's snapshot and post-completion broker reference remain the evidence.
 
 The scheduler accepts multiple symbols in the schema, but the default config
-contains only `EURUSD`, and `max_symbols_per_interval=1`. If an operator opts
-into multiple symbols, the policy selects one current candidate per slot and
-marks other simultaneous candidates explicitly skipped rather than creating a
-queue. Multi-symbol fairness is therefore observable but not a Phase 6
-throughput guarantee.
+contains only `EURUSD`. The single current-candidate selection plus
+`max_concurrent_analyses=1` enforces one analysis slot; if an operator opts into
+multiple symbols, the policy selects one current candidate per slot and marks
+other simultaneous candidates explicitly skipped rather than creating a
+queue. There is no separate per-interval symbol-count setting in Phase 6 v1.
+Multi-symbol fairness is therefore observable but not a Phase 6 throughput
+guarantee.
 
 ## 16. Configuration schema and defaults
 
@@ -872,7 +926,7 @@ startup. Recommended defaults are:
 | `poll_interval_seconds` | `15` | positive; injected scheduler in tests |
 | `bar_close_settle_seconds` | `30` | non-negative |
 | `cooldown_seconds` | `60` | starts after runner completion |
-| `max_concurrent_analyses` | `1` | Phase 6 v1 rejects values other than one |
+| `max_concurrent_analyses` | `1` | Phase 6 v1 rejects values other than one; the only analysis slot |
 | `analysis_timeout_seconds` | `7200` | soft alert/classification threshold; no thread kill |
 | `lease_heartbeat_seconds` | `15` | positive and less than lease TTL |
 | `lease_ttl_seconds` | `9000` | must exceed heartbeat and deployment timeout policy |
@@ -965,6 +1019,7 @@ Read-only SQLite summary; no MT5 or LLM connection by default. It reports:
 - skipped opportunities by reason and failed/abandoned runs;
 - per-basis/per-horizon evaluation counts for `PENDING`, `COMPLETE`,
   `DATA_UNAVAILABLE`, and `INELIGIBLE`;
+- whether a due evaluation is pending behind an active analysis;
 - fully terminal outcome rows/decision IDs, without calling them training
   examples;
 - last evaluation status/error and zero LLM calls for evaluation.
@@ -978,7 +1033,9 @@ default status command.
 Invoke the existing `ShadowOutcomeEvaluator` for pending decisions. It prints
 the Phase 5 read-only banner, reports zero LLM calls, preserves separate
 analysis/reference bases, and returns nonzero on provider/configuration
-failure. It does not start `ForexShadowRunner` or create a new decision.
+failure. It first verifies that no non-expired watcher lease owns the database;
+otherwise it returns `WATCHER_ALREADY_RUNNING` without opening MT5. It does not
+start `ForexShadowRunner` or create a new decision.
 
 ## 18. Public interfaces
 
@@ -1000,6 +1057,9 @@ class SchedulePolicy(Protocol):
 class ReadOnlyMarketProbe(Protocol):
     def probe(self, requested_symbol: str) -> MarketProbeResult: ...
 
+class Mt5OperationGate(Protocol):
+    def acquire(self, operation: str) -> ContextManager[None]: ...
+
 class ShadowRunner(Protocol):
     def run(
         self, *, symbol: str, source_run_id: str, ...
@@ -1011,6 +1071,10 @@ class OutcomeEvaluator(Protocol):
 class WatcherStore:
     def acquire_lease(self, owner: LeaseOwner, now: datetime) -> LeaseResult: ...
     def heartbeat(self, owner_token: str, now: datetime) -> None: ...
+    def mark_evaluation_due(self, owner_token: str, now: datetime) -> None: ...
+    def clear_evaluation_due(
+        self, owner_token: str, now: datetime, status: str
+    ) -> None: ...
     def observe_opportunity(self, opportunity: ScheduledOpportunity, now: datetime): ...
     def claim_opportunity(self, key: str, owner_token: str, now: datetime) -> WatchRun: ...
     def record_skip(self, key: str, reason: SkipReason, now: datetime, detail: str | None): ...
@@ -1091,9 +1155,11 @@ Counters are maintained in the singleton state with a rolling/reset policy:
 When a configured threshold is reached, lifecycle state becomes `DEGRADED`,
 the reason is persisted, and no new analysis is submitted until
 `circuit_breaker_cooldown_seconds` elapses and the relevant read-only health
-probe succeeds. Due Phase 5 evaluation may continue because it makes zero LLM
-calls and does not create decisions. A healthy successful run resets only the
-corresponding counter; unrelated failures remain visible.
+probe succeeds. When no runner is active, due Phase 5 evaluation may continue
+because it makes zero LLM calls and does not create decisions. It is still
+serialized behind the runner and never runs during `ANALYZING`. A healthy
+successful run resets only the corresponding counter; unrelated failures
+remain visible.
 
 The soft analysis timeout is deliberately non-destructive. The heartbeat
 records the alert while the existing runner continues, then the coordinator
@@ -1121,6 +1187,7 @@ failed_runs
 abandoned_runs
 watcher_lifecycle_status
 current_run_id / current_opportunity_key
+evaluation_due_pending
 last_evaluation_status
 ```
 
@@ -1151,20 +1218,23 @@ Required deterministic coverage:
 | 10 | Evaluation maturity | Fake clock advances 5m/15m/30m/60m rows from pending to separate basis statuses |
 | 11 | Data-unavailable recovery | Existing Phase 5 evaluator performs `DATA_UNAVAILABLE -> COMPLETE`; watcher does not overwrite it |
 | 12 | Clean restart | STOPPED state/lease can be reacquired without duplicate opportunity |
-| 13 | Crash/stale RUNNING | Stale owner is fenced; persisted decision is reconciled or run becomes ABANDONED |
+| 13 | Crash/stale RUNNING and lease takeover | A non-expired lease always returns `WATCHER_ALREADY_RUNNING`; after expiry, a provably live exact old process returns `WATCHER_OPERATOR_REVIEW_REQUIRED`, while a dead/unverifiable owner is reconciled and persisted decision is linked or run becomes `ABANDONED` |
 | 14 | Status summary | Counts actions, context, latency, skips, evaluation statuses, and current state accurately |
 | 15 | EURUSD default | Absent symbol config yields exactly `('EURUSD',)` and `INTRADAY`, `market/news` |
 | 16 | Provenance | Provider/models/config fingerprint/analysts/profile/versions/tokens are safe and joinable |
 | 17 | Zero execution | Public API/source AST scan finds no order/mutation surface; every decision has `executed=False` |
 | 18 | Stock CLI unchanged | Existing stock entry point/help/regression tests remain unchanged; only new forex script is registered |
-| 19 | Phase 5 reuse | Injected evaluator is called; watcher source contains no copied bid/ask/MFE/MAE formulas |
+| 19 | Phase 5 reuse and MT5 serialization | Injected evaluator is called only when no runner is active, a due evaluation is retained during `ANALYZING`, it runs after runner completion before the next probe, and a gate/fake proves no MT5 overlap; watcher source contains no copied bid/ask/MFE/MAE formulas |
 | 20 | No real-time sleep | Fake clock/scheduler completes all lifecycle tests without wall-clock waiting |
 
 Additional tests should cover lease acquisition races, database busy retry,
-owner-token fencing, process-liveness/expiry paths, multiple symbols with one
-slot, soft-timeout classification, graceful shutdown while active, malformed
-configuration, unavailable reference quotes, and redaction of credential-like
-configuration values.
+owner-token fencing, the strict non-expired-lease rule, expired exact-process
+operator review, process-liveness/expiry paths, multiple symbols with one
+slot, soft-timeout classification, graceful shutdown while active, evaluation
+due during `ANALYZING`, no probe/evaluator/provider creation during an active
+runner, immediate post-run evaluation ordering, malformed configuration,
+unavailable reference quotes, and redaction of credential-like configuration
+values.
 
 An opt-in integration test may run one bounded local MT5 probe and/or one
 historical Phase 5 evaluation, asserting UTC timestamps, symbol resolution,
