@@ -40,6 +40,18 @@ python -m py_compile C:\AITrading\TradingAgents\tradingagents\agents\utils\struc
 
 Result: passed.
 
+## Import-order follow-up
+
+Reordered the standard-library imports in `tests/test_forex_shadow_contract.py` to satisfy Ruff/isort ordering (`importlib.util`, `json`, `math`). No other files were changed by this follow-up.
+
+Verification:
+
+```text
+pytest C:\\AITrading\\TradingAgents\\tests\\test_forex_shadow_contract.py -q
+```
+
+Result: passed.
+
 ## Fix round 2 evidence
 
 Reviewer findings addressed:
