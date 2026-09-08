@@ -109,3 +109,64 @@ def test_cli_returns_nonzero_and_keeps_banner_when_runner_fails(capsys, monkeypa
     assert "MT5 FOREX" in captured.out
     assert "NO ORDER WILL BE SENT" in captured.out
     assert "terminal unavailable" in captured.err
+
+
+def test_cli_passes_stats_callback_and_prints_run_evidence(capsys, monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeStats:
+        def get_stats(self):
+            return {"llm_calls": 9, "tool_calls": 3, "tokens_in": 10, "tokens_out": 20}
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+        def run(self, **kwargs):
+            captured["run"] = kwargs
+            decision = type(
+                "Decision",
+                (),
+                {
+                    "decision_id": "decision-001",
+                    "action": "HOLD",
+                    "normalization_status": "NORMALIZED",
+                    "executed": False,
+                    "requested_symbol": "EURUSD",
+                    "resolved_symbol": "EURUSD",
+                    "snapshot_timestamp": "2026-09-08T00:00:00Z",
+                    "raw_portfolio_manager_result_json": '{"rating":"Hold"}',
+                    "llm_provider": "openai",
+                    "quick_model": "gpt-5.6-luna",
+                    "deep_model": "gpt-5.6",
+                    "reference_bid": 1.1,
+                    "reference_ask": 1.2,
+                    "spread": 0.1,
+                    "spread_points": 10000,
+                },
+            )()
+            return type(
+                "Result",
+                (),
+                {
+                    "decision": decision,
+                    "elapsed_seconds": 1.25,
+                    "metrics": {
+                        "llm_calls": 9,
+                        "tool_calls": 3,
+                        "tokens_in": 10,
+                        "tokens_out": 20,
+                    },
+                },
+            )()
+
+    monkeypatch.setattr("cli.forex_shadow.ForexShadowRunner", FakeRunner)
+    monkeypatch.setattr("cli.forex_shadow.StatsCallbackHandler", FakeStats)
+
+    assert main(["--db-path", str(tmp_path / "shadow.db")]) == 0
+    assert len(captured["run"]["callbacks"]) == 1
+    output = capsys.readouterr().out
+    assert "LLM PROVIDER: openai" in output
+    assert "LLM CALLS: 9" in output
+    assert "NORMALIZED ACTION: HOLD" in output
+    assert "EXECUTED: FALSE" in output

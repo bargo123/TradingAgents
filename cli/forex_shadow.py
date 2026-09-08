@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
 from typing import Any
 
+from cli.stats_handler import StatsCallbackHandler
 from tradingagents.forex.runner import ForexShadowRunner
 
 _FOREX_ANALYSTS = frozenset({"market", "news"})
@@ -102,6 +104,32 @@ def _runtime_config(args: argparse.Namespace) -> dict[str, Any]:
     return {key: value for key, value in values.items() if value is not None}
 
 
+def _format_timestamp(value: Any) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.isoformat()
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return str(value) if value is not None else "unknown"
+
+
+def _format_raw_result(decision: Any) -> str:
+    raw_json = getattr(decision, "raw_portfolio_manager_result_json", None)
+    if isinstance(raw_json, str) and raw_json:
+        return raw_json
+    raw_result = getattr(decision, "raw_portfolio_manager_result", None)
+    if raw_result is None:
+        return "unavailable"
+    try:
+        return json.dumps(raw_result, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return repr(raw_result)
+
+
+def _metric(metrics: Mapping[str, Any], key: str) -> Any:
+    value = metrics.get(key)
+    return value if value is not None else "unknown"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -115,6 +143,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print("MT5 FOREX — SHADOW MODE")
     print("NO ORDER WILL BE SENT")
 
+    stats_handler = StatsCallbackHandler()
     try:
         runner = ForexShadowRunner(config=_runtime_config(args) or None)
         result = runner.run(
@@ -124,19 +153,42 @@ def main(argv: Sequence[str] | None = None) -> int:
             terminal_path=args.terminal_path,
             db_path=args.db_path,
             analysts=analysts,
+            callbacks=[stats_handler],
         )
     except Exception as exc:  # CLI boundary: preserve a concise non-zero error
         print(f"FOREX SHADOW ERROR: {exc}", file=sys.stderr)
         return 1
 
     decision = result.decision
+    if getattr(decision, "executed", False) is not False:
+        print("FOREX SHADOW ERROR: executed invariant was violated", file=sys.stderr)
+        return 1
+    metrics = result.metrics if isinstance(getattr(result, "metrics", None), Mapping) else {}
+    database_path = args.db_path or getattr(getattr(runner, "store", None), "path", "configured default")
     print("SHADOW DECISION RECORDED")
     print(f"DECISION ID: {decision.decision_id}")
-    print(f"ACTION: {decision.action or 'UNRESOLVED'}")
+    print(f"LLM PROVIDER: {getattr(decision, 'llm_provider', None) or 'unknown'}")
+    print(f"QUICK MODEL: {getattr(decision, 'quick_model', None) or 'unknown'}")
+    print(f"DEEP MODEL: {getattr(decision, 'deep_model', None) or 'unknown'}")
+    print(f"REQUESTED SYMBOL: {getattr(decision, 'requested_symbol', None) or 'unknown'}")
+    print(f"RESOLVED SYMBOL: {getattr(decision, 'resolved_symbol', None) or 'unknown'}")
+    print(f"SNAPSHOT TIMESTAMP: {_format_timestamp(getattr(decision, 'snapshot_timestamp', None))}")
+    print(f"BID: {getattr(decision, 'reference_bid', 'unknown')}")
+    print(f"ASK: {getattr(decision, 'reference_ask', 'unknown')}")
+    print(f"SPREAD: {getattr(decision, 'spread', 'unknown')}")
+    print(f"SPREAD POINTS: {getattr(decision, 'spread_points', 'unknown')}")
+    print(f"RUNTIME SECONDS: {getattr(result, 'elapsed_seconds', _metric(metrics, 'elapsed_seconds'))}")
+    print(f"LLM CALLS: {_metric(metrics, 'llm_calls')}")
+    print(f"TOOL CALLS: {_metric(metrics, 'tool_calls')}")
+    print(f"TOKENS IN: {_metric(metrics, 'tokens_in')}")
+    print(f"TOKENS OUT: {_metric(metrics, 'tokens_out')}")
+    print(f"RAW PORTFOLIO MANAGER RESULT: {_format_raw_result(decision)}")
+    print(f"NORMALIZED ACTION: {getattr(decision, 'action', None) or 'UNRESOLVED'}")
     print(f"NORMALIZATION STATUS: {decision.normalization_status}")
     normalization_error = getattr(decision, "normalization_error", None)
     if normalization_error:
         print(f"NORMALIZATION ERROR: {normalization_error}")
+    print(f"SHADOW DATABASE: {database_path}")
     print("EXECUTED: FALSE")
     return 0
 
