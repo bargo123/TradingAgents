@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import math
 import importlib.util
+import sqlite3
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -203,3 +205,177 @@ def test_store_round_trip_is_idempotent_and_preserves_failed_action(
     assert restored.normalization_status == "FAILED"
     assert store.list_pending() == [restored]
     assert json.loads(restored.raw_portfolio_manager_result_json)["error"] == "missing"
+
+
+def test_store_rejects_invalid_future_evaluation_status_via_sql(
+    tmp_path: Path,
+) -> None:
+    store = ShadowDecisionStore(tmp_path / "shadow.db")
+    store.initialize()
+    with pytest.raises(sqlite3.IntegrityError):
+        with sqlite3.connect(store.path) as conn:
+            conn.execute(
+                """
+                INSERT INTO shadow_decisions (
+                    decision_id,
+                    created_at,
+                    analysis_date,
+                    requested_symbol,
+                    resolved_symbol,
+                    snapshot_timestamp,
+                    action,
+                    normalization_status,
+                    normalization_error,
+                    raw_portfolio_manager_result,
+                    confidence,
+                    reference_bid,
+                    reference_ask,
+                    reference_mid,
+                    spread,
+                    spread_points,
+                    analysis_timeframe,
+                    trader_summary,
+                    portfolio_manager_summary,
+                    bull_summary,
+                    bear_summary,
+                    llm_provider,
+                    quick_model,
+                    deep_model,
+                    snapshot_json,
+                    executed,
+                    future_evaluation_status,
+                    outcome_raw,
+                    outcome_alpha,
+                    outcome_resolved_at,
+                    reflection,
+                    source_run_id
+                ) VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    "bad-status",
+                    "2026-09-08T00:00:00Z",
+                    "2026-09-08",
+                    "EURUSD",
+                    "EURUSDm",
+                    "2026-09-08T00:00:00Z",
+                    "HOLD",
+                    "NORMALIZED",
+                    None,
+                    json.dumps({"rating": "Hold"}),
+                    0.1,
+                    1.1,
+                    1.1002,
+                    1.1001,
+                    0.0002,
+                    2.0,
+                    "M15",
+                    "x",
+                    "y",
+                    None,
+                    None,
+                    "local",
+                    "qwen",
+                    None,
+                    json.dumps({"symbol": "EURUSD"}),
+                    0,
+                    "BROKEN",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            )
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            """
+            INSERT INTO shadow_decisions (
+                decision_id,
+                created_at,
+                analysis_date,
+                requested_symbol,
+                resolved_symbol,
+                snapshot_timestamp,
+                action,
+                normalization_status,
+                normalization_error,
+                raw_portfolio_manager_result,
+                confidence,
+                reference_bid,
+                reference_ask,
+                reference_mid,
+                spread,
+                spread_points,
+                analysis_timeframe,
+                trader_summary,
+                portfolio_manager_summary,
+                bull_summary,
+                bear_summary,
+                llm_provider,
+                quick_model,
+                deep_model,
+                snapshot_json,
+                executed,
+                future_evaluation_status,
+                outcome_raw,
+                outcome_alpha,
+                outcome_resolved_at,
+                reflection,
+                source_run_id
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            """,
+            (
+                "bad-status-update",
+                "2026-09-08T00:00:00Z",
+                "2026-09-08",
+                "EURUSD",
+                "EURUSDm",
+                "2026-09-08T00:00:00Z",
+                "HOLD",
+                "NORMALIZED",
+                None,
+                json.dumps({"rating": "Hold"}),
+                0.1,
+                1.1,
+                1.1002,
+                1.1001,
+                0.0002,
+                2.0,
+                "M15",
+                "x",
+                "y",
+                None,
+                None,
+                "local",
+                "qwen",
+                None,
+                json.dumps({"symbol": "EURUSD"}),
+                0,
+                "PENDING",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "UPDATE shadow_decisions SET future_evaluation_status = ? WHERE decision_id = ?",
+                ("BROKEN", "bad-status-update"),
+            )
+
+
+def test_shadow_decision_rejects_non_finite_float_fields() -> None:
+    with pytest.raises(ValueError):
+        make_decision(reference_bid=math.inf)
+    with pytest.raises(ValueError):
+        make_decision(snapshot_json={"spread": math.nan})
+    with pytest.raises(ValueError):
+        make_decision(raw_portfolio_manager_result={"rating": "Hold", "spread": math.inf})

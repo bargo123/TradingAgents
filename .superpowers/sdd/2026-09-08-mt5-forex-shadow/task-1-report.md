@@ -40,6 +40,33 @@ python -m py_compile C:\AITrading\TradingAgents\tradingagents\agents\utils\struc
 
 Result: passed.
 
+## Fix round 2 evidence
+
+Reviewer findings addressed:
+
+- `future_evaluation_status` now has a SQLite `CHECK` constraint requiring `PENDING` or `RESOLVED`.
+- The contract suite now proves invalid `future_evaluation_status` is rejected on direct SQL insert and update.
+- Non-finite float values now fail closed in both `ShadowTradeDecision` validation and JSON-safe serialization.
+- The contract suite now proves non-finite raw values and snapshot values are rejected.
+
+Verification after the fix:
+
+```text
+pytest C:\AITrading\TradingAgents\tests\test_forex_shadow_contract.py -q
+```
+
+Result:
+
+```text
+15 passed in 0.38s
+```
+
+```text
+python -m py_compile C:\AITrading\TradingAgents\tradingagents\agents\utils\structured.py C:\AITrading\TradingAgents\tradingagents\forex\shadow.py C:\AITrading\TradingAgents\tests\test_forex_shadow_contract.py
+```
+
+Result: passed.
+
 Attempted lint check:
 
 ```text

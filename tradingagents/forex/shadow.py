@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 import sqlite3
 import sys
 from collections.abc import Mapping
@@ -62,9 +63,15 @@ def _json_safe(value: Any) -> Any:
         return utc_value.isoformat().replace("+00:00", "Z")
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("non-finite float values are not allowed")
+        return value
     if hasattr(value, "value") and not isinstance(value, (str, bytes)):
         return _json_safe(value.value)
     if isinstance(value, (str, int, float, bool)) or value is None:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("non-finite float values are not allowed")
         return value
     raise TypeError(f"unsupported JSON value type: {type(value).__name__}")
 
@@ -271,6 +278,10 @@ class ShadowTradeDecision:
         else:
             _json_safe(self.snapshot_json)
         _json_safe(self.raw_portfolio_manager_result)
+        for field_name in ("confidence", "reference_bid", "reference_ask", "reference_mid", "spread", "spread_points", "outcome_raw", "outcome_alpha"):
+            value = getattr(self, field_name)
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError(f"{field_name} must be finite when provided")
 
     @property
     def raw_portfolio_manager_result_json(self) -> str:
@@ -319,7 +330,8 @@ class ShadowDecisionStore:
                     deep_model TEXT,
                     snapshot_json TEXT NOT NULL,
                     executed INTEGER NOT NULL DEFAULT 0 CHECK (executed = 0),
-                    future_evaluation_status TEXT NOT NULL DEFAULT 'PENDING',
+                    future_evaluation_status TEXT NOT NULL DEFAULT 'PENDING'
+                        CHECK (future_evaluation_status IN ('PENDING','RESOLVED')),
                     outcome_raw REAL,
                     outcome_alpha REAL,
                     outcome_resolved_at TEXT,
