@@ -28,6 +28,44 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 
+
+class StructuredOutputRequiredError(RuntimeError):
+    """Raised when a structured-output binding is required but unavailable."""
+
+
+def invoke_structured_only(
+    structured_llm: Any | None,
+    prompt: Any,
+    agent_name: str,
+) -> BaseModel:
+    """Invoke a structured LLM binding and fail closed on any miss.
+
+    The helper never falls back to plain-text generation. Callers use it only
+    when structured output is mandatory and any missing binding or invocation
+    failure should be surfaced explicitly.
+    """
+    if structured_llm is None:
+        raise StructuredOutputRequiredError(
+            f"{agent_name}: structured output binding is required"
+        )
+
+    try:
+        result = structured_llm.invoke(prompt)
+    except Exception as exc:  # pragma: no cover - exercised in tests
+        raise StructuredOutputRequiredError(
+            f"{agent_name}: structured output invocation failed"
+        ) from exc
+
+    if result is None:
+        raise StructuredOutputRequiredError(
+            f"{agent_name}: structured output returned no parsed result"
+        )
+    if not isinstance(result, BaseModel):
+        raise StructuredOutputRequiredError(
+            f"{agent_name}: structured output did not return a BaseModel"
+        )
+    return result
+
 # Schema-only structured output binds exactly one tool (the schema itself), so a
 # model that reaches for a search tool emits an unknown tool call and the whole
 # structured attempt is discarded for a free-text retry. Agents on this path
