@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from tradingagents.forex.evaluation import (
     EvaluationConfig,
@@ -119,7 +119,11 @@ def main(
         else:
             result = evaluator.evaluate_pending(terminal_path=args.terminal_path)
         _print_result(result)
-        if getattr(result, "llm_calls", 0) not in (0, None):
+        result_metrics = getattr(result, "metrics", {})
+        if (
+            isinstance(result_metrics, Mapping)
+            and result_metrics.get("llm_calls", 0) not in (0, None)
+        ):
             print("FOREX EVALUATION ERROR: evaluator reported non-zero LLM calls", file=sys.stderr)
             return 1
         return 1 if getattr(result, "errors", ()) else 0

@@ -14,8 +14,10 @@ from tradingagents.dataflows.mt5.models import (
     Mt5AccountInfo,
     Mt5Bar,
     Mt5Position,
+    Mt5Spread,
     Mt5SymbolInfo,
 )
+from tradingagents.forex import runner as runner_module
 from tradingagents.forex.runner import ForexShadowRunner, ForexShadowRunResult
 from tradingagents.forex.shadow import ShadowDecisionStore
 from tradingagents.graph.propagation import Propagator
@@ -523,9 +525,6 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
     assert provider.shutdown_calls == 0
 
 # Phase 5 temporal/reference tests
-from tradingagents.dataflows.mt5.models import Mt5Spread, Mt5SymbolInfo
-from tradingagents.forex import runner as runner_module
-
 ANALYSIS_TIMESTAMP = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
 COMPLETION_TIMESTAMP = datetime(2026, 9, 8, 0, 0, 41, tzinfo=timezone.utc)
 BROKER_REFERENCE_TIMESTAMP = datetime(2026, 9, 8, 0, 0, 42, 250_000, tzinfo=timezone.utc)

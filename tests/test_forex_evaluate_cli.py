@@ -95,6 +95,26 @@ def test_forex_evaluate_cli_returns_nonzero_on_provider_failure(capsys) -> None:
     assert "NO ORDER WILL BE SENT" in captured.out
 
 
+def test_forex_evaluate_cli_rejects_nonzero_llm_metric(capsys) -> None:
+    class NonZeroLlmEvaluator:
+        def __init__(self, **kwargs):
+            pass
+
+        def evaluate_decision(self, decision_id, *, now=None, terminal_path=None):
+            result = _fake_result()
+            result.metrics["llm_calls"] = 1
+            return result
+
+    result = main(
+        ["--decision-id", "decision-cli-001"],
+        evaluator_factory=NonZeroLlmEvaluator,
+    )
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "non-zero LLM calls" in captured.err
+
+
 def test_forex_evaluate_has_no_llm_or_execution_options() -> None:
     parser = build_parser()
     option_strings = {

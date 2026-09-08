@@ -222,9 +222,11 @@ class ShadowOutcomeEvaluation:
             value = getattr(self, name)
             if value is not None:
                 _finite(value, name)
-        if self.evaluation_status == "COMPLETE":
-            if self.observation_timestamp is None or self.entry_timestamp is None:
-                raise ValueError("complete evaluations require observation and entry timestamps")
+        if (
+            self.evaluation_status == "COMPLETE"
+            and (self.observation_timestamp is None or self.entry_timestamp is None)
+        ):
+            raise ValueError("complete evaluations require observation and entry timestamps")
 
 
 def decision_source_eligibility(decision: ShadowTradeDecision) -> EligibilityResult:
@@ -1198,7 +1200,8 @@ class ShadowOutcomeEvaluator:
         terminal_path: str | None,
         provider: Any | None,
         provider_initialized: bool,
-    ) -> tuple[ShadowDecisionEvaluationResult, Any | None, bool]:
+        provider_error: str | None = None,
+    ) -> tuple[ShadowDecisionEvaluationResult, Any | None, bool, str | None]:
         started = time.perf_counter()
         db_seconds = 0.0
         mt5_seconds = 0.0
@@ -1209,19 +1212,22 @@ class ShadowOutcomeEvaluator:
         db_started = time.perf_counter()
         self.evaluation_store.upsert(records)
         db_seconds += time.perf_counter() - db_started
+        ticks: tuple[Mt5Tick, ...] = ()
         if mature:
-            if provider is None:
+            if provider_error is None and provider is None:
                 try:
                     provider = self._new_provider(terminal_path)
                 except Exception as exc:
-                    errors.append(str(exc))
-            if provider is not None and not provider_initialized and not errors:
+                    provider_error = str(exc)
+                    errors.append(provider_error)
+            if provider is not None and not provider_initialized and provider_error is None:
                 try:
                     self._initialize_provider(provider)
                     provider_initialized = True
                 except Exception as exc:
-                    errors.append(str(exc))
-            if provider is not None and provider_initialized and not errors:
+                    provider_error = str(exc)
+                    errors.append(provider_error)
+            if provider is not None and provider_initialized and provider_error is None:
                 start = min(item.anchor_timestamp for item in mature)
                 end = max(item.deadline_timestamp for item in mature)
                 try:
@@ -1262,7 +1268,7 @@ class ShadowOutcomeEvaluator:
         metrics = {
             "decisions_scanned": 1,
             "horizons_evaluated": len(mature),
-            "historical_ticks_processed": 0 if not mature or errors else len(ticks),
+            "historical_ticks_processed": 0 if not mature or provider_error is not None else len(ticks),
             "database_seconds": db_seconds,
             "mt5_read_seconds": mt5_seconds,
             "total_runtime_seconds": time.perf_counter() - started,
@@ -1278,6 +1284,7 @@ class ShadowOutcomeEvaluator:
             ),
             provider,
             provider_initialized,
+            provider_error,
         )
 
     def evaluate_decision(
@@ -1290,7 +1297,7 @@ class ShadowOutcomeEvaluator:
         decision = self.decision_store.get(decision_id)
         provider: Any | None = None
         try:
-            result, provider, _ = self._evaluate_one(
+            result, provider, _, _ = self._evaluate_one(
                 decision,
                 now=_utc(now or _utc_now()),
                 terminal_path=terminal_path,
@@ -1316,6 +1323,7 @@ class ShadowOutcomeEvaluator:
         database_seconds = time.perf_counter() - db_started
         provider: Any | None = None
         provider_initialized = False
+        provider_error: str | None = None
         all_evaluations: list[ShadowOutcomeEvaluation] = []
         all_errors: list[str] = []
         statuses: dict[str, Mapping[EvaluationBasis, str]] = {}
@@ -1324,12 +1332,13 @@ class ShadowOutcomeEvaluator:
         mt5_seconds = 0.0
         try:
             for decision in decisions:
-                result, provider, provider_initialized = self._evaluate_one(
+                result, provider, provider_initialized, provider_error = self._evaluate_one(
                     decision,
                     now=now,
                     terminal_path=terminal_path,
                     provider=provider,
                     provider_initialized=provider_initialized,
+                    provider_error=provider_error,
                 )
                 all_evaluations.extend(result.evaluations)
                 all_errors.extend(result.errors)

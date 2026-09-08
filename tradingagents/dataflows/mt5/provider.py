@@ -331,14 +331,8 @@ class MT5Provider:
             raise ValueError("start must be timezone-aware")
         if not isinstance(end, datetime) or end.tzinfo is None:
             raise ValueError("end must be timezone-aware")
-        if start.utcoffset() != timezone.utc.utcoffset(start):
-            start = start.astimezone(timezone.utc)
-        else:
-            start = start.astimezone(timezone.utc)
-        if end.utcoffset() != timezone.utc.utcoffset(end):
-            end = end.astimezone(timezone.utc)
-        else:
-            end = end.astimezone(timezone.utc)
+        start = start.astimezone(timezone.utc)
+        end = end.astimezone(timezone.utc)
         if end < start:
             raise ValueError("end must be greater than or equal to start")
 

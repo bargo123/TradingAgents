@@ -14,8 +14,8 @@ from tradingagents.forex.evaluation import (
     EvaluationStatus,
     ShadowDecisionEvaluationResult,
     ShadowEvaluationBatchResult,
-    ShadowOutcomeEvaluator,
     ShadowEvaluationStore,
+    ShadowOutcomeEvaluator,
     build_horizon_evaluation,
     decision_source_eligibility,
     evaluate_directional_outcomes,
@@ -24,7 +24,6 @@ from tradingagents.forex.evaluation import (
     first_valid_tick,
 )
 from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
-
 
 ANCHOR = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
 COMPLETED = ANCHOR + timedelta(seconds=41)
@@ -562,3 +561,25 @@ def test_evaluator_pending_batch_reuses_one_provider_lifecycle(tmp_path: Path) -
     assert provider.initialize_calls == 1
     assert provider.shutdown_calls == 1
     assert len(provider.range_calls) == 2
+
+
+def test_evaluator_pending_batch_does_not_retry_failed_provider_initialization(
+    tmp_path: Path,
+) -> None:
+    provider = _CountingEvaluationProvider(init_error=RuntimeError("MT5 unavailable"))
+    decision_store = ShadowDecisionStore(tmp_path / "batch-failure.db")
+    decision_store.record(_decision(decision_id="batch-failure-1"))
+    decision_store.record(_decision(decision_id="batch-failure-2"))
+    evaluator = ShadowOutcomeEvaluator(
+        decision_store=decision_store,
+        evaluation_store=ShadowEvaluationStore(tmp_path / "batch-failure.db"),
+        config=EvaluationConfig(horizons_seconds=(300,), observation_tolerance_seconds=30),
+        provider_factory=lambda terminal_path=None: provider,
+    )
+
+    result = evaluator.evaluate_pending(now=ANCHOR + timedelta(hours=1))
+
+    assert provider.initialize_calls == 1
+    assert provider.shutdown_calls == 1
+    assert len(result.errors) == 1
+    assert all(row.evaluation_status == "PENDING" for row in result.evaluations)
