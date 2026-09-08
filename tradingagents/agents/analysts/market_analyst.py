@@ -1,4 +1,38 @@
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+try:  # pragma: no cover - fallback for minimal test environments
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+except ModuleNotFoundError:  # pragma: no cover
+    class MessagesPlaceholder:
+        def __init__(self, variable_name: str):
+            self.variable_name = variable_name
+
+    class ChatPromptTemplate:
+        def __init__(self, messages):
+            self.messages = messages
+            self._partials = {}
+
+        @classmethod
+        def from_messages(cls, messages):
+            return cls(messages)
+
+        def partial(self, **kwargs):
+            self._partials.update(kwargs)
+            return self
+
+        def __or__(self, llm):
+            class _Chain:
+                def __init__(self, prompt, llm):
+                    self.prompt = prompt
+                    self.llm = llm
+
+                def invoke(self, messages):
+                    prompt = {
+                        "messages": messages,
+                        "template": self.prompt.messages,
+                        **self.prompt._partials,
+                    }
+                    return self.llm.invoke(prompt)
+
+            return _Chain(self, llm)
 
 from tradingagents.agents.utils.agent_utils import (
     get_indicators,
@@ -9,20 +43,41 @@ from tradingagents.agents.utils.agent_utils import (
 )
 
 
-def create_market_analyst(llm):
-
+def create_market_analyst(llm, market_data_mode: str = "stock", mt5_tools=None):
     def market_analyst_node(state):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
+        asset_type = state.get("asset_type", "stock")
 
-        tools = [
-            get_stock_data,
-            get_indicators,
-            get_verified_market_snapshot,
-        ]
-
-        system_message = (
-            """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
+        if market_data_mode == "forex_mt5" or asset_type == "forex":
+            if mt5_tools is None or not callable(getattr(mt5_tools, "as_tools", None)):
+                raise ValueError("forex market analyst requires an MT5 adapter")
+            available_tools = list(mt5_tools.as_tools())
+            tools = [
+                tool
+                for tool in available_tools
+                if getattr(tool, "name", getattr(tool, "__name__", ""))
+                == "get_mt5_market_snapshot"
+            ]
+            if len(tools) != 1:
+                raise ValueError(
+                    "forex market analyst requires one get_mt5_market_snapshot tool"
+                )
+            system_message = (
+                "You are a forex market analyst. Focus only on currency-pair price "
+                "action, bid/ask/spread, volatility, and the cached MT5 snapshot. "
+                "Issuer-level fundamentals and corporate events are unavailable; "
+                "do not infer them."
+                + get_language_instruction()
+            )
+        else:
+            tools = [
+                get_stock_data,
+                get_indicators,
+                get_verified_market_snapshot,
+            ]
+            system_message = (
+                """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
 
 Moving Averages:
 - close_50_sma: 50 SMA: A medium-term trend indicator. Usage: Identify trend direction and serve as dynamic support/resistance. Tips: It lags price; combine with faster indicators for timely signals.
@@ -51,9 +106,9 @@ Volume-Based Indicators:
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
 
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + get_language_instruction()
-        )
+                + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+                + get_language_instruction()
+            )
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -79,11 +134,9 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
         prompt = prompt.partial(instrument_context=instrument_context)
 
         chain = prompt | llm.bind_tools(tools)
-
         result = chain.invoke(state["messages"])
 
         report = ""
-
         if len(result.tool_calls) == 0:
             report = result.content
 

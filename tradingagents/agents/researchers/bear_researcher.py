@@ -49,6 +49,18 @@ Last bull argument: {current_response}
 Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the {target_label}.
 """ + get_language_instruction()
 
+        if asset_type == "forex":
+            prompt = f"""You are the Bear Analyst for the {target_label} currency pair. Build an evidence-based risk case from observed price action, spread, volatility, and broad macro news. Do not invent issuer-level fundamentals or corporate facts: those fundamentals are unavailable for forex.
+
+Available evidence:
+{instrument_context}
+Market research report: {market_research_report}
+Global news report: {news_report}
+Conversation history: {history}
+Last bull argument: {current_response}
+
+Address the bull argument directly, distinguish observations from assumptions, and state when evidence is insufficient for a directional view.""" + get_language_instruction()
+
         response = llm.invoke(prompt)
 
         argument = f"Bear Analyst: {response.content}"

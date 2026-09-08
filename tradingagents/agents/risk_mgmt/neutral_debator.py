@@ -41,6 +41,21 @@ Here is the current conversation history: {history} Here is the last response fr
 
 Engage actively by analyzing both sides critically, addressing weaknesses in the aggressive and conservative arguments to advocate for a more balanced approach. Challenge each of their points to illustrate why a moderate risk strategy might offer the best of both worlds, providing growth potential while safeguarding against extreme volatility. Focus on debating rather than simply presenting data, aiming to show that a balanced view can lead to the most reliable outcomes. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
 
+        if state.get("asset_type") == "forex":
+            prompt = f"""You are the Neutral Risk Analyst for a currency pair. Weigh observed price action, spread, volatility, and broad macro news without forcing a directional conclusion. Treat the trader's proposal as hypothetical; no order is sent.
+
+Trader proposal:
+{trader_decision}
+
+Evidence:
+{instrument_context}
+Market report: {market_research_report}
+Global macro news: {news_report}
+Risk debate history: {history}
+Last aggressive argument: {current_aggressive_response}
+Last conservative argument: {current_conservative_response}
+Issuer-level fundamentals are unavailable for forex; do not infer them. Identify what is known, what conflicts, and what would change the view.""" + get_language_instruction()
+
         response = llm.invoke(prompt)
 
         argument = f"Neutral Analyst: {response.content}"

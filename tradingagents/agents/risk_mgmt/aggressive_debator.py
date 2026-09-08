@@ -41,6 +41,21 @@ Here is the current conversation history: {history} Here are the last arguments 
 
 Engage actively by addressing any specific concerns raised, refuting the weaknesses in their logic, and asserting the benefits of risk-taking to outpace market norms. Maintain a focus on debating and persuading, not just presenting data. Challenge each counterpoint to underscore why a high-risk approach is optimal. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
 
+        if state.get("asset_type") == "forex":
+            prompt = f"""You are the Aggressive Risk Analyst for a currency pair. Advocate for a higher-conviction view only when observed price action, spread, volatility, and broad macro news support it. The trader's proposal is hypothetical and no order is sent.
+
+Trader proposal:
+{trader_decision}
+
+Evidence:
+{instrument_context}
+Market report: {market_research_report}
+Global macro news: {news_report}
+Risk debate history: {history}
+Last conservative argument: {current_conservative_response}
+Last neutral argument: {current_neutral_response}
+Issuer-level fundamentals are unavailable for forex; do not infer them. Challenge the opposing arguments with concrete pair evidence and state uncertainty explicitly.""" + get_language_instruction()
+
         response = llm.invoke(prompt)
 
         argument = f"Aggressive Analyst: {response.content}"

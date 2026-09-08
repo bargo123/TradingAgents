@@ -1,4 +1,38 @@
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+try:  # pragma: no cover - fallback for minimal test environments
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+except ModuleNotFoundError:  # pragma: no cover
+    class MessagesPlaceholder:
+        def __init__(self, variable_name: str):
+            self.variable_name = variable_name
+
+    class ChatPromptTemplate:
+        def __init__(self, messages):
+            self.messages = messages
+            self._partials = {}
+
+        @classmethod
+        def from_messages(cls, messages):
+            return cls(messages)
+
+        def partial(self, **kwargs):
+            self._partials.update(kwargs)
+            return self
+
+        def __or__(self, llm):
+            class _Chain:
+                def __init__(self, prompt, llm):
+                    self.prompt = prompt
+                    self.llm = llm
+
+                def invoke(self, messages):
+                    prompt = {
+                        "messages": messages,
+                        "template": self.prompt.messages,
+                        **self.prompt._partials,
+                    }
+                    return self.llm.invoke(prompt)
+
+            return _Chain(self, llm)
 
 from tradingagents.agents.utils.agent_utils import (
     get_global_news,
@@ -10,25 +44,33 @@ from tradingagents.agents.utils.agent_utils import (
 )
 
 
-def create_news_analyst(llm):
+def create_news_analyst(llm, market_data_mode: str = "stock"):
     def news_analyst_node(state):
         current_date = state["trade_date"]
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
 
-        tools = [
-            get_news,
-            get_global_news,
-            get_macro_indicators,
-            get_prediction_markets,
-        ]
-
-        system_message = (
-            f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for {asset_label}-specific news by ticker symbol, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events). Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
-            + get_language_instruction()
-        )
+        if market_data_mode == "forex_mt5" or asset_type == "forex":
+            tools = [get_global_news]
+            system_message = (
+                "You are a forex news researcher. Use only broad, global, and "
+                "macro-relevant news context for currency pairs. Instrument-specific "
+                "issuer information is unavailable; do not infer it."
+                + get_language_instruction()
+            )
+        else:
+            tools = [
+                get_news,
+                get_global_news,
+                get_macro_indicators,
+                get_prediction_markets,
+            ]
+            system_message = (
+                f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for {asset_label}-specific news by ticker symbol, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events). Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+                + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+                + get_language_instruction()
+            )
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -57,7 +99,6 @@ def create_news_analyst(llm):
         result = chain.invoke(state["messages"])
 
         report = ""
-
         if len(result.tool_calls) == 0:
             report = result.content
 

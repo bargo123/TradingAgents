@@ -43,28 +43,55 @@ def create_trader(llm):
             grounding = ""
             report_section = ""
 
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a trading agent analyzing market data to make investment decisions. "
-                    "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
-                    + grounding
-                    + NO_EXTERNAL_TOOLS
-                    + get_language_instruction()
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Here is the research team's investment plan for {company_name}. "
-                    f"{instrument_context}\n\n"
-                    f"{report_section}"
-                    f"Proposed Investment Plan:\n{investment_plan}\n\n"
-                    f"Make an informed, strategic trading decision."
-                ),
-            },
-        ]
+        if state.get("asset_type") == "forex":
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a forex shadow-mode trader analyzing one currency pair. "
+                        "Return a structured hypothetical Buy, Sell, or Hold proposal using "
+                        "only the supplied price action, spread, volatility, and macro context. "
+                        "Any entry or stop levels are observational only; no order is sent. "
+                        "Issuer-level fundamentals are unavailable for forex; do not infer them. "
+                        + grounding
+                        + NO_EXTERNAL_TOOLS
+                        + get_language_instruction()
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Here is the research team's plan for currency pair {company_name}. "
+                        f"{instrument_context}\n\n"
+                        f"{report_section}"
+                        f"Proposed Plan:\n{investment_plan}\n\n"
+                        f"Make an evidence-based hypothetical trading proposal."
+                    ),
+                },
+            ]
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a trading agent analyzing market data to make investment decisions. "
+                        "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
+                        + grounding
+                        + NO_EXTERNAL_TOOLS
+                        + get_language_instruction()
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Here is the research team's investment plan for {company_name}. "
+                        f"{instrument_context}\n\n"
+                        f"{report_section}"
+                        f"Proposed Investment Plan:\n{investment_plan}\n\n"
+                        f"Make an informed, strategic trading decision."
+                    ),
+                },
+            ]
 
         trader_plan = invoke_structured_or_freetext(
             structured_llm,

@@ -41,6 +41,21 @@ Here is the current conversation history: {history} Here is the last response fr
 
 Engage by questioning their optimism and emphasizing the potential downsides they may have overlooked. Address each of their counterpoints to showcase why a conservative stance is ultimately the safest path for the firm's assets. Focus on debating and critiquing their arguments to demonstrate the strength of a low-risk strategy over their approaches. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
 
+        if state.get("asset_type") == "forex":
+            prompt = f"""You are the Conservative Risk Analyst for a currency pair. Protect against spread costs, volatility, gaps, and adverse macro surprises. Treat the trader's proposal as hypothetical; no order is sent.
+
+Trader proposal:
+{trader_decision}
+
+Evidence:
+{instrument_context}
+Market report: {market_research_report}
+Global macro news: {news_report}
+Risk debate history: {history}
+Last aggressive argument: {current_aggressive_response}
+Last neutral argument: {current_neutral_response}
+Issuer-level fundamentals are unavailable for forex; do not infer them. Emphasize observable risk, invalidation conditions, and uncertainty.""" + get_language_instruction()
+
         response = llm.invoke(prompt)
 
         argument = f"Conservative Analyst: {response.content}"
