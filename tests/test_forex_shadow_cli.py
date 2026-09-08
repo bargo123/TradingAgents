@@ -132,6 +132,7 @@ def test_cli_passes_stats_callback_and_prints_run_evidence(capsys, monkeypatch, 
                     "decision_id": "decision-001",
                     "action": "HOLD",
                     "normalization_status": "NORMALIZED",
+                    "decision_context_status": "COMPLETE",
                     "executed": False,
                     "requested_symbol": "EURUSD",
                     "resolved_symbol": "EURUSD",
@@ -186,6 +187,7 @@ def test_cli_passes_stats_callback_and_prints_run_evidence(capsys, monkeypatch, 
     assert "LLM PROVIDER: openai" in output
     assert "LLM CALLS: 9" in output
     assert "NORMALIZED ACTION: HOLD" in output
+    assert "DECISION CONTEXT STATUS: COMPLETE" in output
     assert "ANALYSIS PROFILE: INTRADAY" in output
     assert "VALID FOR SECONDS: 3600" in output
     assert "MACRO/EVENT STATUS: MACRO/EVENT DATA UNAVAILABLE" in output

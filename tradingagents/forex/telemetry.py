@@ -7,12 +7,14 @@ changing LangGraph state or retaining prompt/reasoning content.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any
+
+from .context_integrity import state_artifact_metrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,9 @@ class AgentContext:
 
 _CURRENT_AGENT: ContextVar[AgentContext | None] = ContextVar(
     "tradingagents_current_agent", default=None
+)
+_STATE_TRACE: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "tradingagents_forex_state_trace", default=None
 )
 
 
@@ -55,15 +60,54 @@ def current_agent_context() -> AgentContext | None:
     return _CURRENT_AGENT.get()
 
 
+@contextmanager
+def capture_state_trace() -> Iterator[list[dict[str, Any]]]:
+    """Capture metadata-only state boundaries for one graph invocation."""
+    trace: list[dict[str, Any]] = []
+    token = _STATE_TRACE.set(trace)
+    try:
+        yield trace
+    finally:
+        _STATE_TRACE.reset(token)
+
+
+def record_state_boundary(
+    node: str,
+    phase: str,
+    state: Mapping[str, Any] | None,
+) -> None:
+    """Append presence/size metadata without retaining state contents."""
+    trace = _STATE_TRACE.get()
+    if trace is None:
+        return
+    trace.append(
+        {
+            "node": str(node),
+            "phase": str(phase),
+            "artifacts": state_artifact_metrics(state),
+        }
+    )
+
+
 def instrument_agent_node(node, agent_name: str, llm: Any):
-    """Wrap an LLM-bearing graph node with context-local attribution."""
+    """Wrap an LLM-bearing graph node with context and state attribution."""
     if not callable(node):
         raise TypeError("node must be callable")
 
     @wraps(node)
     def wrapped(*args, **kwargs):
+        state = args[0] if args else kwargs.get("state")
+        record_state_boundary(agent_name, "before", state)
         with agent_context(agent_name, llm):
-            return node(*args, **kwargs)
+            result = node(*args, **kwargs)
+        if isinstance(state, Mapping):
+            merged_state = dict(state)
+            if isinstance(result, Mapping):
+                merged_state.update(result)
+        else:
+            merged_state = result if isinstance(result, Mapping) else None
+        record_state_boundary(agent_name, "after", merged_state)
+        return result
 
     return wrapped
 
@@ -71,7 +115,9 @@ def instrument_agent_node(node, agent_name: str, llm: Any):
 __all__ = [
     "AgentContext",
     "agent_context",
+    "capture_state_trace",
     "current_agent_context",
     "instrument_agent_node",
     "model_identifier",
+    "record_state_boundary",
 ]

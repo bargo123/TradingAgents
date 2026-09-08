@@ -69,6 +69,9 @@ Address the bull argument directly, distinguish observations from assumptions, a
 
         argument = f"Bear Analyst: {response.content}"
 
+        # Preserve the complete nested state in forex mode because LangGraph
+        # replaces this mapping as one channel value.  Stock mode retains its
+        # historical update shape.
         new_investment_debate_state = {
             "history": history + "\n" + argument,
             "bear_history": bear_history + "\n" + argument,
@@ -76,6 +79,11 @@ Address the bull argument directly, distinguish observations from assumptions, a
             "current_response": argument,
             "count": investment_debate_state["count"] + 1,
         }
+        if asset_type == "forex":
+            new_investment_debate_state = {
+                **investment_debate_state,
+                **new_investment_debate_state,
+            }
 
         return {"investment_debate_state": new_investment_debate_state}
 

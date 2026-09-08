@@ -76,6 +76,8 @@ Issuer-level fundamentals are unavailable for forex; do not infer them. Identify
             "current_neutral_response": argument,
             "count": risk_debate_state["count"] + 1,
         }
+        if state.get("asset_type") == "forex":
+            new_risk_debate_state = {**risk_debate_state, **new_risk_debate_state}
 
         return {"risk_debate_state": new_risk_debate_state}
 

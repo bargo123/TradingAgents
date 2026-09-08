@@ -67,6 +67,10 @@ Address the bear argument directly, distinguish observations from assumptions, a
 
         argument = f"Bull Analyst: {response.content}"
 
+        # Nested AgentState channels use last-write semantics.  In forex mode,
+        # start from the existing debate mapping so fields not owned by this
+        # speaker (for example prior judge metadata) cannot disappear.  Keep
+        # the historical stock update shape unchanged.
         new_investment_debate_state = {
             "history": history + "\n" + argument,
             "bull_history": bull_history + "\n" + argument,
@@ -74,6 +78,11 @@ Address the bear argument directly, distinguish observations from assumptions, a
             "current_response": argument,
             "count": investment_debate_state["count"] + 1,
         }
+        if asset_type == "forex":
+            new_investment_debate_state = {
+                **investment_debate_state,
+                **new_investment_debate_state,
+            }
 
         return {"investment_debate_state": new_investment_debate_state}
 

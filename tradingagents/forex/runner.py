@@ -12,6 +12,7 @@ from typing import Any
 from tradingagents.agents.utils.agent_utils import build_instrument_context
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
+from tradingagents.forex.context_integrity import evaluate_context_integrity
 from tradingagents.forex.profile import MACRO_EVENT_UNAVAILABLE, resolve_forex_profile
 from tradingagents.forex.shadow import (
     ShadowDecisionStore,
@@ -19,6 +20,7 @@ from tradingagents.forex.shadow import (
     ShadowTradeDecision,
     normalize_portfolio_manager_result,
 )
+from tradingagents.forex.telemetry import capture_state_trace
 from tradingagents.forex.tools import MT5ToolAdapter
 
 
@@ -260,10 +262,19 @@ class ForexShadowRunner:
             graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
             # The runner deliberately calls the already compiled graph. The
             # stock propagate helper performs Yahoo identity/memory-log work.
-            final_state = self._invoke_compiled_graph(graph, initial_state, graph_args)
+            with capture_state_trace() as state_trace:
+                final_state = self._invoke_compiled_graph(graph, initial_state, graph_args)
             if not isinstance(final_state, Mapping):
                 raise TypeError("compiled forex graph must return a mapping state")
             final_state = dict(final_state)
+            context_integrity = evaluate_context_integrity(
+                final_state,
+                trace=state_trace,
+            )
+            # The trace contains only node/phase names and artifact
+            # presence/size metadata; report content and private reasoning
+            # are deliberately never retained.
+            context_integrity["boundaries"] = list(state_trace)
 
             raw_pm_result = self._extract_raw_pm_result(final_state)
             try:
@@ -317,6 +328,7 @@ class ForexShadowRunner:
                 raw_portfolio_manager_result=normalized.raw_result,
                 normalization_status=normalized.normalization_status,
                 normalization_error=normalized.normalization_error,
+                decision_context_status=context_integrity["status"],
                 confidence=None,
                 reference_bid=snapshot.bid,
                 reference_ask=snapshot.ask,
@@ -356,6 +368,9 @@ class ForexShadowRunner:
                 "macro_event_status": MACRO_EVENT_UNAVAILABLE,
                 "decision_valid_for_seconds": valid_for_seconds,
                 "decision_valid_until": valid_until,
+                "decision_context_status": context_integrity["status"],
+                "context_integrity": context_integrity,
+                "state_boundaries": list(state_trace),
                 **callback_metrics,
             }
             return ForexShadowRunResult(

@@ -63,6 +63,8 @@ Issuer-level fundamentals are unavailable for forex; do not infer them. Challeng
 
         argument = f"Aggressive Analyst: {response.content}"
 
+        # Risk debate is a nested last-write channel.  Preserve fields owned by
+        # other speakers in forex mode; stock mode retains its historical shape.
         new_risk_debate_state = {
             "history": history + "\n" + argument,
             "aggressive_history": aggressive_history + "\n" + argument,
@@ -76,6 +78,8 @@ Issuer-level fundamentals are unavailable for forex; do not infer them. Challeng
             ),
             "count": risk_debate_state["count"] + 1,
         }
+        if state.get("asset_type") == "forex":
+            new_risk_debate_state = {**risk_debate_state, **new_risk_debate_state}
 
         return {"risk_debate_state": new_risk_debate_state}
 

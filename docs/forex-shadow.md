@@ -273,3 +273,57 @@ API was added or called.
 Final verification gate for this implementation: `772 passed, 4 skipped, 71
 subtests passed`; Ruff, `compileall`, and `git diff --check` passed; the opt-in
 MT5 integration guard passed (`1 passed, 2 deselected`).
+
+## Phase 4.3 context-integrity validation (2026-09-08)
+
+Phase 4.3 traced the normal graph state rather than adding summaries or
+copying prose between prompts. The first failing deterministic trace showed
+that Bull and Bear reports were written to
+`investment_debate_state.history`, Research Manager consumed that history,
+Trader consumed the rendered `investment_plan`, and each Risk Analyst
+consumed `trader_investment_plan` while appending to `risk_debate_state`.
+The actual omission was at the forex Portfolio Manager boundary: its prompt
+read the Research Manager and Trader plans plus risk history, but never read
+the preserved Bull/Bear research-debate fields. The forex prompt now receives
+the existing `history`, `bull_history`, and `bear_history` values directly.
+
+The nested debate updates also now start from the existing mapping. LangGraph
+treats each nested mapping as a last-write channel, so this preserves fields
+owned by another speaker (including prior judge metadata) without changing the
+stock prompt or routing path.
+
+The accepted Phase 4.2 v3 row remains evidence of an incomplete visible
+context: its Bull/Bear fields contain only their speaker labels and no report
+body, and the risk debate body is likewise absent. Phase 4.3 does not promote
+hidden model reasoning into a report. Instead, the pre-persistence validator
+records `decision_context_status=INCOMPLETE` for such a run while retaining the
+genuine structured Portfolio Manager result and its independent strict
+normalization status. Rows with all required normal report bodies are marked
+`COMPLETE`; the field is backward-compatible and defaults old rows to
+`INCOMPLETE`.
+
+Boundary instrumentation stores only node/phase names and artifact presence or
+size metadata. A deterministic compiled-graph trace produced 20 boundaries
+(before/after for each expected LLM-bearing node):
+
+```text
+context_status=COMPLETE
+nodes=Aggressive Analyst,Bear Researcher,Bull Researcher,Conservative Analyst,Market Analyst,Neutral Analyst,News Analyst,Portfolio Manager,Research Manager,Trader
+market present=True chars=13
+news present=True chars=11
+bull present=True content_chars=11
+bear present=True content_chars=11
+research_manager present=True content_chars=84
+trader present=True content_chars=84
+risk_debate present=True history_chars=52 agent_chars=17/19/14
+portfolio_manager present=True raw_fields=7 final_chars=145
+trace_entries=20
+report_text_retained=False
+```
+
+The existing local Qwen v3 run was not repeated because its full graph took
+about 41 minutes; the bounded deterministic graph trace is the Phase 4.3
+correctness proof. The standalone command remains read-only, no execution API
+was added, and every persisted decision continues to enforce
+`executed=False`. Phase 5 evaluation, outcome labeling, training, RAG, ONNX,
+and order execution remain out of scope.

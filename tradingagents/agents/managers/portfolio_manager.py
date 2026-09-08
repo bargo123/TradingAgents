@@ -11,6 +11,7 @@ back gracefully to free-text generation.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 
 from tradingagents.agents.schemas import (
     ForexPortfolioDecision,
@@ -42,6 +43,16 @@ def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
 
         history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
+        investment_debate_history = ""
+        bull_history = ""
+        bear_history = ""
+        if is_forex:
+            investment_debate_state = state.get("investment_debate_state", {})
+            if not isinstance(investment_debate_state, Mapping):
+                investment_debate_state = {}
+            investment_debate_history = investment_debate_state.get("history", "")
+            bull_history = investment_debate_state.get("bull_history", "")
+            bear_history = investment_debate_state.get("bear_history", "")
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
 
@@ -70,6 +81,12 @@ def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
 - **Sell**: Exit position or avoid entry
 
 **Context:**
+- Bull/Bear Research Debate History:
+{investment_debate_history}
+- Bull Research History:
+{bull_history}
+- Bear Research History:
+{bear_history}
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
 {lessons_line}
@@ -162,6 +179,8 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
             "current_neutral_response": risk_debate_state["current_neutral_response"],
             "count": risk_debate_state["count"],
         }
+        if is_forex:
+            new_risk_debate_state = {**risk_debate_state, **new_risk_debate_state}
 
         return {
             "risk_debate_state": new_risk_debate_state,

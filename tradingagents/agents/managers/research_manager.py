@@ -88,6 +88,11 @@ Commit to a directional stance only when the debate's strongest arguments clearl
             "current_response": investment_plan,
             "count": investment_debate_state["count"],
         }
+        if is_forex:
+            new_investment_debate_state = {
+                **investment_debate_state,
+                **new_investment_debate_state,
+            }
 
         return {
             "investment_debate_state": new_investment_debate_state,

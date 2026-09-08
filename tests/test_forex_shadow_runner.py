@@ -390,6 +390,71 @@ def test_runner_persists_failed_normalization_without_guessing(tmp_path):
     assert store.get(result.decision.decision_id).normalization_status == "FAILED"
 
 
+def test_runner_persists_incomplete_context_status_without_relabeling_action(tmp_path):
+    runner, provider, _, store = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": "**Rating**: Hold",
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "market_report": "MARKET_REPORT",
+            "news_report": "NEWS_REPORT",
+            "investment_plan": "RM_PLAN",
+            "trader_investment_plan": "TRADER_PLAN",
+            "investment_debate_state": {
+                "history": "\nBull Analyst: \nBear Analyst: ",
+                "bull_history": "\nBull Analyst: ",
+                "bear_history": "\nBear Analyst: ",
+            },
+            "risk_debate_state": {
+                "history": "\nAggressive Analyst: ",
+                "aggressive_history": "\nAggressive Analyst: ",
+                "conservative_history": "\nConservative Analyst: ",
+                "neutral_history": "\nNeutral Analyst: ",
+            },
+        },
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert provider.market_snapshot_calls == 1
+    assert result.decision.action == "HOLD"
+    assert result.decision.normalization_status == "NORMALIZED"
+    assert result.decision.decision_context_status == "INCOMPLETE"
+    assert result.metrics["decision_context_status"] == "INCOMPLETE"
+    assert store.get(result.decision.decision_id).decision_context_status == "INCOMPLETE"
+
+
+def test_runner_marks_complete_context_when_all_artifacts_are_present(tmp_path):
+    runner, _, _, store = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": "PM_RESULT",
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "market_report": "MARKET_REPORT",
+            "news_report": "NEWS_REPORT",
+            "investment_plan": "RM_PLAN",
+            "trader_investment_plan": "TRADER_PLAN",
+            "investment_debate_state": {
+                "history": "\nBull Analyst: BULL\nBear Analyst: BEAR",
+                "bull_history": "\nBull Analyst: BULL",
+                "bear_history": "\nBear Analyst: BEAR",
+            },
+            "risk_debate_state": {
+                "history": "\nAggressive Analyst: AGG\nConservative Analyst: CON\nNeutral Analyst: NEU",
+                "aggressive_history": "\nAggressive Analyst: AGG",
+                "conservative_history": "\nConservative Analyst: CON",
+                "neutral_history": "\nNeutral Analyst: NEU",
+            },
+        },
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.decision.decision_context_status == "COMPLETE"
+    assert result.metrics["context_integrity"]["missing"] == []
+    assert store.get(result.decision.decision_id).decision_context_status == "COMPLETE"
+
+
 def test_runner_shuts_down_when_graph_fails(tmp_path):
     provider = _FakeProvider(_snapshot())
 

@@ -39,6 +39,7 @@ PortfolioRating = _schemas.PortfolioRating
 
 AllowedAction = Literal["BUY", "SELL", "HOLD"]
 NormalizationStatus = Literal["NORMALIZED", "FAILED"]
+DecisionContextStatus = Literal["COMPLETE", "INCOMPLETE"]
 FutureEvaluationStatus = Literal["PENDING", "RESOLVED"]
 
 _RATING_TO_ACTION: dict[str, AllowedAction] = {
@@ -304,12 +305,15 @@ class ShadowTradeDecision:
     valid_for_seconds: int | None = None
     valid_until: datetime | None = None
     executed: bool = False
+    decision_context_status: DecisionContextStatus = "INCOMPLETE"
 
     def __post_init__(self) -> None:
         if self.executed is not False:
             raise ValueError("ShadowTradeDecision must always be created with executed=False")
         if self.normalization_status not in ("NORMALIZED", "FAILED"):
             raise ValueError("normalization_status must be NORMALIZED or FAILED")
+        if self.decision_context_status not in ("COMPLETE", "INCOMPLETE"):
+            raise ValueError("decision_context_status must be COMPLETE or INCOMPLETE")
         if self.future_evaluation_status not in ("PENDING", "RESOLVED"):
             raise ValueError("future_evaluation_status must be PENDING or RESOLVED")
         if not isinstance(self.analysis_profile, str) or not self.analysis_profile.strip():
@@ -381,6 +385,8 @@ class ShadowDecisionStore:
                     action TEXT CHECK (action IS NULL OR action IN ('BUY','SELL','HOLD')),
                     normalization_status TEXT NOT NULL
                         CHECK (normalization_status IN ('NORMALIZED','FAILED')),
+                    decision_context_status TEXT NOT NULL DEFAULT 'INCOMPLETE'
+                        CHECK (decision_context_status IN ('COMPLETE','INCOMPLETE')),
                     normalization_error TEXT,
                     raw_portfolio_manager_result TEXT NOT NULL,
                     confidence REAL,
@@ -426,6 +432,10 @@ class ShadowDecisionStore:
                 "analysis_profile": "TEXT NOT NULL DEFAULT 'INTRADAY'",
                 "valid_for_seconds": "INTEGER",
                 "valid_until": "TEXT",
+                "decision_context_status": (
+                    "TEXT NOT NULL DEFAULT 'INCOMPLETE' "
+                    "CHECK (decision_context_status IN ('COMPLETE','INCOMPLETE'))"
+                ),
             }
             for column, declaration in migrations.items():
                 if column not in existing_columns:
@@ -450,6 +460,7 @@ class ShadowDecisionStore:
             "snapshot_timestamp",
             "action",
             "normalization_status",
+            "decision_context_status",
             "normalization_error",
             "raw_portfolio_manager_result",
             "confidence",
@@ -494,6 +505,7 @@ class ShadowDecisionStore:
                     _parse_utc_datetime(decision.snapshot_timestamp).isoformat().replace("+00:00", "Z"),
                     decision.action,
                     decision.normalization_status,
+                    decision.decision_context_status,
                     decision.normalization_error,
                     decision.raw_portfolio_manager_result_json,
                     decision.confidence,
@@ -593,6 +605,11 @@ class ShadowDecisionStore:
             action=row["action"],
             raw_portfolio_manager_result=json.loads(row["raw_portfolio_manager_result"]),
             normalization_status=row["normalization_status"],
+            decision_context_status=(
+                row["decision_context_status"]
+                if "decision_context_status" in row_keys
+                else "INCOMPLETE"
+            ),
             normalization_error=row["normalization_error"],
             confidence=row["confidence"],
             reference_bid=row["reference_bid"],

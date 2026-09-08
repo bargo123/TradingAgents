@@ -214,6 +214,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"RAW PORTFOLIO MANAGER RESULT: {_format_raw_result(decision)}")
     print(f"NORMALIZED ACTION: {getattr(decision, 'action', None) or 'UNRESOLVED'}")
     print(f"NORMALIZATION STATUS: {decision.normalization_status}")
+    print(
+        "DECISION CONTEXT STATUS: "
+        f"{getattr(decision, 'decision_context_status', 'INCOMPLETE')}"
+    )
+    context_integrity = metrics.get("context_integrity")
+    if isinstance(context_integrity, Mapping):
+        missing_context = context_integrity.get("missing")
+        if (
+            isinstance(missing_context, Sequence)
+            and not isinstance(missing_context, (str, bytes))
+            and missing_context
+        ):
+            print(
+                "CONTEXT INTEGRITY MISSING: "
+                + ", ".join(str(item) for item in missing_context)
+            )
     normalization_error = getattr(decision, "normalization_error", None)
     if normalization_error:
         print(f"NORMALIZATION ERROR: {normalization_error}")

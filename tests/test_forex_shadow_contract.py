@@ -207,6 +207,8 @@ def test_shadow_decision_rejects_executed_true_and_invalid_status() -> None:
         make_decision(action="HOLD", normalization_status="FAILED")
     with pytest.raises(ValueError):
         make_decision(future_evaluation_status="BROKEN")
+    with pytest.raises(ValueError):
+        make_decision(decision_context_status="BROKEN")
 
 
 def test_shadow_decision_requires_utc_timestamps() -> None:
@@ -288,6 +290,36 @@ def test_store_round_trip_preserves_profile_and_validity(tmp_path: Path) -> None
     assert restored.analysis_profile == "INTRADAY"
     assert restored.valid_for_seconds == 3600
     assert restored.valid_until == timestamp + timedelta(seconds=3600)
+
+
+def test_store_round_trip_preserves_context_integrity_status(tmp_path: Path) -> None:
+    store = ShadowDecisionStore(tmp_path / "shadow.db")
+    decision = make_decision(decision_context_status="COMPLETE")
+
+    store.record(decision)
+
+    restored = store.get(decision.decision_id)
+    assert restored.decision_context_status == "COMPLETE"
+
+
+def test_store_migrates_legacy_schema_with_incomplete_default(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-shadow.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE shadow_decisions ("
+            "decision_id TEXT PRIMARY KEY, "
+            "resolved_symbol TEXT, analysis_date TEXT)"
+        )
+
+    store = ShadowDecisionStore(path)
+    store.initialize()
+
+    with sqlite3.connect(path) as conn:
+        columns = {
+            row[1]: row[4]
+            for row in conn.execute("PRAGMA table_info(shadow_decisions)")
+        }
+    assert columns["decision_context_status"] == "'INCOMPLETE'"
 
 
 def test_store_rejects_invalid_future_evaluation_status_via_sql(
