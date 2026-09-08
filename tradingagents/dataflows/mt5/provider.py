@@ -19,6 +19,7 @@ from .errors import (
     Mt5SymbolNotFoundError,
 )
 from .models import (
+    ForexMarketSnapshot,
     Mt5AccountInfo,
     Mt5Bar,
     Mt5Order,
@@ -202,6 +203,9 @@ class MT5Provider:
 
     def get_tick(self, symbol: str) -> Mt5Tick:
         resolved = self.ensure_symbol(symbol)
+        return self._get_tick_resolved(resolved)
+
+    def _get_tick_resolved(self, resolved: str) -> Mt5Tick:
         raw = self._api.symbol_info_tick(resolved)
         if raw is None:
             raise Mt5DataError(f"No tick available for {resolved!r}")
@@ -222,6 +226,11 @@ class MT5Provider:
         if count <= 0:
             raise Mt5DataError("Bar count must be greater than zero")
         resolved = self.ensure_symbol(symbol)
+        return self._get_bars_resolved(resolved, timeframe, count, start_pos)
+
+    def _get_bars_resolved(self, resolved: str, timeframe: str, count: int, start_pos: int = 0) -> tuple[Mt5Bar, ...]:
+        if count <= 0:
+            raise Mt5DataError("Bar count must be greater than zero")
         rows = self._api.copy_rates_from_pos(resolved, resolve_timeframe(timeframe, self._api), start_pos, count)
         if rows is None:
             raise Mt5DataError(f"No bars available for {resolved!r}")
@@ -236,6 +245,9 @@ class MT5Provider:
     def get_positions(self, symbol: str | None = None) -> tuple[Mt5Position, ...]:
         self._require_connected()
         resolved = self.find_symbol(symbol) if symbol is not None else None
+        return self._get_positions_resolved(resolved)
+
+    def _get_positions_resolved(self, resolved: str | None) -> tuple[Mt5Position, ...]:
         raw_positions = self._api.positions_get() or ()
         try:
             return tuple(
@@ -269,6 +281,43 @@ class MT5Provider:
             return Mt5Spread(resolved, bid, ask, price, price / float(point), _utc_timestamp(tick, prefer_msc=True))
         except (TypeError, ValueError, OSError, ZeroDivisionError) as exc:
             raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
+
+    def get_market_snapshot(self, symbol: str, count: int = 100) -> ForexMarketSnapshot:
+        """Capture a normalized, read-only multi-timeframe market snapshot."""
+        self._require_connected()
+        if count <= 0:
+            raise Mt5DataError("Bar count must be greater than zero")
+        resolved = self.ensure_symbol(symbol)
+        info = self._api.symbol_info(resolved)
+        if info is None or _field(info, "point") in (None, 0):
+            raise Mt5DataError(f"Cannot calculate spread for {resolved!r}")
+        tick = self._get_tick_resolved(resolved)
+        try:
+            point = float(_field(info, "point"))
+            spread = tick.ask - tick.bid
+            spread_points = spread / point
+        except (TypeError, ValueError, ZeroDivisionError) as exc:
+            raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
+        candles = {
+            timeframe: self._get_bars_resolved(resolved, timeframe, count)
+            for timeframe in ("M1", "M5", "M15", "H1")
+        }
+        account = self.get_account_info()
+        positions = self._get_positions_resolved(resolved)
+        return ForexMarketSnapshot(
+            timestamp=tick.timestamp,
+            symbol=resolved,
+            bid=tick.bid,
+            ask=tick.ask,
+            spread=spread,
+            spread_points=spread_points,
+            m1_candles=candles["M1"],
+            m5_candles=candles["M5"],
+            m15_candles=candles["M15"],
+            h1_candles=candles["H1"],
+            account=account,
+            positions=positions,
+        )
 
 
 Mt5Provider = MT5Provider
