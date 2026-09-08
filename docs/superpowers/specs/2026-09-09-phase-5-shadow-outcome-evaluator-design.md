@@ -75,8 +75,10 @@ The Phase 5 compatibility portion of `ShadowTradeDecision` and
 captures the analysis snapshot first, records `decision_completed_timestamp`
 immediately after the graph returns its structured Portfolio Manager result,
 then performs exactly one fresh read-only `get_spread(resolved_symbol)` call.
-That fresh quote is stored as the decision reference; it is not fed back into
-the graph and it never triggers another LLM call.
+The quote's broker-provided tick timestamp is stored as the decision
+reference; the application completion time is never copied into the market
+timestamp. The fresh quote is not fed back into the graph and it never
+triggers another LLM call.
 
 ## Temporal evidence, eligibility, and training safety
 
@@ -111,8 +113,9 @@ basis, but its `DECISION_REFERENCE` basis is explicitly unavailable; the
 analysis quote is never silently substituted.
 
 `decision_completed_timestamp` is captured immediately after the graph returns
-the structured Portfolio Manager result. `analysis_latency_seconds` is the
-UTC difference between that timestamp and `analysis_snapshot_timestamp`.
+the structured Portfolio Manager result using the application clock.
+`analysis_latency_seconds` is the UTC difference between that timestamp and
+`analysis_snapshot_timestamp`.
 `decision_reference_delay_seconds` is the difference between the fresh quote
 timestamp and `decision_completed_timestamp` (negative when the terminal
 returns an older quote, which makes the reference `INVALID_TEMPORAL`). The
@@ -257,7 +260,12 @@ Immediately after the graph returns its structured Portfolio Manager result,
 the runner captures `decision_completed_timestamp` and derives
 `analysis_latency_seconds`. It then calls the existing read-only
 `provider.get_spread(resolved_symbol)` exactly once. On success, that result
-populates `decision_reference_timestamp`, bid, ask, spread, and spread-points.
+must expose the actual broker tick timestamp through `Mt5Spread.timestamp`
+(or the smallest equivalent read-only tick seam if a provider implementation
+does not expose it); that timestamp populates
+`decision_reference_timestamp`. The local completion timestamp is never
+assigned to the market quote. The same fresh result supplies bid, ask, spread,
+and spread-points.
 On failure, the decision is still persisted with the analysis result,
 `decision_reference_status=UNAVAILABLE`, null reference quote fields, and a
 non-secret error string. No second LLM call and no mutation is allowed. If the
@@ -359,8 +367,10 @@ SELL (ask is the executable close side):
 ```
 
 Under these conventions adverse excursion is normally negative; the initial
-spread may make the anchor itself adverse. No tick after the target may affect
-MFE or MAE.
+spread may make the anchor itself adverse. Cost-aware MFE can remain negative
+when price never moves far enough to overcome the entry spread. It is not
+floored to zero; a conventional spread-free excursion metric would be a
+separate future field. No tick after the target may affect MFE or MAE.
 
 ## Evaluation records and statuses
 
@@ -383,7 +393,8 @@ best_counterfactual_action, best_counterfactual_net_points,
 hold_opportunity_cost_points,
 buy_mfe_price, buy_mfe_points, buy_mae_price, buy_mae_points,
 sell_mfe_price, sell_mfe_points, sell_mae_price, sell_mae_points,
-evaluation_status, unavailable_reason, created_at
+evaluation_status, unavailable_reason, created_at, evaluated_at,
+recovered_from_unavailable_at, previous_unavailable_reason
 ```
 
 `entry_*` is the quote set for the row's basis: analysis snapshot for
@@ -410,9 +421,16 @@ collapsing signal and actionable evidence:
   (unavailable horizons remain visible);
 - `DATA_UNAVAILABLE` if every horizon is terminal unavailable.
 
-A terminal evaluation row is never overwritten. A retryable MT5 initialization
-or read failure leaves existing valid rows untouched and leaves unresolved
-horizons pending, with an operation error in the result metrics.
+A `COMPLETE` or `INELIGIBLE` evaluation row is never overwritten. A retryable
+MT5 initialization or read failure leaves existing valid rows untouched and
+leaves unresolved horizons pending, with an operation error in the result
+metrics. A `PENDING` row may transition to `COMPLETE` or
+`DATA_UNAVAILABLE`. After a temporary data gap has produced
+`DATA_UNAVAILABLE`, a later successful bounded MT5 read may transition that
+same row to `COMPLETE` when a valid observation and calculations are
+available. Recovery preserves evaluation timestamps, provider/data-source
+provenance, and the prior unavailable reason in audit metadata; valid
+`COMPLETE` evidence cannot be replaced.
 
 ## SQLite schema and idempotency
 
@@ -465,6 +483,9 @@ CREATE TABLE IF NOT EXISTS shadow_decision_evaluations (
     evaluation_status TEXT NOT NULL CHECK (evaluation_status IN ('PENDING','COMPLETE','DATA_UNAVAILABLE','INELIGIBLE')),
     unavailable_reason TEXT,
     created_at TEXT NOT NULL,
+    evaluated_at TEXT,
+    recovered_from_unavailable_at TEXT,
+    previous_unavailable_reason TEXT,
     PRIMARY KEY (decision_id, evaluation_basis, horizon_seconds)
 );
 ```
@@ -472,11 +493,23 @@ CREATE TABLE IF NOT EXISTS shadow_decision_evaluations (
 `target_timestamp` is nullable only for an invalid legacy timestamp that
 cannot safely be expanded; valid decisions always persist it. Quote,
 calculation, and observation fields are nullable for pending, unavailable, or
-ineligible rows. A status-aware upsert may update only an existing `PENDING`
-row; it must never replace `COMPLETE`, `DATA_UNAVAILABLE`, or `INELIGIBLE`
-evidence. Batch writes use one SQLite transaction. Table creation is the
+ineligible rows. A status-aware upsert may update an existing `PENDING` row to
+`COMPLETE` or `DATA_UNAVAILABLE`, or recover an existing
+`DATA_UNAVAILABLE` row to `COMPLETE`; it must never replace `COMPLETE` or
+`INELIGIBLE` evidence. `created_at` is the first row timestamp and
+`evaluated_at` records the current evaluation attempt for new/retried rows;
+legacy rows created before this column may keep it null. When a
+`DATA_UNAVAILABLE` row recovers to `COMPLETE`, `recovered_from_unavailable_at`
+records the recovery attempt and `previous_unavailable_reason` preserves the
+prior terminal reason; the new observation timestamp, evaluation version, and
+market-data provenance are stored alongside it. Batch writes use one SQLite
+transaction. Table creation is the
 backward-compatible migration for existing Phase 4 databases, and tests also
-cover an older evaluation table missing newly added optional columns. The
+cover an older evaluation table missing newly added optional columns. If an
+older Phase 5 table lacks `evaluation_basis` and the triple key, the migration
+rebuilds it transactionally, maps its rows to `ANALYSIS_SNAPSHOT`, and leaves
+decision-reference rows to be created on the next evaluation; nullable audit
+columns remain null for legacy rows. The
 triple primary key makes reruns idempotent while allowing both bases for every
 horizon.
 
