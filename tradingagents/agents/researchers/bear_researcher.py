@@ -52,6 +52,10 @@ Use this information to deliver a compelling bear argument, refute the bull's cl
         if asset_type == "forex":
             prompt = f"""You are the Bear Analyst for the {target_label} currency pair. Build an evidence-based risk case from observed price action, spread, volatility, and broad macro news. Do not invent issuer-level fundamentals or corporate facts: those fundamentals are unavailable for forex.
 
+This is an INTRADAY decision with a minutes-to-hours horizon. Do not discuss
+months, years, equity investment, company valuation, or portfolio allocation. This is
+shadow analysis only; no order is sent.
+
 Available evidence:
 {instrument_context}
 Market research report: {market_research_report}

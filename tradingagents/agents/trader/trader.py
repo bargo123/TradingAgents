@@ -16,6 +16,7 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_or_freetext,
 )
+from tradingagents.forex.profile import build_forex_profile_context
 
 
 def create_trader(llm):
@@ -48,7 +49,10 @@ def create_trader(llm):
                 {
                     "role": "system",
                     "content": (
-                        "You are a forex shadow-mode trader analyzing one currency pair. "
+                    "You are a forex shadow-mode trader analyzing one currency pair. "
+                        + build_forex_profile_context(state.get("forex_analysis_profile"))
+                        + "\n"
+                        "This is an intraday decision: use minutes-to-hours horizons only. "
                         "Return a structured hypothetical Buy, Sell, or Hold proposal using "
                         "only the supplied price action, spread, volatility, and macro context. "
                         "Any entry or stop levels are observational only; no order is sent. "

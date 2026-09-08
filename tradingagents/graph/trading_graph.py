@@ -42,6 +42,7 @@ from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.forex.news import get_forex_global_news
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
 
@@ -248,7 +249,7 @@ class TradingAgentsGraph:
             forex_tools = validate_read_only_mt5_tools(mt5_tools)
             return {
                 "market": ToolNode(list(forex_tools)),
-                "news": ToolNode([get_global_news]),
+                "news": ToolNode([get_forex_global_news]),
             }
         return {
             "market": ToolNode(

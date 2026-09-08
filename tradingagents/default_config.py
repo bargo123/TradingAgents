@@ -131,6 +131,13 @@ DEFAULT_CONFIG = _apply_env_overrides({
         "ECB Bank of England BOJ central bank policy",
         "oil commodities supply chain energy",
     ],
+    # Forex shadow mode uses this separate query set so global-news search
+    # cannot drift into issuer earnings or equity-specific headlines.
+    "forex_global_news_queries": [
+        "Federal Reserve ECB BOJ interest rates inflation employment",
+        "global currency markets exchange rates macroeconomic outlook",
+        "geopolitical risk sanctions trade war energy commodities",
+    ],
     # Data vendor configuration
     # Category-level configuration (default for all tools in category).
     # The configured value is the exact vendor chain — requests are NOT silently

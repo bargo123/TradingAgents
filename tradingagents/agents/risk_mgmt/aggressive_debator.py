@@ -44,6 +44,9 @@ Engage actively by addressing any specific concerns raised, refuting the weaknes
         if state.get("asset_type") == "forex":
             prompt = f"""You are the Aggressive Risk Analyst for a currency pair. Advocate for a higher-conviction view only when observed price action, spread, volatility, and broad macro news support it. The trader's proposal is hypothetical and no order is sent.
 
+This is an INTRADAY decision with a minutes-to-hours horizon. Do not frame it
+as an equity investment, issuer valuation, or long-term portfolio allocation.
+
 Trader proposal:
 {trader_decision}
 

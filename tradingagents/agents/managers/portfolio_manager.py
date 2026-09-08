@@ -12,7 +12,12 @@ from __future__ import annotations
 
 import json
 
-from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
+from tradingagents.agents.schemas import (
+    ForexPortfolioDecision,
+    PortfolioDecision,
+    render_forex_pm_decision,
+    render_pm_decision,
+)
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
@@ -23,12 +28,15 @@ from tradingagents.agents.utils.structured import (
     invoke_structured_only,
     invoke_structured_or_freetext,
 )
+from tradingagents.forex.profile import build_forex_profile_context
 
 
-def create_portfolio_manager(llm):
+def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
+    forex_structured_llm = None
 
     def portfolio_manager_node(state) -> dict:
+        nonlocal forex_structured_llm
         instrument_context = get_instrument_context_from_state(state)
         is_forex = state.get("asset_type") == "forex"
 
@@ -45,9 +53,12 @@ def create_portfolio_manager(llm):
         )
 
         if is_forex:
+            profile_context = build_forex_profile_context(state.get("forex_analysis_profile", forex_profile))
             prompt = f"""As the Portfolio Manager for a currency pair, synthesize the risk analysts' debate and return one structured portfolio rating.
 
 {instrument_context}
+
+{profile_context}
 
 ---
 
@@ -67,7 +78,7 @@ def create_portfolio_manager(llm):
 
 ---
 
-Ground the rating in observed currency-pair price action, spread, volatility, and broad macro context from the analysts. Commit to a directional call only when evidence clearly supports one; choose Hold when the case is balanced, materially conflicting, ambiguous, or insufficient. Entry and risk levels are hypothetical observations only; no order is sent. Do not infer issuer-level business data.
+Ground the rating in observed currency-pair price action, spread, volatility, and broad macro context from the analysts. Commit to a directional call only when evidence clearly supports one; choose Hold when the case is balanced, materially conflicting, ambiguous, or insufficient. Entry and risk levels are hypothetical observations only; no order is sent. Return the exact analysis profile and a bounded valid_for_seconds value. Use minutes-to-hours horizons only; never use months, years, long-term equity language, issuer valuation, dividends, or company fundamentals. Do not infer issuer-level business data.
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
         else:
@@ -98,15 +109,25 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 
         if is_forex:
+            if forex_structured_llm is None:
+                forex_structured_llm = bind_structured(
+                    llm,
+                    ForexPortfolioDecision,
+                    "Forex Portfolio Manager",
+                )
             try:
                 structured_result = invoke_structured_only(
-                    structured_llm,
+                    forex_structured_llm,
                     prompt,
                     "Portfolio Manager",
                 )
+                if not isinstance(structured_result, ForexPortfolioDecision):
+                    structured_result = ForexPortfolioDecision.model_validate(
+                        structured_result.model_dump(mode="python")
+                    )
                 raw_result = structured_result.model_dump(mode="json")
                 json.dumps(raw_result, allow_nan=False)
-                final_trade_decision = render_pm_decision(structured_result)
+                final_trade_decision = render_forex_pm_decision(structured_result)
                 normalization_status = "NORMALIZED"
                 normalization_error = None
             except Exception as exc:  # noqa: BLE001 — shadow mode must fail closed

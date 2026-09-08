@@ -44,6 +44,9 @@ Engage actively by analyzing both sides critically, addressing weaknesses in the
         if state.get("asset_type") == "forex":
             prompt = f"""You are the Neutral Risk Analyst for a currency pair. Weigh observed price action, spread, volatility, and broad macro news without forcing a directional conclusion. Treat the trader's proposal as hypothetical; no order is sent.
 
+This is an INTRADAY decision with a minutes-to-hours horizon. Do not frame it
+as an equity investment, issuer valuation, or long-term portfolio allocation.
+
 Trader proposal:
 {trader_decision}
 

@@ -1,6 +1,8 @@
 """yfinance-based news data fetching functions."""
 
 import contextlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 
 import yfinance as yf
@@ -10,6 +12,23 @@ from .config import get_config
 from .date_window import in_window
 from .stockstats_utils import yf_retry
 from .symbol_utils import normalize_symbol
+
+_FOREX_NEWS_QUERIES: ContextVar[tuple[str, ...] | None] = ContextVar(
+    "forex_news_queries", default=None
+)
+
+
+@contextmanager
+def forex_global_news_context(queries):
+    """Temporarily select the forex-safe global-news query set."""
+    normalized = None
+    if queries:
+        normalized = tuple(str(query).strip() for query in queries if str(query).strip())
+    token = _FOREX_NEWS_QUERIES.set(normalized)
+    try:
+        yield
+    finally:
+        _FOREX_NEWS_QUERIES.reset(token)
 
 
 def _extract_article_data(article: dict) -> dict:
@@ -143,7 +162,7 @@ def get_global_news_yfinance(
         look_back_days = config["global_news_lookback_days"]
     if limit is None:
         limit = config["global_news_article_limit"]
-    search_queries = config["global_news_queries"]
+    search_queries = _FOREX_NEWS_QUERIES.get() or config["global_news_queries"]
 
     all_news = []
     seen_titles = set()

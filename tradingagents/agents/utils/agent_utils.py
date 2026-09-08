@@ -202,6 +202,12 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
             str(state["company_of_interest"]),
             state.get("asset_type", "stock"),
         )
+    if state.get("asset_type") == "forex" or state.get("market_data_mode") == "forex_mt5":
+        from tradingagents.forex.profile import build_forex_profile_context
+
+        profile_context = build_forex_profile_context(state.get("forex_analysis_profile"))
+        if profile_context not in base_context:
+            base_context = f"{base_context}\n{profile_context}"
     market_context = state.get("market_context")
     if isinstance(market_context, str) and market_context.strip():
         market_context = market_context.strip()

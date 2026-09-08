@@ -44,6 +44,9 @@ Engage by questioning their optimism and emphasizing the potential downsides the
         if state.get("asset_type") == "forex":
             prompt = f"""You are the Conservative Risk Analyst for a currency pair. Protect against spread costs, volatility, gaps, and adverse macro surprises. Treat the trader's proposal as hypothetical; no order is sent.
 
+This is an INTRADAY decision with a minutes-to-hours horizon. Do not frame it
+as an equity investment, issuer valuation, or long-term portfolio allocation.
+
 Trader proposal:
 {trader_decision}
 
