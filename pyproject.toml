@@ -50,6 +50,7 @@ mt5 = [
 
 [project.scripts]
 tradingagents = "cli.main:app"
+forex-shadow = "cli.forex_shadow:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*"]
