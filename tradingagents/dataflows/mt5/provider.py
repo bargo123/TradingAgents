@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import re
 from collections.abc import Mapping
+from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any
 
@@ -51,6 +52,14 @@ def _field(raw: Any, name: str, default: Any = None) -> Any:
             return default
 
 
+def _first_field(raw: Any, *names: str, default: Any = None) -> Any:
+    for name in names:
+        value = _field(raw, name)
+        if value is not None:
+            return value
+    return default
+
+
 def _utc_timestamp(raw: Any, *, prefer_msc: bool = False) -> datetime:
     value = _field(raw, "time_msc") if prefer_msc else None
     if value in (None, 0):
@@ -59,9 +68,9 @@ def _utc_timestamp(raw: Any, *, prefer_msc: bool = False) -> datetime:
     return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
 
 
-def _pair_candidates(name: str) -> set[str]:
+def _pair_candidates(name: str) -> list[str]:
     """Return valid currency-pair cores in a controlled broker symbol form."""
-    pairs: set[str] = set()
+    pairs: list[str] = []
     for start in range(max(0, len(name) - 5)):
         core = name[start : start + 6]
         if len(core) != 6 or core[:3] not in _CURRENCY_CODES or core[3:] not in _CURRENCY_CODES:
@@ -78,7 +87,7 @@ def _pair_candidates(name: str) -> set[str]:
             or (suffix[0] in "._#-" and bool(_SEPARATOR.sub("", suffix) or suffix == "#"))
         )
         if prefix_ok and suffix_ok:
-            pairs.add(core)
+            pairs.append(core)
     return pairs
 
 
@@ -113,12 +122,25 @@ class MT5Provider:
     def _last_error(self) -> Any:
         try:
             return self._api.last_error()
-        except (AttributeError, TypeError):
+        except Exception:
             return None
 
     def _connection_error(self, message: str) -> str:
         detail = self._last_error()
         return f"{message}: {detail!r}" if detail not in (None, (0, "")) else message
+
+    def _failed_collection(self, operation: str) -> Mt5DataError:
+        return Mt5DataError(f"MT5 {operation} returned no data: {self._last_error()!r}")
+
+    def _symbols(self) -> Any:
+        raw_symbols = self._api.symbols_get()
+        if raw_symbols is None:
+            raise self._failed_collection("symbols_get")
+        return raw_symbols
+
+    def _shutdown_after_failed_initialize(self) -> None:
+        with suppress(Exception):
+            self._api.shutdown()
 
     def initialize(self) -> bool:
         api = self._load_api()
@@ -128,12 +150,18 @@ class MT5Provider:
             raise Mt5InitializationError(f"MT5 initialization failed: {self._last_error()!r}") from exc
         if not success:
             raise Mt5InitializationError(f"MT5 initialization failed: {self._last_error()!r}")
-        terminal, account = api.terminal_info(), api.account_info()
+        try:
+            terminal, account = api.terminal_info(), api.account_info()
+        except Exception as exc:
+            self._shutdown_after_failed_initialize()
+            raise Mt5InitializationError(
+                self._connection_error("MT5 post-initialization inspection failed")
+            ) from exc
         if terminal is None or not _field(terminal, "connected", False):
-            api.shutdown()
+            self._shutdown_after_failed_initialize()
             raise Mt5InitializationError(self._connection_error("MT5 terminal is not connected"))
         if account is None:
-            api.shutdown()
+            self._shutdown_after_failed_initialize()
             raise Mt5AccountDisconnectedError(self._connection_error("MT5 account is not connected"))
         self._initialized = True
         return True
@@ -168,18 +196,21 @@ class MT5Provider:
         raw = self._api.account_info()
         if raw is None:
             raise Mt5AccountDisconnectedError("MT5 account is not connected")
-        return Mt5AccountInfo(**{key: _field(raw, key) for key in Mt5AccountInfo.__dataclass_fields__})
+        values = {key: _field(raw, key) for key in Mt5AccountInfo.__dataclass_fields__}
+        if values["free_margin"] is None:
+            values["free_margin"] = _field(raw, "margin_free")
+        return Mt5AccountInfo(**values)
 
     def get_symbols(self) -> tuple[Mt5SymbolInfo, ...]:
         self._require_connected()
-        raw_symbols = self._api.symbols_get() or ()
+        raw_symbols = self._symbols()
         fields = Mt5SymbolInfo.__dataclass_fields__
         return tuple(Mt5SymbolInfo(**{key: _field(raw, key) for key in fields}) for raw in raw_symbols)
 
     def find_symbol(self, symbol: str) -> str:
         self._require_connected()
         requested = str(symbol).strip().upper()
-        records = self._api.symbols_get() or ()
+        records = self._symbols()
         exact = [str(_field(raw, "name")) for raw in records if str(_field(raw, "name", "")).upper() == requested]
         if exact:
             return exact[0]
@@ -248,7 +279,9 @@ class MT5Provider:
         return self._get_positions_resolved(resolved)
 
     def _get_positions_resolved(self, resolved: str | None) -> tuple[Mt5Position, ...]:
-        raw_positions = self._api.positions_get() or ()
+        raw_positions = self._api.positions_get()
+        if raw_positions is None:
+            raise self._failed_collection("positions_get")
         try:
             return tuple(
                 Mt5Position(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw))
@@ -260,10 +293,12 @@ class MT5Provider:
     def get_orders(self, symbol: str | None = None) -> tuple[Mt5Order, ...]:
         self._require_connected()
         resolved = self.find_symbol(symbol) if symbol is not None else None
-        raw_orders = self._api.orders_get() or ()
+        raw_orders = self._api.orders_get()
+        if raw_orders is None:
+            raise self._failed_collection("orders_get")
         try:
             return tuple(
-                Mt5Order(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp(raw))
+                Mt5Order(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_first_field(raw, "volume_current", "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp({"time": _first_field(raw, "time_setup", "time")}))
                 for raw in raw_orders if resolved is None or str(_field(raw, "symbol")) == resolved
             )
         except (TypeError, ValueError, OSError) as exc:

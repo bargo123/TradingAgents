@@ -27,6 +27,7 @@ class FakeMT5:
         self.initialize_result = True
         self.error = (0, "")
         self.connected = False
+        self.shutdown_called = False
         self.tick_time_msc = 1_700_000_000_123
         self.rate_timeframes = []
         self.symbol_records = [
@@ -56,6 +57,7 @@ class FakeMT5:
         return self.initialize_result
 
     def shutdown(self):
+        self.shutdown_called = True
         self.connected = False
 
     def terminal_info(self):
@@ -76,7 +78,7 @@ class FakeMT5:
             equity=9_900.0,
             profit=-100.0,
             margin=400.0,
-            free_margin=9_500.0,
+            margin_free=9_500.0,
             leverage=100,
         )
 
@@ -146,7 +148,19 @@ class FakeMT5:
         )
 
     def orders_get(self, **kwargs):
-        return ()
+        return (
+            SimpleNamespace(
+                ticket=303,
+                symbol="USDJPY",
+                type=2,
+                volume_current=0.15,
+                price_open=150.120,
+                price_current=150.123,
+                sl=150.000,
+                tp=150.500,
+                time_setup=1_700_000_000,
+            ),
+        )
 
     def last_error(self):
         return self.error
@@ -178,6 +192,17 @@ def test_initialize_failure_surfaces_last_error(fake_api):
     fake_api.error = (10004, "terminal unavailable")
     with pytest.raises(Mt5InitializationError, match="terminal unavailable"):
         MT5Provider(api=fake_api).initialize()
+
+
+@pytest.mark.unit
+def test_initialize_post_check_failure_is_typed_and_shuts_down(fake_api):
+    def terminal_info_failure():
+        raise RuntimeError("inspection failed")
+
+    fake_api.terminal_info = terminal_info_failure
+    with pytest.raises(Mt5InitializationError, match="post-initialization"):
+        MT5Provider(api=fake_api).initialize()
+    assert fake_api.shutdown_called is True
 
 
 @pytest.mark.unit
@@ -219,6 +244,14 @@ def test_missing_symbol_raises_not_found(fake_api):
     provider = initialized_provider(fake_api)
     with pytest.raises(Mt5SymbolNotFoundError, match="GBPUSD"):
         provider.find_symbol("GBPUSD")
+
+
+@pytest.mark.unit
+def test_repeated_forex_core_is_not_a_valid_broker_variant(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("EURUSD.EURUSD")]
+    provider = initialized_provider(fake_api)
+    with pytest.raises(Mt5SymbolNotFoundError):
+        provider.find_symbol("EURUSD")
 
 
 @pytest.mark.unit
@@ -269,6 +302,15 @@ def test_bars_account_and_spread_are_normalized(fake_api):
     assert account.balance == 10_000.0 and account.free_margin == 9_500.0
     assert spread.price == pytest.approx(0.003)
     assert spread.points == pytest.approx(3.0)
+
+
+@pytest.mark.unit
+def test_active_orders_use_mt5_time_setup_and_volume_current(fake_api):
+    provider = initialized_provider(fake_api)
+    orders = provider.get_orders("USDJPY")
+    assert len(orders) == 1
+    assert orders[0].volume == pytest.approx(0.15)
+    assert orders[0].time == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc)
 
 
 @pytest.mark.unit
@@ -361,3 +403,20 @@ def test_malformed_spread_data_raises_typed_error(fake_api):
     fake_api.symbol_info_tick = lambda _name: SimpleNamespace(time=None, time_msc=None, bid=None, ask=1.1)
     with pytest.raises(Mt5DataError, match="Invalid spread data"):
         provider.get_spread("USDJPY")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "api_method"),
+    [
+        ("get_symbols", "symbols_get"),
+        ("get_positions", "positions_get"),
+        ("get_orders", "orders_get"),
+    ],
+)
+def test_none_mt5_collection_response_raises_typed_data_error(fake_api, method, api_method):
+    provider = initialized_provider(fake_api)
+    fake_api.error = (10006, "transport unavailable")
+    setattr(fake_api, api_method, lambda: None)
+    with pytest.raises(Mt5DataError, match="transport unavailable"):
+        getattr(provider, method)()
