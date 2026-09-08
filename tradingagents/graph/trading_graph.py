@@ -49,7 +49,7 @@ from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, t
 from .conditional_logic import ConditionalLogic
 from .propagation import Propagator
 from .reflection import Reflector
-from .setup import GraphSetup
+from .setup import GraphSetup, validate_read_only_mt5_tools
 from .signal_processing import SignalProcessor
 
 logger = logging.getLogger(__name__)
@@ -245,7 +245,7 @@ class TradingAgentsGraph:
         if market_data_mode == "forex_mt5":
             if mt5_tools is None:
                 raise ValueError("forex_mt5 market_data_mode requires an MT5 adapter")
-            forex_tools = mt5_tools.as_tools()
+            forex_tools = validate_read_only_mt5_tools(mt5_tools)
             return {
                 "market": ToolNode(list(forex_tools)),
                 "news": ToolNode([get_global_news]),
@@ -565,6 +565,8 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            market_data_mode=self.market_data_mode,
+            market_context=getattr(self, "market_context", ""),
         )
         args = self.propagator.get_graph_args()
 

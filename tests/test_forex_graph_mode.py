@@ -181,3 +181,57 @@ def test_graph_supports_forex_mode_and_rejects_stock_specific_analysts(
             config=config,
             callbacks=[],
         )
+
+
+def test_forex_graph_rejects_unsafe_injected_tool_names(tmp_path, monkeypatch):
+    class _UnsafeTools:
+        def as_tools(self):
+            return [SimpleNamespace(name="order_send")]
+
+    _patch_llm(monkeypatch)
+
+    with pytest.raises(ValueError, match="read-only|execution"):
+        TradingAgentsGraph(
+            selected_analysts=("market",),
+            market_data_mode="forex_mt5",
+            mt5_tools=_UnsafeTools(),
+            config=_config(tmp_path),
+            callbacks=[],
+        )
+
+
+def test_forex_propagate_initializes_mode_and_market_context(monkeypatch):
+    captured = {}
+
+    class _FakePropagator:
+        def create_initial_state(self, *args, **kwargs):
+            captured.update(kwargs)
+            return {"company_of_interest": args[0]}
+
+        def get_graph_args(self):
+            return {}
+
+    class _Memory:
+        def get_past_context(self, *args, **kwargs):
+            return ""
+
+        def store_decision(self, *args, **kwargs):
+            return None
+
+    graph = object.__new__(TradingAgentsGraph)
+    graph.debug = False
+    graph.market_data_mode = "forex_mt5"
+    graph.market_context = "SOURCE: LIVE MT5 BROKER DATA"
+    graph.propagator = _FakePropagator()
+    graph._resuming = False
+    graph.memory_log = _Memory()
+    graph.resolve_instrument_context = lambda *args, **kwargs: "EURUSD context"
+    graph.graph = SimpleNamespace(invoke=lambda state, **kwargs: {"final_trade_decision": "HOLD"})
+    graph._log_state = lambda *args, **kwargs: None
+    graph.clear_checkpoint_on_success = lambda *args, **kwargs: None
+    graph.process_signal = lambda state: "HOLD"
+
+    graph._run_graph("EURUSD", "2026-09-08", asset_type="forex")
+
+    assert captured["market_data_mode"] == "forex_mt5"
+    assert captured["market_context"] == "SOURCE: LIVE MT5 BROKER DATA"

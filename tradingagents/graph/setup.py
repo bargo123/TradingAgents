@@ -50,6 +50,32 @@ from tradingagents.agents.utils.agent_states import AgentState
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
 
+_FORBIDDEN_MT5_TOOL_TOKENS = (
+    "order_send",
+    "send_order",
+    "place_order",
+    "cancel_order",
+    "pending_order",
+    "buy",
+    "sell",
+    "open_position",
+    "close_position",
+    "modify_position",
+    "modify_order",
+)
+
+
+def validate_read_only_mt5_tools(mt5_tools: Any) -> list[Any]:
+    """Return injected MT5 tools only when their names are read-only."""
+    tools = list(mt5_tools.as_tools())
+    for tool in tools:
+        name = str(getattr(tool, "name", getattr(tool, "__name__", ""))).casefold()
+        if any(token in name for token in _FORBIDDEN_MT5_TOOL_TOKENS):
+            raise ValueError(
+                f"forex_mt5 injected tool {name!r} is not allowed in read-only execution"
+            )
+    return tools
+
 # Every target a shared conditional router can return. Each edge driven by the
 # router maps all of them, so a fall-through return (e.g. under prompt/i18n/
 # refactor drift in the speaker labels) can never hit a missing path_map entry
@@ -90,6 +116,8 @@ class GraphSetup:
             raise ValueError(
                 "forex_mt5 market_data_mode requires an MT5 adapter with as_tools()"
             )
+        if market_data_mode == "forex_mt5":
+            validate_read_only_mt5_tools(mt5_tools)
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
@@ -110,6 +138,7 @@ class GraphSetup:
                 - "fundamentals": Fundamentals analyst
         """
         if self.market_data_mode == "forex_mt5":
+            validate_read_only_mt5_tools(self.mt5_tools)
             forbidden = [name for name in selected_analysts if name in {"social", "fundamentals"}]
             if forbidden:
                 raise ValueError(
