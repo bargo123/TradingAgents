@@ -101,3 +101,18 @@ pytest tests/test_forex_shadow_integration.py -m integration -q
 If the MetaTrader 5 package, terminal, account, or configured LLM is not
 available, the run should be reported as unverified rather than replaced with
 Yahoo Finance data or a fabricated recommendation.
+
+## Local verification snapshot (2026-09-08)
+
+The local demo terminal was available during Phase 4 verification. A direct
+read-only snapshot of `EURUSD` returned UTC timestamp
+`2026-09-08T16:27:17.585Z`, bid `1.16245`, ask `1.16246`, 1-point spread,
+`digits=5`, `point=0.00001`, and two bars in each M1/M5/M15/H1 series. The
+positions and orders lists were empty before and after the read. The guarded
+provider/adapter integration test passed.
+
+The full LLM-backed `forex-shadow` smoke was attempted twice with local Ollama
+Qwen models. Both attempts reached the graph but exceeded the bounded local
+model wait window before persistence; no decision row was written. This is
+recorded as unverified for the LLM-backed decision path, not treated as a
+successful recommendation.
