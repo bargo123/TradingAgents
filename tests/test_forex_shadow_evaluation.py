@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sqlite3
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +12,7 @@ from tradingagents.forex.evaluation import (
     EvaluationBasis,
     EvaluationConfig,
     EvaluationStatus,
+    ShadowEvaluationStore,
     build_horizon_evaluation,
     decision_source_eligibility,
     evaluate_directional_outcomes,
@@ -234,3 +238,137 @@ def test_public_status_literals_remain_closed() -> None:
         "DATA_UNAVAILABLE",
         "INELIGIBLE",
     )
+
+
+def _record(
+    decision: ShadowTradeDecision,
+    *,
+    now: datetime,
+    ticks: tuple[Mt5Tick, ...] = (),
+) -> object:
+    return build_horizon_evaluation(
+        decision,
+        evaluation_basis="ANALYSIS_SNAPSHOT",
+        horizon_seconds=300,
+        now=now,
+        ticks=ticks,
+        config=EvaluationConfig(horizons_seconds=(300,), observation_tolerance_seconds=30),
+    )
+
+
+def test_evaluation_store_creates_basis_schema_and_triple_key(tmp_path: Path) -> None:
+    store = ShadowEvaluationStore(tmp_path / "evaluations.db")
+    store.initialize()
+
+    with sqlite3.connect(store.path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(shadow_decision_evaluations)")}
+        primary_key = [
+            row[1]
+            for row in sorted(
+                conn.execute("PRAGMA table_info(shadow_decision_evaluations)").fetchall(),
+                key=lambda row: row[5],
+            )
+            if row[5]
+        ]
+    assert {"evaluation_basis", "source_context_eligible", "training_eligible"}.issubset(columns)
+    assert {"evaluated_at", "recovered_from_unavailable_at", "previous_unavailable_reason"}.issubset(columns)
+    assert primary_key == ["decision_id", "evaluation_basis", "horizon_seconds"]
+
+
+def test_evaluation_store_allows_recovery_but_preserves_complete_and_ineligible(
+    tmp_path: Path,
+) -> None:
+    store = ShadowEvaluationStore(tmp_path / "transitions.db")
+    decision = _decision()
+    target = ANCHOR + timedelta(seconds=300)
+    pending = _record(decision, now=target)
+    store.upsert([pending])
+    assert store.get(decision.decision_id, "ANALYSIS_SNAPSHOT", 300).evaluation_status == "PENDING"
+
+    unavailable = _record(decision, now=target + timedelta(seconds=30))
+    store.upsert([unavailable])
+    unavailable_row = store.get(decision.decision_id, "ANALYSIS_SNAPSHOT", 300)
+    assert unavailable_row.evaluation_status == "DATA_UNAVAILABLE"
+
+    observed = _tick(target + timedelta(seconds=1), 1.1004, 1.1006)
+    complete = _record(
+        decision,
+        now=target + timedelta(seconds=30),
+        ticks=(observed,),
+    )
+    store.upsert([complete])
+    recovered = store.get(decision.decision_id, "ANALYSIS_SNAPSHOT", 300)
+    assert recovered.evaluation_status == "COMPLETE"
+    assert recovered.created_at == unavailable_row.created_at
+    assert recovered.evaluated_at == complete.evaluated_at
+    assert recovered.recovered_from_unavailable_at == complete.evaluated_at
+    assert recovered.previous_unavailable_reason == unavailable_row.unavailable_reason
+    assert recovered.market_data_source == "MT5"
+    assert recovered.training_eligible is None
+
+    changed = replace(complete, future_bid=1.2, evaluated_at=target + timedelta(minutes=1))
+    store.upsert([changed])
+    still_complete = store.get(decision.decision_id, "ANALYSIS_SNAPSHOT", 300)
+    assert still_complete.future_bid == complete.future_bid
+    assert still_complete.evaluated_at == complete.evaluated_at
+
+    ineligible_decision = _decision(
+        decision_id="decision-ineligible",
+        decision_context_status="INCOMPLETE",
+    )
+    ineligible = _record(ineligible_decision, now=target)
+    store.upsert([ineligible])
+    attempted_complete = replace(
+        ineligible,
+        evaluation_status="COMPLETE",
+        observation_timestamp=target,
+        entry_timestamp=ANCHOR,
+    )
+    store.upsert([attempted_complete])
+    assert (
+        store.get("decision-ineligible", "ANALYSIS_SNAPSHOT", 300).evaluation_status
+        == "INELIGIBLE"
+    )
+
+
+def test_evaluation_store_migrates_legacy_single_key_table(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-evaluations.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE shadow_decision_evaluations (
+                decision_id TEXT NOT NULL,
+                horizon_seconds INTEGER NOT NULL,
+                resolved_symbol TEXT NOT NULL,
+                evaluation_version TEXT NOT NULL,
+                market_data_source TEXT NOT NULL,
+                training_eligible INTEGER NOT NULL,
+                target_timestamp TEXT,
+                evaluation_status TEXT NOT NULL,
+                unavailable_reason TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (decision_id, horizon_seconds)
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO shadow_decision_evaluations
+                (decision_id, horizon_seconds, resolved_symbol, evaluation_version,
+                 market_data_source, training_eligible, target_timestamp,
+                 evaluation_status, unavailable_reason, created_at)
+            VALUES ('legacy', 300, 'EURUSDm', 'old', 'MT5', 1, NULL,
+                    'DATA_UNAVAILABLE', 'old gap', '2026-09-08T00:00:00Z')
+            """
+        )
+
+    store = ShadowEvaluationStore(path)
+    store.initialize()
+    rows = store.list_for_decision("legacy")
+
+    assert len(rows) == 1
+    assert rows[0].evaluation_basis == "ANALYSIS_SNAPSHOT"
+    assert rows[0].training_eligible is None
+    assert rows[0].training_eligibility_reason == "SOURCE_CONTEXT_INELIGIBLE"
+    assert rows[0].evaluation_status == "DATA_UNAVAILABLE"
+    assert rows[0].previous_unavailable_reason is None

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Literal
 
 from tradingagents.dataflows.mt5.models import Mt5Tick
@@ -612,6 +614,416 @@ def build_horizon_evaluation(
     return ShadowOutcomeEvaluation(**common)
 
 
+_EVALUATION_COLUMNS = (
+    "decision_id",
+    "resolved_symbol",
+    "evaluation_basis",
+    "horizon_seconds",
+    "evaluation_version",
+    "market_data_source",
+    "source_context_eligible",
+    "training_eligible",
+    "training_eligibility_reason",
+    "target_timestamp",
+    "observation_timestamp",
+    "observation_lag_ms",
+    "entry_timestamp",
+    "entry_bid",
+    "entry_ask",
+    "entry_spread",
+    "entry_spread_points",
+    "future_bid",
+    "future_ask",
+    "future_spread",
+    "future_spread_points",
+    "point",
+    "digits",
+    "buy_net_price",
+    "buy_net_points",
+    "sell_net_price",
+    "sell_net_points",
+    "selected_action",
+    "selected_action_net_price",
+    "selected_action_net_points",
+    "best_counterfactual_action",
+    "best_counterfactual_net_points",
+    "hold_opportunity_cost_points",
+    "buy_mfe_price",
+    "buy_mfe_points",
+    "buy_mae_price",
+    "buy_mae_points",
+    "sell_mfe_price",
+    "sell_mfe_points",
+    "sell_mae_price",
+    "sell_mae_points",
+    "evaluation_status",
+    "unavailable_reason",
+    "created_at",
+    "evaluated_at",
+    "recovered_from_unavailable_at",
+    "previous_unavailable_reason",
+)
+
+_CREATE_EVALUATIONS_SQL = """
+CREATE TABLE IF NOT EXISTS shadow_decision_evaluations (
+    decision_id TEXT NOT NULL,
+    evaluation_basis TEXT NOT NULL CHECK (evaluation_basis IN ('ANALYSIS_SNAPSHOT','DECISION_REFERENCE')),
+    horizon_seconds INTEGER NOT NULL CHECK (horizon_seconds > 0),
+    resolved_symbol TEXT NOT NULL,
+    evaluation_version TEXT NOT NULL,
+    market_data_source TEXT NOT NULL CHECK (market_data_source = 'MT5'),
+    source_context_eligible INTEGER NOT NULL CHECK (source_context_eligible IN (0, 1)),
+    training_eligible INTEGER CHECK (training_eligible IS NULL OR training_eligible IN (0, 1)),
+    training_eligibility_reason TEXT NOT NULL,
+    target_timestamp TEXT,
+    observation_timestamp TEXT,
+    observation_lag_ms INTEGER,
+    entry_timestamp TEXT,
+    entry_bid REAL,
+    entry_ask REAL,
+    entry_spread REAL,
+    entry_spread_points REAL,
+    future_bid REAL,
+    future_ask REAL,
+    future_spread REAL,
+    future_spread_points REAL,
+    point REAL,
+    digits INTEGER,
+    buy_net_price REAL,
+    buy_net_points REAL,
+    sell_net_price REAL,
+    sell_net_points REAL,
+    selected_action TEXT CHECK (selected_action IS NULL OR selected_action IN ('BUY','SELL','HOLD')),
+    selected_action_net_price REAL,
+    selected_action_net_points REAL,
+    best_counterfactual_action TEXT CHECK (best_counterfactual_action IS NULL OR best_counterfactual_action IN ('BUY','SELL','TIE')),
+    best_counterfactual_net_points REAL,
+    hold_opportunity_cost_points REAL,
+    buy_mfe_price REAL,
+    buy_mfe_points REAL,
+    buy_mae_price REAL,
+    buy_mae_points REAL,
+    sell_mfe_price REAL,
+    sell_mfe_points REAL,
+    sell_mae_price REAL,
+    sell_mae_points REAL,
+    evaluation_status TEXT NOT NULL CHECK (evaluation_status IN ('PENDING','COMPLETE','DATA_UNAVAILABLE','INELIGIBLE')),
+    unavailable_reason TEXT,
+    created_at TEXT NOT NULL,
+    evaluated_at TEXT,
+    recovered_from_unavailable_at TEXT,
+    previous_unavailable_reason TEXT,
+    PRIMARY KEY (decision_id, evaluation_basis, horizon_seconds)
+)
+"""
+
+
+def _iso(value: datetime | None) -> str | None:
+    return None if value is None else _utc(value).isoformat().replace("+00:00", "Z")
+
+
+def _record_values(
+    record: ShadowOutcomeEvaluation,
+    *,
+    created_at: datetime | None = None,
+    evaluated_at: datetime | None = None,
+    recovered_from_unavailable_at: datetime | None = None,
+    previous_unavailable_reason: str | None = None,
+) -> dict[str, Any]:
+    values = {
+        "decision_id": record.decision_id,
+        "resolved_symbol": record.resolved_symbol,
+        "evaluation_basis": record.evaluation_basis,
+        "horizon_seconds": record.horizon_seconds,
+        "evaluation_version": record.evaluation_version,
+        "market_data_source": record.market_data_source,
+        "source_context_eligible": int(record.source_context_eligible),
+        "training_eligible": None,
+        "training_eligibility_reason": record.training_eligibility_reason,
+        "target_timestamp": _iso(record.target_timestamp),
+        "observation_timestamp": _iso(record.observation_timestamp),
+        "observation_lag_ms": record.observation_lag_ms,
+        "entry_timestamp": _iso(record.entry_timestamp),
+        "entry_bid": record.entry_bid,
+        "entry_ask": record.entry_ask,
+        "entry_spread": record.entry_spread,
+        "entry_spread_points": record.entry_spread_points,
+        "future_bid": record.future_bid,
+        "future_ask": record.future_ask,
+        "future_spread": record.future_spread,
+        "future_spread_points": record.future_spread_points,
+        "point": record.point,
+        "digits": record.digits,
+        "buy_net_price": record.buy_net_price,
+        "buy_net_points": record.buy_net_points,
+        "sell_net_price": record.sell_net_price,
+        "sell_net_points": record.sell_net_points,
+        "selected_action": record.selected_action,
+        "selected_action_net_price": record.selected_action_net_price,
+        "selected_action_net_points": record.selected_action_net_points,
+        "best_counterfactual_action": record.best_counterfactual_action,
+        "best_counterfactual_net_points": record.best_counterfactual_net_points,
+        "hold_opportunity_cost_points": record.hold_opportunity_cost_points,
+        "buy_mfe_price": record.buy_mfe_price,
+        "buy_mfe_points": record.buy_mfe_points,
+        "buy_mae_price": record.buy_mae_price,
+        "buy_mae_points": record.buy_mae_points,
+        "sell_mfe_price": record.sell_mfe_price,
+        "sell_mfe_points": record.sell_mfe_points,
+        "sell_mae_price": record.sell_mae_price,
+        "sell_mae_points": record.sell_mae_points,
+        "evaluation_status": record.evaluation_status,
+        "unavailable_reason": record.unavailable_reason,
+        "created_at": _iso(created_at or record.created_at),
+        "evaluated_at": _iso(evaluated_at or record.evaluated_at),
+        "recovered_from_unavailable_at": _iso(
+            recovered_from_unavailable_at or record.recovered_from_unavailable_at
+        ),
+        "previous_unavailable_reason": (
+            previous_unavailable_reason
+            if previous_unavailable_reason is not None
+            else record.previous_unavailable_reason
+        ),
+    }
+    return values
+
+
+class ShadowEvaluationStore:
+    """SQLite persistence for immutable-per-basis shadow outcome evidence."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def initialize(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.path) as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                ("shadow_decision_evaluations",),
+            ).fetchone()
+            if not exists:
+                conn.execute(_CREATE_EVALUATIONS_SQL)
+                return
+            columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(shadow_decision_evaluations)")
+            }
+            if not {"evaluation_basis", "source_context_eligible", "training_eligibility_reason"}.issubset(columns):
+                self._migrate_legacy_table(conn)
+                return
+            for column in (
+                "evaluated_at",
+                "recovered_from_unavailable_at",
+                "previous_unavailable_reason",
+            ):
+                if column not in columns:
+                    conn.execute(f"ALTER TABLE shadow_decision_evaluations ADD COLUMN {column} TEXT")
+
+    def _migrate_legacy_table(self, conn: sqlite3.Connection) -> None:
+        legacy_name = "shadow_decision_evaluations_legacy"
+        suffix = 1
+        while conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (legacy_name,)
+        ).fetchone():
+            suffix += 1
+            legacy_name = f"shadow_decision_evaluations_legacy_{suffix}"
+        conn.execute(f"ALTER TABLE shadow_decision_evaluations RENAME TO {legacy_name}")
+        conn.execute(_CREATE_EVALUATIONS_SQL)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(f"SELECT * FROM {legacy_name}").fetchall()
+        for row in rows:
+            row_keys = set(row.keys())
+            status = row["evaluation_status"] if "evaluation_status" in row_keys else "DATA_UNAVAILABLE"
+            if status not in _STATUS_VALUES:
+                status = "DATA_UNAVAILABLE"
+            created_at = (
+                row["created_at"]
+                if "created_at" in row_keys and row["created_at"]
+                else _iso(_utc_now())
+            )
+            values = {
+                "decision_id": row["decision_id"],
+                "resolved_symbol": row["resolved_symbol"] if "resolved_symbol" in row_keys else "",
+                "evaluation_basis": "ANALYSIS_SNAPSHOT",
+                "horizon_seconds": row["horizon_seconds"] if "horizon_seconds" in row_keys else 1,
+                "evaluation_version": row["evaluation_version"] if "evaluation_version" in row_keys else "legacy",
+                "market_data_source": row["market_data_source"] if "market_data_source" in row_keys else "MT5",
+                "source_context_eligible": 0,
+                "training_eligible": None,
+                "training_eligibility_reason": "SOURCE_CONTEXT_INELIGIBLE",
+                "target_timestamp": row["target_timestamp"] if "target_timestamp" in row_keys else None,
+                "evaluation_status": status,
+                "unavailable_reason": row["unavailable_reason"] if "unavailable_reason" in row_keys else None,
+                "created_at": created_at,
+                "evaluated_at": None,
+                "recovered_from_unavailable_at": None,
+                "previous_unavailable_reason": None,
+            }
+            for column in _EVALUATION_COLUMNS:
+                values.setdefault(column, row[column] if column in row_keys else None)
+            values["source_context_eligible"] = 0
+            values["training_eligible"] = None
+            values["training_eligibility_reason"] = "SOURCE_CONTEXT_INELIGIBLE"
+            values["evaluation_basis"] = "ANALYSIS_SNAPSHOT"
+            values["created_at"] = created_at
+            placeholders = ", ".join("?" for _ in _EVALUATION_COLUMNS)
+            conn.execute(
+                f"INSERT INTO shadow_decision_evaluations ({', '.join(_EVALUATION_COLUMNS)}) VALUES ({placeholders})",
+                tuple(values[column] for column in _EVALUATION_COLUMNS),
+            )
+
+    def get(
+        self,
+        decision_id: str,
+        evaluation_basis: EvaluationBasis,
+        horizon_seconds: int,
+    ) -> ShadowOutcomeEvaluation:
+        self.initialize()
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                "SELECT * FROM shadow_decision_evaluations WHERE decision_id=? AND evaluation_basis=? AND horizon_seconds=?",
+                (decision_id, evaluation_basis, horizon_seconds),
+            ).fetchone()
+        if row is None:
+            raise KeyError((decision_id, evaluation_basis, horizon_seconds))
+        return self._row_to_record(row)
+
+    def list_for_decision(self, decision_id: str) -> list[ShadowOutcomeEvaluation]:
+        self.initialize()
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM shadow_decision_evaluations WHERE decision_id=? ORDER BY evaluation_basis, horizon_seconds",
+                (decision_id,),
+            ).fetchall()
+        return [self._row_to_record(row) for row in rows]
+
+    def upsert(self, records: Sequence[ShadowOutcomeEvaluation]) -> None:
+        self.initialize()
+        records = tuple(records)
+        if not records:
+            return
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            for record in records:
+                key = (record.decision_id, record.evaluation_basis, record.horizon_seconds)
+                existing = conn.execute(
+                    "SELECT * FROM shadow_decision_evaluations WHERE decision_id=? AND evaluation_basis=? AND horizon_seconds=?",
+                    key,
+                ).fetchone()
+                evaluated_at = record.evaluated_at or record.created_at or _utc_now()
+                if existing is None:
+                    values = _record_values(record, evaluated_at=evaluated_at)
+                    placeholders = ", ".join("?" for _ in _EVALUATION_COLUMNS)
+                    conn.execute(
+                        f"INSERT INTO shadow_decision_evaluations ({', '.join(_EVALUATION_COLUMNS)}) VALUES ({placeholders})",
+                        tuple(values[column] for column in _EVALUATION_COLUMNS),
+                    )
+                    continue
+                current_status = existing["evaluation_status"]
+                incoming_status = record.evaluation_status
+                if current_status in ("COMPLETE", "INELIGIBLE"):
+                    continue
+                if current_status == "DATA_UNAVAILABLE" and incoming_status != "COMPLETE":
+                    continue
+                if current_status == "PENDING" and incoming_status not in (
+                    "PENDING",
+                    "COMPLETE",
+                    "DATA_UNAVAILABLE",
+                ):
+                    continue
+                recovered_at = None
+                previous_reason = None
+                if current_status == "DATA_UNAVAILABLE" and incoming_status == "COMPLETE":
+                    recovered_at = evaluated_at
+                    previous_reason = existing["unavailable_reason"]
+                values = _record_values(
+                    record,
+                    created_at=_parse_db_timestamp(existing["created_at"]),
+                    evaluated_at=evaluated_at,
+                    recovered_from_unavailable_at=recovered_at,
+                    previous_unavailable_reason=previous_reason,
+                )
+                update_columns = [
+                    column
+                    for column in _EVALUATION_COLUMNS
+                    if column not in ("decision_id", "evaluation_basis", "horizon_seconds", "created_at")
+                ]
+                conn.execute(
+                    f"UPDATE shadow_decision_evaluations SET {', '.join(f'{column}=?' for column in update_columns)} WHERE decision_id=? AND evaluation_basis=? AND horizon_seconds=?",
+                    tuple(values[column] for column in update_columns) + key,
+                )
+
+    def upsert_pending(self, records: Sequence[ShadowOutcomeEvaluation]) -> None:
+        self.upsert(records)
+
+    @staticmethod
+    def _row_to_record(row: sqlite3.Row) -> ShadowOutcomeEvaluation:
+        keys = set(row.keys())
+
+        def value(name: str, default: Any = None) -> Any:
+            return row[name] if name in keys else default
+
+        return ShadowOutcomeEvaluation(
+            decision_id=row["decision_id"],
+            resolved_symbol=row["resolved_symbol"],
+            evaluation_basis=row["evaluation_basis"],
+            horizon_seconds=int(row["horizon_seconds"]),
+            evaluation_version=row["evaluation_version"],
+            market_data_source=row["market_data_source"],
+            source_context_eligible=bool(row["source_context_eligible"]),
+            training_eligible=None,
+            training_eligibility_reason=row["training_eligibility_reason"],
+            target_timestamp=_parse_db_timestamp(value("target_timestamp")),
+            observation_timestamp=_parse_db_timestamp(value("observation_timestamp")),
+            observation_lag_ms=value("observation_lag_ms"),
+            entry_timestamp=_parse_db_timestamp(value("entry_timestamp")),
+            entry_bid=value("entry_bid"),
+            entry_ask=value("entry_ask"),
+            entry_spread=value("entry_spread"),
+            entry_spread_points=value("entry_spread_points"),
+            future_bid=value("future_bid"),
+            future_ask=value("future_ask"),
+            future_spread=value("future_spread"),
+            future_spread_points=value("future_spread_points"),
+            point=value("point"),
+            digits=value("digits"),
+            buy_net_price=value("buy_net_price"),
+            buy_net_points=value("buy_net_points"),
+            sell_net_price=value("sell_net_price"),
+            sell_net_points=value("sell_net_points"),
+            selected_action=value("selected_action"),
+            selected_action_net_price=value("selected_action_net_price"),
+            selected_action_net_points=value("selected_action_net_points"),
+            best_counterfactual_action=value("best_counterfactual_action"),
+            best_counterfactual_net_points=value("best_counterfactual_net_points"),
+            hold_opportunity_cost_points=value("hold_opportunity_cost_points"),
+            buy_mfe_price=value("buy_mfe_price"),
+            buy_mfe_points=value("buy_mfe_points"),
+            buy_mae_price=value("buy_mae_price"),
+            buy_mae_points=value("buy_mae_points"),
+            sell_mfe_price=value("sell_mfe_price"),
+            sell_mfe_points=value("sell_mfe_points"),
+            sell_mae_price=value("sell_mae_price"),
+            sell_mae_points=value("sell_mae_points"),
+            evaluation_status=row["evaluation_status"],
+            unavailable_reason=value("unavailable_reason"),
+            created_at=_parse_db_timestamp(row["created_at"]) or _utc_now(),
+            evaluated_at=_parse_db_timestamp(value("evaluated_at")),
+            recovered_from_unavailable_at=_parse_db_timestamp(
+                value("recovered_from_unavailable_at")
+            ),
+            previous_unavailable_reason=value("previous_unavailable_reason"),
+        )
+
+
+def _parse_db_timestamp(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
 __all__ = [
     "AllowedAction",
     "BestCounterfactualAction",
@@ -622,6 +1034,7 @@ __all__ = [
     "EvaluationStatus",
     "ExcursionMetrics",
     "ShadowOutcomeEvaluation",
+    "ShadowEvaluationStore",
     "build_horizon_evaluation",
     "decision_source_eligibility",
     "evaluate_directional_outcomes",
