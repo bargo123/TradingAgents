@@ -46,6 +46,8 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.forex.profile import resolve_forex_profile
+from tradingagents.forex.telemetry import instrument_agent_node
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -104,6 +106,7 @@ class GraphSetup:
         conditional_logic: ConditionalLogic,
         market_data_mode: str = "stock",
         mt5_tools: Any | None = None,
+        forex_profile: str = "INTRADAY",
     ):
         """Initialize with required components."""
         if market_data_mode not in {"stock", "forex_mt5"}:
@@ -118,12 +121,20 @@ class GraphSetup:
             )
         if market_data_mode == "forex_mt5":
             validate_read_only_mt5_tools(mt5_tools)
+            forex_profile = resolve_forex_profile(forex_profile).name
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
         self.market_data_mode = market_data_mode
         self.mt5_tools = mt5_tools
+        self.forex_profile = forex_profile
+
+    def _instrument(self, node, agent_name: str, llm: Any):
+        """Add forex-only callback attribution around an LLM-bearing node."""
+        if self.market_data_mode != "forex_mt5":
+            return node
+        return instrument_agent_node(node, agent_name, llm)
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "fundamentals")
@@ -176,26 +187,60 @@ class GraphSetup:
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
         neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
+        portfolio_manager_node = create_portfolio_manager(
+            self.deep_thinking_llm,
+            forex_profile=self.forex_profile,
+        )
 
         # Create workflow
         workflow = StateGraph(AgentState)
 
         # Add analyst nodes to the graph
         for spec in plan.specs:
-            workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
+            workflow.add_node(
+                spec.agent_node,
+                self._instrument(
+                    analyst_factories[spec.key](), spec.agent_node, self.quick_thinking_llm
+                ),
+            )
             workflow.add_node(spec.clear_node, create_msg_delete())
             workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
         # Add other nodes
-        workflow.add_node("Bull Researcher", bull_researcher_node)
-        workflow.add_node("Bear Researcher", bear_researcher_node)
-        workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
-        workflow.add_node("Portfolio Manager", portfolio_manager_node)
+        workflow.add_node(
+            "Bull Researcher",
+            self._instrument(bull_researcher_node, "Bull Researcher", self.quick_thinking_llm),
+        )
+        workflow.add_node(
+            "Bear Researcher",
+            self._instrument(bear_researcher_node, "Bear Researcher", self.quick_thinking_llm),
+        )
+        workflow.add_node(
+            "Research Manager",
+            self._instrument(research_manager_node, "Research Manager", self.deep_thinking_llm),
+        )
+        workflow.add_node(
+            "Trader",
+            self._instrument(trader_node, "Trader", self.quick_thinking_llm),
+        )
+        workflow.add_node(
+            "Aggressive Analyst",
+            self._instrument(aggressive_analyst, "Aggressive Analyst", self.quick_thinking_llm),
+        )
+        workflow.add_node(
+            "Neutral Analyst",
+            self._instrument(neutral_analyst, "Neutral Analyst", self.quick_thinking_llm),
+        )
+        workflow.add_node(
+            "Conservative Analyst",
+            self._instrument(
+                conservative_analyst, "Conservative Analyst", self.quick_thinking_llm
+            ),
+        )
+        workflow.add_node(
+            "Portfolio Manager",
+            self._instrument(portfolio_manager_node, "Portfolio Manager", self.deep_thinking_llm),
+        )
 
         # Define edges
         # Start with the first analyst

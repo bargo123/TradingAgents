@@ -26,6 +26,14 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_GOOGLE_THINKING_LEVEL":   "google_thinking_level",
     "TRADINGAGENTS_OPENAI_REASONING_EFFORT": "openai_reasoning_effort",
     "TRADINGAGENTS_ANTHROPIC_EFFORT":        "anthropic_effort",
+    "TRADINGAGENTS_FOREX_QUICK_REASONING_EFFORT": "forex_quick_reasoning_effort",
+    "TRADINGAGENTS_FOREX_DEEP_REASONING_EFFORT":  "forex_deep_reasoning_effort",
+    "TRADINGAGENTS_FOREX_QUICK_THINKING_LEVEL":   "forex_quick_thinking_level",
+    "TRADINGAGENTS_FOREX_DEEP_THINKING_LEVEL":   "forex_deep_thinking_level",
+    "TRADINGAGENTS_FOREX_QUICK_EFFORT":           "forex_quick_effort",
+    "TRADINGAGENTS_FOREX_DEEP_EFFORT":            "forex_deep_effort",
+    "TRADINGAGENTS_FOREX_QUICK_THINKING":         "forex_quick_thinking",
+    "TRADINGAGENTS_FOREX_DEEP_THINKING":          "forex_deep_thinking",
 }
 
 
@@ -92,6 +100,17 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "google_thinking_level": None,      # "high", "minimal", etc.
     "openai_reasoning_effort": None,    # "medium", "high", "low"
     "anthropic_effort": None,           # "high", "medium", "low"
+    # Forex-only role controls. Quick analyst calls default to no Ollama
+    # thinking; deep managers retain thinking. Other providers consume their
+    # role-specific reasoning/thinking settings only when explicitly set.
+    "forex_quick_reasoning_effort": None,
+    "forex_deep_reasoning_effort": None,
+    "forex_quick_thinking_level": None,
+    "forex_deep_thinking_level": None,
+    "forex_quick_effort": None,
+    "forex_deep_effort": None,
+    "forex_quick_thinking": False,
+    "forex_deep_thinking": True,
     # Sampling temperature, forwarded to every provider when set. None leaves
     # each provider at its own default. Lower values reduce run-to-run
     # variation on models that honor it; reasoning models largely ignore it

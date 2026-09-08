@@ -74,6 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="market,news",
         help="comma-separated forex-safe analysts (default: market,news)",
     )
+    parser.add_argument(
+        "--analysis-profile",
+        default="INTRADAY",
+        help="bounded forex analysis profile (default: INTRADAY)",
+    )
 
     # Non-secret runtime overrides. Credentials remain in the provider/host
     # configuration and are never accepted as command-line arguments.
@@ -154,6 +159,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             db_path=args.db_path,
             analysts=analysts,
             callbacks=[stats_handler],
+            analysis_profile=args.analysis_profile,
         )
     except Exception as exc:  # CLI boundary: preserve a concise non-zero error
         print(f"FOREX SHADOW ERROR: {exc}", file=sys.stderr)
@@ -177,11 +183,34 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"ASK: {getattr(decision, 'reference_ask', 'unknown')}")
     print(f"SPREAD: {getattr(decision, 'spread', 'unknown')}")
     print(f"SPREAD POINTS: {getattr(decision, 'spread_points', 'unknown')}")
+    print(f"ANALYSIS PROFILE: {getattr(decision, 'analysis_profile', args.analysis_profile)}")
+    print(f"VALID FOR SECONDS: {getattr(decision, 'valid_for_seconds', None) or 'unknown'}")
+    print(f"VALID UNTIL: {_format_timestamp(getattr(decision, 'valid_until', None))}")
+    print(f"MACRO/EVENT STATUS: {_metric(metrics, 'macro_event_status')}")
+    bars_used = metrics.get("bars_used")
+    if isinstance(bars_used, Mapping):
+        print(f"BARS USED: {json.dumps(dict(bars_used), sort_keys=True)}")
     print(f"RUNTIME SECONDS: {getattr(result, 'elapsed_seconds', _metric(metrics, 'elapsed_seconds'))}")
     print(f"LLM CALLS: {_metric(metrics, 'llm_calls')}")
     print(f"TOOL CALLS: {_metric(metrics, 'tool_calls')}")
     print(f"TOKENS IN: {_metric(metrics, 'tokens_in')}")
     print(f"TOKENS OUT: {_metric(metrics, 'tokens_out')}")
+    print(f"REASONING TOKENS: {_metric(metrics, 'reasoning_tokens')}")
+    agents = metrics.get("agents")
+    if isinstance(agents, Mapping):
+        for agent_name, agent_metrics in agents.items():
+            if not isinstance(agent_metrics, Mapping):
+                continue
+            print(
+                "AGENT METRICS: "
+                f"{agent_name} "
+                f"model={agent_metrics.get('model', 'unknown')} "
+                f"calls={agent_metrics.get('calls', 'unknown')} "
+                f"tokens_in={agent_metrics.get('tokens_in', 'unknown')} "
+                f"tokens_out={agent_metrics.get('tokens_out', 'unknown')} "
+                f"reasoning_tokens={agent_metrics.get('reasoning_tokens', 'unknown')} "
+                f"elapsed_seconds={agent_metrics.get('elapsed_seconds', 'unknown')}"
+            )
     print(f"RAW PORTFOLIO MANAGER RESULT: {_format_raw_result(decision)}")
     print(f"NORMALIZED ACTION: {getattr(decision, 'action', None) or 'UNRESOLVED'}")
     print(f"NORMALIZATION STATUS: {decision.normalization_status}")

@@ -43,6 +43,7 @@ from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.news import get_forex_global_news
+from tradingagents.forex.profile import resolve_forex_profile
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
 
@@ -89,6 +90,19 @@ def _coerce_max_tokens(value):
     return n
 
 
+def _coerce_bool(value: Any, name: str) -> bool:
+    """Coerce a boolean config value and reject ambiguous strings."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean")
+
+
 class TradingAgentsGraph:
     """Main class that orchestrates the trading agents framework."""
 
@@ -100,6 +114,7 @@ class TradingAgentsGraph:
         callbacks: list | None = None,
         market_data_mode: str = "stock",
         mt5_tools: Any | None = None,
+        forex_analysis_profile: str = "INTRADAY",
     ):
         """Initialize the trading agents graph and components.
 
@@ -125,6 +140,11 @@ class TradingAgentsGraph:
         self.callbacks = callbacks or []
         self.market_data_mode = market_data_mode
         self.mt5_tools = mt5_tools
+        self.forex_analysis_profile = (
+            resolve_forex_profile(forex_analysis_profile).name
+            if market_data_mode == "forex_mt5"
+            else forex_analysis_profile
+        )
 
         # Update the interface's config
         set_config(self.config)
@@ -134,23 +154,25 @@ class TradingAgentsGraph:
         os.makedirs(self.config["results_dir"], exist_ok=True)
 
         # Initialize LLMs with provider-specific thinking configuration
-        llm_kwargs = self._get_provider_kwargs()
+        deep_llm_kwargs = self._get_provider_kwargs(role="deep")
+        quick_llm_kwargs = self._get_provider_kwargs(role="quick")
 
-        # Add callbacks to kwargs if provided (passed to LLM constructor)
+        # Add callbacks to kwargs if provided (passed to LLM constructor).
         if self.callbacks:
-            llm_kwargs["callbacks"] = self.callbacks
+            deep_llm_kwargs["callbacks"] = self.callbacks
+            quick_llm_kwargs["callbacks"] = self.callbacks
 
         deep_client = create_llm_client(
             provider=self.config["llm_provider"],
             model=self.config["deep_think_llm"],
             base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            **deep_llm_kwargs,
         )
         quick_client = create_llm_client(
             provider=self.config["llm_provider"],
             model=self.config["quick_think_llm"],
             base_url=self.config.get("backend_url"),
-            **llm_kwargs,
+            **quick_llm_kwargs,
         )
 
         self.deep_thinking_llm = deep_client.get_llm()
@@ -173,6 +195,7 @@ class TradingAgentsGraph:
             self.conditional_logic,
             market_data_mode=self.market_data_mode,
             mt5_tools=self.mt5_tools,
+            forex_profile=self.forex_analysis_profile,
         )
 
         self.propagator = Propagator(
@@ -195,25 +218,51 @@ class TradingAgentsGraph:
         self._checkpointer_ctx = None
         self._resuming = False
 
-    def _get_provider_kwargs(self) -> dict[str, Any]:
-        """Get provider-specific kwargs for LLM client creation."""
+    def _get_provider_kwargs(self, role: str | None = None) -> dict[str, Any]:
+        """Get provider-specific kwargs for LLM client creation.
+
+        ``role`` is used only for forex shadow mode so quick analyst calls can
+        disable provider-supported thinking while deep decision nodes retain a
+        separate setting. Calls from the stock CLI retain the original config
+        path when no role is supplied.
+        """
         kwargs = {}
         provider = self.config.get("llm_provider", "").lower()
+        is_forex = getattr(self, "market_data_mode", "stock") == "forex_mt5"
+
+        def role_value(base_key: str):
+            if is_forex and role in {"quick", "deep"}:
+                role_key = {
+                    "google_thinking_level": f"forex_{role}_thinking_level",
+                    "openai_reasoning_effort": f"forex_{role}_reasoning_effort",
+                    "anthropic_effort": f"forex_{role}_effort",
+                }.get(base_key, f"forex_{role}_{base_key}")
+                override = self.config.get(role_key)
+                if override is not None and override != "":
+                    return override
+            return self.config.get(base_key)
 
         if provider == "google":
-            thinking_level = self.config.get("google_thinking_level")
+            thinking_level = role_value("google_thinking_level")
             if thinking_level:
                 kwargs["thinking_level"] = thinking_level
 
         elif provider == "openai":
-            reasoning_effort = self.config.get("openai_reasoning_effort")
+            reasoning_effort = role_value("openai_reasoning_effort")
             if reasoning_effort:
                 kwargs["reasoning_effort"] = reasoning_effort
 
         elif provider == "anthropic":
-            effort = self.config.get("anthropic_effort")
+            effort = role_value("anthropic_effort")
             if effort:
                 kwargs["effort"] = effort
+
+        if provider == "ollama" and is_forex and role in {"quick", "deep"}:
+            thinking = self.config.get(f"forex_{role}_thinking")
+            if thinking is not None and thinking != "":
+                kwargs["extra_body"] = {
+                    "think": _coerce_bool(thinking, f"forex_{role}_thinking")
+                }
 
         # Sampling temperature is cross-provider: forward it whenever set.
         # float() here so a value coming from a TRADINGAGENTS_TEMPERATURE env
@@ -442,6 +491,7 @@ class TradingAgentsGraph:
             f"risk={self.config['max_risk_discuss_rounds']}",
             f"asset={asset_type}",
             f"market_data_mode={getattr(self, 'market_data_mode', 'stock')}",
+            f"forex_profile={getattr(self, 'forex_analysis_profile', 'INTRADAY')}",
         ])
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
@@ -568,6 +618,11 @@ class TradingAgentsGraph:
             instrument_context=instrument_context,
             market_data_mode=self.market_data_mode,
             market_context=getattr(self, "market_context", ""),
+            forex_analysis_profile=(
+                self.forex_analysis_profile
+                if self.market_data_mode == "forex_mt5"
+                else None
+            ),
         )
         args = self.propagator.get_graph_args()
 
