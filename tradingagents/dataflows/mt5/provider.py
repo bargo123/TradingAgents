@@ -33,7 +33,7 @@ from .timeframes import resolve_timeframe
 _CURRENCY_CODES = frozenset(
     ["AED", "ARS", "AUD", "BGN", "BHD", "BRL", "CAD", "CHF", "CLP", "CNY", "COP", "CZK", "DKK", "EGP", "EUR", "GBP", "HKD", "HUF", "IDR", "ILS", "INR", "JPY", "KRW", "KWD", "MXN", "MYR", "NOK", "NZD", "OMR", "PHP", "PLN", "QAR", "RON", "RUB", "SAR", "SEK", "SGD", "THB", "TRY", "TWD", "USD", "XAG", "XAU", "ZAR"]
 )
-_SEPARATOR = re.compile(r"[._-]")
+_SEPARATOR = re.compile(r"[._#-]")
 
 
 def _field(raw: Any, name: str, default: Any = None) -> Any:
@@ -69,12 +69,12 @@ def _pair_candidates(name: str) -> set[str]:
         prefix_ok = (
             not prefix
             or (prefix.isalnum() and len(prefix) <= 2)
-            or (prefix.endswith((".", "_", "-")) and bool(prefix[:-1]))
+            or (prefix.endswith((".", "_", "#", "-")) and bool(prefix[:-1] or prefix == "#"))
         )
         suffix_ok = (
             not suffix
             or (suffix.isalnum() and len(suffix) <= 2)
-            or (suffix[0] in "._-" and len(suffix) > 1 and bool(_SEPARATOR.sub("", suffix)))
+            or (suffix[0] in "._#-" and bool(_SEPARATOR.sub("", suffix) or suffix == "#"))
         )
         if prefix_ok and suffix_ok:
             pairs.add(core)
@@ -115,6 +115,10 @@ class MT5Provider:
         except (AttributeError, TypeError):
             return None
 
+    def _connection_error(self, message: str) -> str:
+        detail = self._last_error()
+        return f"{message}: {detail!r}" if detail not in (None, (0, "")) else message
+
     def initialize(self) -> bool:
         api = self._load_api()
         try:
@@ -126,10 +130,10 @@ class MT5Provider:
         terminal, account = api.terminal_info(), api.account_info()
         if terminal is None or not _field(terminal, "connected", False):
             api.shutdown()
-            raise Mt5InitializationError("MT5 terminal is not connected")
+            raise Mt5InitializationError(self._connection_error("MT5 terminal is not connected"))
         if account is None:
             api.shutdown()
-            raise Mt5AccountDisconnectedError("MT5 account is not connected")
+            raise Mt5AccountDisconnectedError(self._connection_error("MT5 account is not connected"))
         self._initialized = True
         return True
 
@@ -201,11 +205,18 @@ class MT5Provider:
         raw = self._api.symbol_info_tick(resolved)
         if raw is None:
             raise Mt5DataError(f"No tick available for {resolved!r}")
-        return Mt5Tick(
-            symbol=resolved, timestamp=_utc_timestamp(raw, prefer_msc=True), bid=float(_field(raw, "bid")),
-            ask=float(_field(raw, "ask")), last=_field(raw, "last"), volume=_field(raw, "volume"),
-            volume_real=_field(raw, "volume_real"),
-        )
+        try:
+            return Mt5Tick(
+                symbol=resolved,
+                timestamp=_utc_timestamp(raw, prefer_msc=True),
+                bid=float(_field(raw, "bid")),
+                ask=float(_field(raw, "ask")),
+                last=_field(raw, "last"),
+                volume=_field(raw, "volume"),
+                volume_real=_field(raw, "volume_real"),
+            )
+        except (TypeError, ValueError, OSError) as exc:
+            raise Mt5DataError(f"Invalid tick data for {resolved!r}") from exc
 
     def get_bars(self, symbol: str, timeframe: str, count: int, start_pos: int = 0) -> tuple[Mt5Bar, ...]:
         if count <= 0:
@@ -226,19 +237,25 @@ class MT5Provider:
         self._require_connected()
         resolved = self.find_symbol(symbol) if symbol is not None else None
         raw_positions = self._api.positions_get() or ()
-        return tuple(
-            Mt5Position(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw))
-            for raw in raw_positions if resolved is None or str(_field(raw, "symbol")) == resolved
-        )
+        try:
+            return tuple(
+                Mt5Position(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw))
+                for raw in raw_positions if resolved is None or str(_field(raw, "symbol")) == resolved
+            )
+        except (TypeError, ValueError, OSError) as exc:
+            raise Mt5DataError("Invalid MT5 position data") from exc
 
     def get_orders(self, symbol: str | None = None) -> tuple[Mt5Order, ...]:
         self._require_connected()
         resolved = self.find_symbol(symbol) if symbol is not None else None
         raw_orders = self._api.orders_get() or ()
-        return tuple(
-            Mt5Order(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp(raw))
-            for raw in raw_orders if resolved is None or str(_field(raw, "symbol")) == resolved
-        )
+        try:
+            return tuple(
+                Mt5Order(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp(raw))
+                for raw in raw_orders if resolved is None or str(_field(raw, "symbol")) == resolved
+            )
+        except (TypeError, ValueError, OSError) as exc:
+            raise Mt5DataError("Invalid MT5 order data") from exc
 
     def get_spread(self, symbol: str) -> Mt5Spread:
         resolved = self.ensure_symbol(symbol)
@@ -246,9 +263,12 @@ class MT5Provider:
         point = _field(info, "point")
         if info is None or point in (None, 0) or tick is None:
             raise Mt5DataError(f"Cannot calculate spread for {resolved!r}")
-        bid, ask = float(_field(tick, "bid")), float(_field(tick, "ask"))
-        price = ask - bid
-        return Mt5Spread(resolved, bid, ask, price, price / float(point), _utc_timestamp(tick, prefer_msc=True))
+        try:
+            bid, ask = float(_field(tick, "bid")), float(_field(tick, "ask"))
+            price = ask - bid
+            return Mt5Spread(resolved, bid, ask, price, price / float(point), _utc_timestamp(tick, prefer_msc=True))
+        except (TypeError, ValueError, OSError, ZeroDivisionError) as exc:
+            raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
 
 
 Mt5Provider = MT5Provider

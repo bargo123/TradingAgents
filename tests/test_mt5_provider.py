@@ -4,13 +4,14 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
-from tradingagents.dataflows.mt5.provider import MT5Provider
 
 from tradingagents.dataflows.mt5.errors import (
+    Mt5DataError,
     Mt5InitializationError,
     Mt5SymbolAmbiguousError,
     Mt5SymbolNotFoundError,
 )
+from tradingagents.dataflows.mt5.provider import MT5Provider
 
 
 class FakeMT5:
@@ -179,6 +180,13 @@ def test_normalized_prefix_variant_is_resolved(fake_api):
 
 
 @pytest.mark.unit
+def test_hash_broker_decoration_is_resolved(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("EURUSD#")]
+    provider = initialized_provider(fake_api)
+    assert provider.find_symbol("EURUSD") == "EURUSD#"
+
+
+@pytest.mark.unit
 def test_multiple_plausible_variants_raise_ambiguity(fake_api):
     provider = initialized_provider(fake_api)
     with pytest.raises(Mt5SymbolAmbiguousError, match="EURUSD"):
@@ -257,3 +265,36 @@ def test_provider_exposes_no_mutation_or_execution_api(fake_api):
         "cancel_order",
     }
     assert forbidden.isdisjoint(dir(provider))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["time", "bid", "ask"])
+def test_malformed_tick_data_raises_typed_error(fake_api, field):
+    provider = initialized_provider(fake_api)
+    tick = fake_api.symbol_info_tick("USDJPY")
+    setattr(tick, field, None)
+    if field == "time":
+        tick.time_msc = None
+    fake_api.symbol_info_tick = lambda _name: tick
+    with pytest.raises(Mt5DataError, match="Invalid tick data"):
+        provider.get_tick("USDJPY")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("method", "record"), [
+    ("get_positions", SimpleNamespace(ticket=None, symbol="USDJPY", time=1_700_000_000)),
+    ("get_orders", SimpleNamespace(ticket=1, symbol="USDJPY", time=None)),
+])
+def test_malformed_position_or_order_data_raises_typed_error(fake_api, method, record):
+    provider = initialized_provider(fake_api)
+    setattr(fake_api, f"{method[4:]}_get", lambda: (record,))
+    with pytest.raises(Mt5DataError, match="Invalid MT5"):
+        getattr(provider, method)()
+
+
+@pytest.mark.unit
+def test_malformed_spread_data_raises_typed_error(fake_api):
+    provider = initialized_provider(fake_api)
+    fake_api.symbol_info_tick = lambda _name: SimpleNamespace(time=None, time_msc=None, bid=None, ask=1.1)
+    with pytest.raises(Mt5DataError, match="Invalid spread data"):
+        provider.get_spread("USDJPY")
