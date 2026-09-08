@@ -18,8 +18,8 @@ so that:
 
 from __future__ import annotations
 
-from enum import Enum
 import re
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator

@@ -32,7 +32,7 @@ structured = load_module(
 StructuredOutputRequiredError = structured.StructuredOutputRequiredError
 invoke_structured_only = structured.invoke_structured_only
 
-from tradingagents.agents.schemas import ForexPortfolioDecision
+from tradingagents.agents.schemas import ForexPortfolioDecision  # noqa: E402
 from tradingagents.forex.shadow import (  # noqa: E402  # isolated helper import must run first
     PortfolioDecision,
     PortfolioRating,

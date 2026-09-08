@@ -153,3 +153,49 @@ The raw structured Portfolio Manager result is retained in SQLite, including
 its executive summary, investment thesis, price target, rating, and time
 horizon. The before/after account checks remained empty and no mutation API is
 available in the provider, adapter, runner, or graph tool set.
+
+## Phase 4.2 calibration validation (2026-09-08)
+
+The Phase 4.2 run completed the full graph with the production default history
+(`count=100` on M1/M5/M15/H1), one cached MT5 snapshot, and the default
+forex-safe analyst set. No hosted key was configured, so the existing local
+Ollama configuration was used. Quick nodes used `qwen3.5:2b` with the
+forex-only `think=false` control; deep Research Manager and Portfolio Manager
+nodes used `qwen3.5:4b` with `think=true`.
+
+The complete evidence is persisted at
+`data_cache/phase42-validation-20260908.db`:
+
+```text
+provider=ollama
+quick_model=qwen3.5:2b
+deep_model=qwen3.5:4b
+requested_symbol=EURUSD
+resolved_symbol=EURUSD
+snapshot_timestamp=2026-09-08T20:30:12.304000Z
+bid=1.16261 ask=1.16262 spread=0.0000100000000000655 spread_points=1.00000000000655
+analysis_profile=INTRADAY horizon=minutes to hours valid_for_seconds=3600
+bars=M1:100 M5:100 M15:100 H1:100
+macro_event_status=MACRO/EVENT DATA UNAVAILABLE
+llm_calls=13 tool_calls=3 tokens_in=32790 tokens_out=14128 reasoning_tokens=0
+runtime_seconds=2268.3846525
+portfolio_manager_rating=Hold
+raw_time_horizon=minutes to hours
+normalized_action=HOLD
+normalization_status=NORMALIZED
+decision_id=181a14d3-213d-4c20-98dc-1aac980ea58f
+executed=False
+positions_before=[] positions_after=[]
+orders_before=[] orders_after=[]
+```
+
+The raw Portfolio Manager JSON is retained in the row, including the
+intraday executive summary, thesis, `rating=Hold`, and `valid_for_seconds=3600`.
+The deterministic feature payload records latest OHLC, direction, return,
+high/low/range, ATR, range percentage, and close position for every timeframe;
+the prompt receives those compact summaries rather than a raw bar dump.
+
+Compared with the Phase 4.1 local run (`2595.45s`, 14 calls), this complete
+Phase 4.2 run took `2268.38s` (about `327.07s`, or `12.6%`, faster). The
+positions/orders before and after reconnect were both empty, and the command
+printed `NO ORDER WILL BE SENT`; no execution API was called.

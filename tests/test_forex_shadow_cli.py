@@ -12,6 +12,7 @@ def test_forex_shadow_parser_defaults_and_positive_count():
 
     assert args.symbol == "EURUSD"
     assert args.analysts == "market,news"
+    assert args.analysis_profile == "INTRADAY"
     assert args.count > 0
 
     with pytest.raises(SystemExit):
@@ -143,6 +144,9 @@ def test_cli_passes_stats_callback_and_prints_run_evidence(capsys, monkeypatch, 
                     "reference_ask": 1.2,
                     "spread": 0.1,
                     "spread_points": 10000,
+                    "analysis_profile": "INTRADAY",
+                    "valid_for_seconds": 3600,
+                    "valid_until": "2026-09-08T01:00:00Z",
                 },
             )()
             return type(
@@ -156,6 +160,19 @@ def test_cli_passes_stats_callback_and_prints_run_evidence(capsys, monkeypatch, 
                         "tool_calls": 3,
                         "tokens_in": 10,
                         "tokens_out": 20,
+                        "reasoning_tokens": 4,
+                        "macro_event_status": "MACRO/EVENT DATA UNAVAILABLE",
+                        "bars_used": {"M1": 100, "M5": 100, "M15": 100, "H1": 100},
+                        "agents": {
+                            "Trader": {
+                                "model": "gpt-5.6-luna",
+                                "calls": 1,
+                                "tokens_in": 2,
+                                "tokens_out": 3,
+                                "reasoning_tokens": 0,
+                                "elapsed_seconds": 0.5,
+                            }
+                        },
                     },
                 },
             )()
@@ -169,4 +186,9 @@ def test_cli_passes_stats_callback_and_prints_run_evidence(capsys, monkeypatch, 
     assert "LLM PROVIDER: openai" in output
     assert "LLM CALLS: 9" in output
     assert "NORMALIZED ACTION: HOLD" in output
+    assert "ANALYSIS PROFILE: INTRADAY" in output
+    assert "VALID FOR SECONDS: 3600" in output
+    assert "MACRO/EVENT STATUS: MACRO/EVENT DATA UNAVAILABLE" in output
+    assert 'BARS USED: {"H1": 100, "M1": 100, "M15": 100, "M5": 100}' in output
+    assert "AGENT METRICS: Trader" in output
     assert "EXECUTED: FALSE" in output
