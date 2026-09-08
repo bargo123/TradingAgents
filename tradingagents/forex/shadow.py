@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 
 def _load_schemas_module():
-    module_name = "tradingagents._forex_schemas"
+    module_name = "tradingagents.agents.schemas"
     module = sys.modules.get(module_name)
     if module is not None:
         return module
@@ -24,6 +24,10 @@ def _load_schemas_module():
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    if hasattr(module.PortfolioDecision, "model_rebuild"):
+        module.PortfolioDecision.model_rebuild(
+            _types_namespace={"PortfolioRating": module.PortfolioRating}
+        )
     return module
 
 
@@ -42,9 +46,6 @@ _RATING_TO_ACTION: dict[str, AllowedAction] = {
     PortfolioRating.UNDERWEIGHT.value: "SELL",
     PortfolioRating.SELL.value: "SELL",
 }
-_RATING_ALIASES = ("rating", "recommendation", "action")
-
-
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
@@ -63,41 +64,47 @@ def _json_safe(value: Any) -> Any:
         return value.isoformat()
     if hasattr(value, "value") and not isinstance(value, (str, bytes)):
         return _json_safe(value.value)
-    return value
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    raise TypeError(f"unsupported JSON value type: {type(value).__name__}")
 
 
 def _parse_utc_datetime(value: str | datetime) -> datetime:
     if isinstance(value, datetime):
         if value.tzinfo is None:
             raise ValueError("timestamps must be timezone-aware UTC values")
+        if value.utcoffset() != timezone.utc.utcoffset(value):
+            raise ValueError("timestamps must be UTC values")
         result = value.astimezone(timezone.utc)
     else:
         result = datetime.fromisoformat(value.replace("Z", "+00:00"))
         if result.tzinfo is None:
             raise ValueError("timestamps must be timezone-aware UTC values")
+        if result.utcoffset() != timezone.utc.utcoffset(result):
+            raise ValueError("timestamps must be UTC values")
         result = result.astimezone(timezone.utc)
-    if result.utcoffset() != timezone.utc.utcoffset(result):
-        raise ValueError("timestamps must be UTC values")
     return result
 
 
 def _canonical_rating(value: Any) -> str:
     if isinstance(value, PortfolioRating):
         return value.value
-    if isinstance(value, str):
+    if isinstance(value, str) and value in _RATING_TO_ACTION:
         return value
-    raise TypeError("rating must be a PortfolioRating value")
-
-
-def _normalized_payload(raw: PortfolioDecision | Mapping[str, Any]) -> dict[str, Any]:
-    if isinstance(raw, PortfolioDecision):
-        return raw.model_dump(mode="json")
-    if isinstance(raw, Mapping):
-        return _json_safe(dict(raw))
-    raise TypeError("raw result must be a PortfolioDecision, mapping, or None")
+    raise ValueError("rating must be an exact PortfolioRating value")
 
 
 def _normalize_from_payload(payload: Mapping[str, Any]) -> ShadowNormalization:
+    try:
+        safe_payload = _json_safe(dict(payload))
+    except TypeError as exc:
+        return ShadowNormalization(
+            action=None,
+            normalization_status="FAILED",
+            normalization_error=str(exc),
+            raw_result={"error": str(exc)},
+        )
+
     if "rating" not in payload:
         return ShadowNormalization(
             action=None,
@@ -105,11 +112,20 @@ def _normalize_from_payload(payload: Mapping[str, Any]) -> ShadowNormalization:
             normalization_error=(
                 "structured Portfolio Manager output must include an exact rating"
             ),
-            raw_result=_json_safe(dict(payload)),
+            raw_result=safe_payload,
         )
 
     try:
-        rating_text = _canonical_rating(payload["rating"]).strip()
+        rating_text = _canonical_rating(payload["rating"])
+    except ValueError:
+        return ShadowNormalization(
+            action=None,
+            normalization_status="FAILED",
+            normalization_error=(
+                f"unknown PortfolioRating value: {payload['rating']!r}"
+            ),
+            raw_result=safe_payload,
+        )
     except TypeError:
         return ShadowNormalization(
             action=None,
@@ -117,7 +133,7 @@ def _normalize_from_payload(payload: Mapping[str, Any]) -> ShadowNormalization:
             normalization_error=(
                 "structured Portfolio Manager output must include an exact rating"
             ),
-            raw_result=_json_safe(dict(payload)),
+            raw_result=safe_payload,
         )
 
     mapped_action = _RATING_TO_ACTION.get(rating_text)
@@ -128,38 +144,25 @@ def _normalize_from_payload(payload: Mapping[str, Any]) -> ShadowNormalization:
             normalization_error=(
                 f"unknown PortfolioRating value: {rating_text!r}"
             ),
-            raw_result=_json_safe(dict(payload)),
+            raw_result=safe_payload,
         )
 
-    for alias in _RATING_ALIASES[1:]:
-        if alias not in payload:
-            continue
-        try:
-            alias_rating = _canonical_rating(payload[alias]).strip()
-        except TypeError:
+    for alias in ("recommendation", "action"):
+        if alias in payload and payload[alias] != payload["rating"]:
             return ShadowNormalization(
                 action=None,
                 normalization_status="FAILED",
                 normalization_error=(
                     "conflicting structured Portfolio Manager rating values"
                 ),
-                raw_result=_json_safe(dict(payload)),
-            )
-        if alias_rating != rating_text:
-            return ShadowNormalization(
-                action=None,
-                normalization_status="FAILED",
-                normalization_error=(
-                    "conflicting structured Portfolio Manager rating values"
-                ),
-                raw_result=_json_safe(dict(payload)),
+                raw_result=safe_payload,
             )
 
     return ShadowNormalization(
         action=mapped_action,
         normalization_status="NORMALIZED",
         normalization_error=None,
-        raw_result=_json_safe(dict(payload)),
+        raw_result=safe_payload,
     )
 
 
@@ -207,7 +210,7 @@ def normalize_portfolio_manager_result(
         normalization_error=(
             "structured Portfolio Manager output must be a PortfolioDecision or mapping"
         ),
-        raw_result={"value": _json_safe(raw)},
+        raw_result={"value": str(type(raw).__name__)},
     )
 
 
@@ -215,6 +218,7 @@ def normalize_portfolio_manager_result(
 class ShadowTradeDecision:
     decision_id: str
     created_at: datetime
+    snapshot_timestamp: datetime
     analysis_date: date
     requested_symbol: str
     resolved_symbol: str
@@ -250,17 +254,23 @@ class ShadowTradeDecision:
             raise ValueError("ShadowTradeDecision must always be created with executed=False")
         if self.normalization_status not in ("NORMALIZED", "FAILED"):
             raise ValueError("normalization_status must be NORMALIZED or FAILED")
+        if self.future_evaluation_status not in ("PENDING", "RESOLVED"):
+            raise ValueError("future_evaluation_status must be PENDING or RESOLVED")
         if self.normalization_status == "NORMALIZED" and self.action is None:
             raise ValueError("normalized decisions must include an action")
         if self.normalization_status == "FAILED" and self.action is not None:
             raise ValueError("failed decisions must not include an action")
         if self.action is not None and self.action not in ("BUY", "SELL", "HOLD"):
             raise ValueError("action must be BUY, SELL, HOLD, or None")
+        _parse_utc_datetime(self.snapshot_timestamp)
         _parse_utc_datetime(self.created_at)
         if self.outcome_resolved_at is not None:
             _parse_utc_datetime(self.outcome_resolved_at)
         if self.snapshot_json is None:
             object.__setattr__(self, "snapshot_json", {})
+        else:
+            _json_safe(self.snapshot_json)
+        _json_safe(self.raw_portfolio_manager_result)
 
     @property
     def raw_portfolio_manager_result_json(self) -> str:
@@ -287,6 +297,7 @@ class ShadowDecisionStore:
                     analysis_date TEXT NOT NULL,
                     requested_symbol TEXT NOT NULL,
                     resolved_symbol TEXT NOT NULL,
+                    snapshot_timestamp TEXT NOT NULL,
                     action TEXT CHECK (action IS NULL OR action IN ('BUY','SELL','HOLD')),
                     normalization_status TEXT NOT NULL
                         CHECK (normalization_status IN ('NORMALIZED','FAILED')),
@@ -332,7 +343,7 @@ class ShadowDecisionStore:
 
     def record(self, decision: ShadowTradeDecision) -> None:
         self.initialize()
-        placeholders = ", ".join(["?"] * 31)
+        placeholders = ", ".join(["?"] * 32)
         with sqlite3.connect(self.path) as conn:
             conn.execute(
                 f"""
@@ -342,6 +353,7 @@ class ShadowDecisionStore:
                     analysis_date,
                     requested_symbol,
                     resolved_symbol,
+                    snapshot_timestamp,
                     action,
                     normalization_status,
                     normalization_error,
@@ -377,6 +389,7 @@ class ShadowDecisionStore:
                     decision.analysis_date.isoformat(),
                     decision.requested_symbol,
                     decision.resolved_symbol,
+                    _parse_utc_datetime(decision.snapshot_timestamp).isoformat().replace("+00:00", "Z"),
                     decision.action,
                     decision.normalization_status,
                     decision.normalization_error,
@@ -466,6 +479,7 @@ class ShadowDecisionStore:
             analysis_date=date.fromisoformat(row["analysis_date"]),
             requested_symbol=row["requested_symbol"],
             resolved_symbol=row["resolved_symbol"],
+            snapshot_timestamp=_parse_utc_datetime(row["snapshot_timestamp"]),
             action=row["action"],
             raw_portfolio_manager_result=json.loads(row["raw_portfolio_manager_result"]),
             normalization_status=row["normalization_status"],

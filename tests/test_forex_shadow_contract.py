@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import importlib.util
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +44,7 @@ def make_decision(**overrides):
     base = dict(
         decision_id="decision-001",
         created_at=datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc),
+        snapshot_timestamp=datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc),
         analysis_date=date(2026, 9, 8),
         requested_symbol="EURUSD",
         resolved_symbol="EURUSDm",
@@ -82,6 +84,27 @@ def test_invoke_structured_only_requires_a_structured_binding() -> None:
         invoke_structured_only(None, prompt="ignored", agent_name="Portfolio Manager")
 
 
+def test_invoke_structured_only_rejects_none_and_non_base_model() -> None:
+    class NoneStructured:
+        def invoke(self, prompt):
+            return None
+
+    class PlainStructured:
+        def invoke(self, prompt):
+            return {"rating": "Hold"}
+
+    with pytest.raises(StructuredOutputRequiredError):
+        invoke_structured_only(NoneStructured(), prompt="ignored", agent_name="Portfolio Manager")
+    with pytest.raises(StructuredOutputRequiredError):
+        invoke_structured_only(PlainStructured(), prompt="ignored", agent_name="Portfolio Manager")
+
+
+def test_normalization_uses_exact_portfolio_rating_vocabulary_only() -> None:
+    assert normalize_portfolio_manager_result({"rating": "Hold"}).action == "HOLD"
+    assert normalize_portfolio_manager_result({"rating": "Overweight"}).action == "BUY"
+    assert normalize_portfolio_manager_result({"rating": "Underweight"}).action == "SELL"
+
+
 def test_normalization_uses_structured_rating_only() -> None:
     result = normalize_portfolio_manager_result(
         PortfolioDecision(
@@ -102,11 +125,64 @@ def test_normalization_rejects_prose_and_preserves_failure() -> None:
     assert "structured" in result.normalization_error.lower()
 
 
+def test_normalization_rejects_whitespace_and_case_variants() -> None:
+    result = normalize_portfolio_manager_result({"rating": " Hold "})
+    assert result.action is None
+    assert result.normalization_status == "FAILED"
+    assert "unknown" in result.normalization_error.lower()
+
+
+def test_normalization_rejects_conflicting_mapping_and_unknown_types() -> None:
+    result = normalize_portfolio_manager_result(
+        {"rating": "Hold", "recommendation": "Sell"}
+    )
+    assert result.action is None
+    assert result.normalization_status == "FAILED"
+    assert "conflicting" in result.normalization_error.lower()
+
+    result = normalize_portfolio_manager_result(SimpleNamespace(rating="Hold"))
+    assert result.action is None
+    assert result.normalization_status == "FAILED"
+
+
 def test_shadow_decision_rejects_executed_true_and_invalid_status() -> None:
     with pytest.raises(ValueError):
-        make_decision(executed=True)
+        make_decision(executed=1)
     with pytest.raises(ValueError):
         make_decision(action="HOLD", normalization_status="FAILED")
+    with pytest.raises(ValueError):
+        make_decision(future_evaluation_status="BROKEN")
+
+
+def test_shadow_decision_requires_utc_timestamps() -> None:
+    with pytest.raises(ValueError):
+        make_decision(created_at=datetime(2026, 9, 8, 2, 0, tzinfo=timezone(timedelta(hours=2))))
+    with pytest.raises(ValueError):
+        make_decision(outcome_resolved_at=datetime(2026, 9, 8, 2, 0, tzinfo=timezone(timedelta(hours=2))))
+
+
+def test_shadow_decision_requires_snapshot_timestamp_round_trip() -> None:
+    snapshot_timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
+    decision = make_decision(snapshot_timestamp=snapshot_timestamp)
+    assert decision.snapshot_timestamp == snapshot_timestamp
+
+
+def test_shadow_decision_store_rejects_executed_true_directly() -> None:
+    with pytest.raises(ValueError):
+        make_decision(executed=1)
+
+
+def test_shadow_decision_round_trips_with_canonical_portfolio_decision_class() -> None:
+    canonical_module = sys.modules["tradingagents.agents.schemas"]
+    canonical_decision = canonical_module.PortfolioDecision(
+        rating=canonical_module.PortfolioRating.HOLD,
+        executive_summary="x",
+        investment_thesis="y",
+    )
+    result = normalize_portfolio_manager_result(canonical_decision)
+    assert result.action == "HOLD"
+    assert result.raw_result["rating"] == "Hold"
+    assert PortfolioDecision is canonical_module.PortfolioDecision
 
 
 def test_store_round_trip_is_idempotent_and_preserves_failed_action(
