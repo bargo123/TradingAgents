@@ -10,12 +10,14 @@
 
 **Spec:** docs/superpowers/specs/2026-09-08-mt5-read-only-provider-design.md
 
+**Baseline Git SHA (recorded before implementation):** 92f3d6d824383b01aef8c51f18246e01fa764d04
+
 ## Global Constraints
 
 - The MT5 provider is read-only and contains no mutation/execution methods or wrappers.
 - No login, password, server, or terminal path is hard-coded; only an optional caller/CLI terminal path is accepted.
 - Supported timeframes are exactly M1, M5, M15, M30, H1, H4, and D1.
-- Exact symbol matches win; normalized broker variants are considered only when they preserve the requested forex base; ambiguity and missing symbols are explicit errors.
+- Exact symbol matches win; normalized broker prefix/suffix variants are considered only when they preserve the requested forex base; ambiguity and missing symbols are explicit errors.
 - Tick timestamps prefer time_msc, fall back to time, and are timezone-aware UTC datetimes.
 - Mt5SymbolInfo includes digits and point.
 - Existing TradingAgents dataflow routing, LangGraph tool registration, and agent workflow are not modified.
@@ -263,7 +265,7 @@ git -c user.name='Codex' -c user.email='codex@localhost' commit -m "feat: add no
 
 - [ ] **Step 1: Add a fake MT5 API fixture**
 
-The fake exposes timeframe constants and only read methods (initialize, shutdown, terminal_info, account_info, symbols_get, symbol_select, symbol_info, symbol_info_tick, copy_rates_from_pos, positions_get, orders_get, last_error). Include symbols EURUSD.a, EURUSDm, USDJPY, and a symbol with a separator suffix such as EURUSD.raw; return deterministic records with digits=5 and point=0.00001.
+The fake exposes timeframe constants and only read methods (initialize, shutdown, terminal_info, account_info, symbols_get, symbol_select, symbol_info, symbol_info_tick, copy_rates_from_pos, positions_get, orders_get, last_error). Include symbols EURUSD.a, EURUSDm, mEURUSD, USDJPY, and a symbol with a separator suffix such as EURUSD.raw. Use realistic per-symbol precision: EURUSD variants have digits=5 and point=0.00001 with bid=1.10000/ask=1.10020 (20 points); USDJPY has digits=3 and point=0.001 with bid=150.123/ask=150.126 (3 points). The fake bar prices must use the same precision.
 
 - [ ] **Step 2: Write the failing provider tests**
 
@@ -296,6 +298,13 @@ def test_normalized_variant_is_resolved_without_fixed_suffix_allowlist(fake_api)
     fake_api.symbol_records = [fake_api.symbol("EURUSD.raw")]
     provider = initialized_provider(fake_api)
     assert provider.find_symbol(" EURUSD ") == "EURUSD.raw"
+
+
+@pytest.mark.unit
+def test_normalized_prefix_variant_is_resolved(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("mEURUSD")]
+    provider = initialized_provider(fake_api)
+    assert provider.find_symbol("EURUSD") == "mEURUSD"
 
 
 @pytest.mark.unit
@@ -338,7 +347,7 @@ def test_bars_account_and_spread_are_normalized(fake_api):
     assert len(bars) == 2 and bars[-1].close == 150.125
     assert account.balance == 10_000.0 and account.free_margin == 9_500.0
     assert spread.price == pytest.approx(0.003)
-    assert spread.points == pytest.approx(30.0)
+    assert spread.points == pytest.approx(3.0)
 
 
 @pytest.mark.unit
@@ -414,7 +423,7 @@ The tick normalizer always calls _utc_timestamp(raw, prefer_msc=True); bars and 
 
 - [ ] **Step 3: Implement flexible but fail-closed symbol resolution**
 
-Normalize input by trimming and uppercasing. First return the original broker name for an exact case-insensitive match. Otherwise derive a six-letter forex base only when the first six characters are alphabetic; accept a candidate when it has the same base and its remainder is either a single alphanumeric marker or a separator-led broker suffix made of alphanumerics/separators. Reject multi-letter suffixes with no separator (for example, EURUSDJPY) so an unrelated instrument cannot be guessed. Return one candidate, raise Mt5SymbolAmbiguousError with all candidates for more than one, and raise Mt5SymbolNotFoundError for none. ensure_symbol() calls symbol_select(resolved, True) and raises Mt5SymbolError if selection fails.
+Normalize input by trimming and uppercasing. First return the original broker name for an exact case-insensitive match. Otherwise derive one six-letter forex base from an input that can have a controlled broker prefix and/or suffix. Accept a candidate only when the base occurs once and every affix is either a separator-led decoration (for example fx_EURUSD, EURUSD.pro, or mEURUSD.a) or a short alphanumeric broker marker (for example mEURUSD or EURUSDm); reject a second six-letter run, a multi-letter no-separator currency-code affix such as EURUSDJPY, and other malformed names. This permits broker prefixes without turning arbitrary instruments into matches. Return one candidate, raise Mt5SymbolAmbiguousError with all candidates for more than one, and raise Mt5SymbolNotFoundError for none. ensure_symbol() calls symbol_select(resolved, True) and raises Mt5SymbolError if selection fails.
 
 - [ ] **Step 4: Implement read-only fetch and normalization methods**
 
@@ -545,7 +554,7 @@ pip install -e ".[mt5]"
 python scripts/test_mt5_connection.py --symbol EURUSD
 ~~~
 
-Include the supported timeframe table, exact-first/flexible-suffix symbol resolution and ambiguity behavior, terminal/account initialization failure messages, the optional --terminal-path, the opt-in integration test command, and a bold statement that Phase 3 is read-only and does not register LangGraph tools.
+Include the supported timeframe table, exact-first/flexible-prefix-and-suffix symbol resolution and ambiguity behavior, terminal/account initialization failure messages, the optional --terminal-path, the opt-in integration test command, and a bold statement that Phase 3 is read-only and does not register LangGraph tools.
 
 - [ ] **Step 5: Run snapshot and CLI tests and verify GREEN**
 
@@ -633,7 +642,7 @@ Record the actual connection result, resolved broker symbol, bid/ask, latest M5 
 
 ~~~powershell
 rg -n "order_send|open_position|close_position|modify_position|place_order|cancel_order" tradingagents/dataflows/mt5 scripts/test_mt5_connection.py
-git diff --name-only HEAD~8..HEAD
+git diff --name-only 92f3d6d824383b01aef8c51f18246e01fa764d04..HEAD
 git status --short
 ~~~
 
