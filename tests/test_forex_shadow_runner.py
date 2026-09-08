@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -230,6 +230,31 @@ def test_runner_fetches_one_snapshot_and_persists_normalized_decision(tmp_path):
     assert graph.invocations[0][1]["config"]["callbacks"] == []
     assert graph.invocations[0][0]["asset_type"] == "forex"
     assert graph.invocations[0][0]["market_data_mode"] == "forex_mt5"
+    assert result.decision.analysis_profile == "INTRADAY"
+    assert result.decision.valid_for_seconds == 3600
+    assert result.decision.valid_until == result.decision.snapshot_timestamp + timedelta(seconds=3600)
+
+
+def test_runner_fails_closed_for_month_horizon(tmp_path):
+    runner, _, _, _ = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": "**Rating**: Hold",
+            "portfolio_manager_raw_result": {
+                "rating": "Hold",
+                "time_horizon": "3-6 months",
+                "analysis_profile": "INTRADAY",
+            },
+            "risk_debate_state": {},
+        },
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.decision.action is None
+    assert result.decision.normalization_status == "FAILED"
+    assert result.decision.valid_for_seconds is None
+    assert result.decision.valid_until is None
 
 
 def test_runner_passes_callbacks_and_reports_llm_metrics(tmp_path):

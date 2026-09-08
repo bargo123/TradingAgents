@@ -5,13 +5,14 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from tradingagents.agents.utils.agent_utils import build_instrument_context
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
+from tradingagents.forex.profile import MACRO_EVENT_UNAVAILABLE, resolve_forex_profile
 from tradingagents.forex.shadow import (
     ShadowDecisionStore,
     ShadowNormalization,
@@ -54,6 +55,8 @@ def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
         "tool_calls": 0,
         "tokens_in": 0,
         "tokens_out": 0,
+        "reasoning_tokens": 0,
+        "agents": {},
     }
     for callback in callbacks:
         getter = getattr(callback, "get_stats", None)
@@ -67,7 +70,9 @@ def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
             continue
         for key in metrics:
             value = reported.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if key == "agents" and isinstance(value, Mapping):
+                metrics[key] = dict(value)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
                 metrics[key] = value
         break
     return metrics
@@ -205,6 +210,7 @@ class ForexShadowRunner:
         *,
         db_path: str | Path | None = None,
         callbacks: Sequence[Any] | None = None,
+        analysis_profile: str = "INTRADAY",
     ) -> ForexShadowRunResult:
         started = time.perf_counter()
         provider: Any | None = None
@@ -219,6 +225,7 @@ class ForexShadowRunner:
             parsed_date = self._validate_inputs(
                 symbol, count, analysis_date, selected_analysts
             )
+            profile = resolve_forex_profile(analysis_profile)
             provider = self.provider_factory(terminal_path=terminal_path)
             if not provider.initialize():
                 raise RuntimeError("MT5 provider initialization failed")
@@ -227,7 +234,7 @@ class ForexShadowRunner:
                 raise RuntimeError("MT5 provider returned an invalid resolved symbol")
             snapshot = provider.get_market_snapshot(resolved_symbol, count=count)
             snapshot_json = snapshot_to_dict(snapshot)
-            market_context = build_forex_market_context(snapshot)
+            market_context = build_forex_market_context(snapshot, profile)
             instrument_context = build_instrument_context(resolved_symbol, "forex", {})
             adapter = MT5ToolAdapter(provider, snapshot)
 
@@ -238,6 +245,7 @@ class ForexShadowRunner:
                 mt5_tools=adapter,
                 config=self.config,
                 callbacks=callback_list,
+                forex_analysis_profile=profile.name,
             )
             initial_state = graph.propagator.create_initial_state(
                 resolved_symbol,
@@ -247,6 +255,7 @@ class ForexShadowRunner:
                 instrument_context=instrument_context,
                 market_data_mode="forex_mt5",
                 market_context=market_context,
+                forex_analysis_profile=profile.name,
             )
             graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
             # The runner deliberately calls the already compiled graph. The
@@ -258,7 +267,10 @@ class ForexShadowRunner:
 
             raw_pm_result = self._extract_raw_pm_result(final_state)
             try:
-                normalized = normalize_portfolio_manager_result(raw_pm_result)
+                normalized = normalize_portfolio_manager_result(
+                    raw_pm_result,
+                    forex_profile=profile.name,
+                )
             except Exception as exc:  # malformed structured output fails closed
                 normalized = _failed_normalization(exc)
 
@@ -271,6 +283,21 @@ class ForexShadowRunner:
                         normalization_error=state_error.strip(),
                         raw_result=normalized.raw_result,
                     )
+
+            valid_for_seconds = None
+            valid_until = None
+            if normalized.normalization_status == "NORMALIZED":
+                raw_validity = (
+                    normalized.raw_result.get("valid_for_seconds")
+                    if isinstance(normalized.raw_result, Mapping)
+                    else None
+                )
+                valid_for_seconds = (
+                    raw_validity
+                    if isinstance(raw_validity, int) and not isinstance(raw_validity, bool)
+                    else profile.valid_for_seconds
+                )
+                valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
 
             source_run_id = str(uuid.uuid4())
             graph_config = getattr(graph, "config", {})
@@ -296,7 +323,7 @@ class ForexShadowRunner:
                 reference_mid=(snapshot.bid + snapshot.ask) / 2,
                 spread=snapshot.spread,
                 spread_points=snapshot.spread_points,
-                analysis_timeframe="M15",
+                analysis_timeframe="M1/M5/M15/H1",
                 trader_summary=_text(final_state.get("trader_investment_plan")),
                 portfolio_manager_summary=_text(final_state.get("final_trade_decision")),
                 bull_summary=_text(investment_debate_state.get("bull_history")) or None,
@@ -306,6 +333,9 @@ class ForexShadowRunner:
                 deep_model=_identifier(effective_config.get("deep_think_llm")),
                 snapshot_json=dict(snapshot_json),
                 source_run_id=source_run_id,
+                analysis_profile=profile.name,
+                valid_for_seconds=valid_for_seconds,
+                valid_until=valid_until,
             )
             self.store.record(decision)
             elapsed_seconds = time.perf_counter() - started
@@ -315,6 +345,17 @@ class ForexShadowRunner:
                 "elapsed_seconds": elapsed_seconds,
                 "market_data_mode": "forex_mt5",
                 "selected_analysts": selected_analysts,
+                "analysis_profile": profile.name,
+                "bars_used": {
+                    timeframe: snapshot_json.get("features", {})
+                    .get(timeframe, {})
+                    .get("candle_count", 0)
+                    for timeframe in ("M1", "M5", "M15", "H1")
+                },
+                "market_features": snapshot_json.get("features", {}),
+                "macro_event_status": MACRO_EVENT_UNAVAILABLE,
+                "decision_valid_for_seconds": valid_for_seconds,
+                "decision_valid_until": valid_until,
                 **callback_metrics,
             }
             return ForexShadowRunResult(

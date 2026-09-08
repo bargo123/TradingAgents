@@ -3,11 +3,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import re
 import sqlite3
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -47,6 +48,35 @@ _RATING_TO_ACTION: dict[str, AllowedAction] = {
     PortfolioRating.UNDERWEIGHT.value: "SELL",
     PortfolioRating.SELL.value: "SELL",
 }
+
+_FOREX_LONG_HORIZON_RE = re.compile(
+    r"\b(?:month|months|year|years|quarter|quarters|long[- ]term|equity investment)\b",
+    re.IGNORECASE,
+)
+
+
+def _validate_forex_payload(payload: Mapping[str, Any], profile_name: str) -> str | None:
+    profile_value = payload.get("analysis_profile")
+    if profile_value is not None and profile_value != profile_name:
+        return (
+            f"forex analysis_profile must be exactly {profile_name}, "
+            f"got {profile_value!r}"
+        )
+
+    horizon = payload.get("time_horizon")
+    if horizon is not None:
+        if not isinstance(horizon, str):
+            return "forex time_horizon must be a string when provided"
+        if _FOREX_LONG_HORIZON_RE.search(horizon):
+            return "forex time_horizon must be intraday minutes/hours, not months or years"
+
+    validity = payload.get("valid_for_seconds")
+    if validity is not None:
+        if isinstance(validity, bool) or not isinstance(validity, int):
+            return "forex valid_for_seconds must be an integer number of seconds"
+        if not 60 <= validity <= 86400:
+            return "forex valid_for_seconds must be between 60 and 86400 seconds"
+    return None
 def _json_safe(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
@@ -101,7 +131,11 @@ def _canonical_rating(value: Any) -> str:
     raise ValueError("rating must be an exact PortfolioRating value")
 
 
-def _normalize_from_payload(payload: Mapping[str, Any]) -> ShadowNormalization:
+def _normalize_from_payload(
+    payload: Mapping[str, Any],
+    *,
+    forex_profile: str | None = None,
+) -> ShadowNormalization:
     try:
         safe_payload = _json_safe(dict(payload))
     except TypeError as exc:
@@ -121,6 +155,16 @@ def _normalize_from_payload(payload: Mapping[str, Any]) -> ShadowNormalization:
             ),
             raw_result=safe_payload,
         )
+
+    if forex_profile is not None:
+        forex_error = _validate_forex_payload(payload, forex_profile)
+        if forex_error is not None:
+            return ShadowNormalization(
+                action=None,
+                normalization_status="FAILED",
+                normalization_error=forex_error,
+                raw_result=safe_payload,
+            )
 
     try:
         rating_text = _canonical_rating(payload["rating"])
@@ -183,6 +227,8 @@ class ShadowNormalization:
 
 def normalize_portfolio_manager_result(
     raw: PortfolioDecision | Mapping[str, Any] | None,
+    *,
+    forex_profile: str | None = None,
 ) -> ShadowNormalization:
     if raw is None:
         return ShadowNormalization(
@@ -206,10 +252,10 @@ def normalize_portfolio_manager_result(
 
     if isinstance(raw, PortfolioDecision):
         payload = raw.model_dump(mode="json")
-        return _normalize_from_payload(payload)
+        return _normalize_from_payload(payload, forex_profile=forex_profile)
 
     if isinstance(raw, Mapping):
-        return _normalize_from_payload(raw)
+        return _normalize_from_payload(raw, forex_profile=forex_profile)
 
     return ShadowNormalization(
         action=None,
@@ -254,6 +300,9 @@ class ShadowTradeDecision:
     outcome_resolved_at: datetime | None = None
     reflection: str | None = None
     source_run_id: str | None = None
+    analysis_profile: str = "INTRADAY"
+    valid_for_seconds: int | None = None
+    valid_until: datetime | None = None
     executed: bool = False
 
     def __post_init__(self) -> None:
@@ -263,6 +312,19 @@ class ShadowTradeDecision:
             raise ValueError("normalization_status must be NORMALIZED or FAILED")
         if self.future_evaluation_status not in ("PENDING", "RESOLVED"):
             raise ValueError("future_evaluation_status must be PENDING or RESOLVED")
+        if not isinstance(self.analysis_profile, str) or not self.analysis_profile.strip():
+            raise ValueError("analysis_profile must be a non-empty string")
+        if self.valid_for_seconds is not None:
+            if (
+                isinstance(self.valid_for_seconds, bool)
+                or not isinstance(self.valid_for_seconds, int)
+                or not 60 <= self.valid_for_seconds <= 86400
+            ):
+                raise ValueError("valid_for_seconds must be an integer between 60 and 86400")
+            if self.valid_until is None:
+                raise ValueError("valid_until is required when valid_for_seconds is set")
+        elif self.valid_until is not None:
+            raise ValueError("valid_for_seconds is required when valid_until is set")
         if self.normalization_status == "NORMALIZED" and self.action is None:
             raise ValueError("normalized decisions must include an action")
         if self.normalization_status == "FAILED" and self.action is not None:
@@ -271,6 +333,13 @@ class ShadowTradeDecision:
             raise ValueError("action must be BUY, SELL, HOLD, or None")
         _parse_utc_datetime(self.snapshot_timestamp)
         _parse_utc_datetime(self.created_at)
+        if self.valid_until is not None:
+            valid_until = _parse_utc_datetime(self.valid_until)
+            expected = _parse_utc_datetime(self.snapshot_timestamp) + timedelta(
+                seconds=self.valid_for_seconds
+            )
+            if valid_until != expected:
+                raise ValueError("valid_until must equal snapshot_timestamp + valid_for_seconds")
         if self.outcome_resolved_at is not None:
             _parse_utc_datetime(self.outcome_resolved_at)
         if self.snapshot_json is None:
@@ -321,6 +390,9 @@ class ShadowDecisionStore:
                     spread REAL NOT NULL,
                     spread_points REAL NOT NULL,
                     analysis_timeframe TEXT NOT NULL,
+                    analysis_profile TEXT NOT NULL DEFAULT 'INTRADAY',
+                    valid_for_seconds INTEGER,
+                    valid_until TEXT,
                     trader_summary TEXT NOT NULL,
                     portfolio_manager_summary TEXT NOT NULL,
                     bull_summary TEXT,
@@ -346,6 +418,20 @@ class ShadowDecisionStore:
                 )
                 """
             )
+            existing_columns = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(shadow_decisions)").fetchall()
+            }
+            migrations = {
+                "analysis_profile": "TEXT NOT NULL DEFAULT 'INTRADAY'",
+                "valid_for_seconds": "INTEGER",
+                "valid_until": "TEXT",
+            }
+            for column, declaration in migrations.items():
+                if column not in existing_columns:
+                    conn.execute(
+                        f"ALTER TABLE shadow_decisions ADD COLUMN {column} {declaration}"
+                    )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_shadow_decisions_resolved_symbol_date
@@ -355,44 +441,48 @@ class ShadowDecisionStore:
 
     def record(self, decision: ShadowTradeDecision) -> None:
         self.initialize()
-        placeholders = ", ".join(["?"] * 32)
+        columns = [
+            "decision_id",
+            "created_at",
+            "analysis_date",
+            "requested_symbol",
+            "resolved_symbol",
+            "snapshot_timestamp",
+            "action",
+            "normalization_status",
+            "normalization_error",
+            "raw_portfolio_manager_result",
+            "confidence",
+            "reference_bid",
+            "reference_ask",
+            "reference_mid",
+            "spread",
+            "spread_points",
+            "analysis_timeframe",
+            "analysis_profile",
+            "valid_for_seconds",
+            "valid_until",
+            "trader_summary",
+            "portfolio_manager_summary",
+            "bull_summary",
+            "bear_summary",
+            "llm_provider",
+            "quick_model",
+            "deep_model",
+            "snapshot_json",
+            "executed",
+            "future_evaluation_status",
+            "outcome_raw",
+            "outcome_alpha",
+            "outcome_resolved_at",
+            "reflection",
+            "source_run_id",
+        ]
+        placeholders = ", ".join(["?"] * len(columns))
         with sqlite3.connect(self.path) as conn:
             conn.execute(
                 f"""
-                INSERT INTO shadow_decisions (
-                    decision_id,
-                    created_at,
-                    analysis_date,
-                    requested_symbol,
-                    resolved_symbol,
-                    snapshot_timestamp,
-                    action,
-                    normalization_status,
-                    normalization_error,
-                    raw_portfolio_manager_result,
-                    confidence,
-                    reference_bid,
-                    reference_ask,
-                    reference_mid,
-                    spread,
-                    spread_points,
-                    analysis_timeframe,
-                    trader_summary,
-                    portfolio_manager_summary,
-                    bull_summary,
-                    bear_summary,
-                    llm_provider,
-                    quick_model,
-                    deep_model,
-                    snapshot_json,
-                    executed,
-                    future_evaluation_status,
-                    outcome_raw,
-                    outcome_alpha,
-                    outcome_resolved_at,
-                    reflection,
-                    source_run_id
-                ) VALUES ({placeholders})
+                INSERT INTO shadow_decisions ({", ".join(columns)}) VALUES ({placeholders})
                 ON CONFLICT(decision_id) DO NOTHING
                 """,
                 (
@@ -413,6 +503,13 @@ class ShadowDecisionStore:
                     decision.spread,
                     decision.spread_points,
                     decision.analysis_timeframe,
+                    decision.analysis_profile,
+                    decision.valid_for_seconds,
+                    None
+                    if decision.valid_until is None
+                    else _parse_utc_datetime(decision.valid_until)
+                    .isoformat()
+                    .replace("+00:00", "Z"),
                     decision.trader_summary,
                     decision.portfolio_manager_summary,
                     decision.bull_summary,
@@ -485,6 +582,7 @@ class ShadowDecisionStore:
             )
 
     def _row_to_decision(self, row: sqlite3.Row) -> ShadowTradeDecision:
+        row_keys = set(row.keys())
         return ShadowTradeDecision(
             decision_id=row["decision_id"],
             created_at=_parse_utc_datetime(row["created_at"]),
@@ -503,6 +601,17 @@ class ShadowDecisionStore:
             spread=row["spread"],
             spread_points=row["spread_points"],
             analysis_timeframe=row["analysis_timeframe"],
+            analysis_profile=(
+                row["analysis_profile"] if "analysis_profile" in row_keys else "INTRADAY"
+            ),
+            valid_for_seconds=(
+                row["valid_for_seconds"] if "valid_for_seconds" in row_keys else None
+            ),
+            valid_until=(
+                None
+                if "valid_until" not in row_keys or row["valid_until"] is None
+                else _parse_utc_datetime(row["valid_until"])
+            ),
             trader_summary=row["trader_summary"],
             portfolio_manager_summary=row["portfolio_manager_summary"],
             bull_summary=row["bull_summary"],

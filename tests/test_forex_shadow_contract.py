@@ -32,6 +32,7 @@ structured = load_module(
 StructuredOutputRequiredError = structured.StructuredOutputRequiredError
 invoke_structured_only = structured.invoke_structured_only
 
+from tradingagents.agents.schemas import ForexPortfolioDecision
 from tradingagents.forex.shadow import (  # noqa: E402  # isolated helper import must run first
     PortfolioDecision,
     PortfolioRating,
@@ -146,6 +147,59 @@ def test_normalization_rejects_conflicting_mapping_and_unknown_types() -> None:
     assert result.normalization_status == "FAILED"
 
 
+def test_forex_normalization_rejects_stock_style_horizons() -> None:
+    result = normalize_portfolio_manager_result(
+        {
+            "rating": "Hold",
+            "analysis_profile": "INTRADAY",
+            "time_horizon": "3-6 months",
+            "valid_for_seconds": 3600,
+        },
+        forex_profile="INTRADAY",
+    )
+
+    assert result.action is None
+    assert result.normalization_status == "FAILED"
+    assert "horizon" in result.normalization_error.lower()
+
+
+def test_forex_normalization_rejects_profile_or_validity_mismatches() -> None:
+    mismatched = normalize_portfolio_manager_result(
+        {"rating": "Hold", "analysis_profile": "SWING"},
+        forex_profile="INTRADAY",
+    )
+    assert mismatched.action is None
+    assert mismatched.normalization_status == "FAILED"
+    assert "profile" in mismatched.normalization_error.lower()
+
+    invalid_validity = normalize_portfolio_manager_result(
+        {"rating": "Hold", "valid_for_seconds": 0},
+        forex_profile="INTRADAY",
+    )
+    assert invalid_validity.action is None
+    assert invalid_validity.normalization_status == "FAILED"
+    assert "valid" in invalid_validity.normalization_error.lower()
+
+
+def test_forex_portfolio_schema_rejects_months_and_carries_validity() -> None:
+    with pytest.raises(ValueError, match="intraday|month"):
+        ForexPortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="x",
+            investment_thesis="y",
+            time_horizon="3-6 months",
+        )
+
+    decision = ForexPortfolioDecision(
+        rating=PortfolioRating.HOLD,
+        executive_summary="x",
+        investment_thesis="y",
+        time_horizon="minutes to hours",
+    )
+    assert decision.analysis_profile == "INTRADAY"
+    assert decision.valid_for_seconds == 3600
+
+
 def test_shadow_decision_rejects_executed_true_and_invalid_status() -> None:
     with pytest.raises(ValueError):
         make_decision(executed=1)
@@ -166,6 +220,18 @@ def test_shadow_decision_requires_snapshot_timestamp_round_trip() -> None:
     snapshot_timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
     decision = make_decision(snapshot_timestamp=snapshot_timestamp)
     assert decision.snapshot_timestamp == snapshot_timestamp
+
+
+def test_shadow_decision_round_trips_intraday_validity() -> None:
+    snapshot_timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
+    decision = make_decision(
+        snapshot_timestamp=snapshot_timestamp,
+        analysis_profile="INTRADAY",
+        valid_for_seconds=3600,
+        valid_until=snapshot_timestamp + timedelta(seconds=3600),
+    )
+    assert decision.valid_for_seconds == 3600
+    assert decision.valid_until == snapshot_timestamp + timedelta(seconds=3600)
 
 
 def test_shadow_decision_store_rejects_executed_true_directly() -> None:
@@ -204,6 +270,24 @@ def test_store_round_trip_is_idempotent_and_preserves_failed_action(
     assert restored.normalization_status == "FAILED"
     assert store.list_pending() == [restored]
     assert json.loads(restored.raw_portfolio_manager_result_json)["error"] == "missing"
+
+
+def test_store_round_trip_preserves_profile_and_validity(tmp_path: Path) -> None:
+    store = ShadowDecisionStore(tmp_path / "shadow.db")
+    timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
+    decision = make_decision(
+        snapshot_timestamp=timestamp,
+        analysis_profile="INTRADAY",
+        valid_for_seconds=3600,
+        valid_until=timestamp + timedelta(seconds=3600),
+    )
+
+    store.record(decision)
+    restored = store.get(decision.decision_id)
+
+    assert restored.analysis_profile == "INTRADAY"
+    assert restored.valid_for_seconds == 3600
+    assert restored.valid_until == timestamp + timedelta(seconds=3600)
 
 
 def test_store_rejects_invalid_future_evaluation_status_via_sql(

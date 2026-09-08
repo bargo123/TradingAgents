@@ -19,6 +19,7 @@ so that:
 from __future__ import annotations
 
 from enum import Enum
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -231,6 +232,72 @@ class PortfolioDecision(BaseModel):
     @classmethod
     def _nullish_float_to_none(cls, v):
         return _coerce_optional_float(v)
+
+
+_FOREX_LONG_HORIZON_RE = re.compile(
+    r"\b(?:month|months|year|years|quarter|quarters|long[- ]term|equity investment)\b",
+    re.IGNORECASE,
+)
+
+
+class ForexPortfolioDecision(PortfolioDecision):
+    """Forex-only Portfolio Manager output for a bounded intraday decision.
+
+    The stock ``PortfolioDecision`` remains unchanged.  This subclass adds
+    explicit profile/validity fields and rejects long-horizon equity language
+    before a forex result can be persisted.
+    """
+
+    analysis_profile: str = Field(
+        default="INTRADAY",
+        description="Exact forex analysis profile. The current supported value is INTRADAY.",
+    )
+    valid_for_seconds: int = Field(
+        default=3600,
+        ge=60,
+        le=86400,
+        description=(
+            "How many seconds this intraday shadow decision remains relevant from "
+            "the supplied MT5 snapshot; keep it bounded to the current session."
+        ),
+    )
+
+    @field_validator("analysis_profile")
+    @classmethod
+    def _exact_intraday_profile(cls, value: str) -> str:
+        if value != "INTRADAY":
+            raise ValueError("forex analysis_profile must be exactly INTRADAY")
+        return value
+
+    @field_validator("time_horizon")
+    @classmethod
+    def _reject_long_horizon(cls, value: str | None) -> str | None:
+        if value and _FOREX_LONG_HORIZON_RE.search(value):
+            raise ValueError(
+                "forex time_horizon must be intraday minutes/hours, not months or years"
+            )
+        return value
+
+    @field_validator("valid_for_seconds", mode="before")
+    @classmethod
+    def _reject_boolean_validity(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("valid_for_seconds must be an integer number of seconds")
+        return value
+
+
+def render_forex_pm_decision(decision: ForexPortfolioDecision) -> str:
+    """Render a forex Portfolio Manager result with explicit validity evidence."""
+    parts = [render_pm_decision(decision)]
+    parts.extend(
+        [
+            "",
+            f"**Analysis Profile**: {decision.analysis_profile}",
+            "",
+            f"**Valid For Seconds**: {decision.valid_for_seconds}",
+        ]
+    )
+    return "\n".join(parts)
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
