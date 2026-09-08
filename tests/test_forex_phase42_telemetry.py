@@ -11,6 +11,7 @@ from tradingagents.forex.telemetry import (
     current_agent_context,
     instrument_agent_node,
 )
+from tradingagents.graph.setup import GraphSetup
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 
 
@@ -125,3 +126,25 @@ def test_ollama_forex_thinking_controls_use_extra_body_only_in_forex():
     assert graph._get_provider_kwargs(role="deep")["extra_body"] == {"think": True}
     graph.market_data_mode = "stock"
     assert "extra_body" not in graph._get_provider_kwargs(role="quick")
+
+
+def test_forex_trader_keeps_deep_model_available_without_changing_stock():
+    setup = object.__new__(GraphSetup)
+    setup.market_data_mode = "forex_mt5"
+    deep = object()
+    quick = object()
+    setup.deep_thinking_llm = deep
+    setup.quick_thinking_llm = quick
+    forex_trader_llm = (
+        setup.deep_thinking_llm
+        if setup.market_data_mode == "forex_mt5"
+        else setup.quick_thinking_llm
+    )
+    assert forex_trader_llm is deep
+    setup.market_data_mode = "stock"
+    stock_trader_llm = (
+        setup.deep_thinking_llm
+        if setup.market_data_mode == "forex_mt5"
+        else setup.quick_thinking_llm
+    )
+    assert stock_trader_llm is quick

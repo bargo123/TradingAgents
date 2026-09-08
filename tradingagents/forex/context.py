@@ -108,10 +108,18 @@ def _position_to_dict(position: Any) -> dict[str, Any]:
     }
 
 
-def snapshot_to_dict(snapshot: ForexMarketSnapshot) -> dict[str, Any]:
-    """Serialize a normalized MT5 snapshot into a JSON-safe mapping."""
-    payload = _coerce_json_value(
-        {
+def snapshot_to_dict(
+    snapshot: ForexMarketSnapshot,
+    *,
+    include_candles: bool = True,
+) -> dict[str, Any]:
+    """Serialize a normalized MT5 snapshot into a JSON-safe mapping.
+
+    ``include_candles`` is retained for persisted evidence and diagnostics. The
+    graph's cached market tool sets it to ``False`` so raw bar arrays never
+    enter an LLM message; deterministic feature summaries remain available.
+    """
+    payload_value: dict[str, Any] = {
         "timestamp": _utc_iso(snapshot.timestamp),
         "symbol": snapshot.symbol,
         "quote": {
@@ -123,20 +131,21 @@ def snapshot_to_dict(snapshot: ForexMarketSnapshot) -> dict[str, Any]:
         "symbol_metadata": _symbol_info_to_dict(snapshot),
         "account": _account_to_dict(snapshot.account),
         "positions": [_position_to_dict(position) for position in snapshot.positions],
-        "candles": {
-            "M1": [_bar_to_dict(bar) for bar in snapshot.m1_candles[-_MAX_SERIALIZED_BARS:]],
-            "M5": [_bar_to_dict(bar) for bar in snapshot.m5_candles[-_MAX_SERIALIZED_BARS:]],
-            "M15": [_bar_to_dict(bar) for bar in snapshot.m15_candles[-_MAX_SERIALIZED_BARS:]],
-            "H1": [_bar_to_dict(bar) for bar in snapshot.h1_candles[-_MAX_SERIALIZED_BARS:]],
-        },
         "features": {
             "M1": calculate_timeframe_features(snapshot.m1_candles),
             "M5": calculate_timeframe_features(snapshot.m5_candles),
             "M15": calculate_timeframe_features(snapshot.m15_candles),
             "H1": calculate_timeframe_features(snapshot.h1_candles),
         },
+    }
+    if include_candles:
+        payload_value["candles"] = {
+            "M1": [_bar_to_dict(bar) for bar in snapshot.m1_candles[-_MAX_SERIALIZED_BARS:]],
+            "M5": [_bar_to_dict(bar) for bar in snapshot.m5_candles[-_MAX_SERIALIZED_BARS:]],
+            "M15": [_bar_to_dict(bar) for bar in snapshot.m15_candles[-_MAX_SERIALIZED_BARS:]],
+            "H1": [_bar_to_dict(bar) for bar in snapshot.h1_candles[-_MAX_SERIALIZED_BARS:]],
         }
-    )
+    payload = _coerce_json_value(payload_value)
     return _validate_json_safe(payload)
 
 
@@ -166,7 +175,7 @@ def build_forex_market_context(
 ) -> str:
     """Build a compact, deterministic prompt context for forex shadow mode."""
     resolved_profile = resolve_forex_profile(profile)
-    payload = snapshot_to_dict(snapshot)
+    payload = snapshot_to_dict(snapshot, include_candles=False)
     quote = payload["quote"]
     metadata = payload["symbol_metadata"]
     account = payload["account"] or {}

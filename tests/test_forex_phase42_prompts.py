@@ -176,6 +176,7 @@ def test_forex_portfolio_manager_uses_forex_schema_and_validity_language():
     assert "validity" in text or "valid_for_seconds" in text
     assert "3-6 months" not in text
     assert "issuer-level" in text
+    assert "3-6 months" not in ForexPortfolioDecision.model_json_schema()["properties"]["time_horizon"]["description"]
 
 
 def test_stock_research_manager_prompt_does_not_receive_forex_profile():

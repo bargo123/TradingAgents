@@ -172,6 +172,8 @@ def test_mt5_tool_adapter_uses_cached_snapshot_without_second_provider_snapshot(
 
     assert first == second
     assert provider.market_snapshot_calls == 0
+    assert "candles" not in first
+    assert set(first["features"]) == {"M1", "M5", "M15", "H1"}
 
 
 def test_mt5_tool_adapter_returns_json_safe_primitives_and_tools(

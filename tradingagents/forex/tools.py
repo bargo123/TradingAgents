@@ -64,7 +64,10 @@ class MT5ToolAdapter:
             raise RuntimeError(
                 "MT5ToolAdapter cached snapshot symbol does not match requested symbol"
             )
-        return snapshot_to_dict(self._cached_snapshot)
+        # Keep the LLM-facing tool compact: the deterministic feature summary
+        # is sufficient, while raw bars remain available only in persisted
+        # snapshot evidence returned by ``snapshot_to_dict``'s default path.
+        return snapshot_to_dict(self._cached_snapshot, include_candles=False)
 
     def get_mt5_tick(self, symbol: str) -> dict[str, Any]:
         return _normalize_value(self._provider.get_tick(symbol))

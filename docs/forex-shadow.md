@@ -154,7 +154,7 @@ its executive summary, investment thesis, price target, rating, and time
 horizon. The before/after account checks remained empty and no mutation API is
 available in the provider, adapter, runner, or graph tool set.
 
-## Phase 4.2 calibration validation (2026-09-08)
+## Phase 4.2 calibration validation — superseded v1 attempt (2026-09-08)
 
 The Phase 4.2 run completed the full graph with the production default history
 (`count=100` on M1/M5/M15/H1), one cached MT5 snapshot, and the default
@@ -199,3 +199,77 @@ Compared with the Phase 4.1 local run (`2595.45s`, 14 calls), this complete
 Phase 4.2 run took `2268.38s` (about `327.07s`, or `12.6%`, faster). The
 positions/orders before and after reconnect were both empty, and the command
 printed `NO ORDER WILL BE SENT`; no execution API was called.
+
+## Phase 4.2 final-code validation (v3 authoritative, 2026-09-08)
+
+After the v1 run, the final code was tightened so the LLM-facing MT5 tool emits
+only the compact quote/feature context (no raw candle arrays), the forex Trader
+is explicitly routed through the deep model, and the forex Portfolio Manager
+schema does not inherit a stock-style long-horizon description. The following
+run was then executed from that final code revision through the complete graph.
+
+The local configuration did not contain a hosted API key, so the existing
+Ollama provider was used. The default forex-safe allow-list remained
+`market,news`; Market, News, Bull, Bear, Research Manager, Trader, all three
+Risk Analysts, and Portfolio Manager each ran, with one cached MT5 snapshot and
+100 bars for every M1/M5/M15/H1 timeframe.
+
+Authoritative persisted/CLI evidence:
+
+```text
+provider=ollama
+quick_model=qwen3.5:2b (forex think=false)
+deep_model=qwen3.5:4b (forex think=true)
+requested_symbol=EURUSD
+resolved_symbol=EURUSD
+snapshot_timestamp=2026-09-08T21:55:51.236000Z
+bid=1.16268 ask=1.16268 spread=0.0 spread_points=0.0
+analysis_profile=INTRADAY horizon=minutes to hours valid_for_seconds=3600
+valid_until=2026-09-08T22:55:51.236000Z
+bars=M1:100 M5:100 M15:100 H1:100
+macro_event_status=MACRO/EVENT DATA UNAVAILABLE
+llm_calls=12 tool_calls=2 tokens_in=29015 tokens_out=14081 reasoning_tokens=0
+runtime_seconds=2468.540167500032
+portfolio_manager_rating=Hold
+raw_time_horizon=null
+normalized_action=HOLD
+normalization_status=NORMALIZED
+decision_id=5a8b4266-cd36-46c5-a898-188463d86cde
+executed=False
+database=data_cache/phase42-validation-20260908-v3.db
+positions_before=[] positions_after=[]
+orders_before=[] orders_after=[]
+```
+
+The raw structured Portfolio Manager result is retained in the SQLite row. It
+reported `rating=Hold`, omitted `time_horizon`, and included
+`valid_for_seconds=3600`; the validity window therefore comes from the
+declared `INTRADAY` profile rather than prose. The decision remains
+`future_evaluation_status=PENDING` and was not evaluated or relabeled.
+
+Final per-agent metrics (numeric telemetry only; no prompts or private
+chain-of-thought are stored):
+
+```text
+Market Analyst       model=qwen3.5:2b calls=2 input=4550 output=1400 elapsed=245.075s
+News Analyst         model=qwen3.5:2b calls=2 input=6371 output=1259 elapsed=228.127s
+Bull Researcher      model=qwen3.5:2b calls=1 input=2148 output=1948 elapsed=295.907s
+Bear Researcher      model=qwen3.5:2b calls=1 input=2140 output=1956 elapsed=289.750s
+Research Manager     model=qwen3.5:4b calls=1 input=1949 output=738  elapsed=199.636s
+Trader               model=qwen3.5:4b calls=1 input=2658 output=670  elapsed=199.769s
+Aggressive Analyst   model=qwen3.5:2b calls=1 input=2279 output=1817 elapsed=270.098s
+Conservative Analyst model=qwen3.5:2b calls=1 input=2260 output=1836 elapsed=257.102s
+Neutral Analyst      model=qwen3.5:2b calls=1 input=2259 output=1837 elapsed=282.347s
+Portfolio Manager    model=qwen3.5:4b calls=1 input=2401 output=620  elapsed=193.779s
+```
+
+The final runtime was `2468.54s`, `126.91s` (approximately `4.9%`) faster
+than the Phase 4.1 baseline of `2595.45s`, while using the required 100-bar
+history. A pre-run MT5 read captured empty positions and orders; a fresh
+post-run connection again returned empty positions and orders. The command
+printed `MT5 FOREX — SHADOW MODE` and `NO ORDER WILL BE SENT`, and no execution
+API was added or called.
+
+Final verification gate for this implementation: `772 passed, 4 skipped, 71
+subtests passed`; Ruff, `compileall`, and `git diff --check` passed; the opt-in
+MT5 integration guard passed (`1 passed, 2 deselected`).

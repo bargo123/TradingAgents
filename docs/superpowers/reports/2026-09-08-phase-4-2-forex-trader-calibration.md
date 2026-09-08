@@ -1,7 +1,11 @@
 # Phase 4.2 Forex Trader Calibration — Validation Report
 
-Date: 2026-09-08  
-Scope baseline: `e334b88a92c1a59bc69b7a84c22bb839ede86c5a` (accepted Phase 4.1)  
+> The first evidence block in this historical report is the superseded v1
+> attempt. The **Final-code v3 validation** section at the end is authoritative
+> for the completed implementation.
+
+Date: 2026-09-08
+Scope baseline: `e334b88a92c1a59bc69b7a84c22bb839ede86c5a` (accepted Phase 4.1)
 Mode: standalone `forex-shadow`, read-only MT5, no Phase 5 evaluation
 
 ## Result
@@ -118,4 +122,123 @@ git diff --check
 ```
 
 Phase 5 evaluation, outcome labeling, training, RAG, ONNX, order execution,
+and live/demo promotion remain out of scope.
+
+## Final-code v3 validation (authoritative)
+
+The final-code EURUSD run completed the full shadow path and persisted a genuine
+Portfolio Manager result. Market, News, Bull, Bear, Research Manager, Trader,
+Aggressive Risk, Conservative Risk, Neutral Risk, and Portfolio Manager all ran.
+No order execution path was added or invoked.
+
+| Field | Evidence |
+| --- | --- |
+| LLM provider | `ollama` |
+| Quick model | `qwen3.5:2b` (`think=false`, forex-only) |
+| Deep model | `qwen3.5:4b` (`think=true`, forex-only) |
+| Requested symbol | `EURUSD` |
+| Resolved broker symbol | `EURUSD` |
+| MT5 snapshot timestamp | `2026-09-08T21:55:51.236000Z` |
+| Bid / ask | `1.16268 / 1.16268` |
+| Spread / points | `0.0 / 0.0` |
+| Profile / horizon | `INTRADAY` / `minutes to hours` |
+| Validity | `3600s`, until `2026-09-08T22:55:51.236000Z` |
+| History | `100` bars each for M1, M5, M15, H1 |
+| Macro status | `MACRO/EVENT DATA UNAVAILABLE` |
+| Total LLM calls | `12` |
+| Tool calls | `2` |
+| Input / output tokens | `29015 / 14081` |
+| Reasoning tokens reported | `0` |
+| Total runtime | `2468.540167500032s` |
+| Raw Portfolio Manager rating | `Hold` |
+| Raw Portfolio Manager horizon | `null` (profile validity supplied) |
+| Normalized action | `HOLD` |
+| Normalization status | `NORMALIZED` |
+| Shadow decision ID | `5a8b4266-cd36-46c5-a898-188463d86cde` |
+| Shadow database | `data_cache/phase42-validation-20260908-v3.db` |
+| Executed | `False` |
+
+The raw structured Portfolio Manager JSON is persisted unchanged. It contains
+`analysis_profile=INTRADAY`, `rating=Hold`, `time_horizon=null`, and
+`valid_for_seconds=3600`. Normalization used that structured rating only; no
+free-form BUY/SELL/HOLD guessing occurred. The row remains
+`future_evaluation_status=PENDING`.
+
+Exact raw structured payload:
+
+```json
+{
+  "analysis_profile": "INTRADAY",
+  "executive_summary": "Maintain current EURUSD exposure with no directional action required. Wait for complete analyst debate content before executing trades, as zero spread conditions and missing Bull/Bear arguments preclude confident directional calls. Monitor price action and volatility within the intraday session.",
+  "investment_thesis": "The research manager's Hold recommendation is appropriate given the absence of Risk Analysts Debate History content. While technical indicators show bullish direction across all timeframes (M1, M5, M15, H1), no analyst arguments are provided to evaluate the bull/bear debate. The zero spread and demo account conditions further limit confidence in any trade execution. When evidence is missing or ambiguous, Hold is the appropriate stance rather than forcing a direction.",
+  "price_target": null,
+  "rating": "Hold",
+  "time_horizon": null,
+  "valid_for_seconds": 3600
+}
+```
+
+Final numeric per-agent telemetry (no prompts, completions, or private
+chain-of-thought text retained):
+
+```text
+Market Analyst       model=qwen3.5:2b calls=2 input=4550 output=1400 elapsed=245.075s
+News Analyst         model=qwen3.5:2b calls=2 input=6371 output=1259 elapsed=228.127s
+Bull Researcher      model=qwen3.5:2b calls=1 input=2148 output=1948 elapsed=295.907s
+Bear Researcher      model=qwen3.5:2b calls=1 input=2140 output=1956 elapsed=289.750s
+Research Manager     model=qwen3.5:4b calls=1 input=1949 output=738  elapsed=199.636s
+Trader               model=qwen3.5:4b calls=1 input=2658 output=670  elapsed=199.769s
+Aggressive Analyst   model=qwen3.5:2b calls=1 input=2279 output=1817 elapsed=270.098s
+Conservative Analyst model=qwen3.5:2b calls=1 input=2260 output=1836 elapsed=257.102s
+Neutral Analyst      model=qwen3.5:2b calls=1 input=2259 output=1837 elapsed=282.347s
+Portfolio Manager    model=qwen3.5:4b calls=1 input=2401 output=620  elapsed=193.779s
+```
+
+The forex Trader now uses the deep model while stock-mode assignments remain
+unchanged; a regression test covers this split. The LLM-facing MT5 tool emits
+compact quote/feature context without raw candle arrays, while persisted
+snapshot evidence remains available in SQLite.
+
+## Final MT5 safety proof
+
+Pre-run connected read:
+
+```text
+connected=True
+positions=[]
+orders=[]
+```
+
+Fresh post-run connected read:
+
+```text
+connected=True
+resolved=EURUSD
+positions=[]
+orders=[]
+```
+
+The provider, adapter, runner, and forex CLI expose no order-send, buy/sell,
+close-position, modify-position, or other mutation API. The command printed
+`MT5 FOREX — SHADOW MODE` and `NO ORDER WILL BE SENT`.
+
+## Final runtime comparison
+
+The accepted Phase 4.1 local validation measured `2595.45s` and 14 calls with
+a single-candle probe. Final Phase 4.2 measured `2468.5401675s` and 12 calls
+with the required 100-bar history per timeframe: `126.9098325s`
+(approximately `4.9%`) faster. This is runtime/calibration evidence only, not
+a profitability or trading-performance claim.
+
+## Verification results
+
+```text
+772 passed, 4 skipped, 71 subtests passed
+Ruff: All checks passed!
+compileall: passed
+git diff --check: passed
+MT5 integration guard: 1 passed, 2 deselected
+```
+
+Phase 5 outcome evaluation, labeling, training, RAG, ONNX, order execution,
 and live/demo promotion remain out of scope.

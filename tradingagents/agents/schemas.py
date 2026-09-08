@@ -261,6 +261,13 @@ class ForexPortfolioDecision(PortfolioDecision):
             "the supplied MT5 snapshot; keep it bounded to the current session."
         ),
     )
+    time_horizon: str | None = Field(
+        default=None,
+        description=(
+            "Optional intraday holding period, such as minutes to hours. "
+            "Do not provide a month/year or long-term equity horizon."
+        ),
+    )
 
     @field_validator("analysis_profile")
     @classmethod

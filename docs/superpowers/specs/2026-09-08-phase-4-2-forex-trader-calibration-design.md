@@ -34,7 +34,7 @@ The forex News analyst binds one tool named `get_global_news`, implemented throu
 
 ## Runtime telemetry
 
-The existing callback statistics handler gains an optional per-agent map. Graph nodes are wrapped with a context label and model identifier before invoking the existing LLMs. Callback events record call count, model, input tokens, output tokens, reasoning tokens when a provider reports them, and elapsed seconds. Only numeric metrics are retained; prompt text and chain-of-thought are never stored. Provider-specific limits remain configurable: existing OpenAI/Google/Anthropic knobs continue to apply, with optional forex quick/deep overrides and an Ollama `think` extra-body flag when explicitly configured. Deep reasoning remains available for Research Manager and Portfolio Manager.
+The existing callback statistics handler gains an optional per-agent map. Graph nodes are wrapped with a context label and model identifier before invoking the existing LLMs. Callback events record call count, model, input tokens, output tokens, reasoning tokens when a provider reports them, and elapsed seconds. Only numeric metrics are retained; prompt text and chain-of-thought are never stored. Provider-specific limits remain configurable: existing OpenAI/Google/Anthropic knobs continue to apply, with optional forex quick/deep overrides and an Ollama `think` extra-body flag when explicitly configured. Deep reasoning remains available for the forex Trader, Research Manager, and Portfolio Manager; stock mode keeps its original quick/deep assignments.
 
 ## Persistence and compatibility
 

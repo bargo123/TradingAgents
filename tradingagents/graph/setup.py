@@ -181,7 +181,12 @@ class GraphSetup:
         bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
         bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
         research_manager_node = create_research_manager(self.deep_thinking_llm)
-        trader_node = create_trader(self.quick_thinking_llm)
+        trader_llm = (
+            self.deep_thinking_llm
+            if self.market_data_mode == "forex_mt5"
+            else self.quick_thinking_llm
+        )
+        trader_node = create_trader(trader_llm)
 
         # Create risk analysis nodes
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
@@ -221,7 +226,7 @@ class GraphSetup:
         )
         workflow.add_node(
             "Trader",
-            self._instrument(trader_node, "Trader", self.quick_thinking_llm),
+            self._instrument(trader_node, "Trader", trader_llm),
         )
         workflow.add_node(
             "Aggressive Analyst",

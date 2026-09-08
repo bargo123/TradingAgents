@@ -1,5 +1,9 @@
 # Phase 4.2 Forex Trader Calibration Implementation Plan
 
+**Implementation status:** Completed and validated 2026-09-08. The checklist
+below records the original TDD execution plan; final evidence is in the
+validation report.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Calibrate the standalone forex shadow workflow for intraday decisions using sufficient deterministic MT5 history, strict validity, forex-safe prompts/news, and per-agent performance evidence.
@@ -112,7 +116,7 @@
 **Interfaces:**
 - `agent_context(name, model)` labels a synchronous graph node through a context variable.
 - `StatsCallbackHandler.get_stats()` retains existing counters and adds `agents: {name: {model, calls, tokens_in, tokens_out, reasoning_tokens, elapsed_seconds}}`.
-- Optional forex quick/deep reasoning/thinking config is passed only to the selected LLM role/provider; deep stages remain capable of reasoning.
+- Optional forex quick/deep reasoning/thinking config is passed only to the selected LLM role/provider; the forex Trader, Research Manager, and Portfolio Manager retain deep reasoning while stock assignments remain unchanged.
 
 - [ ] Write failing tests for agent context labels, usage extraction (including reasoning details), elapsed metrics, absence of prompt/chain-of-thought storage, and quick/deep config separation.
 - [ ] Run the focused telemetry tests and confirm missing metrics/config failures.
