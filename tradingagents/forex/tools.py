@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -35,6 +36,8 @@ def _normalize_value(value: Any) -> Any:
         return {key: _normalize_value(item) for key, item in value.items()}
     if isinstance(value, datetime):
         return _utc_iso(value)
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("MT5 tool values must be finite")
     return value
 
 

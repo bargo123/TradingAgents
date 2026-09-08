@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -235,3 +236,47 @@ def test_mt5_tool_adapter_rejects_market_snapshot_without_cache(
 
     with pytest.raises(RuntimeError, match="cached snapshot"):
         adapter.get_mt5_market_snapshot("EURUSD")
+
+
+def test_snapshot_to_dict_caps_each_timeframe_payload(
+    fake_snapshot: ForexMarketSnapshot,
+):
+    bars = fake_snapshot.m1_candles * 150
+    large_snapshot = ForexMarketSnapshot(
+        timestamp=fake_snapshot.timestamp,
+        symbol=fake_snapshot.symbol,
+        bid=fake_snapshot.bid,
+        ask=fake_snapshot.ask,
+        spread=fake_snapshot.spread,
+        spread_points=fake_snapshot.spread_points,
+        symbol_info=fake_snapshot.symbol_info,
+        m1_candles=bars,
+        m5_candles=bars,
+        m15_candles=bars,
+        h1_candles=bars,
+        account=fake_snapshot.account,
+        positions=fake_snapshot.positions,
+    )
+
+    payload = snapshot_to_dict(large_snapshot)
+
+    assert len(payload["candles"]["M1"]) <= 100
+    assert len(payload["candles"]["M5"]) <= 100
+    assert len(payload["candles"]["M15"]) <= 100
+    assert len(payload["candles"]["H1"]) <= 100
+
+
+def test_adapter_rejects_non_finite_float_values(fake_snapshot: ForexMarketSnapshot):
+    provider = FakeProvider(fake_snapshot)
+    provider.get_spread = lambda symbol: SimpleNamespace(
+        symbol=symbol,
+        bid=math.nan,
+        ask=fake_snapshot.ask,
+        price=fake_snapshot.spread,
+        points=fake_snapshot.spread_points,
+        timestamp=fake_snapshot.timestamp,
+    )
+    adapter = MT5ToolAdapter(provider, fake_snapshot)
+
+    with pytest.raises(ValueError, match="finite"):
+        adapter.get_mt5_spread("EURUSD")

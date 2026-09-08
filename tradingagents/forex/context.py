@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar
 
 _SOURCE_LABEL = "SOURCE: LIVE MT5 BROKER DATA (read-only; not Yahoo Finance)"
+_MAX_SERIALIZED_BARS = 100
 
 
 def _utc_iso(value: datetime) -> str:
@@ -31,6 +33,15 @@ def _bar_to_dict(bar: Mt5Bar) -> dict[str, Any]:
         "spread": bar.spread,
         "real_volume": bar.real_volume,
     }
+
+
+def _validate_json_safe(payload: Any) -> Any:
+    """Ensure a serialized payload contains no NaN/Infinity or opaque values."""
+    try:
+        json.dumps(payload, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("serialized MT5 context must contain finite JSON-safe values") from exc
+    return payload
 
 
 def _symbol_info_to_dict(snapshot: ForexMarketSnapshot) -> dict[str, Any]:
@@ -72,7 +83,7 @@ def _position_to_dict(position: Any) -> dict[str, Any]:
 
 def snapshot_to_dict(snapshot: ForexMarketSnapshot) -> dict[str, Any]:
     """Serialize a normalized MT5 snapshot into a JSON-safe mapping."""
-    return {
+    payload = {
         "timestamp": _utc_iso(snapshot.timestamp),
         "symbol": snapshot.symbol,
         "quote": {
@@ -85,12 +96,13 @@ def snapshot_to_dict(snapshot: ForexMarketSnapshot) -> dict[str, Any]:
         "account": _account_to_dict(snapshot.account),
         "positions": [_position_to_dict(position) for position in snapshot.positions],
         "candles": {
-            "M1": [_bar_to_dict(bar) for bar in snapshot.m1_candles],
-            "M5": [_bar_to_dict(bar) for bar in snapshot.m5_candles],
-            "M15": [_bar_to_dict(bar) for bar in snapshot.m15_candles],
-            "H1": [_bar_to_dict(bar) for bar in snapshot.h1_candles],
+            "M1": [_bar_to_dict(bar) for bar in snapshot.m1_candles[-_MAX_SERIALIZED_BARS:]],
+            "M5": [_bar_to_dict(bar) for bar in snapshot.m5_candles[-_MAX_SERIALIZED_BARS:]],
+            "M15": [_bar_to_dict(bar) for bar in snapshot.m15_candles[-_MAX_SERIALIZED_BARS:]],
+            "H1": [_bar_to_dict(bar) for bar in snapshot.h1_candles[-_MAX_SERIALIZED_BARS:]],
         },
     }
+    return _validate_json_safe(payload)
 
 
 def _summarize_series(label: str, bars: tuple[Mt5Bar, ...]) -> str:
