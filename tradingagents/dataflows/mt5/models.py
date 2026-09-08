@@ -100,3 +100,4 @@ class ForexMarketSnapshot:
     h1_candles: tuple[Mt5Bar, ...]
     account: Mt5AccountInfo | None
     positions: tuple[Mt5Position, ...]
+    symbol_info: Mt5SymbolInfo | None = None

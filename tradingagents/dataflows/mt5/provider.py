@@ -346,6 +346,7 @@ class MT5Provider:
             ask=tick.ask,
             spread=spread,
             spread_points=spread_points,
+            symbol_info=Mt5SymbolInfo(**{key: _field(info, key) for key in Mt5SymbolInfo.__dataclass_fields__}),
             m1_candles=candles["M1"],
             m5_candles=candles["M5"],
             m15_candles=candles["M15"],
