@@ -5,6 +5,23 @@
 **Repository:** C:\AITrading\TradingAgents  
 **Phase 4 baseline:** d4f4a49aab5958c11f9b4f693f66477e19f1d194
 
+### Approved amendments
+
+The implementation must also honor these amendments approved on 2026-09-08:
+
+- Final action normalization is strict and fail closed. Forex mode uses the
+  structured PortfolioDecision result; it never infers BUY/SELL/HOLD from
+  ambiguous or free-form prose. A failed normalization is persisted with an
+  explicit failure status and no action so later training data cannot treat it
+  as a labeled trade.
+- Forex news is limited to broad/global/macro-relevant context. Ticker/company
+  news, earnings, fundamentals, StockTwits, Reddit, P/E, EPS, dividends, and
+  equivalent stock-specific material are excluded.
+- Shadow persistence stores both the raw final Portfolio Manager result and
+  its normalized shadow result, including normalization status, requested and
+  resolved symbols, snapshot timestamp, bid/ask/spread, provider/model
+  identifiers, and executed=false.
+
 ## 1. Purpose
 
 Phase 4 adds a standalone, read-only forex analysis entry point named
@@ -133,18 +150,20 @@ method and contains no order API name.
 ### shadow.py
 
 'ShadowTradeDecision' is a frozen value object representing one completed
-analysis. It contains a UUID decision id, UTC creation time, analysis date,
-requested and resolved symbols, canonical action, optional confidence,
-reference bid/ask/mid/spread/spread-points, analysis timeframe, compact
-context, trader/portfolio-manager summaries, optional bull/bear summaries,
-provider/model metadata, an explicit serialized snapshot, future-evaluation
-status, optional outcome/reflection fields, a source run id, and
-'executed=False'.
+analysis or an explicitly failed normalization. It contains a UUID decision
+id, UTC creation time, analysis date, requested and resolved symbols, a
+possibly-null canonical action, normalization status and error, the raw
+structured Portfolio Manager result, optional confidence, reference bid/ask/
+mid/spread/spread-points, analysis timeframe, compact context, trader/
+portfolio-manager summaries, optional bull/bear summaries, provider/model
+metadata, an explicit serialized snapshot, future-evaluation status, optional
+outcome/reflection fields, a source run id, and 'executed=False'.
 
 Its post-initialization validation rejects any non-false executed value,
 invalid action, naive timestamp, or non-UTC timestamp. Action normalization
 uses the existing rating extractor and fails with an explicit review error
-when the portfolio-manager output has no recognized rating:
+when the structured portfolio-manager output is missing, malformed, or has
+no exact recognized rating. It never calls a prose parser for forex mode:
 
 - 'Buy' and 'Overweight' become 'BUY'.
 - 'Hold' becomes 'HOLD'.
@@ -256,7 +275,11 @@ shadow_decisions(
   analysis_date TEXT NOT NULL,
   requested_symbol TEXT NOT NULL,
   resolved_symbol TEXT NOT NULL,
-  action TEXT NOT NULL CHECK (action IN ('BUY','SELL','HOLD')),
+  action TEXT CHECK (action IS NULL OR action IN ('BUY','SELL','HOLD')),
+  normalization_status TEXT NOT NULL
+    CHECK (normalization_status IN ('NORMALIZED','FAILED')),
+  normalization_error TEXT,
+  raw_portfolio_manager_result TEXT NOT NULL,
   confidence REAL,
   reference_bid REAL NOT NULL,
   reference_ask REAL NOT NULL,
@@ -278,7 +301,13 @@ shadow_decisions(
   outcome_alpha REAL,
   outcome_resolved_at TEXT,
   reflection TEXT,
-  source_run_id TEXT
+  source_run_id TEXT,
+  CHECK (
+    (normalization_status = 'NORMALIZED' AND action IS NOT NULL
+      AND normalization_error IS NULL)
+    OR
+    (normalization_status = 'FAILED' AND action IS NULL)
+  )
 )
 ~~~
 
@@ -322,9 +351,11 @@ SHADOW DECISION RECORDED
 EXECUTED: FALSE
 ~~~
 
-Connection, symbol, graph, rating, and persistence failures return a
-non-zero exit status with an actionable error and never fall back to Yahoo or
-another market-data vendor.
+Connection, symbol, graph, and persistence failures return a non-zero exit
+status with an actionable error and never fall back to Yahoo or another
+market-data vendor. A completed graph run whose structured final result cannot
+be normalized is recorded as 'normalization_status=FAILED' with a null action
+and a non-zero exit status; it is never silently converted to HOLD.
 
 ## 9. Safety invariants
 
@@ -355,8 +386,8 @@ buy/sell, close-position, or modify-position methods.
   ambiguity, and fail-closed errors;
 - graph mode defaults and stock compatibility;
 - forex analyst allow-list rejection of social/fundamentals;
-- PM rating extraction and BUY/SELL/HOLD mapping, including missing-rating
-  failure;
+- strict structured PM-result normalization and BUY/SELL/HOLD mapping,
+  including missing/malformed-rating failure with raw-result retention;
 - frozen decision validation and normalized snapshot serialization;
 - SQLite schema, restart persistence, idempotent duplicate recording, pending
   listing, outcome updates, and immutable executed false.
