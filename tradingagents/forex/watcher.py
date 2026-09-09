@@ -1337,6 +1337,37 @@ class WatcherCoordinator:
             self.run_once()
             self._stop.wait(self.config.poll_interval_seconds)
 
+    def wait_for_active(self) -> str | None:
+        """Wait for the current run and finalize it without starting another.
+
+        The one-shot CLI uses this boundary so a failed asynchronous analysis
+        cannot be reported as a successful command.  It deliberately performs
+        no new probe or scheduling decision; the existing Phase 5 evaluator is
+        run only after the active runner has fully completed.
+        """
+
+        future = self._analysis_future
+        if future is None:
+            return None
+        with suppress(Exception):
+            future.result()
+        now = _require_aware_utc(self.clock.now(), "now")
+        if self._analysis_future is None:
+            return None
+        _, error_code = self._finalize_completed(now)
+        if error_code is not None:
+            return error_code
+        try:
+            self._maybe_evaluate(now)
+        except Exception as exc:
+            if self.owner_token is not None:
+                with suppress(Exception):
+                    self.store.set_error(
+                        self.owner_token, "EVALUATION_FAILED", str(exc), now
+                    )
+            return "EVALUATION_FAILED"
+        return None
+
     def request_shutdown(self) -> None:
         self.events.emit("SHUTDOWN_REQUESTED", {})
         self._stop.set()

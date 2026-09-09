@@ -61,6 +61,33 @@ def test_once_prints_shadow_collector_banner(capsys, monkeypatch, tmp_path):
     assert "NO ORDER WILL BE SENT" in output
 
 
+def test_once_propagates_active_analysis_failure(capsys, monkeypatch, tmp_path):
+    class FakeCoordinator:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self):
+            return SimpleNamespace(status=LeaseStatus.ACQUIRED)
+
+        def run_once(self, now=None):
+            return SimpleNamespace(
+                lifecycle_status="ANALYZING",
+                active_run_id="run-1",
+                error_code=None,
+            )
+
+        def wait_for_active(self):
+            return "ANALYSIS_FAILED"
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr("cli.forex_watch.WatcherCoordinator", FakeCoordinator)
+
+    assert main(["once", "--db-path", str(tmp_path / "watch.db")]) == 1
+    assert "ANALYSIS_FAILED" in capsys.readouterr().err
+
+
 def test_status_does_not_construct_mt5_or_llm(capsys, tmp_path):
     assert main(["status", "--db-path", str(tmp_path / "watch.db")]) == 0
     output = capsys.readouterr().out

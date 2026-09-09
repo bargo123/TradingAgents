@@ -204,11 +204,17 @@ def _run_once(coordinator: Any) -> int:
         # Production coordinators expose wait_for_active; test doubles can
         # return IDLE immediately without needing a worker implementation.
         waiter = getattr(coordinator, "wait_for_active", None)
+        wait_error = None
         if callable(waiter) and getattr(cycle, "active_run_id", None):
-            waiter()
+            wait_error = waiter()
+        if not isinstance(wait_error, str):
+            wait_error = getattr(wait_error, "error_code", None)
+        error_code = getattr(cycle, "error_code", None) or wait_error
+        if error_code:
+            print(f"FOREX WATCH ERROR: {error_code}", file=sys.stderr)
         summary = coordinator.store.summary() if hasattr(coordinator, "store") else {}
         _print_status(summary, False)
-        return 0 if getattr(cycle, "error_code", None) is None else 1
+        return 0 if error_code is None else 1
     finally:
         coordinator.shutdown()
 
