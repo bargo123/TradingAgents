@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import importlib
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any
 
+from .clock import (
+    BrokerClockConfig,
+    BrokerClockSample,
+    Mt5BrokerClock,
+    calibrate_broker_clock,
+    decode_mt5_epoch,
+)
 from .errors import (
     Mt5AccountDisconnectedError,
     Mt5BrokerClockError,
@@ -19,13 +26,6 @@ from .errors import (
     Mt5SymbolAmbiguousError,
     Mt5SymbolError,
     Mt5SymbolNotFoundError,
-)
-from .clock import (
-    BrokerClockConfig,
-    BrokerClockSample,
-    Mt5BrokerClock,
-    calibrate_broker_clock,
-    decode_mt5_epoch,
 )
 from .models import (
     ForexMarketSnapshot,
@@ -409,6 +409,11 @@ class MT5Provider:
         clock = self._broker_clock
         if clock is None:
             raise Mt5BrokerClockError("broker clock calibration is unavailable")
+        if resolved is None:
+            clock.ensure_fresh(
+                self._clock_now_utc(),
+                max_age_seconds=self._clock_config.max_calibration_age_seconds,
+            )
         raw_positions = self._api.positions_get()
         if raw_positions is None:
             raise self._failed_collection("positions_get")
@@ -428,6 +433,11 @@ class MT5Provider:
         clock = self._broker_clock
         if clock is None:
             raise Mt5BrokerClockError("broker clock calibration is unavailable")
+        if resolved is None:
+            clock.ensure_fresh(
+                self._clock_now_utc(),
+                max_age_seconds=self._clock_config.max_calibration_age_seconds,
+            )
         raw_orders = self._api.orders_get()
         if raw_orders is None:
             raise self._failed_collection("orders_get")

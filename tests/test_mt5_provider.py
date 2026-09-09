@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
 from tradingagents.dataflows.mt5.errors import (
     Mt5BrokerClockError,
     Mt5DataError,
@@ -12,7 +13,6 @@ from tradingagents.dataflows.mt5.errors import (
     Mt5SymbolAmbiguousError,
     Mt5SymbolNotFoundError,
 )
-from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
 from tradingagents.dataflows.mt5.provider import MT5Provider
 
 
@@ -316,6 +316,25 @@ def test_provider_rejects_stale_injected_broker_clock(fake_api):
 
     with pytest.raises(Mt5BrokerClockError, match="stale"):
         provider.get_tick("USDJPY")
+
+
+def test_provider_rejects_stale_clock_for_unfiltered_positions_and_orders(fake_api):
+    stale_clock = Mt5BrokerClock(
+        offset_seconds=0,
+        status="CALIBRATED",
+        calibrated_at_utc=datetime.now(timezone.utc) - timedelta(hours=2),
+        server="Fake-Demo",
+        symbol="USDJPY",
+        sample_count=1,
+        max_residual_seconds=0.0,
+        source="TEST",
+    )
+    provider = initialized_provider(fake_api, broker_clock=stale_clock)
+
+    with pytest.raises(Mt5BrokerClockError, match="stale"):
+        provider.get_positions()
+    with pytest.raises(Mt5BrokerClockError, match="stale"):
+        provider.get_orders()
 
 
 def test_provider_normalizes_each_timestamped_surface_once(fake_api):

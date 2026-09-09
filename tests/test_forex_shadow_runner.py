@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
+from tradingagents.dataflows.mt5.errors import Mt5BrokerClockError
 from tradingagents.dataflows.mt5.models import (
     ForexMarketSnapshot,
     Mt5AccountInfo,
@@ -237,6 +238,29 @@ def test_runner_fetches_one_snapshot_and_persists_normalized_decision(tmp_path):
     assert result.decision.analysis_profile == "INTRADAY"
     assert result.decision.valid_for_seconds == 3600
     assert result.decision.valid_until == result.decision.snapshot_timestamp + timedelta(seconds=3600)
+
+
+def test_runner_does_not_construct_graph_when_broker_clock_is_unavailable(tmp_path):
+    provider = _FakeProvider(_snapshot())
+
+    def unavailable_snapshot(symbol: str, count: int = 100):
+        raise Mt5BrokerClockError("broker clock calibration is unavailable")
+
+    provider.get_market_snapshot = unavailable_snapshot
+    graph_constructions = []
+
+    runner = ForexShadowRunner(
+        provider_factory=lambda terminal_path=None: provider,
+        graph_factory=lambda **kwargs: graph_constructions.append(kwargs),
+        store=ShadowDecisionStore(tmp_path / "shadow.db"),
+        config={"llm_provider": "local"},
+    )
+
+    with pytest.raises(Mt5BrokerClockError, match="broker clock"):
+        runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert graph_constructions == []
+    assert provider.shutdown_calls == 1
 
 
 def test_runner_uses_watcher_source_run_id(tmp_path):
