@@ -1,21 +1,27 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 
 from tradingagents.forex.watcher import (
     CompletedBarSchedule,
+    FrozenClock,
     LeaseHeartbeat,
     Mt5OperationBusy,
     ReadOnlyMarketProbe,
     SerializedMt5OperationGate,
     SingleSlotAnalysisExecutor,
+    WatcherCoordinator,
     WatcherConfig,
     canonical_opportunity_key,
     safe_effective_config,
 )
+from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
+from tradingagents.forex.watch_store import WatcherStore
 
 NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
 
@@ -186,3 +192,263 @@ def test_heartbeat_only_renews_and_marks_soft_timeout():
     assert store.renewals == 2
     assert store.runtime_alerts == 1
     assert heartbeat.runner_future_still_owned is True
+
+
+def _utc(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def _decision(source_run_id: str) -> ShadowTradeDecision:
+    from datetime import date
+
+    return ShadowTradeDecision(
+        decision_id=f"decision-{source_run_id}",
+        created_at=NOW,
+        snapshot_timestamp=NOW,
+        analysis_date=date(2026, 9, 9),
+        requested_symbol="EURUSD",
+        resolved_symbol="EURUSDm",
+        action="BUY",
+        raw_portfolio_manager_result={"rating": "Buy"},
+        normalization_status="NORMALIZED",
+        normalization_error=None,
+        confidence=None,
+        reference_bid=1.1,
+        reference_ask=1.1002,
+        reference_mid=1.1001,
+        spread=0.0002,
+        spread_points=2.0,
+        analysis_timeframe="M15",
+        trader_summary="trader",
+        portfolio_manager_summary="pm",
+        source_run_id=source_run_id,
+        decision_context_status="COMPLETE",
+        executed=False,
+    )
+
+
+class _Probe:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = []
+
+    def probe(self, symbol):
+        self.calls.append(symbol)
+        if self.error:
+            raise self.error
+        return SimpleNamespace(
+            requested_symbol=symbol,
+            resolved_symbol=f"{symbol}m",
+            timestamp=NOW,
+            bid=1.1,
+            ask=1.1002,
+        )
+
+
+class _Runner:
+    def __init__(self, store, result=None):
+        self.store = store
+        self.result = result
+        self.calls = []
+
+    def run(self, **kwargs):
+        self.calls.append(kwargs)
+        result = self.result
+        if callable(result):
+            result = result(kwargs)
+        decision = result.decision
+        if decision.source_run_id != kwargs["source_run_id"]:
+            decision = replace(decision, source_run_id=kwargs["source_run_id"])
+            result = replace(result, decision=decision) if hasattr(result, "__dataclass_fields__") else SimpleNamespace(
+                decision=decision, elapsed_seconds=result.elapsed_seconds, metrics=result.metrics
+            )
+        if not self.store.path.exists() or not ShadowDecisionStore(self.store.path).find_by_source_run_id(
+            decision.source_run_id
+        ):
+            ShadowDecisionStore(self.store.path).record(decision)
+        return result
+
+
+class _Evaluator:
+    def __init__(self):
+        self.calls = []
+
+    def evaluate_pending(self, **kwargs):
+        self.calls.append("evaluate_pending")
+        return SimpleNamespace(status="OK", errors=(), metrics={"llm_calls": 0})
+
+
+class _Harness:
+    def __init__(self, tmp_path: Path, runner_result=None, probe_error=None, symbols=("EURUSD",)):
+        from concurrent.futures import Future
+
+        self.clock = FrozenClock(NOW)
+        self.config = WatcherConfig(
+            db_path=tmp_path / "watch.db",
+            symbols=symbols,
+            evaluation_interval_seconds=0,
+        )
+        self.store = WatcherStore(self.config.db_path, lease_ttl_seconds=self.config.lease_ttl_seconds)
+        self.probe = _Probe(probe_error)
+        self.provider_factory = SimpleNamespace(created=0, created_while_active=0)
+        self.deferred = runner_result
+        self.runner = _Runner(self.store, runner_result or _complete_run_result())
+        self.evaluator = _Evaluator()
+        self.submitter_futures = []
+
+        def submit(fn):
+            future = Future()
+            # Invoke the fake worker immediately so calls/arguments are
+            # observable, but keep the Future pending until the test releases
+            # it.  No wall-clock thread or model work is involved.
+            result = fn()
+            self.submitter_futures.append((future, result))
+            return future
+
+        self.executor = SingleSlotAnalysisExecutor(submitter=submit)
+        self.gate = SerializedMt5OperationGate()
+        self.events = []
+        self.sequence = []
+        schedule = CompletedBarSchedule(
+            timeframe="M15",
+            settle_seconds=30,
+            config_fingerprint=self.config.safe_fingerprint,
+            requested_symbols=symbols,
+        )
+        self.coordinator = WatcherCoordinator(
+            config=self.config,
+            store=self.store,
+            clock=self.clock,
+            schedule=schedule,
+            probe=self.probe,
+            runner=self.runner,
+            evaluator=self.evaluator,
+            executor=self.executor,
+            gate=self.gate,
+            events=self.events,
+        )
+
+    def start(self, now=None):
+        return self.coordinator.start(now=now or NOW)
+
+    def poll(self, now=None):
+        return self.coordinator.run_once(now=now)
+
+    def complete_runner(self, completed_at=None):
+        if not self.submitter_futures:
+            raise AssertionError("runner was not submitted")
+        future, result = self.submitter_futures[-1]
+        future.set_result(result)
+
+    def shutdown(self):
+        self.coordinator.shutdown()
+
+
+def _complete_run_result():
+    return SimpleNamespace(
+        decision=_decision("run-1"),
+        elapsed_seconds=1.0,
+        metrics={"llm_calls": 1, "tool_calls": 1},
+    )
+
+
+def test_normal_poll_claims_one_current_opportunity_and_persists_decision(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+
+    cycle = harness.poll(_utc("2026-09-09T12:15:31Z"))
+    assert cycle.lifecycle_status == "ANALYZING"
+    assert [call["symbol"] for call in harness.runner.calls] == ["EURUSD"]
+    assert harness.store.list_opportunities()[0].status == "RUNNING"
+
+    harness.complete_runner()
+    finished = harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    assert finished.active_run_id is None
+    assert harness.store.list_opportunities()[0].status == "DECISION_SAVED"
+    assert harness.store.list_runs()[0].run_status in {"SUCCEEDED", "SUCCEEDED_SLOW"}
+    assert harness.store.decision_for_run(harness.store.list_runs()[0].run_id).executed is False
+
+
+def test_new_bar_during_analysis_is_terminally_skipped_and_not_queued(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+
+    cycle = harness.poll(_utc("2026-09-09T12:30:31Z"))
+
+    assert "ANALYSIS_ALREADY_RUNNING" in cycle.skip_reasons
+    assert len(harness.runner.calls) == 1
+    assert harness.executor.pending_count == 1
+    assert all(row.status == "SKIPPED" for row in harness.store.list_skipped())
+
+
+def test_duplicate_polls_do_not_create_second_decision(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    now = _utc("2026-09-09T12:15:31Z")
+    harness.poll(now)
+    harness.complete_runner()
+    harness.poll(now + timedelta(seconds=1))
+    harness.poll(now + timedelta(seconds=2))
+
+    assert len(harness.runner.calls) == 1
+    assert len(harness.store.list_opportunities()) == 1
+
+
+def test_market_probe_failure_skips_without_graph_or_llm(tmp_path):
+    harness = _Harness(tmp_path, probe_error=RuntimeError("MT5 unavailable"))
+    harness.start()
+
+    cycle = harness.poll(_utc("2026-09-09T12:15:31Z"))
+
+    assert cycle.skip_reasons == ("MT5_UNAVAILABLE",)
+    assert harness.runner.calls == []
+    assert harness.probe.calls == ["EURUSD"]
+
+
+def test_worker_forwards_existing_runner_iso_analysis_date_contract(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+
+    assert harness.runner.calls[0]["analysis_date"] == "2026-09-09"
+    assert isinstance(harness.runner.calls[0]["analysis_date"], str)
+
+
+def test_lifecycle_events_are_allowlisted_and_redacted(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+
+    assert {event["event"] for event in harness.events} <= {
+        "WATCHER_STARTED", "LEASE_RECOVERED", "OPPORTUNITY_OBSERVED",
+        "OPPORTUNITY_SKIPPED", "ANALYSIS_STARTED", "ANALYSIS_TIMEOUT_OBSERVED",
+        "ANALYSIS_FINISHED", "ANALYSIS_FAILED", "EVALUATION_FINISHED",
+        "EVALUATION_FAILED", "CIRCUIT_OPENED", "SHUTDOWN_REQUESTED",
+        "WATCHER_STOPPED",
+    }
+    assert all("prompt" not in repr(event).lower() for event in harness.events)
+    assert all("completion" not in repr(event).lower() for event in harness.events)
+
+
+def test_cooldown_selects_only_newest_current_candidate(tmp_path):
+    harness = _Harness(tmp_path, symbols=("EURUSD", "USDJPY"))
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    cycle = harness.poll(_utc("2026-09-09T12:16:32Z"))
+
+    assert [call["symbol"] for call in harness.runner.calls] == ["EURUSD"]
+    assert "COOLDOWN" in cycle.skip_reasons
+
+
+def test_restart_catchup_is_bounded_and_never_queues_old_buckets(tmp_path):
+    harness = _Harness(tmp_path)
+    harness.start()
+
+    cycle = harness.poll(_utc("2026-09-09T15:00:31Z"))
+
+    assert len(harness.store.list_opportunities()) <= harness.config.max_recovery_buckets + 1
+    assert harness.executor.pending_count == 1
+    assert cycle.recovery_gap_count >= 0

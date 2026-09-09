@@ -579,6 +579,475 @@ class LeaseHeartbeat:
         return self._runtime_alerted
 
 
+@dataclass(frozen=True, slots=True)
+class EvaluationRunEvidence:
+    status: str
+    errors: tuple[str, ...]
+    metrics: Mapping[str, Any]
+
+
+class EventSink:
+    """Allow-listed operational event collector with no prompt/report fields."""
+
+    ALLOWED = frozenset(
+        {
+            "WATCHER_STARTED",
+            "LEASE_RECOVERED",
+            "OPPORTUNITY_OBSERVED",
+            "OPPORTUNITY_SKIPPED",
+            "ANALYSIS_STARTED",
+            "ANALYSIS_TIMEOUT_OBSERVED",
+            "ANALYSIS_FINISHED",
+            "ANALYSIS_FAILED",
+            "EVALUATION_FINISHED",
+            "EVALUATION_FAILED",
+            "CIRCUIT_OPENED",
+            "SHUTDOWN_REQUESTED",
+            "WATCHER_STOPPED",
+        }
+    )
+
+    def __init__(self, target: list[dict[str, Any]] | None = None) -> None:
+        self.target = target if target is not None else []
+
+    def emit(self, event: str, payload: Mapping[str, Any] | None = None) -> None:
+        if event not in self.ALLOWED:
+            raise ValueError(f"event is not allow-listed: {event}")
+        safe = {"event": event}
+        for key, value in dict(payload or {}).items():
+            if key.casefold() in {"prompt", "completion", "report", "reasoning", "prose"}:
+                continue
+            if isinstance(value, (str, int, float, bool)) or value is None:
+                safe[key] = value
+        self.target.append(safe)
+
+
+@dataclass(frozen=True, slots=True)
+class WatchCycleResult:
+    lifecycle_status: str
+    observed_keys: tuple[str, ...] = ()
+    skipped_keys: tuple[str, ...] = ()
+    skip_reasons: tuple[str, ...] = ()
+    active_run_id: str | None = None
+    evaluation_status: str | None = None
+    evaluation_due_pending: bool = False
+    recovery_gap_count: int = 0
+    error_code: str | None = None
+
+
+class OutcomeCoordinator:
+    """Adapter around the existing zero-LLM Phase 5 evaluator."""
+
+    def __init__(self, evaluator: Any, *, terminal_path: str | None = None) -> None:
+        self.evaluator = evaluator
+        self.terminal_path = terminal_path
+
+    def evaluate_pending(self, now: datetime) -> EvaluationRunEvidence:
+        try:
+            result = self.evaluator.evaluate_pending(now=now, terminal_path=self.terminal_path)
+        except TypeError:
+            result = self.evaluator.evaluate_pending(now=now)
+        errors = tuple(str(item) for item in getattr(result, "errors", ()) or ())
+        metrics = getattr(result, "metrics", {})
+        if not isinstance(metrics, Mapping):
+            metrics = {}
+        metrics = dict(metrics)
+        metrics["llm_calls"] = 0
+        status = "ERROR" if errors else "OK"
+        return EvaluationRunEvidence(status=status, errors=errors, metrics=metrics)
+
+
+class WatcherCoordinator:
+    """Foreground scheduler that composes the existing read-only forex runner."""
+
+    def __init__(
+        self,
+        config: WatcherConfig,
+        store: Any,
+        clock: Clock,
+        schedule: SchedulePolicy,
+        probe: Any,
+        runner: Any,
+        evaluator: Any,
+        executor: SingleSlotAnalysisExecutor,
+        gate: SerializedMt5OperationGate,
+        heartbeat: LeaseHeartbeat | None = None,
+        process_inspector: Any | None = None,
+        events: list[dict[str, Any]] | EventSink | None = None,
+        callbacks: Sequence[Any] = (),
+    ) -> None:
+        self.config = config
+        self.store = store
+        self.clock = clock
+        self.schedule = schedule
+        self.probe = probe
+        self.runner = runner
+        self.outcomes = evaluator if isinstance(evaluator, OutcomeCoordinator) else OutcomeCoordinator(evaluator, terminal_path=config.terminal_path)
+        self.executor = executor
+        self.gate = gate
+        self.process_inspector = process_inspector
+        self.callbacks = tuple(callbacks)
+        self.events = events if isinstance(events, EventSink) else EventSink(events)
+        self.owner_token: str | None = None
+        self._owner = None
+        self._analysis_future: Future[Any] | None = None
+        self._active_run_id: str | None = None
+        self._last_poll: datetime | None = None
+        self._next_eligible_at: datetime | None = None
+        self._last_evaluation_at: datetime | None = None
+        self._stop = threading.Event()
+        self._runtime_alerted = False
+        self.heartbeat = heartbeat
+
+    def start(self, now: datetime | None = None):
+        from tradingagents.forex.watch_store import LeaseOwner, LeaseStatus
+
+        now = _require_aware_utc(now or self.clock.now(), "now")
+        self.store.initialize()
+        owner = LeaseOwner(
+            owner_token=str(uuid.uuid4()),
+            pid=os.getpid(),
+            host=socket.gethostname(),
+            process_started_at=now,
+        )
+        result = self.store.acquire_lease(owner, now, self.process_inspector)
+        if result.status is not LeaseStatus.ACQUIRED:
+            return result
+        self.owner_token = owner.owner_token
+        self._owner = owner
+        self.store.set_lifecycle(owner.owner_token, "IDLE", now)
+        if result.recovered_expired:
+            try:
+                from tradingagents.forex.shadow import ShadowDecisionStore
+
+                self.store.reconcile_stale_runs(
+                    owner.owner_token, now, ShadowDecisionStore(self.config.db_path)
+                )
+            except Exception as exc:  # recovery is fail-closed but startup can report it
+                self.store.set_error(owner.owner_token, "RECONCILIATION_FAILED", str(exc), now)
+        self.events.emit("LEASE_RECOVERED" if result.recovered_expired else "WATCHER_STARTED", {})
+        self._last_poll = None
+        self._last_evaluation_at = None
+        return result
+
+    def _require_started(self, now: datetime) -> str:
+        if self.owner_token is None:
+            raise RuntimeError("watcher is not started")
+        self.store.heartbeat(self.owner_token, now)
+        return self.owner_token
+
+    def _observe(self, now: datetime) -> tuple[list[Any], int]:
+        items = self.schedule.opportunities_between(self._last_poll, now)
+        self._last_poll = now
+        observed: list[Any] = []
+        for item in items:
+            row = self.store.observe_opportunity(item, now)
+            observed.append(row)
+            self.events.emit("OPPORTUNITY_OBSERVED", {"opportunity_key": item.opportunity_key})
+        return observed, 0
+
+    def _skip_busy(self, rows: Sequence[Any], now: datetime, owner_token: str) -> tuple[list[str], list[str]]:
+        keys: list[str] = []
+        reasons: list[str] = []
+        for row in rows:
+            if row.status != "ELIGIBLE":
+                continue
+            self.store.record_skip(owner_token, row.opportunity_key, "ANALYSIS_ALREADY_RUNNING", now)
+            keys.append(row.opportunity_key)
+            reasons.append("ANALYSIS_ALREADY_RUNNING")
+            self.events.emit(
+                "OPPORTUNITY_SKIPPED",
+                {"opportunity_key": row.opportunity_key, "reason": "ANALYSIS_ALREADY_RUNNING"},
+            )
+        return keys, reasons
+
+    def _run_claimed(self, run: Any):
+        opportunity = self.store.get_opportunity(run.opportunity_key)
+        with self.gate.acquire("runner"):
+            return self.runner.run(
+                symbol=run.requested_symbol,
+                analysis_date=opportunity.anchor_timestamp.date().isoformat(),
+                analysis_profile=self.config.analysis_profile,
+                analysts=self.config.analysts,
+                terminal_path=self.config.terminal_path,
+                db_path=self.config.db_path,
+                source_run_id=run.source_run_id,
+                callbacks=self.callbacks,
+            )
+
+    def _evidence_from_result(self, run: Any, result: Any) -> Any:
+        from tradingagents.forex.watch_store import RunEvidence
+
+        decision = getattr(result, "decision", None)
+        if decision is None:
+            raise ValueError("runner result did not contain a decision")
+        if getattr(decision, "executed", True) is not False:
+            raise ValueError("shadow decision executed invariant was violated")
+        if getattr(decision, "source_run_id", None) != run.source_run_id:
+            raise ValueError("runner source_run_id does not match watcher run")
+        metrics = getattr(result, "metrics", {})
+        if not isinstance(metrics, Mapping):
+            metrics = {}
+        safe_config = json.dumps(safe_effective_config(self.config.__dict__ if hasattr(self.config, "__dict__") else asdict(self.config)), sort_keys=True)
+        return RunEvidence(
+            run_id=run.run_id,
+            source_run_id=run.source_run_id,
+            decision_id=getattr(decision, "decision_id", None),
+            requested_symbol=decision.requested_symbol,
+            resolved_symbol=decision.resolved_symbol,
+            decision_context_status=getattr(decision, "decision_context_status", None),
+            normalization_status=getattr(decision, "normalization_status", None),
+            normalized_action=getattr(decision, "action", None),
+            analysis_snapshot_timestamp=getattr(decision, "analysis_snapshot_timestamp", None),
+            decision_completed_timestamp=getattr(decision, "decision_completed_timestamp", None),
+            analysis_latency_seconds=getattr(decision, "analysis_latency_seconds", None),
+            decision_reference_timestamp=getattr(decision, "decision_reference_timestamp", None),
+            decision_reference_delay_seconds=getattr(decision, "decision_reference_delay_seconds", None),
+            stale_by_completion=(
+                None
+                if getattr(decision, "decision_completed_timestamp", None) is None
+                else getattr(decision, "decision_completed_timestamp")
+                - getattr(decision, "analysis_snapshot_timestamp", getattr(decision, "snapshot_timestamp"))
+                > timedelta(seconds=self.config.freshness_budget_seconds)
+            ),
+            runtime_seconds=getattr(result, "elapsed_seconds", None),
+            llm_calls=metrics.get("llm_calls"),
+            tool_calls=metrics.get("tool_calls"),
+            tokens_in=metrics.get("tokens_in"),
+            tokens_out=metrics.get("tokens_out"),
+            reasoning_tokens=metrics.get("reasoning_tokens"),
+            llm_provider=getattr(decision, "llm_provider", None),
+            quick_model=getattr(decision, "quick_model", None),
+            deep_model=getattr(decision, "deep_model", None),
+            executed=False,
+            decision_reference_status=getattr(decision, "decision_reference_status", None),
+            freshness_budget_seconds=self.config.freshness_budget_seconds,
+            safe_config_json=safe_config,
+            metrics_json=json.dumps(dict(metrics), default=str, sort_keys=True),
+        )
+
+    def _finalize_completed(self, now: datetime) -> tuple[str | None, str | None]:
+        future = self._analysis_future
+        run_id = self._active_run_id
+        self._analysis_future = None
+        self._active_run_id = None
+        if future is None or run_id is None:
+            return None, None
+        run = self.store.get_run(run_id)
+        try:
+            result = future.result()
+            evidence = self._evidence_from_result(run, result)
+            slow = bool(
+                evidence.runtime_seconds is not None
+                and evidence.runtime_seconds > self.config.analysis_timeout_seconds
+            )
+            status = "SUCCEEDED_SLOW" if slow else "SUCCEEDED"
+            self.store.finalize_run(self.owner_token, run_id, now, status=status, evidence=evidence)
+            self._next_eligible_at = now + timedelta(seconds=self.config.cooldown_seconds)
+            self.events.emit(
+                "ANALYSIS_FINISHED",
+                {"run_id": run_id, "decision_id": evidence.decision_id, "status": status},
+            )
+            return evidence.decision_id, None
+        except Exception as exc:
+            self.store.finalize_run(
+                self.owner_token,
+                run_id,
+                now,
+                status="FAILED",
+                failure_code="ANALYSIS_FAILED",
+                failure_detail=str(exc),
+            )
+            self.events.emit("ANALYSIS_FAILED", {"run_id": run_id, "error_code": "ANALYSIS_FAILED"})
+            return None, "ANALYSIS_FAILED"
+
+    def _maybe_evaluate(self, now: datetime) -> str | None:
+        if not self.config.evaluation_enabled:
+            return None
+        summary = self.store.summary(now)
+        due = bool(summary.get("evaluation_due_pending"))
+        last = self._last_evaluation_at
+        if not due and self.config.evaluation_interval_seconds:
+            due = last is None or (now - last).total_seconds() >= self.config.evaluation_interval_seconds
+        if not due:
+            return None
+        with self.gate.acquire("evaluator"):
+            evidence = self.outcomes.evaluate_pending(now)
+        self.store.clear_evaluation_due(self.owner_token, now, evidence.status)
+        self._last_evaluation_at = now
+        event = "EVALUATION_FAILED" if evidence.errors else "EVALUATION_FINISHED"
+        self.events.emit(event, {"status": evidence.status, "llm_calls": 0})
+        return evidence.status
+
+    def run_once(self, now: datetime | None = None) -> WatchCycleResult:
+        now = _require_aware_utc(now or self.clock.now(), "now")
+        owner_token = self._require_started(now)
+        observed, gap = self._observe(now)
+        observed_keys = tuple(row.opportunity_key for row in observed)
+        if self._analysis_future is not None and not self._analysis_future.done():
+            skipped_keys, skip_reasons = self._skip_busy(observed, now, owner_token)
+            summary = self.store.summary(now)
+            if self._last_evaluation_at is None or (
+                self.config.evaluation_interval_seconds
+                and (now - self._last_evaluation_at).total_seconds() >= self.config.evaluation_interval_seconds
+            ):
+                self.store.mark_evaluation_due(owner_token, now)
+            self.store.set_lifecycle(owner_token, "ANALYZING", now)
+            if self.heartbeat is not None:
+                self.heartbeat.tick(now, self.clock.monotonic())
+            return WatchCycleResult(
+                lifecycle_status="ANALYZING",
+                observed_keys=observed_keys,
+                skipped_keys=tuple(skipped_keys),
+                skip_reasons=tuple(skip_reasons),
+                active_run_id=self._active_run_id,
+                evaluation_due_pending=True,
+                recovery_gap_count=gap,
+            )
+
+        error_code = None
+        evaluation_status = None
+        if self._analysis_future is not None:
+            _, error_code = self._finalize_completed(now)
+            if error_code is None:
+                try:
+                    evaluation_status = self._maybe_evaluate(now)
+                except Exception as exc:
+                    error_code = "EVALUATION_FAILED"
+                    self.store.set_error(owner_token, error_code, str(exc), now)
+        else:
+            try:
+                evaluation_status = self._maybe_evaluate(now)
+            except Exception as exc:
+                error_code = "EVALUATION_FAILED"
+                self.store.set_error(owner_token, error_code, str(exc), now)
+
+        if error_code is not None:
+            return WatchCycleResult(
+                lifecycle_status="IDLE",
+                observed_keys=observed_keys,
+                evaluation_status=evaluation_status,
+                evaluation_due_pending=bool(self.store.summary(now).get("evaluation_due_pending")),
+                recovery_gap_count=gap,
+                error_code=error_code,
+            )
+
+        candidates = [
+            row
+            for row in self.store.list_opportunities()
+            if row.status == "ELIGIBLE" and row.eligible_after <= now
+        ]
+        if self._next_eligible_at is not None and now < self._next_eligible_at:
+            for row in candidates:
+                self.store.record_skip(owner_token, row.opportunity_key, "COOLDOWN", now)
+            return WatchCycleResult(
+                lifecycle_status="IDLE",
+                observed_keys=observed_keys,
+                skipped_keys=tuple(row.opportunity_key for row in candidates),
+                skip_reasons=("COOLDOWN",) if not candidates else tuple("COOLDOWN" for _ in candidates),
+                evaluation_status=evaluation_status,
+                evaluation_due_pending=False,
+                recovery_gap_count=gap,
+            )
+        if not candidates:
+            self.store.set_lifecycle(owner_token, "IDLE", now)
+            return WatchCycleResult(
+                lifecycle_status="IDLE",
+                observed_keys=observed_keys,
+                evaluation_status=evaluation_status,
+                skip_reasons=("COOLDOWN",) if self._next_eligible_at is not None and now < self._next_eligible_at else (),
+                evaluation_due_pending=False,
+                recovery_gap_count=gap,
+            )
+
+        candidate = max(candidates, key=lambda row: row.anchor_timestamp)
+        skipped_keys: list[str] = []
+        skip_reasons: list[str] = []
+        for row in candidates:
+            if row.opportunity_key == candidate.opportunity_key:
+                continue
+            self.store.record_skip(owner_token, row.opportunity_key, "ANALYSIS_ALREADY_RUNNING", now)
+            skipped_keys.append(row.opportunity_key)
+            skip_reasons.append("ANALYSIS_ALREADY_RUNNING")
+        try:
+            with self.gate.acquire("probe"):
+                probe_result = self.probe.probe(candidate.requested_symbol)
+        except Exception as exc:
+            reason = "MT5_UNAVAILABLE"
+            self.store.record_skip(owner_token, candidate.opportunity_key, reason, now, str(exc))
+            skipped_keys.append(candidate.opportunity_key)
+            skip_reasons.append(reason)
+            return WatchCycleResult(
+                lifecycle_status="IDLE",
+                observed_keys=observed_keys,
+                skipped_keys=tuple(skipped_keys),
+                skip_reasons=tuple(skip_reasons),
+                evaluation_status=evaluation_status,
+                evaluation_due_pending=False,
+                recovery_gap_count=gap,
+                error_code=reason,
+            )
+        try:
+            run = self.store.claim_opportunity(
+                owner_token,
+                candidate.opportunity_key,
+                now,
+                resolved_symbol=probe_result.resolved_symbol,
+            )
+            future = self.executor.submit(lambda run=run: self._run_claimed(run))
+        except Exception as exc:
+            self.store.record_skip(owner_token, candidate.opportunity_key, "DB_LOCKED", now, str(exc))
+            return WatchCycleResult(
+                lifecycle_status="IDLE",
+                observed_keys=observed_keys,
+                skipped_keys=tuple(skipped_keys),
+                skip_reasons=tuple(skip_reasons + ["DB_LOCKED"]),
+                evaluation_status=evaluation_status,
+                evaluation_due_pending=False,
+                recovery_gap_count=gap,
+                error_code="DB_LOCKED",
+            )
+        self._analysis_future = future
+        self._active_run_id = run.run_id
+        self.store.set_lifecycle(owner_token, "ANALYZING", now)
+        self.events.emit("ANALYSIS_STARTED", {"run_id": run.run_id, "opportunity_key": candidate.opportunity_key})
+        return WatchCycleResult(
+            lifecycle_status="ANALYZING",
+            observed_keys=observed_keys,
+            skipped_keys=tuple(skipped_keys),
+            skip_reasons=tuple(skip_reasons),
+            active_run_id=run.run_id,
+            evaluation_status=evaluation_status,
+            evaluation_due_pending=False,
+            recovery_gap_count=gap,
+        )
+
+    def run_forever(self) -> None:
+        while not self._stop.is_set():
+            self.run_once()
+            self._stop.wait(self.config.poll_interval_seconds)
+
+    def request_shutdown(self) -> None:
+        self.events.emit("SHUTDOWN_REQUESTED", {})
+        self._stop.set()
+
+    def shutdown(self) -> None:
+        now = _require_aware_utc(self.clock.now(), "now")
+        if self.owner_token is not None:
+            token = self.owner_token
+            if self._analysis_future is not None and not self._analysis_future.done():
+                self._analysis_future.result(timeout=self.config.analysis_timeout_seconds)
+                self.run_once(now)
+            try:
+                self._maybe_evaluate(now)
+            except Exception:
+                pass
+            self.store.release_lease(token, now)
+            self.events.emit("WATCHER_STOPPED", {})
+            self.owner_token = None
+        self.executor.shutdown(wait=True)
+
+
 __all__ = [
     "WatcherConfig",
     "Clock",
@@ -595,4 +1064,9 @@ __all__ = [
     "SerializedMt5OperationGate",
     "SingleSlotAnalysisExecutor",
     "LeaseHeartbeat",
+    "EvaluationRunEvidence",
+    "EventSink",
+    "WatchCycleResult",
+    "OutcomeCoordinator",
+    "WatcherCoordinator",
 ]
