@@ -3,14 +3,13 @@ from __future__ import annotations
 import ast
 import os
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from tests.test_forex_watcher import _Harness, _complete_run_result, _utc
-
+from tests.test_forex_watcher import _complete_run_result, _Harness, _utc
 
 FORBIDDEN = {
     "order_send", "buy", "sell", "open_position", "close_position",

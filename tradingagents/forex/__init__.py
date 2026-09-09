@@ -52,11 +52,13 @@ from .watch_store import (
     WatcherStore,
 )
 from .watcher import (
+    CircuitBreakers,
     CompletedBarSchedule,
     EvaluationRunEvidence,
     EventSink,
     MarketProbeResult,
     Mt5OperationBusy,
+    Mt5OperationGate,
     OutcomeCoordinator,
     ReadOnlyMarketProbe,
     ScheduledOpportunity,
@@ -112,6 +114,7 @@ __all__ = [
     "MarketProbeResult",
     "ScheduledOpportunity",
     "CompletedBarSchedule",
+    "CircuitBreakers",
     "WatchCycleResult",
     "LeaseResult",
     "LeaseStatus",
@@ -123,5 +126,6 @@ __all__ = [
     "SerializedMt5OperationGate",
     "SingleSlotAnalysisExecutor",
     "Mt5OperationBusy",
+    "Mt5OperationGate",
     "EventSink",
 ]

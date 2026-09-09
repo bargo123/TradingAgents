@@ -78,6 +78,46 @@ def test_status_probe_refuses_while_watcher_lease_is_valid(tmp_path, capsys):
     assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err
 
 
+def test_once_refuses_active_watcher_before_coordinator_resource_construction(
+    tmp_path, capsys, monkeypatch
+):
+    db_path = tmp_path / "watch.db"
+    store = WatcherStore(db_path)
+    now = datetime.now(timezone.utc)
+    store.acquire_lease(_owner(), now)
+
+    def must_not_construct(*args, **kwargs):
+        raise AssertionError("coordinator resources must not be constructed")
+
+    monkeypatch.setattr("cli.forex_watch._make_coordinator", must_not_construct)
+
+    assert main(["once", "--db-path", str(db_path)]) == 1
+    assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err
+
+
+def test_main_accepts_injected_coordinator_factory_for_deterministic_smoke(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    class FakeCoordinator:
+        def start(self):
+            return SimpleNamespace(status=LeaseStatus.WATCHER_ALREADY_RUNNING)
+
+    def factory(args, config):
+        calls.append((args.command, config.db_path))
+        return FakeCoordinator()
+
+    # The lease guard remains authoritative; this no-lease path reaches the
+    # injected coordinator and never imports/contructs the production runner.
+    monkeypatch.setattr("cli.forex_watch._watcher_lease_is_active", lambda *args: False)
+    assert main(
+        ["once", "--db-path", str(tmp_path / "watch.db")],
+        coordinator_factory=factory,
+    ) == 1
+    assert calls and calls[0][0] == "once"
+
+
 def test_pyproject_registers_only_new_forex_watch_script():
     text = Path("pyproject.toml").read_text(encoding="utf-8")
     assert 'forex-watch = "cli.forex_watch:main"' in text

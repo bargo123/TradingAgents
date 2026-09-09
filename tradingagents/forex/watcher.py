@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import socket
 import threading
@@ -17,7 +18,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -200,9 +201,13 @@ class WatcherConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbols", _normalize_symbol_tuple(self.symbols))
         object.__setattr__(self, "analysts", _normalize_analyst_tuple(self.analysts))
+        if not isinstance(self.schedule_timeframe, str):
+            raise ValueError("schedule_timeframe must be a string")
         timeframe = self.schedule_timeframe.strip().upper()
         _require_choice(timeframe, set(_TIMEFRAME_SECONDS), "schedule_timeframe")
         object.__setattr__(self, "schedule_timeframe", timeframe)
+        if not isinstance(self.analysis_profile, str):
+            raise ValueError("analysis_profile must be a string")
         _require_choice(self.analysis_profile, {"INTRADAY"}, "analysis_profile")
         object.__setattr__(self, "analysis_profile", self.analysis_profile.upper())
         _require_positive_int(self.poll_interval_seconds, "poll_interval_seconds")
@@ -297,12 +302,17 @@ class ScheduledOpportunity:
     bar_close_timestamp: datetime
     eligible_after: datetime
     config_fingerprint: str
+    analyst_set: tuple[str, ...] = ("market", "news")
     opportunity_key: str = field(default="")
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "requested_symbol", self.requested_symbol.strip().upper())
         object.__setattr__(self, "analysis_profile", self.analysis_profile.strip().upper())
         object.__setattr__(self, "schedule_timeframe", self.schedule_timeframe.strip().upper())
+        analysts = tuple(str(value).strip().lower() for value in self.analyst_set)
+        if not analysts or any(value not in _FOREX_ANALYSTS for value in analysts):
+            raise ValueError("scheduled opportunity analyst_set must be forex-safe")
+        object.__setattr__(self, "analyst_set", analysts)
         for name in ("anchor_timestamp", "bar_close_timestamp", "eligible_after"):
             object.__setattr__(self, name, _require_aware_utc(getattr(self, name), name))
         if not self.requested_symbol or not self.config_fingerprint:
@@ -341,6 +351,7 @@ class CompletedBarSchedule:
     config_fingerprint: str = ""
     requested_symbols: tuple[str, ...] = ("EURUSD",)
     analysis_profile: str = "INTRADAY"
+    analyst_set: tuple[str, ...] = ("market", "news")
 
     def __post_init__(self) -> None:
         timeframe = self.timeframe.strip().upper()
@@ -351,6 +362,7 @@ class CompletedBarSchedule:
             raise ValueError("config_fingerprint must be non-empty")
         object.__setattr__(self, "requested_symbols", _normalize_symbol_tuple(self.requested_symbols))
         object.__setattr__(self, "analysis_profile", self.analysis_profile.strip().upper())
+        object.__setattr__(self, "analyst_set", _normalize_analyst_tuple(self.analyst_set))
 
     def _floor(self, value: datetime) -> datetime:
         value = _require_aware_utc(value)
@@ -389,6 +401,7 @@ class CompletedBarSchedule:
                     bar_close_timestamp=close,
                     eligible_after=close + timedelta(seconds=self.settle_seconds),
                     config_fingerprint=self.config_fingerprint,
+                    analyst_set=self.analyst_set,
                 )
                 for symbol in self.requested_symbols
             )
@@ -403,23 +416,37 @@ class MarketProbeResult:
     bid: float
     ask: float
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.requested_symbol, str) or not self.requested_symbol.strip():
+            raise ValueError("requested symbol must be non-empty")
+        if not isinstance(self.resolved_symbol, str) or not self.resolved_symbol.strip():
+            raise ValueError("resolved symbol must be non-empty")
+        object.__setattr__(self, "requested_symbol", self.requested_symbol.strip().upper())
+        object.__setattr__(self, "resolved_symbol", self.resolved_symbol.strip())
+        object.__setattr__(
+            self, "timestamp", _require_aware_utc(self.timestamp, "broker tick timestamp")
+        )
+        try:
+            bid = float(self.bid)
+            ask = float(self.ask)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("probe quote must contain numeric bid and ask") from exc
+        if not math.isfinite(bid) or not math.isfinite(ask) or bid <= 0 or ask < bid:
+            raise ValueError("probe quote must be finite, positive, and ask >= bid")
+        object.__setattr__(self, "bid", bid)
+        object.__setattr__(self, "ask", ask)
+
     @classmethod
     def from_tick(
         cls, requested_symbol: str, resolved_symbol: str, tick: Any
-    ) -> "MarketProbeResult":
+    ) -> MarketProbeResult:
         timestamp = getattr(tick, "timestamp", None)
         timestamp = _require_aware_utc(timestamp, "broker tick timestamp")
-        if not isinstance(resolved_symbol, str) or not resolved_symbol.strip():
-            raise ValueError("resolved symbol must be non-empty")
         try:
-            bid = float(getattr(tick, "bid"))
-            ask = float(getattr(tick, "ask"))
+            bid = float(tick.bid)
+            ask = float(tick.ask)
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValueError("probe quote must contain numeric bid and ask") from exc
-        import math
-
-        if not math.isfinite(bid) or not math.isfinite(ask) or bid <= 0 or ask < bid:
-            raise ValueError("probe quote must be finite, positive, and ask >= bid")
         return cls(
             requested_symbol=str(requested_symbol).strip().upper(),
             resolved_symbol=resolved_symbol.strip(),
@@ -482,6 +509,11 @@ class SerializedMt5OperationGate:
             self.events.append(f"{name}:end")
             self._operation = None
             self._lock.release()
+
+
+# Public compatibility alias matching the design-level protocol name.  The
+# concrete implementation remains the serialized, non-blocking gate above.
+Mt5OperationGate = SerializedMt5OperationGate
 
 
 class SingleSlotAnalysisExecutor:
@@ -556,6 +588,8 @@ class LeaseHeartbeat:
         self.timeout_seconds = float(timeout_seconds)
         self.sequence = sequence
         self._runtime_alerted = False
+        self._tracked_run_id = run_id
+        self._run_started_monotonic: float | None = None
         self.runner_future_still_owned = True
 
     def tick(self, now: datetime, monotonic_now: float) -> None:
@@ -568,11 +602,43 @@ class LeaseHeartbeat:
             renew(self.owner_token, now)
         if self.sequence is not None:
             self.sequence.append("heartbeat")
-        if monotonic_now > self.timeout_seconds and not self._runtime_alerted and self.run_id:
+        if self.run_id != self._tracked_run_id:
+            self._tracked_run_id = self.run_id
+            self._run_started_monotonic = monotonic_now if self.run_id else None
+            self._runtime_alerted = False
+        elif self.run_id and self._run_started_monotonic is None:
+            self._run_started_monotonic = monotonic_now
+        elapsed = (
+            None
+            if self._run_started_monotonic is None
+            else monotonic_now - self._run_started_monotonic
+        )
+        if (
+            elapsed is not None
+            and elapsed > self.timeout_seconds
+            and not self._runtime_alerted
+            and self.run_id
+        ):
             mark = getattr(self.store, "mark_runtime_alert", None)
             if callable(mark):
                 mark(self.owner_token, self.run_id, now)
             self._runtime_alerted = True
+
+    def begin_run(self, run_id: str, monotonic_now: float) -> None:
+        """Reset elapsed-time accounting for a newly claimed analysis run."""
+
+        self.run_id = run_id
+        self._tracked_run_id = run_id
+        self._run_started_monotonic = monotonic_now
+        self._runtime_alerted = False
+
+    def end_run(self) -> None:
+        """Stop tracking a completed run without changing lease ownership."""
+
+        self.run_id = None
+        self._tracked_run_id = None
+        self._run_started_monotonic = None
+        self._runtime_alerted = False
 
     @property
     def runtime_alerted(self) -> bool:
@@ -660,6 +726,14 @@ class OutcomeCoordinator:
 class CircuitBreakers:
     """Small in-memory view of persisted failure-class thresholds."""
 
+    _THRESHOLD_FIELDS = {
+        "mt5": "max_consecutive_mt5_failures",
+        "analysis": "max_consecutive_analysis_failures",
+        "incomplete": "max_consecutive_incomplete",
+        "normalization": "max_consecutive_normalization_failures",
+        "runtime": "max_consecutive_runtime_exceeded",
+    }
+
     def __init__(self, config: WatcherConfig) -> None:
         self.config = config
         self.counts: dict[str, int] = {
@@ -670,20 +744,16 @@ class CircuitBreakers:
             "runtime": 0,
         }
         self.open_reason: str | None = None
+        self.opened_at: datetime | None = None
 
-    def record(self, failure_class: str) -> bool:
+    def record(self, failure_class: str, now: datetime | None = None) -> bool:
         if failure_class not in self.counts:
             raise ValueError(f"unknown circuit failure class: {failure_class}")
         self.counts[failure_class] += 1
-        threshold = {
-            "mt5": self.config.max_consecutive_mt5_failures,
-            "analysis": self.config.max_consecutive_analysis_failures,
-            "incomplete": self.config.max_consecutive_incomplete,
-            "normalization": self.config.max_consecutive_normalization_failures,
-            "runtime": self.config.max_consecutive_runtime_exceeded,
-        }[failure_class]
-        if self.counts[failure_class] >= threshold:
+        threshold = getattr(self.config, self._THRESHOLD_FIELDS[failure_class])
+        if self.counts[failure_class] >= threshold and not self.is_open:
             self.open_reason = f"{failure_class.upper()}_FAILURES"
+            self.opened_at = None if now is None else _require_aware_utc(now, "now")
         return self.open_reason is not None
 
     def reset(self, failure_class: str) -> None:
@@ -692,6 +762,42 @@ class CircuitBreakers:
         self.counts[failure_class] = 0
         if self.open_reason and self.open_reason.startswith(failure_class.upper()):
             self.open_reason = None
+            self.opened_at = None
+
+    def load(
+        self,
+        counts: Mapping[str, Any],
+        *,
+        reason: str | None = None,
+        opened_at: datetime | None = None,
+    ) -> None:
+        """Restore persisted counters after a restart without opening resources."""
+
+        for failure_class in self.counts:
+            value = counts.get(failure_class, 0)
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                value = 0
+            self.counts[failure_class] = max(0, value)
+        self.open_reason = reason or None
+        self.opened_at = None if opened_at is None else _require_aware_utc(opened_at, "circuit_opened_at")
+
+    def cooldown_elapsed(self, now: datetime) -> bool:
+        if not self.is_open:
+            return True
+        if self.opened_at is None:
+            return False
+        return (
+            _require_aware_utc(now, "now") - self.opened_at
+        ).total_seconds() >= self.config.circuit_breaker_cooldown_seconds
+
+    @property
+    def open_failure_class(self) -> str | None:
+        if not self.open_reason:
+            return None
+        prefix = self.open_reason.split("_", 1)[0].casefold()
+        return prefix if prefix in self.counts else None
 
     @property
     def is_open(self) -> bool:
@@ -741,6 +847,59 @@ class WatcherCoordinator:
         self.circuits = CircuitBreakers(config)
         self.heartbeat = heartbeat
 
+    @staticmethod
+    def _parse_optional_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            text = value.strip()
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            return _require_aware_utc(datetime.fromisoformat(text), "timestamp")
+        except (TypeError, ValueError):
+            return None
+
+    def _load_persisted_state(self, now: datetime) -> dict[str, Any]:
+        summary = self.store.summary(now)
+        counters = {
+            "mt5": summary.get("consecutive_mt5_failures", 0),
+            "analysis": summary.get("consecutive_analysis_failures", 0),
+            "incomplete": summary.get("consecutive_incomplete_decisions", 0),
+            "normalization": summary.get("consecutive_normalization_failures", 0),
+            "runtime": summary.get("consecutive_runtime_exceeded", 0),
+        }
+        self.circuits.load(
+            counters,
+            reason=summary.get("circuit_reason"),
+            opened_at=self._parse_optional_timestamp(summary.get("circuit_opened_at")),
+        )
+        return summary
+
+    def _persist_circuits(self, now: datetime) -> None:
+        updater = getattr(self.store, "update_circuit", None)
+        if callable(updater) and self.owner_token is not None:
+            updater(
+                self.owner_token,
+                now,
+                reason=self.circuits.open_reason,
+                counters=self.circuits.counts,
+            )
+
+    def _record_failure(self, failure_class: str, now: datetime) -> None:
+        was_open = self.circuits.is_open
+        opened = self.circuits.record(failure_class, now)
+        self._persist_circuits(now)
+        if opened and not was_open and self.owner_token is not None:
+            self.store.set_lifecycle(self.owner_token, "DEGRADED", now)
+            self.events.emit(
+                "CIRCUIT_OPENED",
+                {"reason": self.circuits.open_reason or "UNKNOWN_FAILURE"},
+            )
+
+    def _reset_failure(self, failure_class: str, now: datetime) -> None:
+        self.circuits.reset(failure_class)
+        self._persist_circuits(now)
+
     def start(self, now: datetime | None = None):
         from tradingagents.forex.watch_store import LeaseOwner, LeaseStatus
 
@@ -757,7 +916,6 @@ class WatcherCoordinator:
             return result
         self.owner_token = owner.owner_token
         self._owner = owner
-        self.store.set_lifecycle(owner.owner_token, "IDLE", now)
         if result.recovered_expired:
             try:
                 from tradingagents.forex.shadow import ShadowDecisionStore
@@ -767,9 +925,20 @@ class WatcherCoordinator:
                 )
             except Exception as exc:  # recovery is fail-closed but startup can report it
                 self.store.set_error(owner.owner_token, "RECONCILIATION_FAILED", str(exc), now)
+        # Reconciliation may persist an operator-review circuit.  Reload once
+        # before selecting the initial lifecycle state.
+        persisted = self._load_persisted_state(now)
+        lifecycle = (
+            "DEGRADED"
+            if self.circuits.is_open and not self.circuits.cooldown_elapsed(now)
+            else "IDLE"
+        )
+        self.store.set_lifecycle(owner.owner_token, lifecycle, now)
         self.events.emit("LEASE_RECOVERED" if result.recovered_expired else "WATCHER_STARTED", {})
-        self._last_poll = None
-        self._last_evaluation_at = now
+        self._last_poll = self._parse_optional_timestamp(persisted.get("last_loop_at"))
+        self._last_evaluation_at = self._parse_optional_timestamp(
+            persisted.get("last_evaluation_at")
+        ) or now
         if self.heartbeat is None:
             self.heartbeat = LeaseHeartbeat(
                 store=self.store,
@@ -788,12 +957,23 @@ class WatcherCoordinator:
     def _observe(self, now: datetime) -> tuple[list[Any], int]:
         items = self.schedule.opportunities_between(self._last_poll, now)
         self._last_poll = now
+        anchors = sorted({item.anchor_timestamp for item in items})
+        recovery_gap = max(0, len(anchors) - self.config.max_recovery_buckets)
+        if recovery_gap:
+            # Keep only the newest bounded buckets.  Older timer history is a
+            # diagnostic gap, never a queue or a replay instruction.
+            allowed_anchors = set(anchors[-self.config.max_recovery_buckets :])
+            items = tuple(item for item in items if item.anchor_timestamp in allowed_anchors)
+            self.events.emit(
+                "OPPORTUNITY_SKIPPED",
+                {"reason": "STALE_BUCKET", "count": recovery_gap},
+            )
         observed: list[Any] = []
         for item in items:
             row = self.store.observe_opportunity(item, now)
             observed.append(row)
             self.events.emit("OPPORTUNITY_OBSERVED", {"opportunity_key": item.opportunity_key})
-        return observed, 0
+        return observed, recovery_gap
 
     def _skip_busy(self, rows: Sequence[Any], now: datetime, owner_token: str) -> tuple[list[str], list[str]]:
         keys: list[str] = []
@@ -825,6 +1005,7 @@ class WatcherCoordinator:
             )
 
     def _evidence_from_result(self, run: Any, result: Any) -> Any:
+        from tradingagents.forex.shadow import ShadowDecisionStore
         from tradingagents.forex.watch_store import RunEvidence
 
         decision = getattr(result, "decision", None)
@@ -834,29 +1015,44 @@ class WatcherCoordinator:
             raise ValueError("shadow decision executed invariant was violated")
         if getattr(decision, "source_run_id", None) != run.source_run_id:
             raise ValueError("runner source_run_id does not match watcher run")
+        decision_id = getattr(decision, "decision_id", None)
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            raise ValueError("runner decision_id must be non-empty")
+        stored = ShadowDecisionStore(self.config.db_path).get(decision_id)
+        if stored.source_run_id != run.source_run_id or stored.executed is not False:
+            raise ValueError("persisted shadow decision failed watcher invariants")
         metrics = getattr(result, "metrics", {})
         if not isinstance(metrics, Mapping):
             metrics = {}
-        safe_config = json.dumps(safe_effective_config(self.config.__dict__ if hasattr(self.config, "__dict__") else asdict(self.config)), sort_keys=True)
+        safe_config = json.dumps(
+            safe_effective_config(asdict(self.config)), sort_keys=True
+        )
+        analysis_snapshot_timestamp = getattr(
+            decision, "analysis_snapshot_timestamp", None
+        )
+        if analysis_snapshot_timestamp is None:
+            analysis_snapshot_timestamp = getattr(decision, "snapshot_timestamp", None)
+        decision_completed_timestamp = getattr(
+            decision, "decision_completed_timestamp", None
+        )
         return RunEvidence(
             run_id=run.run_id,
             source_run_id=run.source_run_id,
-            decision_id=getattr(decision, "decision_id", None),
+            decision_id=decision_id,
             requested_symbol=decision.requested_symbol,
             resolved_symbol=decision.resolved_symbol,
             decision_context_status=getattr(decision, "decision_context_status", None),
             normalization_status=getattr(decision, "normalization_status", None),
             normalized_action=getattr(decision, "action", None),
-            analysis_snapshot_timestamp=getattr(decision, "analysis_snapshot_timestamp", None),
-            decision_completed_timestamp=getattr(decision, "decision_completed_timestamp", None),
+            analysis_snapshot_timestamp=analysis_snapshot_timestamp,
+            decision_completed_timestamp=decision_completed_timestamp,
             analysis_latency_seconds=getattr(decision, "analysis_latency_seconds", None),
             decision_reference_timestamp=getattr(decision, "decision_reference_timestamp", None),
             decision_reference_delay_seconds=getattr(decision, "decision_reference_delay_seconds", None),
             stale_by_completion=(
                 None
-                if getattr(decision, "decision_completed_timestamp", None) is None
-                else getattr(decision, "decision_completed_timestamp")
-                - getattr(decision, "analysis_snapshot_timestamp", getattr(decision, "snapshot_timestamp"))
+                if decision_completed_timestamp is None or analysis_snapshot_timestamp is None
+                else decision_completed_timestamp - analysis_snapshot_timestamp
                 > timedelta(seconds=self.config.freshness_budget_seconds)
             ),
             runtime_seconds=getattr(result, "elapsed_seconds", None),
@@ -895,21 +1091,40 @@ class WatcherCoordinator:
             )
             status = "SUCCEEDED_SLOW" if slow else "SUCCEEDED"
             self.store.finalize_run(self.owner_token, run_id, now, status=status, evidence=evidence)
+            self._reset_failure("analysis", now)
+            if evidence.decision_context_status == "COMPLETE":
+                self._reset_failure("incomplete", now)
+            else:
+                self._record_failure("incomplete", now)
+            if evidence.normalization_status == "NORMALIZED":
+                self._reset_failure("normalization", now)
+            else:
+                self._record_failure("normalization", now)
+            if slow:
+                self._record_failure("runtime", now)
+            else:
+                self._reset_failure("runtime", now)
             self._next_eligible_at = now + timedelta(seconds=self.config.cooldown_seconds)
             self.events.emit(
                 "ANALYSIS_FINISHED",
                 {"run_id": run_id, "decision_id": evidence.decision_id, "status": status},
             )
+            if self.heartbeat is not None:
+                self.heartbeat.end_run()
             return evidence.decision_id, None
         except Exception as exc:
-            self.store.finalize_run(
-                self.owner_token,
-                run_id,
-                now,
-                status="FAILED",
-                failure_code="ANALYSIS_FAILED",
-                failure_detail=str(exc),
-            )
+            with suppress(Exception):
+                self.store.finalize_run(
+                    self.owner_token,
+                    run_id,
+                    now,
+                    status="FAILED",
+                    failure_code="ANALYSIS_FAILED",
+                    failure_detail=str(exc),
+                )
+            self._record_failure("analysis", now)
+            if self.heartbeat is not None:
+                self.heartbeat.end_run()
             self.events.emit("ANALYSIS_FAILED", {"run_id": run_id, "error_code": "ANALYSIS_FAILED"})
             return None, "ANALYSIS_FAILED"
 
@@ -938,8 +1153,7 @@ class WatcherCoordinator:
         observed_keys = tuple(row.opportunity_key for row in observed)
         if self._analysis_future is not None and not self._analysis_future.done():
             skipped_keys, skip_reasons = self._skip_busy(observed, now, owner_token)
-            summary = self.store.summary(now)
-            if (
+            if self.config.evaluation_enabled and (
                 self.config.evaluation_interval_seconds == 0
                 or self._last_evaluation_at is None
                 or (
@@ -950,14 +1164,22 @@ class WatcherCoordinator:
                 self.store.mark_evaluation_due(owner_token, now)
             self.store.set_lifecycle(owner_token, "ANALYZING", now)
             if self.heartbeat is not None:
+                was_alerted = self.heartbeat.runtime_alerted
                 self.heartbeat.tick(now, self.clock.monotonic())
+                if self.heartbeat.runtime_alerted and not was_alerted:
+                    self.events.emit(
+                        "ANALYSIS_TIMEOUT_OBSERVED",
+                        {"run_id": self._active_run_id},
+                    )
             return WatchCycleResult(
                 lifecycle_status="ANALYZING",
                 observed_keys=observed_keys,
                 skipped_keys=tuple(skipped_keys),
                 skip_reasons=tuple(skip_reasons),
                 active_run_id=self._active_run_id,
-                evaluation_due_pending=True,
+                evaluation_due_pending=bool(
+                    self.store.summary(now).get("evaluation_due_pending")
+                ),
                 recovery_gap_count=gap,
             )
 
@@ -980,7 +1202,7 @@ class WatcherCoordinator:
 
         if error_code is not None:
             return WatchCycleResult(
-                lifecycle_status="IDLE",
+                lifecycle_status="DEGRADED" if self.circuits.is_open else "IDLE",
                 observed_keys=observed_keys,
                 evaluation_status=evaluation_status,
                 evaluation_due_pending=bool(self.store.summary(now).get("evaluation_due_pending")),
@@ -1005,6 +1227,21 @@ class WatcherCoordinator:
                 evaluation_due_pending=False,
                 recovery_gap_count=gap,
             )
+        if self.circuits.is_open and not self.circuits.cooldown_elapsed(now):
+            for row in candidates:
+                self.store.record_skip(owner_token, row.opportunity_key, "CIRCUIT_BREAKER", now)
+            self.store.set_lifecycle(owner_token, "DEGRADED", now)
+            return WatchCycleResult(
+                lifecycle_status="DEGRADED",
+                observed_keys=observed_keys,
+                skipped_keys=tuple(row.opportunity_key for row in candidates),
+                skip_reasons=tuple("CIRCUIT_BREAKER" for _ in candidates),
+                evaluation_status=evaluation_status,
+                evaluation_due_pending=False,
+                recovery_gap_count=gap,
+                error_code="CIRCUIT_BREAKER",
+            )
+
         if not candidates:
             self.store.set_lifecycle(owner_token, "IDLE", now)
             return WatchCycleResult(
@@ -1031,10 +1268,11 @@ class WatcherCoordinator:
         except Exception as exc:
             reason = "MT5_UNAVAILABLE"
             self.store.record_skip(owner_token, candidate.opportunity_key, reason, now, str(exc))
+            self._record_failure("mt5", now)
             skipped_keys.append(candidate.opportunity_key)
             skip_reasons.append(reason)
             return WatchCycleResult(
-                lifecycle_status="IDLE",
+                lifecycle_status="DEGRADED" if self.circuits.is_open else "IDLE",
                 observed_keys=observed_keys,
                 skipped_keys=tuple(skipped_keys),
                 skip_reasons=tuple(skip_reasons),
@@ -1043,6 +1281,7 @@ class WatcherCoordinator:
                 recovery_gap_count=gap,
                 error_code=reason,
             )
+        self._reset_failure("mt5", now)
         try:
             run = self.store.claim_opportunity(
                 owner_token,
@@ -1052,7 +1291,20 @@ class WatcherCoordinator:
             )
             future = self.executor.submit(lambda run=run: self._run_claimed(run))
         except Exception as exc:
-            self.store.record_skip(owner_token, candidate.opportunity_key, "DB_LOCKED", now, str(exc))
+            if "run" in locals():
+                with suppress(Exception):
+                    self.store.finalize_run(
+                        owner_token,
+                        run.run_id,
+                        now,
+                        status="FAILED",
+                        failure_code="ANALYSIS_SUBMIT_FAILED",
+                        failure_detail=str(exc),
+                    )
+            else:
+                self.store.record_skip(
+                    owner_token, candidate.opportunity_key, "DB_LOCKED", now, str(exc)
+                )
             return WatchCycleResult(
                 lifecycle_status="IDLE",
                 observed_keys=observed_keys,
@@ -1066,7 +1318,7 @@ class WatcherCoordinator:
         self._analysis_future = future
         self._active_run_id = run.run_id
         if self.heartbeat is not None:
-            self.heartbeat.run_id = run.run_id
+            self.heartbeat.begin_run(run.run_id, self.clock.monotonic())
         self.store.set_lifecycle(owner_token, "ANALYZING", now)
         self.events.emit("ANALYSIS_STARTED", {"run_id": run.run_id, "opportunity_key": candidate.opportunity_key})
         return WatchCycleResult(
@@ -1094,13 +1346,14 @@ class WatcherCoordinator:
         if self.owner_token is not None:
             token = self.owner_token
             if self._analysis_future is not None and not self._analysis_future.done():
-                self._analysis_future.result(timeout=self.config.analysis_timeout_seconds)
-                self.run_once(now)
-            try:
+                with suppress(Exception):
+                    self._analysis_future.result()
+                with suppress(Exception):
+                    self.run_once(now)
+            with suppress(Exception):
                 self._maybe_evaluate(now)
-            except Exception:
-                pass
-            self.store.release_lease(token, now)
+            with suppress(Exception):
+                self.store.release_lease(token, now)
             self.events.emit("WATCHER_STOPPED", {})
             self.owner_token = None
         self.executor.shutdown(wait=True)
@@ -1119,6 +1372,7 @@ __all__ = [
     "MarketProbeResult",
     "ReadOnlyMarketProbe",
     "Mt5OperationBusy",
+    "Mt5OperationGate",
     "SerializedMt5OperationGate",
     "SingleSlotAnalysisExecutor",
     "LeaseHeartbeat",
@@ -1126,5 +1380,6 @@ __all__ = [
     "EventSink",
     "WatchCycleResult",
     "OutcomeCoordinator",
+    "CircuitBreakers",
     "WatcherCoordinator",
 ]

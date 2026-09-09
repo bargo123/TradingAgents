@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from dataclasses import replace
-from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
+from tradingagents.forex.watch_store import WatcherStore
 from tradingagents.forex.watcher import (
+    CircuitBreakers,
     CompletedBarSchedule,
     FrozenClock,
     LeaseHeartbeat,
@@ -15,13 +18,11 @@ from tradingagents.forex.watcher import (
     ReadOnlyMarketProbe,
     SerializedMt5OperationGate,
     SingleSlotAnalysisExecutor,
-    WatcherCoordinator,
     WatcherConfig,
+    WatcherCoordinator,
     canonical_opportunity_key,
     safe_effective_config,
 )
-from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
-from tradingagents.forex.watch_store import WatcherStore
 
 NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
 
@@ -47,6 +48,8 @@ def test_watcher_defaults_are_forex_safe_and_single_slot(tmp_path):
         ("bar_close_settle_seconds", -1),
         ("analysts", ("market", "fundamentals")),
         ("schedule_timeframe", "H4"),
+        ("schedule_timeframe", None),
+        ("analysis_profile", None),
     ],
 )
 def test_watcher_config_rejects_unsafe_or_invalid_values(tmp_path, field, value):
@@ -96,10 +99,8 @@ def test_safe_effective_config_excludes_credentials():
 
 def test_operation_gate_rejects_nested_or_concurrent_operation():
     gate = SerializedMt5OperationGate()
-    with gate.acquire("runner"):
-        with pytest.raises(Mt5OperationBusy):
-            with gate.acquire("evaluator"):
-                pass
+    with gate.acquire("runner"), pytest.raises(Mt5OperationBusy), gate.acquire("evaluator"):
+        pass
 
 
 class FakeSubmitter:
@@ -165,6 +166,19 @@ def test_probe_shuts_down_provider_and_never_exposes_mutation_api():
         assert not hasattr(probe, name)
 
 
+def test_market_probe_result_validates_injected_quote_values():
+    with pytest.raises(ValueError):
+        from tradingagents.forex.watcher import MarketProbeResult
+
+        MarketProbeResult(
+            requested_symbol="EURUSD",
+            resolved_symbol="EURUSD",
+            timestamp=NOW,
+            bid=1.2,
+            ask=1.1,
+        )
+
+
 class FakeHeartbeatStore:
     def __init__(self):
         self.renewals = 0
@@ -192,6 +206,64 @@ def test_heartbeat_only_renews_and_marks_soft_timeout():
     assert store.renewals == 2
     assert store.runtime_alerts == 1
     assert heartbeat.runner_future_still_owned is True
+
+
+def test_heartbeat_uses_elapsed_monotonic_time_not_absolute_clock_value():
+    store = FakeHeartbeatStore()
+    heartbeat = LeaseHeartbeat(
+        store=store,
+        owner_token="owner",
+        run_id="run",
+        timeout_seconds=7200,
+        sequence=None,
+    )
+
+    heartbeat.tick(NOW, 100_000.0)
+
+    assert store.runtime_alerts == 0
+    heartbeat.tick(NOW.replace(hour=13), 107_201.0)
+    assert store.runtime_alerts == 1
+
+
+def test_circuit_breakers_open_only_after_class_threshold_and_reset_independently(
+    tmp_path,
+):
+    config = WatcherConfig(
+        db_path=tmp_path / "watch.db",
+        max_consecutive_mt5_failures=2,
+        max_consecutive_analysis_failures=3,
+    )
+    circuits = CircuitBreakers(config)
+
+    assert circuits.record("mt5") is False
+    assert circuits.record("mt5") is True
+    assert circuits.open_reason == "MT5_FAILURES"
+    circuits.reset("mt5")
+    assert circuits.counts["mt5"] == 0
+    assert circuits.is_open is False
+    assert circuits.record("analysis") is False
+    assert circuits.counts["mt5"] == 0
+
+
+def test_mt5_failure_threshold_degrades_watcher_and_stops_new_claims(tmp_path):
+    harness = _Harness(tmp_path, probe_error=RuntimeError("MT5 unavailable"))
+    harness.coordinator.config = replace(
+        harness.coordinator.config, max_consecutive_mt5_failures=1
+    )
+    harness.coordinator.circuits.config = harness.coordinator.config
+    harness.start()
+
+    first = harness.poll(_utc("2026-09-09T12:15:31Z"))
+    between = harness.poll(_utc("2026-09-09T12:15:32Z"))
+    second = harness.poll(_utc("2026-09-09T12:30:31Z"))
+
+    assert first.error_code == "MT5_UNAVAILABLE"
+    assert between.lifecycle_status == "DEGRADED"
+    assert between.error_code == "CIRCUIT_BREAKER"
+    assert second.error_code == "CIRCUIT_BREAKER"
+    assert second.lifecycle_status == "DEGRADED"
+    assert harness.runner.calls == []
+    assert harness.store.summary()["circuit_reason"] == "MT5_FAILURES"
 
 
 def _utc(text: str) -> datetime:
@@ -480,6 +552,17 @@ def test_restart_catchup_is_bounded_and_never_queues_old_buckets(tmp_path):
     assert len(harness.store.list_opportunities()) <= harness.config.max_recovery_buckets + 1
     assert harness.executor.pending_count == 1
     assert cycle.recovery_gap_count >= 0
+
+
+def test_catchup_reports_and_caps_recovery_gap(tmp_path):
+    harness = _Harness(tmp_path)
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:00:00Z"))
+
+    cycle = harness.poll(_utc("2026-09-09T15:00:31Z"))
+
+    assert cycle.recovery_gap_count > 0
+    assert len(harness.store.list_opportunities()) <= harness.config.max_recovery_buckets + 1
 
 
 def test_due_evaluation_during_analysis_is_deferred_then_runs_before_next_probe(tmp_path):

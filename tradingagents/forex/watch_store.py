@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import json
-import os
-import socket
 import sqlite3
-import threading
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
     from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
@@ -371,8 +368,14 @@ class WatcherStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_forex_watch_opportunities_status
                     ON forex_watch_opportunities(status, eligible_after);
+                CREATE INDEX IF NOT EXISTS idx_forex_watch_opportunities_symbol_anchor
+                    ON forex_watch_opportunities(requested_symbol, anchor_timestamp);
                 CREATE INDEX IF NOT EXISTS idx_forex_watch_runs_status
                     ON forex_watch_runs(run_status, started_at);
+                CREATE INDEX IF NOT EXISTS idx_forex_watch_runs_heartbeat
+                    ON forex_watch_runs(run_status, heartbeat_at);
+                CREATE INDEX IF NOT EXISTS idx_forex_watch_runs_decision
+                    ON forex_watch_runs(decision_id);
                 """
             )
             columns = {
@@ -568,7 +571,10 @@ class WatcherStore:
     def observe_opportunity(self, opportunity: ScheduledOpportunity, now: datetime) -> WatchOpportunity:
         now = _utc(now, "now")
         self.initialize()
-        analyst_json = json.dumps([], separators=(",", ":"))
+        analyst_json = json.dumps(
+            list(getattr(opportunity, "analyst_set", ("market", "news"))),
+            separators=(",", ":"),
+        )
         with self._transaction(immediate=True) as conn:
             conn.execute(
                 """
@@ -625,6 +631,11 @@ class WatcherStore:
         detail: str | None = None,
     ) -> None:
         now = _utc(now, "now")
+        # Accept the design-document order (key, owner_token, now) as well as
+        # the coordinator's owner-first order without weakening fencing.
+        current = self.active_lease(now)
+        if current is not None and owner_token != current.owner_token and opportunity_key == current.owner_token:
+            owner_token, opportunity_key = opportunity_key, owner_token
         reason_value = reason.value if isinstance(reason, SkipReason) else str(reason)
         self.initialize()
         with self._transaction(immediate=True) as conn:
@@ -648,6 +659,9 @@ class WatcherStore:
         resolved_symbol: str | None = None,
     ) -> WatchRun:
         now = _utc(now, "now")
+        current = self.active_lease(now)
+        if current is not None and owner_token != current.owner_token and opportunity_key == current.owner_token:
+            owner_token, opportunity_key = opportunity_key, owner_token
         source_run_id = source_run_id or str(uuid.uuid4())
         run_id = str(uuid.uuid4())
         self.initialize()
@@ -726,6 +740,8 @@ class WatcherStore:
                 raise KeyError(run_id)
             if row["run_status"] != "RUNNING":
                 return self._row_to_run(row)
+            if evidence is not None and evidence.executed is not False:
+                raise ValueError("watcher evidence must remain executed=False")
             decision_id = None if evidence is None else evidence.decision_id
             run_status = status
             sets = [
@@ -802,6 +818,66 @@ class WatcherStore:
                 "UPDATE forex_watcher_state SET last_error_code=?, last_error=?, updated_at=? WHERE singleton_id=1",
                 (_safe_text(code, 100), _safe_text(detail), _iso(now)),
             )
+
+    def update_circuit(
+        self,
+        owner_token: str,
+        now: datetime,
+        *,
+        reason: str | None = None,
+        counters: Mapping[str, int] | None = None,
+    ) -> None:
+        """Persist circuit state under the current owner fence."""
+
+        now = _utc(now, "now")
+        self.initialize()
+        columns = {
+            "consecutive_mt5_failures": "mt5",
+            "consecutive_analysis_failures": "analysis",
+            "consecutive_incomplete_decisions": "incomplete",
+            "consecutive_normalization_failures": "normalization",
+            "consecutive_runtime_exceeded": "runtime",
+        }
+        with self._transaction(immediate=True) as conn:
+            self._require_owner(conn, owner_token)
+            assignments = ["updated_at=?"]
+            values: list[Any] = [_iso(now)]
+            if reason is not None:
+                assignments.extend(("circuit_reason=?", "circuit_opened_at=?"))
+                values.extend((_safe_text(reason, 100), _iso(now)))
+            else:
+                assignments.extend(("circuit_reason=NULL", "circuit_opened_at=NULL"))
+            for column, key in columns.items():
+                if counters is not None and key in counters:
+                    assignments.append(f"{column}=?")
+                    values.append(int(counters[key]))
+            values.append(1)
+            conn.execute(
+                f"UPDATE forex_watcher_state SET {', '.join(assignments)} WHERE singleton_id=?",
+                values,
+            )
+
+    def increment_failure(self, owner_token: str, failure_class: str, now: datetime) -> int:
+        columns = {
+            "mt5": "consecutive_mt5_failures",
+            "analysis": "consecutive_analysis_failures",
+            "incomplete": "consecutive_incomplete_decisions",
+            "normalization": "consecutive_normalization_failures",
+            "runtime": "consecutive_runtime_exceeded",
+        }
+        if failure_class not in columns:
+            raise ValueError(f"unknown failure class: {failure_class}")
+        now = _utc(now, "now")
+        self.initialize()
+        with self._transaction(immediate=True) as conn:
+            self._require_owner(conn, owner_token)
+            column = columns[failure_class]
+            conn.execute(
+                f"UPDATE forex_watcher_state SET {column}={column}+1, updated_at=? WHERE singleton_id=1",
+                (_iso(now),),
+            )
+            row = conn.execute(f"SELECT {column} FROM forex_watcher_state WHERE singleton_id=1").fetchone()
+        return int(row[0])
 
     def reconcile_stale_runs(
         self,
@@ -903,11 +979,128 @@ class WatcherStore:
                     "SELECT run_status, COUNT(*) AS count FROM forex_watch_runs GROUP BY run_status"
                 ).fetchall()
             }
-        result = {key: state[key] for key in state.keys()} if state is not None else {}
+            skipped_counts = {
+                str(row["skip_reason"]): int(row["count"])
+                for row in conn.execute(
+                    "SELECT skip_reason, COUNT(*) AS count FROM forex_watch_opportunities WHERE status='SKIPPED' AND skip_reason IS NOT NULL GROUP BY skip_reason"
+                ).fetchall()
+            }
+            decision_metrics: dict[str, Any] = {
+                "decisions_total": 0,
+                "decision_context_complete": 0,
+                "decision_context_incomplete": 0,
+                "normalization_failed": 0,
+                "normalized_buy": 0,
+                "normalized_sell": 0,
+                "normalized_hold": 0,
+                "average_analysis_latency_seconds": None,
+                "min_analysis_latency_seconds": None,
+                "max_analysis_latency_seconds": None,
+                "stale_by_completion_count": 0,
+            }
+            evaluation_metrics: dict[str, Any] = {
+                "evaluations_total": 0,
+                "evaluation_status_counts": {},
+                "evaluations_by_basis_and_horizon_and_status": {},
+                "fully_terminal_outcome_decision_count": 0,
+            }
+            has_decisions = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shadow_decisions'"
+            ).fetchone()
+            if has_decisions:
+                decision_columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(shadow_decisions)").fetchall()
+                }
+                stale_expression = (
+                    "stale_by_completion=1"
+                    if "stale_by_completion" in decision_columns
+                    else "(decision_completed_timestamp IS NOT NULL AND analysis_latency_seconds >= 900)"
+                )
+                row = conn.execute(
+                    f"""
+                    SELECT COUNT(*) AS total,
+                           SUM(CASE WHEN decision_context_status='COMPLETE' THEN 1 ELSE 0 END) AS complete,
+                           SUM(CASE WHEN decision_context_status='INCOMPLETE' THEN 1 ELSE 0 END) AS incomplete,
+                           SUM(CASE WHEN normalization_status='FAILED' THEN 1 ELSE 0 END) AS norm_failed,
+                           SUM(CASE WHEN action='BUY' THEN 1 ELSE 0 END) AS buys,
+                           SUM(CASE WHEN action='SELL' THEN 1 ELSE 0 END) AS sells,
+                           SUM(CASE WHEN action='HOLD' THEN 1 ELSE 0 END) AS holds,
+                           AVG(analysis_latency_seconds) AS avg_latency,
+                           MIN(analysis_latency_seconds) AS min_latency,
+                           MAX(analysis_latency_seconds) AS max_latency,
+                           SUM(CASE WHEN {stale_expression} THEN 1 ELSE 0 END) AS stale
+                      FROM shadow_decisions
+                    """
+                ).fetchone()
+                if row is not None:
+                    decision_metrics = {
+                        "decisions_total": int(row["total"] or 0),
+                        "decision_context_complete": int(row["complete"] or 0),
+                        "decision_context_incomplete": int(row["incomplete"] or 0),
+                        "normalization_failed": int(row["norm_failed"] or 0),
+                        "normalized_buy": int(row["buys"] or 0),
+                        "normalized_sell": int(row["sells"] or 0),
+                        "normalized_hold": int(row["holds"] or 0),
+                        "average_analysis_latency_seconds": row["avg_latency"],
+                        "min_analysis_latency_seconds": row["min_latency"],
+                        "max_analysis_latency_seconds": row["max_latency"],
+                        "stale_by_completion_count": int(row["stale"] or 0),
+                    }
+            has_evaluations = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shadow_decision_evaluations'"
+            ).fetchone()
+            if has_evaluations:
+                grouped = conn.execute(
+                    """
+                    SELECT evaluation_basis, horizon_seconds, evaluation_status, COUNT(*) AS count
+                      FROM shadow_decision_evaluations
+                     GROUP BY evaluation_basis, horizon_seconds, evaluation_status
+                     ORDER BY evaluation_basis, horizon_seconds, evaluation_status
+                    """
+                ).fetchall()
+                by_key: dict[str, int] = {}
+                status_counts: dict[str, int] = {}
+                for row in grouped:
+                    basis = str(row["evaluation_basis"])
+                    horizon = int(row["horizon_seconds"])
+                    status = str(row["evaluation_status"])
+                    count = int(row["count"])
+                    by_key[f"{basis}/{horizon}/{status}"] = count
+                    status_counts[status] = status_counts.get(status, 0) + count
+                terminal = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                      FROM (
+                            SELECT decision_id
+                              FROM shadow_decision_evaluations
+                             GROUP BY decision_id
+                            HAVING SUM(CASE WHEN evaluation_status='PENDING' THEN 1 ELSE 0 END) = 0
+                       )
+                    """
+                ).fetchone()
+                evaluation_metrics = {
+                    "evaluations_total": sum(status_counts.values()),
+                    "evaluation_status_counts": status_counts,
+                    "evaluations_by_basis_and_horizon_and_status": by_key,
+                    "fully_terminal_outcome_decision_count": int(
+                        terminal["count"] if terminal is not None else 0
+                    ),
+                }
+        result = (
+            {key: state[index] for index, key in enumerate(state.keys())}
+            if state is not None
+            else {}
+        )
         result["evaluation_due_pending"] = bool(result.get("evaluation_due_pending", 0))
         result["opportunity_counts"] = counts
         result["run_counts"] = run_counts
         result["database_path"] = str(self.path)
+        result.update(decision_metrics)
+        result.update(evaluation_metrics)
+        result["skipped_opportunities_by_reason"] = skipped_counts
+        result["failed_runs"] = int(run_counts.get("FAILED", 0))
+        result["abandoned_runs"] = int(run_counts.get("ABANDONED", 0))
         return result
 
     def force_expiry(self, expiry: datetime) -> None:

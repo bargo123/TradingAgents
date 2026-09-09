@@ -5,13 +5,13 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
 from tradingagents.forex.watch_store import (
+    LeaseLostError,
     LeaseOwner,
     LeaseStatus,
-    LeaseLostError,
     WatcherStore,
 )
-from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
 from tradingagents.forex.watcher import ScheduledOpportunity
 
 NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
@@ -97,6 +97,14 @@ def test_schema_is_idempotent_and_preserves_phase5_tables(tmp_path):
     assert {"forex_watcher_state", "forex_watch_opportunities", "forex_watch_runs"} <= tables
 
 
+def test_summary_exposes_evaluation_quality_counts_without_training_labels(tmp_path):
+    summary = WatcherStore(tmp_path / "watch.db").summary(NOW)
+
+    assert summary["evaluations_by_basis_and_horizon_and_status"] == {}
+    assert summary["fully_terminal_outcome_decision_count"] == 0
+    assert "training_eligible" not in summary
+
+
 def _opportunity(key: str) -> ScheduledOpportunity:
     return ScheduledOpportunity(
         requested_symbol="EURUSD",
@@ -168,7 +176,7 @@ def test_reconciliation_abandons_zero_match_and_flags_multiple_matches(tmp_path)
     decision_store = ShadowDecisionStore(tmp_path / "shadow.db")
     acquired = store.acquire_lease(owner(), NOW)
     missing = _insert_running_run(store, acquired.owner_token, source_run_id="missing")
-    ambiguous = _insert_running_run(store, acquired.owner_token, source_run_id="ambiguous")
+    _insert_running_run(store, acquired.owner_token, source_run_id="ambiguous")
     _record_decision(decision_store, source_run_id="ambiguous")
     # Use a distinct ID while retaining the same source ID to reproduce an
     # ambiguous crash join.

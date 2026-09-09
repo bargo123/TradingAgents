@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
 from datetime import datetime, timezone
-from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -44,7 +43,7 @@ def test_forex_evaluate_requires_exactly_one_selector() -> None:
         parser.parse_args(["--decision-id", "one", "--pending"])
 
 
-def test_forex_evaluate_cli_labels_bases_and_reports_zero_llm_calls(capsys) -> None:
+def test_forex_evaluate_cli_labels_bases_and_reports_zero_llm_calls(capsys, tmp_path) -> None:
     calls: list[tuple[str, str | None]] = []
 
     class FakeEvaluator:
@@ -60,7 +59,7 @@ def test_forex_evaluate_cli_labels_bases_and_reports_zero_llm_calls(capsys) -> N
             "--decision-id",
             "decision-cli-001",
             "--db-path",
-            "test.db",
+            str(tmp_path / "evaluate.db"),
             "--terminal-path",
             "terminal.exe",
             "--observation-tolerance-seconds",

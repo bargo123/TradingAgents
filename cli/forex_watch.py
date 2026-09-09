@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from collections.abc import Sequence
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tradingagents.forex.watch_store import LeaseStatus, WatcherStore
 from tradingagents.forex.watcher import (
     CompletedBarSchedule,
     ReadOnlyMarketProbe,
@@ -19,7 +20,6 @@ from tradingagents.forex.watcher import (
     WatcherConfig,
     WatcherCoordinator,
 )
-from tradingagents.forex.watch_store import LeaseStatus, WatcherStore
 
 
 def _positive_int(value: str) -> int:
@@ -118,7 +118,7 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
     )
     from tradingagents.forex.runner import ForexShadowRunner
     from tradingagents.forex.shadow import ShadowDecisionStore
-    from tradingagents.forex.watcher import FrozenClock, SystemClock
+    from tradingagents.forex.watcher import SystemClock
 
     safe_config = dict(DEFAULT_CONFIG)
     safe_config.update(
@@ -144,6 +144,7 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
         config_fingerprint=config.safe_fingerprint,
         requested_symbols=config.symbols,
         analysis_profile=config.analysis_profile,
+        analyst_set=config.analysts,
     )
     return WatcherCoordinator(
         config=config,
@@ -160,6 +161,16 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
         executor=SingleSlotAnalysisExecutor(),
         gate=SerializedMt5OperationGate(),
     )
+
+
+def _watcher_lease_is_active(
+    db_path: Path,
+    now: datetime,
+    store_factory: Any | None = None,
+) -> bool:
+    store = (store_factory or WatcherStore)(db_path)
+    lease = store.active_lease(now)
+    return lease is not None and lease.lease_expires_at > now
 
 
 def _print_status(summary: dict[str, Any], as_json: bool) -> None:
@@ -184,6 +195,9 @@ def _run_once(coordinator: Any) -> int:
     result = coordinator.start()
     if getattr(result, "status", None) is not LeaseStatus.ACQUIRED:
         print(f"FOREX WATCH ERROR: {getattr(result.status, 'value', result.status)}", file=sys.stderr)
+        shutdown = getattr(coordinator, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
         return 1
     try:
         cycle = coordinator.run_once()
@@ -199,10 +213,15 @@ def _run_once(coordinator: Any) -> int:
         coordinator.shutdown()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    coordinator_factory: Any | None = None,
+    store_factory: Any | None = None,
+) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "status":
-        store = WatcherStore(Path(args.db_path))
+        store = (store_factory or WatcherStore)(Path(args.db_path))
         if args.probe:
             now = datetime.now(timezone.utc)
             lease = store.active_lease(now)
@@ -229,12 +248,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     _print_banner()
     try:
         config = _make_config(args)
-        coordinator = _make_coordinator(args, config)
+        if _watcher_lease_is_active(
+            config.db_path, datetime.now(timezone.utc), store_factory
+        ):
+            print("FOREX WATCH ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
+            return 1
+        coordinator = (coordinator_factory or _make_coordinator)(args, config)
         if args.command == "once":
             return _run_once(coordinator)
         result = coordinator.start()
         if getattr(result, "status", None) is not LeaseStatus.ACQUIRED:
             print(f"FOREX WATCH ERROR: {getattr(result.status, 'value', result.status)}", file=sys.stderr)
+            with suppress(Exception):
+                coordinator.shutdown()
             return 1
         try:
             coordinator.run_forever()

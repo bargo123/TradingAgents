@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -135,6 +135,7 @@ def test_forex_shadow_refuses_active_watcher_before_runner_construction(
             raise AssertionError("ForexShadowRunner must not be constructed")
 
     monkeypatch.setattr("cli.forex_shadow.ForexShadowRunner", MustNotConstruct)
+    monkeypatch.setattr("cli.forex_shadow.StatsCallbackHandler", MustNotConstruct)
 
     assert main(["--db-path", str(db_path)]) == 1
     captured = capsys.readouterr()
