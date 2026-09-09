@@ -395,6 +395,190 @@ class CompletedBarSchedule:
         return tuple(result)
 
 
+@dataclass(frozen=True, slots=True)
+class MarketProbeResult:
+    requested_symbol: str
+    resolved_symbol: str
+    timestamp: datetime
+    bid: float
+    ask: float
+
+    @classmethod
+    def from_tick(
+        cls, requested_symbol: str, resolved_symbol: str, tick: Any
+    ) -> "MarketProbeResult":
+        timestamp = getattr(tick, "timestamp", None)
+        timestamp = _require_aware_utc(timestamp, "broker tick timestamp")
+        if not isinstance(resolved_symbol, str) or not resolved_symbol.strip():
+            raise ValueError("resolved symbol must be non-empty")
+        try:
+            bid = float(getattr(tick, "bid"))
+            ask = float(getattr(tick, "ask"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("probe quote must contain numeric bid and ask") from exc
+        import math
+
+        if not math.isfinite(bid) or not math.isfinite(ask) or bid <= 0 or ask < bid:
+            raise ValueError("probe quote must be finite, positive, and ask >= bid")
+        return cls(
+            requested_symbol=str(requested_symbol).strip().upper(),
+            resolved_symbol=resolved_symbol.strip(),
+            timestamp=timestamp,
+            bid=bid,
+            ask=ask,
+        )
+
+
+class ReadOnlyMarketProbe:
+    """One short read-only provider lifecycle used as an analysis preflight."""
+
+    def __init__(self, provider_factory: Callable[..., Any], terminal_path: str | None = None):
+        self.provider_factory = provider_factory
+        self.terminal_path = terminal_path
+        self.calls: list[str] = []
+
+    def probe(self, requested_symbol: str) -> MarketProbeResult:
+        self.calls.append(requested_symbol)
+        provider: Any | None = None
+        try:
+            provider = self.provider_factory(terminal_path=self.terminal_path)
+            if not callable(getattr(provider, "initialize", None)):
+                raise RuntimeError("MT5 provider does not expose initialize()")
+            if not provider.initialize():
+                raise RuntimeError("MT5 provider initialization failed")
+            resolved = provider.ensure_symbol(requested_symbol)
+            tick = provider.get_tick(resolved)
+            return MarketProbeResult.from_tick(requested_symbol, resolved, tick)
+        finally:
+            shutdown = getattr(provider, "shutdown", None) if provider is not None else None
+            if callable(shutdown):
+                shutdown()
+
+
+class Mt5OperationBusy(RuntimeError):
+    """Raised when a second MT5 operation attempts to overlap the first."""
+
+
+class SerializedMt5OperationGate:
+    """Non-reentrant, non-blocking guard around every MT5 operation."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._operation: str | None = None
+        self.events: list[str] = []
+        self.overlaps: list[tuple[str, str]] = []
+
+    @contextmanager
+    def acquire(self, operation: str):
+        name = str(operation).strip() or "unknown"
+        if not self._lock.acquire(blocking=False):
+            self.overlaps.append((self._operation or "unknown", name))
+            raise Mt5OperationBusy(f"MT5 operation busy: {name}")
+        self._operation = name
+        self.events.append(f"{name}:start")
+        try:
+            yield
+        finally:
+            self.events.append(f"{name}:end")
+            self._operation = None
+            self._lock.release()
+
+
+class SingleSlotAnalysisExecutor:
+    """One active future and no application-level pending queue."""
+
+    def __init__(
+        self,
+        *,
+        submitter: Callable[[Callable[[], Any]], Future[Any]] | None = None,
+    ) -> None:
+        self._lock = threading.Lock()
+        self._future: Future[Any] | None = None
+        self._executor: ThreadPoolExecutor | None = None
+        if submitter is None:
+            self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="forex-shadow")
+            self._submitter = self._executor.submit
+        else:
+            self._submitter = submitter
+
+    def submit(self, fn: Callable[[], Any]) -> Future[Any]:
+        with self._lock:
+            if self._future is not None and not self._future.done():
+                raise RuntimeError("analysis slot is busy")
+            future = self._submitter(fn)
+            if not isinstance(future, Future):
+                raise TypeError("analysis submitter must return concurrent.futures.Future")
+            self._future = future
+
+            def clear(done: Future[Any]) -> None:
+                with self._lock:
+                    if self._future is done:
+                        self._future = None
+
+            future.add_done_callback(clear)
+            return future
+
+    @property
+    def future(self) -> Future[Any] | None:
+        with self._lock:
+            return self._future
+
+    @property
+    def active(self) -> bool:
+        future = self.future
+        return future is not None and not future.done()
+
+    @property
+    def pending_count(self) -> int:
+        # There is intentionally no pending queue; only the active slot exists.
+        return 1 if self.active else 0
+
+    def shutdown(self, wait: bool = True) -> None:
+        if self._executor is not None:
+            self._executor.shutdown(wait=wait)
+
+
+class LeaseHeartbeat:
+    """Renew a lease and record a single soft timeout, never kill work."""
+
+    def __init__(
+        self,
+        *,
+        store: Any,
+        owner_token: str,
+        run_id: str | None,
+        timeout_seconds: float,
+        sequence: list[str] | None = None,
+    ) -> None:
+        self.store = store
+        self.owner_token = owner_token
+        self.run_id = run_id
+        self.timeout_seconds = float(timeout_seconds)
+        self.sequence = sequence
+        self._runtime_alerted = False
+        self.runner_future_still_owned = True
+
+    def tick(self, now: datetime, monotonic_now: float) -> None:
+        renew = getattr(self.store, "heartbeat", None) or getattr(self.store, "renew", None)
+        if not callable(renew):
+            raise RuntimeError("watcher store does not expose a lease heartbeat")
+        try:
+            renew(self.owner_token, now, run_id=self.run_id)
+        except TypeError:
+            renew(self.owner_token, now)
+        if self.sequence is not None:
+            self.sequence.append("heartbeat")
+        if monotonic_now > self.timeout_seconds and not self._runtime_alerted and self.run_id:
+            mark = getattr(self.store, "mark_runtime_alert", None)
+            if callable(mark):
+                mark(self.owner_token, self.run_id, now)
+            self._runtime_alerted = True
+
+    @property
+    def runtime_alerted(self) -> bool:
+        return self._runtime_alerted
+
+
 __all__ = [
     "WatcherConfig",
     "Clock",
@@ -405,4 +589,10 @@ __all__ = [
     "CompletedBarSchedule",
     "canonical_opportunity_key",
     "safe_effective_config",
+    "MarketProbeResult",
+    "ReadOnlyMarketProbe",
+    "Mt5OperationBusy",
+    "SerializedMt5OperationGate",
+    "SingleSlotAnalysisExecutor",
+    "LeaseHeartbeat",
 ]
