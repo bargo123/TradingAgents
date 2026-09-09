@@ -2,8 +2,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar, Mt5SymbolInfo, Mt5Tick
 from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
+from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar, Mt5SymbolInfo, Mt5Tick
 from tradingagents.dataflows.mt5.timeframes import SUPPORTED_TIMEFRAMES, TIMEFRAME_ATTRIBUTES
 
 

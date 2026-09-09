@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.tools import StructuredTool
 
+from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
 from tradingagents.dataflows.mt5.models import (
     ForexMarketSnapshot,
     Mt5AccountInfo,
@@ -17,7 +18,6 @@ from tradingagents.dataflows.mt5.models import (
     Mt5Spread,
     Mt5SymbolInfo,
 )
-from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.tools import MT5ToolAdapter
 
