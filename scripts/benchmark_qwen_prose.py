@@ -236,6 +236,11 @@ def _as_int(value: object) -> int | None:
         return value
     if isinstance(value, float) and value.is_integer():
         return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
     return None
 
 

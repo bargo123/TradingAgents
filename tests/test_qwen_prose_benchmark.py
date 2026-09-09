@@ -87,6 +87,10 @@ def test_truncated_requires_explicit_finish_and_token_evidence():
     )
 
 
+def test_numeric_string_max_tokens_is_available_for_truncation_evidence():
+    assert benchmark._as_int("1024") == 1024
+
+
 def test_summary_contains_counts_statistics_and_no_text():
     records = [
         BenchmarkRecord(
