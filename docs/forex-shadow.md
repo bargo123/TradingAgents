@@ -83,6 +83,25 @@ workflow. A future `forex-demo` or `forex-live` command can be added as a
 separate boundary without changing this command or weakening its shadow-only
 contract.
 
+## Broker clock normalization
+
+The MT5 provider calibrates an explicit broker clock from multiple fresh live
+tick observations before exposing timestamped market data. It evaluates a
+bounded global candidate grid, validates tick age and residuals, and fail closed
+when calibration is unavailable, stale, or ambiguous. The calibration
+does not use the computer's local timezone, deployment country, or a
+broker-specific constant. Incoming ticks, spreads, bars, snapshots, and
+historical ticks are normalized to true UTC; historical requests are translated
+to the calibrated broker clock only at the MT5 boundary and returned to true
+UTC before Phase 5 sees them.
+
+Persisted snapshot evidence includes the safe broker-clock status, offset,
+calibration time, server, symbol, sample count, residual, and source. No
+credentials are stored. The current short Phase 5 horizons use the calibrated
+session offset; months or years of bulk historical/HFT data require a separate
+design for broker daylight-saving (DST) and clock-regime changes and must not assume
+one current calibration covers the entire history.
+
 ## Verification
 
 Run the unit/integration guard suite without an external terminal:

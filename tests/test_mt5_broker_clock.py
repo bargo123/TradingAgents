@@ -140,3 +140,13 @@ def test_production_clock_source_has_no_local_or_broker_specific_offset() -> Non
     assert "metaquotes" not in text
     assert "-3 hours" not in text
     assert "-10800" not in text
+
+
+def test_forex_shadow_docs_describe_broker_clock_limits() -> None:
+    docs = Path(__file__).parents[1].joinpath("docs", "forex-shadow.md")
+    text = docs.read_text(encoding="utf-8").lower()
+    assert "broker clock" in text
+    assert "fail closed" in text
+    assert "computer timezone" in text or "local timezone" in text
+    assert "dst" in text
+    assert "historical" in text
