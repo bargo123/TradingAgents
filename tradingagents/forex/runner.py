@@ -117,12 +117,13 @@ def _identifier(value: Any) -> str:
 def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
     """Read optional callback statistics without making telemetry required."""
     metrics: dict[str, Any] = {
-        "llm_calls": 0,
-        "tool_calls": 0,
-        "tokens_in": 0,
-        "tokens_out": 0,
-        "reasoning_tokens": 0,
-        "agents": {},
+        "telemetry_status": "UNAVAILABLE",
+        "llm_calls": None,
+        "tool_calls": None,
+        "tokens_in": None,
+        "tokens_out": None,
+        "reasoning_tokens": None,
+        "agents": None,
     }
     for callback in callbacks:
         getter = getattr(callback, "get_stats", None)
@@ -134,7 +135,12 @@ def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
             continue
         if not isinstance(reported, Mapping):
             continue
+        if not any(key in reported for key in metrics if key != "telemetry_status"):
+            continue
+        metrics["telemetry_status"] = "AVAILABLE"
         for key in metrics:
+            if key == "telemetry_status":
+                continue
             value = reported.get(key)
             if key == "agents" and isinstance(value, Mapping):
                 metrics[key] = dict(value)

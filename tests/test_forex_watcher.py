@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -468,6 +469,45 @@ def test_normal_poll_claims_one_current_opportunity_and_persists_decision(tmp_pa
     assert harness.store.list_opportunities()[0].status == "DECISION_SAVED"
     assert harness.store.list_runs()[0].run_status in {"SUCCEEDED", "SUCCEEDED_SLOW"}
     assert harness.store.decision_for_run(harness.store.list_runs()[0].run_id).executed is False
+
+
+def test_unavailable_analysis_telemetry_persists_nulls_without_private_text(tmp_path):
+    result = SimpleNamespace(
+        decision=_decision("run-no-telemetry"),
+        elapsed_seconds=1.0,
+        metrics={
+            "telemetry_status": "UNAVAILABLE",
+            "llm_calls": None,
+            "tool_calls": None,
+            "tokens_in": None,
+            "tokens_out": None,
+            "reasoning_tokens": None,
+            "agents": None,
+        },
+    )
+    harness = _Harness(tmp_path, runner_result=result)
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    run = harness.store.list_runs()[0]
+    assert run.llm_calls is None
+    assert run.tool_calls is None
+    assert run.tokens_in is None
+    assert run.tokens_out is None
+    assert run.reasoning_tokens is None
+    assert json.loads(run.metrics_json or "{}") == {
+        "agents": None,
+        "llm_calls": None,
+        "reasoning_tokens": None,
+        "telemetry_status": "UNAVAILABLE",
+        "tokens_in": None,
+        "tokens_out": None,
+        "tool_calls": None,
+    }
+    assert "prompt" not in (run.metrics_json or "").casefold()
+    assert "completion" not in (run.metrics_json or "").casefold()
 
 
 def test_new_bar_during_analysis_is_terminally_skipped_and_not_queued(tmp_path):

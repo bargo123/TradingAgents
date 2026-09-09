@@ -357,6 +357,28 @@ def test_runner_passes_callbacks_and_reports_llm_metrics(tmp_path):
     assert result.elapsed_seconds >= 0
 
 
+def test_runner_marks_analysis_telemetry_unavailable_without_callback(tmp_path):
+    runner, _, _, _ = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": {"rating": "Hold"},
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "investment_debate_state": {"bull_history": "bull", "bear_history": "bear"},
+            "risk_debate_state": {},
+        },
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.metrics["telemetry_status"] == "UNAVAILABLE"
+    assert result.metrics["llm_calls"] is None
+    assert result.metrics["tool_calls"] is None
+    assert result.metrics["tokens_in"] is None
+    assert result.metrics["tokens_out"] is None
+    assert result.metrics["reasoning_tokens"] is None
+    assert result.metrics["agents"] is None
+
+
 def test_runner_prefers_raw_structured_result_over_rendered_prose(tmp_path):
     runner, provider, graph, store = _make_runner(
         tmp_path,

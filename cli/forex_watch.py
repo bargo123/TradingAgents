@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from cli.stats_handler import StatsCallbackHandler
 from tradingagents.forex.watch_store import LeaseStatus, WatcherStore
 from tradingagents.forex.watcher import (
     CompletedBarSchedule,
@@ -136,6 +137,7 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
         config=EvaluationConfig(),
         provider_factory=_provider_factory,
     )
+    stats_handler = StatsCallbackHandler()
     runner = ForexShadowRunner(config=safe_config, store=decision_store)
     probe = ReadOnlyMarketProbe(_provider_factory, terminal_path=config.terminal_path)
     schedule = CompletedBarSchedule(
@@ -160,6 +162,7 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
         evaluator=evaluator,
         executor=SingleSlotAnalysisExecutor(),
         gate=SerializedMt5OperationGate(),
+        callbacks=(stats_handler,),
     )
 
 
@@ -182,7 +185,8 @@ def _print_status(summary: dict[str, Any], as_json: bool) -> None:
     print(f"LEASE EXPIRES AT: {summary.get('lease_expires_at') or 'none'}")
     print(f"CURRENT RUN: {summary.get('current_run_id') or 'none'}")
     print(f"EVALUATION DUE PENDING: {summary.get('evaluation_due_pending', False)}")
-    print(f"LLM CALLS: {summary.get('llm_calls', 0)}")
+    llm_calls = summary.get("llm_calls")
+    print(f"LLM CALLS: {llm_calls if llm_calls is not None else 'unknown'}")
     print(f"DATABASE: {summary.get('database_path')}")
 
 

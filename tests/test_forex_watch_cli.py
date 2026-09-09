@@ -4,7 +4,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import cli.forex_watch as forex_watch
 from cli.forex_watch import build_parser, main
+from cli.stats_handler import StatsCallbackHandler
 from tradingagents.forex.watch_store import LeaseOwner, LeaseStatus, WatcherStore
 
 
@@ -92,7 +94,7 @@ def test_status_does_not_construct_mt5_or_llm(capsys, tmp_path):
     assert main(["status", "--db-path", str(tmp_path / "watch.db")]) == 0
     output = capsys.readouterr().out
     assert "WATCHER STATUS" in output
-    assert "LLM CALLS" in output
+    assert "LLM CALLS: unknown" in output
 
 
 def test_status_probe_refuses_while_watcher_lease_is_valid(tmp_path, capsys):
@@ -103,6 +105,29 @@ def test_status_probe_refuses_while_watcher_lease_is_valid(tmp_path, capsys):
 
     assert result == 1
     assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err
+
+
+def test_make_coordinator_wires_existing_numeric_stats_callback(tmp_path, monkeypatch):
+    args = build_parser().parse_args(["once", "--db-path", str(tmp_path / "watch.db")])
+    config = forex_watch._make_config(args)
+    captured = {}
+
+    class _Executor:
+        def shutdown(self, wait=True):
+            del wait
+
+    class _Coordinator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(forex_watch, "SingleSlotAnalysisExecutor", _Executor)
+    monkeypatch.setattr(forex_watch, "WatcherCoordinator", _Coordinator)
+
+    forex_watch._make_coordinator(args, config)
+
+    callbacks = captured["callbacks"]
+    assert len(callbacks) == 1
+    assert isinstance(callbacks[0], StatsCallbackHandler)
 
 
 def test_once_refuses_active_watcher_before_coordinator_resource_construction(

@@ -451,3 +451,41 @@ forex-evaluate --pending --db-path data_cache/shadow_decisions.db
 
 The command reports both basis statuses, per-run horizon/tick counts, timing,
 and `LLM CALLS: 0`. It accepts no provider credentials or execution options.
+
+## Phase 6.1 quality and observability hardening
+
+The accepted Phase 6 real run was reviewed using its metadata-only state
+boundaries. The first substantive gap occurs at the Bull Researcher **after**
+boundary: the stored field is the 15-character speaker-label wrapper with zero
+visible report characters. Bear, Aggressive Risk, and Neutral Risk show the
+same label-only pattern; Conservative Risk, Research Manager, Trader, and the
+structured Portfolio Manager result are present. The node implementations read
+`response.content` directly for those prose agents, and the exact label-only
+length is produced before LangGraph applies a reducer. Therefore this row is
+provider/model output inadequacy (the visible Qwen response was empty), not
+state loss, schema normalization loss, truncation evidence, or a different
+collector graph path. Hidden reasoning is not treated as a report and is never
+persisted. The existing validator correctly retains the genuine PM result while
+marking the decision `INCOMPLETE`; no prompts or models were changed.
+
+The watcher now constructs the existing numeric-only `StatsCallbackHandler` and
+passes it through `WatcherCoordinator` to `ForexShadowRunner`. Analysis runs
+with the callback report aggregate LLM/tool/token counts and safe per-agent
+model/call/timing data. If no usable callback is supplied, analysis telemetry is
+explicitly `telemetry_status=UNAVAILABLE` with nullable metric fields (and the
+status CLI prints `unknown`), never a fabricated zero. The Phase 5 evaluator
+continues to report numeric `LLM CALLS: 0` because it intentionally makes no
+LLM calls. No prompts, completions, private reasoning, or credentials enter the
+metrics JSON or watcher columns.
+
+A bounded zero-LLM MetaQuotes-Demo diagnostic read EURUSD five times. The
+normalized broker `time_msc` advanced across samples, quote age was about
+8–11 seconds, and positions/orders were identical before and after. The old
+35.158-second pre-completion reference quote is consequently classified as
+transient stale-feed evidence and remains `INVALID_TEMPORAL`; the Phase 5
+timestamp semantics were not weakened.
+
+No second 40-minute Qwen graph was run. The deterministic Phase 4.3 graph trace
+remains the propagation proof, while the real run remains an explicitly
+incomplete, non-training-quality decision. Phase 6.1 does not add execution or
+begin Phase 7.
