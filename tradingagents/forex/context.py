@@ -138,6 +138,8 @@ def snapshot_to_dict(
             "H1": calculate_timeframe_features(snapshot.h1_candles),
         },
     }
+    if snapshot.broker_clock is not None:
+        payload_value["broker_clock"] = snapshot.broker_clock.as_dict()
     if include_candles:
         payload_value["candles"] = {
             "M1": [_bar_to_dict(bar) for bar in snapshot.m1_candles[-_MAX_SERIALIZED_BARS:]],

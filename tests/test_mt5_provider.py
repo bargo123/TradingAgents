@@ -412,6 +412,41 @@ def test_historical_ticks_prefer_milliseconds_and_normalize_utc(fake_api):
     assert fake_api.tick_ranges == [("mEURUSD", start, end, fake_api.COPY_TICKS_ALL)]
 
 
+def test_historical_range_translates_true_utc_to_broker_clock_and_back(fake_api):
+    clock = Mt5BrokerClock(
+        offset_seconds=3 * 3600,
+        status="CALIBRATED",
+        calibrated_at_utc=datetime.now(timezone.utc),
+        server="Fake-Demo",
+        symbol="EURUSD",
+        sample_count=1,
+        max_residual_seconds=0.0,
+        source="TEST",
+    )
+    fake_api.symbol_records = [fake_api.symbol("EURUSD")]
+    fake_api.tick_range_result = (
+        {
+            "time": 1_700_000_000,
+            "time_msc": 1_700_000_000_123,
+            "bid": 1.1,
+            "ask": 1.1002,
+        },
+    )
+    provider = initialized_provider(fake_api, broker_clock=clock)
+    start = datetime(2023, 11, 14, 19, 13, 20, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=1)
+
+    ticks = provider.get_ticks_range("EURUSD", start, end)
+
+    assert fake_api.tick_ranges[-1] == (
+        "EURUSD",
+        start + timedelta(hours=3),
+        end + timedelta(hours=3),
+        fake_api.COPY_TICKS_ALL,
+    )
+    assert ticks[0].timestamp == start + timedelta(milliseconds=123)
+
+
 @pytest.mark.unit
 def test_historical_ticks_normalize_non_utc_inputs_and_use_flags(fake_api):
     fake_api.symbol_records = [fake_api.symbol("EURUSD.raw")]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from tradingagents.dataflows.mt5.models import (
     Mt5Spread,
     Mt5SymbolInfo,
 )
+from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.tools import MT5ToolAdapter
 
@@ -143,6 +145,34 @@ def test_snapshot_to_dict_is_json_safe_and_utc_serialized(fake_snapshot: ForexMa
     assert payload["symbol_metadata"]["digits"] == 5
     assert payload["symbol_metadata"]["point"] == 0.00001
     assert payload["positions"][0]["ticket"] == 101
+
+
+def test_snapshot_serialization_preserves_broker_clock_provenance(
+    fake_snapshot: ForexMarketSnapshot,
+):
+    clock = Mt5BrokerClock(
+        offset_seconds=3 * 3600,
+        status="CALIBRATED",
+        calibrated_at_utc=fake_snapshot.timestamp,
+        server="Fake-Demo",
+        symbol="EURUSD",
+        sample_count=3,
+        max_residual_seconds=0.4,
+        source="LIVE_TICK_MIDPOINT",
+    )
+
+    payload = snapshot_to_dict(replace(fake_snapshot, broker_clock=clock))
+
+    assert payload["broker_clock"] == {
+        "offset_seconds": 10800.0,
+        "status": "CALIBRATED",
+        "calibrated_at_utc": "2026-09-08T00:00:00Z",
+        "server": "Fake-Demo",
+        "symbol": "EURUSD",
+        "sample_count": 3,
+        "max_residual_seconds": 0.4,
+        "source": "LIVE_TICK_MIDPOINT",
+    }
 
 
 def test_build_forex_market_context_is_bounded_and_explicit(
