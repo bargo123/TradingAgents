@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar, Mt5SymbolInfo, Mt5Tick
+from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
 from tradingagents.dataflows.mt5.timeframes import SUPPORTED_TIMEFRAMES, TIMEFRAME_ATTRIBUTES
 
 
@@ -39,7 +40,18 @@ def test_snapshot_uses_immutable_candle_tuples_and_utc_timestamp():
         h1_candles=(bar,),
         account=None,
         positions=(),
+        broker_clock=Mt5BrokerClock(
+            offset_seconds=0,
+            status="CALIBRATED",
+            calibrated_at_utc=timestamp,
+            server="Test",
+            symbol="EURUSD.a",
+            sample_count=1,
+            max_residual_seconds=0.0,
+            source="TEST",
+        ),
     )
     assert snapshot.timestamp.tzinfo == timezone.utc
     assert isinstance(snapshot.m5_candles, tuple)
     assert snapshot.m5_candles[0].close == 1.05
+    assert snapshot.broker_clock is not None

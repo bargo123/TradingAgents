@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+from .clock import Mt5BrokerClock
+
 
 @dataclass(frozen=True, slots=True)
 class Mt5TerminalInfo:
@@ -101,3 +103,4 @@ class ForexMarketSnapshot:
     account: Mt5AccountInfo | None
     positions: tuple[Mt5Position, ...]
     symbol_info: Mt5SymbolInfo | None = None
+    broker_clock: Mt5BrokerClock | None = None

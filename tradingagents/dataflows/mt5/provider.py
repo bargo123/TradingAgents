@@ -7,10 +7,11 @@ import re
 from collections.abc import Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from .errors import (
     Mt5AccountDisconnectedError,
+    Mt5BrokerClockError,
     Mt5DataError,
     Mt5DependencyError,
     Mt5InitializationError,
@@ -18,6 +19,13 @@ from .errors import (
     Mt5SymbolAmbiguousError,
     Mt5SymbolError,
     Mt5SymbolNotFoundError,
+)
+from .clock import (
+    BrokerClockConfig,
+    BrokerClockSample,
+    Mt5BrokerClock,
+    calibrate_broker_clock,
+    decode_mt5_epoch,
 )
 from .models import (
     ForexMarketSnapshot,
@@ -60,12 +68,19 @@ def _first_field(raw: Any, *names: str, default: Any = None) -> Any:
     return default
 
 
-def _utc_timestamp(raw: Any, *, prefer_msc: bool = False) -> datetime:
+def _utc_timestamp(
+    raw: Any,
+    *,
+    prefer_msc: bool = False,
+    broker_clock: Mt5BrokerClock | None = None,
+) -> datetime:
     value = _field(raw, "time_msc") if prefer_msc else None
     if value in (None, 0):
         value = _field(raw, "time")
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
-    return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+        literal = decode_mt5_epoch(value)
+    else:
+        literal = decode_mt5_epoch(value, milliseconds=True)
+    return literal if broker_clock is None else broker_clock.normalize_decoded(literal)
 
 
 def _pair_candidates(name: str) -> list[str]:
@@ -104,10 +119,27 @@ def _normalize_symbol_name(symbol: str) -> str:
 class MT5Provider:
     """A deliberately read-only MT5 provider with optional API injection."""
 
-    def __init__(self, *, api: Any | None = None, terminal_path: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        api: Any | None = None,
+        terminal_path: str | None = None,
+        broker_clock: Mt5BrokerClock | None = None,
+        clock_config: BrokerClockConfig | None = None,
+        clock_now: Callable[[], datetime] | None = None,
+    ) -> None:
         self._api = api
         self._terminal_path = terminal_path
         self._initialized = False
+        self._broker_clock = broker_clock
+        self._clock_config = clock_config or BrokerClockConfig()
+        self._clock_now = clock_now or (lambda: datetime.now(timezone.utc))
+
+    @property
+    def broker_clock(self) -> Mt5BrokerClock | None:
+        """Return the immutable calibration provenance, if available."""
+
+        return self._broker_clock
 
     def _load_api(self) -> Any:
         if self._api is None:
@@ -186,6 +218,93 @@ class MT5Provider:
         if not self.is_connected():
             raise Mt5AccountDisconnectedError("MT5 terminal or account is disconnected")
 
+    def _clock_now_utc(self) -> datetime:
+        try:
+            value = self._clock_now()
+        except Exception as exc:  # pragma: no cover - defensive clock seam
+            raise Mt5BrokerClockError("application UTC clock is unavailable") from exc
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise Mt5BrokerClockError("application clock must return timezone-aware UTC")
+        if value.utcoffset() != timezone.utc.utcoffset(value):
+            raise Mt5BrokerClockError("application clock must return UTC")
+        return value.astimezone(timezone.utc)
+
+    def _select_symbol(self, resolved: str) -> None:
+        if not self._api.symbol_select(resolved, True):
+            raise Mt5SymbolError(f"Unable to select MT5 symbol {resolved!r}")
+
+    def calibrate_broker_clock(self, symbol: str) -> Mt5BrokerClock:
+        """Calibrate the terminal's broker-clock offset from fresh live ticks."""
+
+        self._require_connected()
+        resolved = self.find_symbol(symbol)
+        self._select_symbol(resolved)
+        account = self._api.account_info()
+        server = _field(account, "server")
+        samples: list[BrokerClockSample] = []
+        for _ in range(self._clock_config.sample_count):
+            before = self._clock_now_utc()
+            try:
+                raw = self._api.symbol_info_tick(resolved)
+            except Exception as exc:
+                raise Mt5BrokerClockError(
+                    f"MT5 tick calibration read failed for {resolved!r}"
+                ) from exc
+            after = self._clock_now_utc()
+            if raw is None:
+                self._broker_clock = Mt5BrokerClock(
+                    offset_seconds=None,
+                    status="UNAVAILABLE",
+                    server=server,
+                    symbol=resolved,
+                    source="LIVE_TICK_MIDPOINT",
+                )
+                raise Mt5BrokerClockError(
+                    f"broker clock calibration unavailable for {resolved!r}"
+                )
+            try:
+                raw_timestamp = _utc_timestamp(raw, prefer_msc=True)
+                samples.append(
+                    BrokerClockSample(
+                        observed_before_utc=before,
+                        observed_after_utc=after,
+                        raw_timestamp_utc=raw_timestamp,
+                    )
+                )
+            except (TypeError, ValueError, OSError) as exc:
+                self._broker_clock = Mt5BrokerClock(
+                    offset_seconds=None,
+                    status="UNAVAILABLE",
+                    server=server,
+                    symbol=resolved,
+                    source="LIVE_TICK_MIDPOINT",
+                )
+                raise Mt5BrokerClockError(
+                    f"broker clock calibration received invalid tick for {resolved!r}"
+                ) from exc
+
+        calibration = calibrate_broker_clock(
+            samples,
+            server=server,
+            symbol=resolved,
+            config=self._clock_config,
+        )
+        self._broker_clock = calibration
+        if not calibration.is_calibrated:
+            raise Mt5BrokerClockError(
+                f"broker clock calibration {calibration.status.lower()} for {resolved!r}"
+            )
+        return calibration
+
+    def _ensure_broker_clock(self, resolved: str) -> Mt5BrokerClock:
+        if self._broker_clock is None:
+            return self.calibrate_broker_clock(resolved)
+        self._broker_clock.ensure_fresh(
+            self._clock_now_utc(),
+            max_age_seconds=self._clock_config.max_calibration_age_seconds,
+        )
+        return self._broker_clock
+
     def get_terminal_info(self) -> Mt5TerminalInfo:
         self._require_connected()
         raw = self._api.terminal_info()
@@ -228,8 +347,8 @@ class MT5Provider:
 
     def ensure_symbol(self, symbol: str) -> str:
         resolved = self.find_symbol(symbol)
-        if not self._api.symbol_select(resolved, True):
-            raise Mt5SymbolError(f"Unable to select MT5 symbol {resolved!r}")
+        self._select_symbol(resolved)
+        self._ensure_broker_clock(resolved)
         return resolved
 
     def get_tick(self, symbol: str) -> Mt5Tick:
@@ -241,9 +360,12 @@ class MT5Provider:
         if raw is None:
             raise Mt5DataError(f"No tick available for {resolved!r}")
         try:
+            clock = self._broker_clock
+            if clock is None:
+                raise Mt5BrokerClockError("broker clock calibration is unavailable")
             return Mt5Tick(
                 symbol=resolved,
-                timestamp=_utc_timestamp(raw, prefer_msc=True),
+                timestamp=_utc_timestamp(raw, prefer_msc=True, broker_clock=clock),
                 bid=float(_field(raw, "bid")),
                 ask=float(_field(raw, "ask")),
                 last=_field(raw, "last"),
@@ -266,7 +388,10 @@ class MT5Provider:
         if rows is None:
             raise Mt5DataError(f"No bars available for {resolved!r}")
         try:
-            bars = tuple(Mt5Bar(timestamp=_utc_timestamp(row), open=float(_field(row, "open")), high=float(_field(row, "high")), low=float(_field(row, "low")), close=float(_field(row, "close")), tick_volume=int(_field(row, "tick_volume")), spread=_field(row, "spread"), real_volume=_field(row, "real_volume")) for row in rows)
+            clock = self._broker_clock
+            if clock is None:
+                raise Mt5BrokerClockError("broker clock calibration is unavailable")
+            bars = tuple(Mt5Bar(timestamp=_utc_timestamp(row, broker_clock=clock), open=float(_field(row, "open")), high=float(_field(row, "high")), low=float(_field(row, "low")), close=float(_field(row, "close")), tick_volume=int(_field(row, "tick_volume")), spread=_field(row, "spread"), real_volume=_field(row, "real_volume")) for row in rows)
         except (TypeError, ValueError, OSError) as exc:
             raise Mt5DataError(f"Invalid bar data for {resolved!r}") from exc
         if not bars:
@@ -276,15 +401,20 @@ class MT5Provider:
     def get_positions(self, symbol: str | None = None) -> tuple[Mt5Position, ...]:
         self._require_connected()
         resolved = self.find_symbol(symbol) if symbol is not None else None
+        if symbol is not None:
+            self._ensure_broker_clock(resolved)
         return self._get_positions_resolved(resolved)
 
     def _get_positions_resolved(self, resolved: str | None) -> tuple[Mt5Position, ...]:
+        clock = self._broker_clock
+        if clock is None:
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
         raw_positions = self._api.positions_get()
         if raw_positions is None:
             raise self._failed_collection("positions_get")
         try:
             return tuple(
-                Mt5Position(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw))
+                Mt5Position(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw, broker_clock=clock))
                 for raw in raw_positions if resolved is None or str(_field(raw, "symbol")) == resolved
             )
         except (TypeError, ValueError, OSError) as exc:
@@ -293,12 +423,17 @@ class MT5Provider:
     def get_orders(self, symbol: str | None = None) -> tuple[Mt5Order, ...]:
         self._require_connected()
         resolved = self.find_symbol(symbol) if symbol is not None else None
+        if symbol is not None:
+            self._ensure_broker_clock(resolved)
+        clock = self._broker_clock
+        if clock is None:
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
         raw_orders = self._api.orders_get()
         if raw_orders is None:
             raise self._failed_collection("orders_get")
         try:
             return tuple(
-                Mt5Order(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_first_field(raw, "volume_current", "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp({"time": _first_field(raw, "time_setup", "time")}))
+                Mt5Order(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_first_field(raw, "volume_current", "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp({"time": _first_field(raw, "time_setup", "time")}, broker_clock=clock))
                 for raw in raw_orders if resolved is None or str(_field(raw, "symbol")) == resolved
             )
         except (TypeError, ValueError, OSError) as exc:
@@ -311,9 +446,12 @@ class MT5Provider:
         if info is None or point in (None, 0) or tick is None:
             raise Mt5DataError(f"Cannot calculate spread for {resolved!r}")
         try:
+            clock = self._broker_clock
+            if clock is None:
+                raise Mt5BrokerClockError("broker clock calibration is unavailable")
             bid, ask = float(_field(tick, "bid")), float(_field(tick, "ask"))
             price = ask - bid
-            return Mt5Spread(resolved, bid, ask, price, price / float(point), _utc_timestamp(tick, prefer_msc=True))
+            return Mt5Spread(resolved, bid, ask, price, price / float(point), _utc_timestamp(tick, prefer_msc=True, broker_clock=clock))
         except (TypeError, ValueError, OSError, ZeroDivisionError) as exc:
             raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
 
@@ -337,6 +475,9 @@ class MT5Provider:
             raise ValueError("end must be greater than or equal to start")
 
         resolved = self.ensure_symbol(symbol)
+        clock = self._broker_clock
+        if clock is None:
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
         api_flags = (
             flags
             if flags is not None
@@ -346,7 +487,12 @@ class MT5Provider:
         if not callable(copy_ticks_range):
             raise Mt5DataError("MT5 copy_ticks_range is unavailable")
         try:
-            rows = copy_ticks_range(resolved, start, end, api_flags)
+            rows = copy_ticks_range(
+                resolved,
+                clock.to_broker_datetime(start),
+                clock.to_broker_datetime(end),
+                api_flags,
+            )
         except Exception as exc:
             raise Mt5DataError(
                 f"MT5 copy_ticks_range failed for {resolved!r}: {self._last_error()!r}"
@@ -357,7 +503,7 @@ class MT5Provider:
             return tuple(
                 Mt5Tick(
                     symbol=resolved,
-                    timestamp=_utc_timestamp(row, prefer_msc=True),
+                    timestamp=_utc_timestamp(row, prefer_msc=True, broker_clock=clock),
                     bid=float(_field(row, "bid")),
                     ask=float(_field(row, "ask")),
                     last=_field(row, "last"),
@@ -375,6 +521,9 @@ class MT5Provider:
         if count <= 0:
             raise Mt5DataError("Bar count must be greater than zero")
         resolved = self.ensure_symbol(symbol)
+        clock = self._broker_clock
+        if clock is None:
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
         info = self._api.symbol_info(resolved)
         if info is None or _field(info, "point") in (None, 0):
             raise Mt5DataError(f"Cannot calculate spread for {resolved!r}")
@@ -405,6 +554,7 @@ class MT5Provider:
             h1_candles=candles["H1"],
             account=account,
             positions=positions,
+            broker_clock=clock,
         )
 
 

@@ -6,11 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 from tradingagents.dataflows.mt5.errors import (
+    Mt5BrokerClockError,
     Mt5DataError,
     Mt5InitializationError,
     Mt5SymbolAmbiguousError,
     Mt5SymbolNotFoundError,
 )
+from tradingagents.dataflows.mt5.clock import Mt5BrokerClock
 from tradingagents.dataflows.mt5.provider import MT5Provider
 
 
@@ -178,8 +180,21 @@ def fake_api():
     return FakeMT5()
 
 
-def initialized_provider(fake_api):
-    provider = MT5Provider(api=fake_api)
+def _zero_clock(symbol="EURUSD"):
+    return Mt5BrokerClock(
+        offset_seconds=0,
+        status="CALIBRATED",
+        calibrated_at_utc=datetime.now(timezone.utc),
+        server="Fake-Demo",
+        symbol=symbol,
+        sample_count=1,
+        max_residual_seconds=0.0,
+        source="TEST",
+    )
+
+
+def initialized_provider(fake_api, *, broker_clock=None):
+    provider = MT5Provider(api=fake_api, broker_clock=broker_clock or _zero_clock())
     provider.initialize()
     return provider
 
@@ -276,6 +291,89 @@ def test_tick_falls_back_to_second_timestamp(fake_api):
     assert provider.get_tick("USDJPY").timestamp == datetime.fromtimestamp(
         1_700_000_000, tz=timezone.utc
     )
+
+
+def test_provider_requires_calibrated_broker_clock_before_exposing_tick(fake_api):
+    provider = MT5Provider(api=fake_api)
+    provider.initialize()
+
+    with pytest.raises(Mt5BrokerClockError, match="broker clock calibration"):
+        provider.get_tick("USDJPY")
+
+
+def test_provider_rejects_stale_injected_broker_clock(fake_api):
+    stale_clock = Mt5BrokerClock(
+        offset_seconds=0,
+        status="CALIBRATED",
+        calibrated_at_utc=datetime.now(timezone.utc) - timedelta(hours=2),
+        server="Fake-Demo",
+        symbol="USDJPY",
+        sample_count=1,
+        max_residual_seconds=0.0,
+        source="TEST",
+    )
+    provider = initialized_provider(fake_api, broker_clock=stale_clock)
+
+    with pytest.raises(Mt5BrokerClockError, match="stale"):
+        provider.get_tick("USDJPY")
+
+
+def test_provider_normalizes_each_timestamped_surface_once(fake_api):
+    clock = Mt5BrokerClock(
+        offset_seconds=3 * 3600,
+        status="CALIBRATED",
+        calibrated_at_utc=datetime.now(timezone.utc),
+        server="Fake-Demo",
+        symbol="USDJPY",
+        sample_count=1,
+        max_residual_seconds=0.0,
+        source="TEST",
+    )
+    provider = initialized_provider(fake_api, broker_clock=clock)
+    tick_expected = datetime.fromtimestamp(1_700_000_000.123, tz=timezone.utc) - timedelta(hours=3)
+    bar_expected = datetime.fromtimestamp(1_700_000_000, tz=timezone.utc) - timedelta(hours=3)
+
+    tick = provider.get_tick("USDJPY")
+    spread = provider.get_spread("USDJPY")
+    bars = provider.get_bars("USDJPY", "M5", 1)
+    snapshot = provider.get_market_snapshot("USDJPY", count=1)
+
+    assert tick.timestamp == tick_expected
+    assert spread.timestamp == tick_expected
+    assert bars[0].timestamp == bar_expected
+    assert snapshot.timestamp == tick_expected
+    assert snapshot.m1_candles[0].timestamp == bar_expected
+    assert snapshot.broker_clock == clock
+
+
+def test_provider_calibrates_from_fresh_live_tick_samples(fake_api):
+    offset = 2 * 3600
+    true_now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    observation_times = iter(
+        [
+            true_now - timedelta(milliseconds=100),
+            true_now + timedelta(milliseconds=100),
+            true_now - timedelta(milliseconds=100),
+            true_now + timedelta(milliseconds=100),
+            true_now - timedelta(milliseconds=100),
+            true_now + timedelta(milliseconds=100),
+            true_now + timedelta(seconds=1),
+        ]
+    )
+    fake_api.symbol_records = [fake_api.symbol("EURUSD")]
+    fake_api.tick_time_msc = int((true_now + timedelta(seconds=offset - 0.5)).timestamp() * 1000)
+    provider = MT5Provider(
+        api=fake_api,
+        clock_now=lambda: next(observation_times),
+    )
+    provider.initialize()
+
+    tick = provider.get_tick("EURUSD")
+
+    assert tick.timestamp == datetime(2026, 9, 9, 11, 59, 59, 500_000, tzinfo=timezone.utc)
+    assert provider.broker_clock is not None
+    assert provider.broker_clock.offset_seconds == offset
+    assert provider.broker_clock.sample_count == 3
 
 
 @pytest.mark.unit
