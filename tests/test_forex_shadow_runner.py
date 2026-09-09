@@ -239,6 +239,41 @@ def test_runner_fetches_one_snapshot_and_persists_normalized_decision(tmp_path):
     assert result.decision.valid_until == result.decision.snapshot_timestamp + timedelta(seconds=3600)
 
 
+def test_runner_uses_watcher_source_run_id(tmp_path):
+    runner, _, _, store = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": {"rating": "Hold"},
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "investment_debate_state": {"bull_history": "bull", "bear_history": "bear"},
+            "risk_debate_state": {"history": "risk"},
+        },
+    )
+
+    result = runner.run(
+        symbol="EURUSD",
+        analysis_date="2026-09-09",
+        source_run_id="watch-run-001",
+    )
+
+    assert result.decision.source_run_id == "watch-run-001"
+    assert store.find_by_source_run_id("watch-run-001")[0].decision_id == result.decision.decision_id
+
+
+def test_runner_rejects_empty_source_run_id(tmp_path):
+    runner, _, _, _ = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": {"rating": "Hold"},
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "risk_debate_state": {},
+        },
+    )
+
+    with pytest.raises(ValueError):
+        runner.run(symbol="EURUSD", source_run_id=" ")
+
+
 def test_runner_fails_closed_for_month_horizon(tmp_path):
     runner, _, _, _ = _make_runner(
         tmp_path,

@@ -803,6 +803,89 @@ class WatcherStore:
                 (_safe_text(code, 100), _safe_text(detail), _iso(now)),
             )
 
+    def reconcile_stale_runs(
+        self,
+        owner_token: str,
+        now: datetime,
+        decision_store: ShadowDecisionStore,
+    ) -> tuple[str, ...]:
+        """Reconcile RUNNING rows after an expired lease takeover.
+
+        The source id is the only join authority.  A unique, non-executed
+        decision is linked; no match is abandoned; ambiguity or an execution
+        invariant violation is persisted as an operator-review condition.
+        """
+
+        now = _utc(now, "now")
+        self.initialize()
+        actions: list[str] = []
+        with self._transaction(immediate=True) as conn:
+            self._require_owner(conn, owner_token)
+            rows = conn.execute(
+                "SELECT * FROM forex_watch_runs WHERE run_status='RUNNING' ORDER BY rowid"
+            ).fetchall()
+            for row in rows:
+                matches = tuple(decision_store.find_by_source_run_id(row["source_run_id"]))
+                invalid_execution = any(getattr(item, "executed", True) is not False for item in matches)
+                if len(matches) == 1 and not invalid_execution:
+                    decision = matches[0]
+                    conn.execute(
+                        "UPDATE forex_watch_runs SET run_status='SUCCEEDED', completed_at=?, decision_id=?, resolved_symbol=?, decision_context_status=?, normalization_status=?, normalized_action=?, analysis_snapshot_timestamp=?, decision_completed_timestamp=?, analysis_latency_seconds=?, decision_reference_timestamp=?, decision_reference_status=?, decision_reference_delay_seconds=?, stale_by_completion=?, llm_provider=?, quick_model=?, deep_model=? WHERE run_id=?",
+                        (
+                            _iso(now),
+                            decision.decision_id,
+                            decision.resolved_symbol,
+                            decision.decision_context_status,
+                            decision.normalization_status,
+                            decision.action,
+                            None if decision.analysis_snapshot_timestamp is None else _iso(decision.analysis_snapshot_timestamp),
+                            None if decision.decision_completed_timestamp is None else _iso(decision.decision_completed_timestamp),
+                            decision.analysis_latency_seconds,
+                            None if decision.decision_reference_timestamp is None else _iso(decision.decision_reference_timestamp),
+                            decision.decision_reference_status,
+                            decision.decision_reference_delay_seconds,
+                            None,
+                            decision.llm_provider,
+                            decision.quick_model,
+                            decision.deep_model,
+                            row["run_id"],
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE forex_watch_opportunities SET status='DECISION_SAVED', decision_id=?, updated_at=? WHERE opportunity_key=?",
+                        (decision.decision_id, _iso(now), row["opportunity_key"]),
+                    )
+                    actions.append("DECISION_SAVED")
+                elif len(matches) == 0:
+                    conn.execute(
+                        "UPDATE forex_watch_runs SET run_status='ABANDONED', completed_at=?, failure_code='STALE_RUN_RECOVERED', failure_detail=? WHERE run_id=?",
+                        (_iso(now), "no decision found for stale source run", row["run_id"]),
+                    )
+                    conn.execute(
+                        "UPDATE forex_watch_opportunities SET status='ABANDONED', skip_reason='STALE_BUCKET', skip_detail=?, updated_at=? WHERE opportunity_key=?",
+                        ("STALE_RUN_RECOVERED", _iso(now), row["opportunity_key"]),
+                    )
+                    actions.append("ABANDONED")
+                else:
+                    conn.execute(
+                        "UPDATE forex_watch_runs SET run_status='ABANDONED', completed_at=?, failure_code='RECONCILIATION_AMBIGUOUS', failure_detail=? WHERE run_id=?",
+                        (_iso(now), "multiple or executed decisions for source run", row["run_id"]),
+                    )
+                    conn.execute(
+                        "UPDATE forex_watch_opportunities SET status='ABANDONED', skip_reason='RECONCILIATION_AMBIGUOUS', skip_detail=?, updated_at=? WHERE opportunity_key=?",
+                        ("operator review required", _iso(now), row["opportunity_key"]),
+                    )
+                    conn.execute(
+                        "UPDATE forex_watcher_state SET circuit_reason='RECONCILIATION_AMBIGUOUS', circuit_opened_at=?, last_error_code='RECONCILIATION_AMBIGUOUS', last_error=?, updated_at=? WHERE singleton_id=1",
+                        (_iso(now), "operator review required", _iso(now)),
+                    )
+                    actions.append("RECONCILIATION_AMBIGUOUS")
+            conn.execute(
+                "UPDATE forex_watcher_state SET current_run_id=NULL, current_opportunity_key=NULL, updated_at=? WHERE singleton_id=1",
+                (_iso(now),),
+            )
+        return tuple(actions)
+
     def summary(self, now: datetime | None = None) -> dict[str, Any]:
         del now
         self.initialize()

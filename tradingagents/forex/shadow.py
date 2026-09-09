@@ -749,6 +749,19 @@ class ShadowDecisionStore:
             raise KeyError(decision_id)
         return self._row_to_decision(row)
 
+    def find_by_source_run_id(self, source_run_id: str) -> tuple[ShadowTradeDecision, ...]:
+        """Return decisions linked to a watcher source id without mutating data."""
+        if not isinstance(source_run_id, str) or not source_run_id.strip():
+            raise ValueError("source_run_id must be a non-empty string")
+        self.initialize()
+        with sqlite3.connect(self.path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM shadow_decisions WHERE source_run_id = ? ORDER BY created_at, decision_id",
+                (source_run_id.strip(),),
+            ).fetchall()
+        return tuple(self._row_to_decision(row) for row in rows)
+
     def list_pending(self, resolved_symbol: str | None = None) -> list[ShadowTradeDecision]:
         self.initialize()
         query = "SELECT * FROM shadow_decisions WHERE future_evaluation_status = 'PENDING' AND executed = 0"

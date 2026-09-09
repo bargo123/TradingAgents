@@ -277,10 +277,15 @@ class ForexShadowRunner:
         db_path: str | Path | None = None,
         callbacks: Sequence[Any] | None = None,
         analysis_profile: str = "INTRADAY",
+        source_run_id: str | None = None,
     ) -> ForexShadowRunResult:
         started = time.perf_counter()
         provider: Any | None = None
         callback_list = list(callbacks or ())
+        if source_run_id is not None:
+            if not isinstance(source_run_id, str) or not source_run_id.strip():
+                raise ValueError("source_run_id must be a non-empty string")
+            source_run_id = source_run_id.strip()
         if db_path is not None:
             self.store = ShadowDecisionStore(db_path)
 
@@ -389,7 +394,7 @@ class ForexShadowRunner:
                 )
                 valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
 
-            source_run_id = str(uuid.uuid4())
+            persisted_source_run_id = source_run_id or str(uuid.uuid4())
             graph_config = getattr(graph, "config", {})
             effective_config = dict(graph_config) if isinstance(graph_config, Mapping) else {}
             effective_config.update(self.config)
@@ -423,7 +428,7 @@ class ForexShadowRunner:
                 quick_model=_identifier(effective_config.get("quick_think_llm")),
                 deep_model=_identifier(effective_config.get("deep_think_llm")),
                 snapshot_json=dict(snapshot_json),
-                source_run_id=source_run_id,
+                source_run_id=persisted_source_run_id,
                 analysis_profile=profile.name,
                 valid_for_seconds=valid_for_seconds,
                 valid_until=valid_until,
