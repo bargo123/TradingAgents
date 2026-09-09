@@ -657,6 +657,47 @@ class OutcomeCoordinator:
         return EvaluationRunEvidence(status=status, errors=errors, metrics=metrics)
 
 
+class CircuitBreakers:
+    """Small in-memory view of persisted failure-class thresholds."""
+
+    def __init__(self, config: WatcherConfig) -> None:
+        self.config = config
+        self.counts: dict[str, int] = {
+            "mt5": 0,
+            "analysis": 0,
+            "incomplete": 0,
+            "normalization": 0,
+            "runtime": 0,
+        }
+        self.open_reason: str | None = None
+
+    def record(self, failure_class: str) -> bool:
+        if failure_class not in self.counts:
+            raise ValueError(f"unknown circuit failure class: {failure_class}")
+        self.counts[failure_class] += 1
+        threshold = {
+            "mt5": self.config.max_consecutive_mt5_failures,
+            "analysis": self.config.max_consecutive_analysis_failures,
+            "incomplete": self.config.max_consecutive_incomplete,
+            "normalization": self.config.max_consecutive_normalization_failures,
+            "runtime": self.config.max_consecutive_runtime_exceeded,
+        }[failure_class]
+        if self.counts[failure_class] >= threshold:
+            self.open_reason = f"{failure_class.upper()}_FAILURES"
+        return self.open_reason is not None
+
+    def reset(self, failure_class: str) -> None:
+        if failure_class not in self.counts:
+            raise ValueError(f"unknown circuit failure class: {failure_class}")
+        self.counts[failure_class] = 0
+        if self.open_reason and self.open_reason.startswith(failure_class.upper()):
+            self.open_reason = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.open_reason is not None
+
+
 class WatcherCoordinator:
     """Foreground scheduler that composes the existing read-only forex runner."""
 
@@ -697,6 +738,7 @@ class WatcherCoordinator:
         self._last_evaluation_at: datetime | None = None
         self._stop = threading.Event()
         self._runtime_alerted = False
+        self.circuits = CircuitBreakers(config)
         self.heartbeat = heartbeat
 
     def start(self, now: datetime | None = None):
@@ -727,7 +769,14 @@ class WatcherCoordinator:
                 self.store.set_error(owner.owner_token, "RECONCILIATION_FAILED", str(exc), now)
         self.events.emit("LEASE_RECOVERED" if result.recovered_expired else "WATCHER_STARTED", {})
         self._last_poll = None
-        self._last_evaluation_at = None
+        self._last_evaluation_at = now
+        if self.heartbeat is None:
+            self.heartbeat = LeaseHeartbeat(
+                store=self.store,
+                owner_token=owner.owner_token,
+                run_id=None,
+                timeout_seconds=self.config.analysis_timeout_seconds,
+            )
         return result
 
     def _require_started(self, now: datetime) -> str:
@@ -838,8 +887,11 @@ class WatcherCoordinator:
             result = future.result()
             evidence = self._evidence_from_result(run, result)
             slow = bool(
-                evidence.runtime_seconds is not None
-                and evidence.runtime_seconds > self.config.analysis_timeout_seconds
+                (self.heartbeat is not None and self.heartbeat.runtime_alerted)
+                or (
+                    evidence.runtime_seconds is not None
+                    and evidence.runtime_seconds > self.config.analysis_timeout_seconds
+                )
             )
             status = "SUCCEEDED_SLOW" if slow else "SUCCEEDED"
             self.store.finalize_run(self.owner_token, run_id, now, status=status, evidence=evidence)
@@ -887,9 +939,13 @@ class WatcherCoordinator:
         if self._analysis_future is not None and not self._analysis_future.done():
             skipped_keys, skip_reasons = self._skip_busy(observed, now, owner_token)
             summary = self.store.summary(now)
-            if self._last_evaluation_at is None or (
-                self.config.evaluation_interval_seconds
-                and (now - self._last_evaluation_at).total_seconds() >= self.config.evaluation_interval_seconds
+            if (
+                self.config.evaluation_interval_seconds == 0
+                or self._last_evaluation_at is None
+                or (
+                    now - self._last_evaluation_at
+                ).total_seconds()
+                >= self.config.evaluation_interval_seconds
             ):
                 self.store.mark_evaluation_due(owner_token, now)
             self.store.set_lifecycle(owner_token, "ANALYZING", now)
@@ -1009,6 +1065,8 @@ class WatcherCoordinator:
             )
         self._analysis_future = future
         self._active_run_id = run.run_id
+        if self.heartbeat is not None:
+            self.heartbeat.run_id = run.run_id
         self.store.set_lifecycle(owner_token, "ANALYZING", now)
         self.events.emit("ANALYSIS_STARTED", {"run_id": run.run_id, "opportunity_key": candidate.opportunity_key})
         return WatchCycleResult(

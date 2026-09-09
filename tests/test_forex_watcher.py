@@ -245,6 +245,16 @@ class _Probe:
         )
 
 
+class _Inspector:
+    def __init__(self, alive):
+        self.alive = alive
+        self.calls = []
+
+    def proves_alive(self, owner):
+        self.calls.append("inspect")
+        return self.alive is True
+
+
 class _Runner:
     def __init__(self, store, result=None):
         self.store = store
@@ -279,7 +289,14 @@ class _Evaluator:
 
 
 class _Harness:
-    def __init__(self, tmp_path: Path, runner_result=None, probe_error=None, symbols=("EURUSD",)):
+    def __init__(
+        self,
+        tmp_path: Path,
+        runner_result=None,
+        probe_error=None,
+        symbols=("EURUSD",),
+        process_alive=None,
+    ):
         from concurrent.futures import Future
 
         self.clock = FrozenClock(NOW)
@@ -295,6 +312,7 @@ class _Harness:
         self.runner = _Runner(self.store, runner_result or _complete_run_result())
         self.evaluator = _Evaluator()
         self.submitter_futures = []
+        self.process_inspector = _Inspector(process_alive) if process_alive is not None else None
 
         def submit(fn):
             future = Future()
@@ -326,6 +344,7 @@ class _Harness:
             executor=self.executor,
             gate=self.gate,
             events=self.events,
+            process_inspector=self.process_inspector,
         )
 
     def start(self, now=None):
@@ -342,6 +361,15 @@ class _Harness:
 
     def shutdown(self):
         self.coordinator.shutdown()
+
+    def heartbeat(self, monotonic):
+        self.coordinator.heartbeat.tick(self.clock.now(), monotonic)
+
+    def crash_without_finalizing(self):
+        # Simulate a process that vanishes with a RUNNING watcher row.
+        self.coordinator.owner_token = None
+        self.coordinator._analysis_future = None
+        self.coordinator._active_run_id = None
 
 
 def _complete_run_result():
@@ -452,3 +480,86 @@ def test_restart_catchup_is_bounded_and_never_queues_old_buckets(tmp_path):
     assert len(harness.store.list_opportunities()) <= harness.config.max_recovery_buckets + 1
     assert harness.executor.pending_count == 1
     assert cycle.recovery_gap_count >= 0
+
+
+def test_due_evaluation_during_analysis_is_deferred_then_runs_before_next_probe(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.clock.set(_utc("2026-09-09T12:16:32Z"))
+
+    active_cycle = harness.poll()
+
+    assert active_cycle.evaluation_due_pending is True
+    assert harness.evaluator.calls == []
+    assert harness.probe.calls == ["EURUSD"]
+
+    harness.complete_runner()
+    harness.clock.set(_utc("2026-09-09T12:30:31Z"))
+    finished = harness.poll()
+
+    assert harness.evaluator.calls == ["evaluate_pending"]
+    assert finished.evaluation_due_pending is False
+
+
+def test_no_probe_or_evaluator_or_provider_creation_while_analyzing(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.poll(_utc("2026-09-09T12:30:31Z"))
+
+    assert harness.probe.calls == ["EURUSD"]
+    assert harness.evaluator.calls == []
+    assert harness.gate.overlaps == []
+
+
+def test_nonexpired_lease_returns_already_running_without_mt5(tmp_path):
+    first = _Harness(tmp_path)
+    first.start()
+    second = _Harness(tmp_path)
+
+    result = second.start()
+
+    assert result.status.name == "WATCHER_ALREADY_RUNNING"
+    assert second.probe.calls == []
+    assert second.process_inspector is None
+
+
+def test_expired_exact_live_process_requires_operator_review(tmp_path):
+    first = _Harness(tmp_path)
+    first.start()
+    first.store.force_expiry(_utc("2026-09-09T12:20:00Z"))
+    second = _Harness(tmp_path, process_alive=True)
+
+    result = second.start(now=_utc("2026-09-09T12:20:01Z"))
+
+    assert result.status.name == "WATCHER_OPERATOR_REVIEW_REQUIRED"
+    assert second.probe.calls == []
+
+
+def test_expired_dead_owner_reconciles_without_resubmitting_old_bucket(tmp_path):
+    first = _Harness(tmp_path, runner_result=_complete_run_result())
+    first.start()
+    first.poll(_utc("2026-09-09T12:15:31Z"))
+    first.crash_without_finalizing()
+    first.store.force_expiry(_utc("2026-09-09T12:20:00Z"))
+    second = _Harness(tmp_path, process_alive=False)
+
+    result = second.start(now=_utc("2026-09-09T14:00:00Z"))
+
+    assert result.status.name == "ACQUIRED"
+    assert second.store.list_runs()[0].run_status in {"ABANDONED", "SUCCEEDED"}
+    assert second.runner.calls == []
+
+
+def test_soft_timeout_marks_slow_without_killing_runner(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.heartbeat(monotonic=7201.0)
+
+    assert harness.store.list_runs()[0].runtime_alert_at is not None
+    assert harness.executor.active is True
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+    assert harness.store.list_runs()[0].run_status in {"SUCCEEDED", "SUCCEEDED_SLOW"}
