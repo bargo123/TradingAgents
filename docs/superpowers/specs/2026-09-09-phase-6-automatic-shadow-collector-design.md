@@ -1026,7 +1026,9 @@ Read-only SQLite summary; no MT5 or LLM connection by default. It reports:
 
 `--json` returns stable field names suitable for a monitor. `--probe` is an
 explicit optional read-only MT5 availability check and is not part of the
-default status command.
+default status command. If a non-expired watcher lease owns the database,
+`status --probe` returns `WATCHER_ALREADY_RUNNING` without opening MT5; an
+operator can run the probe after the watcher is stopped.
 
 ### 17.4 `forex-watch evaluate`
 
