@@ -7,10 +7,13 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from cli.stats_handler import StatsCallbackHandler
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.runner import ForexShadowRunner
+from tradingagents.forex.watch_store import WatcherStore
 
 _FOREX_ANALYSTS = frozenset({"market", "news"})
 
@@ -135,6 +138,18 @@ def _metric(metrics: Mapping[str, Any], key: str) -> Any:
     return value if value is not None else "unknown"
 
 
+def _watcher_database_path(db_path: str | None) -> Path:
+    if db_path:
+        return Path(db_path)
+    return Path(DEFAULT_CONFIG.get("data_cache_dir", "data_cache")) / "shadow_decisions.db"
+
+
+def _watcher_lease_is_active(db_path: str | None, now: datetime) -> bool:
+    store = WatcherStore(_watcher_database_path(db_path))
+    lease = store.active_lease(now)
+    return lease is not None and lease.lease_expires_at > now
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -147,6 +162,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Keep the safety boundary visible before provider/graph construction.
     print("MT5 FOREX — SHADOW MODE")
     print("NO ORDER WILL BE SENT")
+
+    try:
+        if _watcher_lease_is_active(args.db_path, datetime.now(timezone.utc)):
+            print("FOREX SHADOW ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
+            return 1
+    except Exception as exc:
+        print(f"FOREX SHADOW ERROR: watcher lease check failed: {exc}", file=sys.stderr)
+        return 1
 
     stats_handler = StatsCallbackHandler()
     try:

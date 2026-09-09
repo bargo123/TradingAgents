@@ -82,3 +82,11 @@ def test_pyproject_registers_only_new_forex_watch_script():
     text = Path("pyproject.toml").read_text(encoding="utf-8")
     assert 'forex-watch = "cli.forex_watch:main"' in text
     assert 'tradingagents = "cli.main:app"' in text
+
+
+def test_forex_shadow_docs_describe_serialized_collector_and_no_execution():
+    text = Path("docs/forex-shadow.md").read_text(encoding="utf-8")
+    assert "forex-watch" in text
+    assert "WATCHER_ALREADY_RUNNING" in text
+    assert "NO ORDER WILL BE SENT" in text
+    assert "evaluation_due_pending" in text

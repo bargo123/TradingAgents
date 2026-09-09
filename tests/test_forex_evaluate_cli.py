@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
 from cli.forex_evaluate import build_parser, main
+from tradingagents.forex.watch_store import LeaseOwner, WatcherStore
 
 
 def _fake_result() -> SimpleNamespace:
@@ -125,3 +128,25 @@ def test_forex_evaluate_has_no_llm_or_execution_options() -> None:
     assert "--llm-provider" not in option_strings
     assert "--order-send" not in option_strings
     assert "--symbol" not in option_strings
+
+
+def test_forex_evaluate_refuses_nonexpired_watcher_lease(capsys, tmp_path):
+    db_path = tmp_path / "watch.db"
+    store = WatcherStore(db_path)
+    now = datetime.now(timezone.utc)
+    store.acquire_lease(
+        LeaseOwner("owner", 123, "host", now),
+        now,
+    )
+
+    class MustNotConstruct:
+        def __init__(self, **kwargs):
+            raise AssertionError("evaluator must not be constructed")
+
+    result = main(
+        ["--pending", "--db-path", str(db_path)],
+        evaluator_factory=MustNotConstruct,
+    )
+
+    assert result == 1
+    assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err

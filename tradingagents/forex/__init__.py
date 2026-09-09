@@ -43,6 +43,29 @@ from .shadow import (
     normalize_portfolio_manager_result,
 )
 from .tools import MT5ToolAdapter
+from .watch_store import (
+    LeaseLostError,
+    LeaseRecord,
+    LeaseResult,
+    LeaseStatus,
+    RunEvidence,
+    WatcherStore,
+)
+from .watcher import (
+    CompletedBarSchedule,
+    EvaluationRunEvidence,
+    EventSink,
+    MarketProbeResult,
+    Mt5OperationBusy,
+    OutcomeCoordinator,
+    ReadOnlyMarketProbe,
+    ScheduledOpportunity,
+    SerializedMt5OperationGate,
+    SingleSlotAnalysisExecutor,
+    WatchCycleResult,
+    WatcherConfig,
+    WatcherCoordinator,
+)
 
 __all__ = [
     "build_forex_market_context",
@@ -82,4 +105,23 @@ __all__ = [
     "build_forex_profile_context",
     "calculate_timeframe_features",
     "resolve_forex_profile",
+    "WatcherConfig",
+    "WatcherCoordinator",
+    "WatcherStore",
+    "ReadOnlyMarketProbe",
+    "MarketProbeResult",
+    "ScheduledOpportunity",
+    "CompletedBarSchedule",
+    "WatchCycleResult",
+    "LeaseResult",
+    "LeaseStatus",
+    "LeaseRecord",
+    "LeaseLostError",
+    "RunEvidence",
+    "OutcomeCoordinator",
+    "EvaluationRunEvidence",
+    "SerializedMt5OperationGate",
+    "SingleSlotAnalysisExecutor",
+    "Mt5OperationBusy",
+    "EventSink",
 ]

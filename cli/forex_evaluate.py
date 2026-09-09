@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ from tradingagents.forex.evaluation import (
     ShadowOutcomeEvaluator,
 )
 from tradingagents.forex.shadow import ShadowDecisionStore
+from tradingagents.forex.watch_store import WatcherStore
 
 
 def _non_negative_int(value: str) -> int:
@@ -100,6 +102,12 @@ def main(
     print("NO ORDER WILL BE SENT")
     try:
         db_path = Path(args.db_path)
+        now = datetime.now(timezone.utc)
+        watcher_store = WatcherStore(db_path)
+        lease = watcher_store.active_lease(now)
+        if lease is not None and lease.lease_expires_at > now:
+            print("FOREX EVALUATION ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
+            return 1
         decision_store = ShadowDecisionStore(db_path)
         evaluation_store = ShadowEvaluationStore(db_path)
         config = EvaluationConfig(

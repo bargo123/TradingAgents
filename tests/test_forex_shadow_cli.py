@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime, timezone
 
 import pytest
 
 from cli.forex_shadow import build_parser, main
+from tradingagents.forex.watch_store import LeaseOwner, WatcherStore
 
 
 def test_forex_shadow_parser_defaults_and_positive_count():
@@ -110,6 +112,69 @@ def test_cli_returns_nonzero_and_keeps_banner_when_runner_fails(capsys, monkeypa
     assert "MT5 FOREX" in captured.out
     assert "NO ORDER WILL BE SENT" in captured.out
     assert "terminal unavailable" in captured.err
+
+
+def test_forex_shadow_refuses_active_watcher_before_runner_construction(
+    capsys, monkeypatch, tmp_path
+):
+    db_path = tmp_path / "shadow.db"
+    store = WatcherStore(db_path)
+    now = datetime.now(timezone.utc)
+    store.acquire_lease(
+        LeaseOwner(
+            owner_token="watcher-owner",
+            pid=123,
+            host="host",
+            process_started_at=now,
+        ),
+        now,
+    )
+
+    class MustNotConstruct:
+        def __init__(self, **kwargs):
+            raise AssertionError("ForexShadowRunner must not be constructed")
+
+    monkeypatch.setattr("cli.forex_shadow.ForexShadowRunner", MustNotConstruct)
+
+    assert main(["--db-path", str(db_path)]) == 1
+    captured = capsys.readouterr()
+    assert "WATCHER_ALREADY_RUNNING" in captured.err
+    assert "NO ORDER WILL BE SENT" in captured.out
+
+
+def test_forex_shadow_runs_normally_without_active_watcher(
+    capsys, monkeypatch, tmp_path
+):
+    captured = {}
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            captured["constructed"] = True
+            self.store = type("Store", (), {"path": tmp_path / "shadow.db"})()
+
+        def run(self, **kwargs):
+            captured["run"] = kwargs
+            decision = type(
+                "Decision",
+                (),
+                {
+                    "decision_id": "decision-001",
+                    "action": "HOLD",
+                    "normalization_status": "NORMALIZED",
+                    "decision_context_status": "COMPLETE",
+                    "executed": False,
+                    "requested_symbol": "EURUSD",
+                    "resolved_symbol": "EURUSD",
+                    "snapshot_timestamp": "2026-09-08T00:00:00Z",
+                    "raw_portfolio_manager_result_json": '{"rating":"Hold"}',
+                },
+            )()
+            return type("Result", (), {"decision": decision, "elapsed_seconds": 0, "metrics": {}})()
+
+    monkeypatch.setattr("cli.forex_shadow.ForexShadowRunner", FakeRunner)
+
+    assert main(["--db-path", str(tmp_path / "shadow.db")]) == 0
+    assert captured.get("constructed") is True
 
 
 def test_cli_passes_stats_callback_and_prints_run_evidence(capsys, monkeypatch, tmp_path):

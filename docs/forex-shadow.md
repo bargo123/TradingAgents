@@ -102,6 +102,43 @@ If the MetaTrader 5 package, terminal, account, or configured LLM is not
 available, the run should be reported as unverified rather than replaced with
 Yahoo Finance data or a fabricated recommendation.
 
+## Phase 6 automatic collector
+
+`forex-watch` is a separate foreground collector. The existing `forex-shadow`
+and stock `tradingagents` commands remain separate entry points, and the stock
+CLI does not acquire this watcher lease.
+
+```text
+MT5 FOREX — SHADOW COLLECTOR
+NO ORDER WILL BE SENT
+```
+
+Use `forex-watch once` for one current completed M15 bucket, `forex-watch run`
+for polling, `forex-watch status` for SQLite-only status, and
+`forex-watch evaluate` to delegate to the existing Phase 5 zero-LLM evaluator.
+Defaults are EURUSD, INTRADAY, `market,news`, M15, a 30-second settle window,
+one active runner, and no queue. A bucket observed while analysis is active is
+recorded once as `SKIPPED / ANALYSIS_ALREADY_RUNNING`; it is never replayed.
+
+The watcher lease is expiry-first. A non-expired lease always returns
+`WATCHER_ALREADY_RUNNING`, without checking a PID, opening MT5, constructing a
+runner, or calling an LLM. Only an expired lease can enter takeover; an exact
+same-host process proven alive then returns
+`WATCHER_OPERATOR_REVIEW_REQUIRED`. Stale runs are reconciled by their
+`source_run_id` before new scheduling.
+
+All MT5-using operations are serialized. While `ANALYZING`, the foreground
+loop only renews the lease, observes schedule buckets, records skips, and
+retains `evaluation_due_pending`. It does not probe, evaluate, create another
+provider, or start another analysis. After the runner's MT5 session shuts down,
+the existing Phase 5 evaluator runs before the next probe. Evaluation is
+read-only and makes zero LLM calls.
+
+The watcher stores operational IDs, statuses, counts, timings, safe provider
+and model identifiers, and separate analysis/reference temporal evidence. It
+does not write prompts, private reasoning, credentials, training labels, or
+execution records. Every persisted decision remains `executed=False`.
+
 ## Local verification snapshot (2026-09-08)
 
 The local demo terminal was available during Phase 4 verification. A direct
