@@ -21,3 +21,7 @@ class Mt5AccountDisconnectedError(Mt5AccountError):
     pass
 class Mt5DataError(Mt5ProviderError):
     pass
+
+
+class Mt5BrokerClockError(Mt5ProviderError):
+    """The terminal clock could not be calibrated or is no longer usable."""
