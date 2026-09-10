@@ -24,6 +24,8 @@ Scope: standalone prose-node calls only; no MT5, graph execution, order path, Ph
 
 Ollama availability was checked before the run: version `0.33.3`; `qwen3.5:2b` and `qwen3.5:4b` were present in `/api/tags`; `/v1/models` returned HTTP 200. The existing LangChain/OpenAI-compatible client path was used. Each call used a fresh deterministic forex state, an existing full-shape prose-agent factory, and one shared client; calls were strictly sequential. Only scalar metadata was retained (lengths, booleans, finish/usage fields, elapsed time, exception type, and transport status). No prompt, completion, or reasoning text was printed or persisted.
 
+The OpenAI-compatible responses exposed input/output token usage; no Ollama `eval_count` field was available through this `/v1` path, so no eval count is claimed.
+
 ## Per-agent results
 
 | Agent | Calls | GOOD | EMPTY | LABEL_ONLY | ERROR | TRUNCATED | Reliability | Median chars | Min/Max chars | Median sec | P95 sec | Mean input tokens | Mean output tokens | Reasoning present |

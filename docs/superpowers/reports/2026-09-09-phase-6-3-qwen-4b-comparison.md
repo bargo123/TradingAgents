@@ -16,6 +16,8 @@ Accepted Phase 6.2 baseline SHA: `e4d6c545c323d79e9b26ec2aab7bb21084667b35`.
 - Max tokens: `1024`
 - Command: `scripts/benchmark_qwen_prose.py --calls-per-agent 10 --agents bear,aggressive --model qwen3.5:4b --output data_cache\phase6-3-qwen3.5-4b-failing.jsonl --summary docs\superpowers\reports\2026-09-09-phase-6-3-qwen-4b-comparison.md`
 
+The OpenAI-compatible responses exposed input/output token usage; no Ollama `eval_count` field was available through this `/v1` path, so no eval count is claimed.
+
 ## Per-agent results
 
 | Agent | Calls | GOOD | EMPTY | LABEL_ONLY | ERROR | TRUNCATED | Reliability | Median chars | Min/Max chars | Median sec | P95 sec | Mean input tokens | Mean output tokens | Reasoning present |
