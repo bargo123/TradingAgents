@@ -272,7 +272,8 @@ data_cache/knowledge/
   vector/
     lancedb/<index_version>/              # staged and active LanceDB tables
   keyword/
-    bm25.sqlite3                          # SQLite FTS5 projection
+    <index_version>/
+      bm25.sqlite3                        # SQLite FTS5 projection
   state/
     active-index.json                     # atomic active-index pointer
     ingestion-runs.jsonl                  # append-only run summaries
@@ -287,7 +288,14 @@ retrievable. JSONL manifests and `active-index.json` are deterministic,
 human-inspectable projections and are regenerated atomically; they are not a
 second source of truth. Parser caches, chunks, and embedding files are
 content-addressed or versioned and may be reused only when their component
-versions match the catalog.
+versions match the catalog. `active-index.json` and the catalog's
+`index_registry` row identify one complete generation, including the matching
+vector location, lexical location, embedding specification, lexical tokenizer
+settings, schema/index version, and document/chunk population identity. The
+catalog registry is the transactional authority; the JSON pointer is written
+with temp-file replacement and reconciled from the registry on startup if a
+crash leaves it stale. A vector table from one generation is never paired with
+an FTS5 database from another generation.
 
 ## 7. Document identity, duplicates, editions, and aliases
 
@@ -314,6 +322,37 @@ The file is statted before and after reading. If size, mtime identity, or a
 second hash check indicates that a source changed during ingestion, staged
 artifacts are discarded and the attempt is recorded as `SOURCE_CHANGED`; the
 source is never written.
+
+### Alias currentness invariant
+
+The catalog keeps the resource-to-document relationship separate from the
+latest ingestion attempt. An alias relation is `CURRENT` only when that path's
+latest successfully ingested hash is the relation's `source_hash` and the
+resource has not been removed. Exact duplicate paths therefore create several
+`CURRENT` aliases for one document.
+
+A document and all of its projections are `ACTIVE` in the default retrieval
+view while at least one current, non-removed alias references its source hash.
+The active flag is derived from this alias relation (or a transactionally
+maintained equivalent), not from one selected filename.
+
+For example, if `A.pdf` and `B.pdf` both reference hash X, removing A marks
+only A `REMOVED`; B remains `CURRENT`, so document X and its chunks/vectors/
+BM25 rows remain active and searchable. X becomes inactive in the default view
+only after the last current alias disappears. Physical rows remain available
+for diagnostics and explicit rebuild cleanup.
+
+When A changes from X to Y, the staged Y attempt does not alter X's relation.
+After successful ingestion, A is atomically reassigned to Y (or marked a
+duplicate of an already indexed Y), X loses only A's alias, and B continues to
+keep X active. Y becomes active only after both projections for Y are ready.
+
+If changed-file ingestion fails, A's previous X relationship is retained as a
+`RETAINED_PREVIOUS` diagnostic relation and the failed Y attempt is recorded
+separately. That retained relation is not counted as a current alias for the
+default view when A is the only path, so stale content cannot silently appear
+as current. If B still references X, X remains active through B exactly as
+before. A later successful attempt replaces the retained relation atomically.
 
 ## 8. Ingestion state machine and incremental behavior
 
@@ -342,11 +381,17 @@ Additional resource-level states are `REMOVED`, `SOURCE_CHANGED`,
 `INTERRUPTED`, and `RETAINED_PREVIOUS`. They describe a failed or superseded
 attempt and are never presented as successful indexing.
 
+The `UNSUPPORTED` branch is terminal for that resource attempt: it is recorded
+in the catalog/status view and stops before hashing, parsing, embedding, or
+index projection. Only supported PDF/EPUB resources continue to `HASHED`.
+
 For one incremental run:
 
-1. recursively enumerate regular `.pdf` and `.epub` files in deterministic
-   relative-path order; unsupported files receive `UNSUPPORTED` and are not
-   silently ignored;
+1. recursively enumerate **all regular files** under the source root in
+   deterministic relative-path order. `.pdf` and `.epub` (case-insensitive)
+   are the supported Phase 7 formats; every other regular file is recorded as
+   `UNSUPPORTED` and is never parsed, embedded, or indexed. Directories,
+   directory entries, and internal filesystem metadata are not resources;
 2. hash each supported resource and compare the current hash plus all
    component versions with the catalog;
 3. record `UNCHANGED` when the hash and compatible index artifacts already
@@ -360,11 +405,13 @@ For one incremental run:
 7. write run counts and diagnostics without requiring an LLM.
 
 When a changed file fails, its previous successfully indexed version is kept
-physically and marked `RETAINED_PREVIOUS` with the failed latest attempt. The
-old content is excluded from the default query view once the resource is
-known to have changed, but remains available for explicit diagnostics and can
-be restored by a later successful re-ingestion. This prevents a bad document
-from corrupting unrelated documents or destroying the last known-good bytes.
+physically and the resource's previous relation is marked `RETAINED_PREVIOUS`
+with the failed latest attempt. The old content is excluded from the default
+query view when that resource is the only alias, but remains available for
+explicit diagnostics and can be restored by a later successful re-ingestion.
+If another current alias references the same old hash, that other alias keeps
+the document active and searchable. This prevents a bad document from
+corrupting unrelated documents or destroying the last known-good bytes.
 
 `knowledge-index --rebuild` is an explicit maintenance operation. It forces
 compatible resources through parsing/chunking as needed and constructs a new
@@ -570,8 +617,9 @@ index_version
 ```
 
 Additional fields include `text`, `content_hash`, `reading_order`,
-`table_metadata`, `equation_metadata`, `active`, and a source-currentness
-marker. A result lacking `document_id`, `source_hash`, `chunk_id`, source
+`table_metadata`, `equation_metadata`, `active`, `vector_ready`,
+`lexical_ready`, `projection_generation`, and a source-currentness marker. A
+result lacking `document_id`, `source_hash`, `chunk_id`, source
 filename, content type, or a source location is invalid and must be dropped or
 raise a provenance error; it must never be returned anonymously.
 
@@ -582,12 +630,21 @@ normalized SQLite tables with the same semantics):
   latest attempt;
 - `documents`: one row per unique source hash, document metadata, parser
   artifact, and currentness;
-- `document_aliases`: every filename/path that has the same content hash;
+- `document_aliases`: every filename/path that has the same content hash,
+  relation status (`CURRENT`, `RETAINED_PREVIOUS`, or `REMOVED`), and the
+  transaction that last changed that relation;
 - `chunks`: one row per deterministic chunk and all provenance fields;
 - `ingestion_runs` and `ingestion_events`: run/stage outcomes and bounded
   diagnostics; and
-- `index_registry`: component versions, active index pointer, dimensions, and
-  build status.
+- `index_registry`: component versions, one matched vector/lexical generation
+  pointer, dimensions, population identity, and build status.
+
+The catalog exposes a derived `current_alias_count` for each document. A
+document is eligible for default retrieval only when that count is greater
+than zero **and** its vector and lexical projections are both ready in the
+same active generation. Updating an alias relation and its derived count is a
+single catalog transaction; removing one duplicate alias cannot deactivate
+the shared document while another current alias remains.
 
 The catalog contains no portfolio decisions, outcome labels, MT5 fields, or
 experience-memory rows.
@@ -618,7 +675,7 @@ and the existing active index remains intact. Normal query operation is fully
 offline. CPU thread count and batch size are bounded by configuration; CUDA is
 not assumed.
 
-## 15. LanceDB vector schema and index lifecycle
+## 15. LanceDB vector schema and paired index lifecycle
 
 The active LanceDB table has one row per active chunk with fields equivalent to:
 
@@ -654,6 +711,57 @@ IDs, dimensions, normalization policies, or index schemas are never mixed in
 one active table. A change creates a new versioned table and updates the
 registry only after validation.
 
+### Generation contract
+
+An `index_version` names a **matched generation**, not just a vector table. Its
+registry entry and `state/active-index.json` contain at least:
+
+```text
+generation_id / index_version
+vector_location = vector/lancedb/<index_version>/
+lexical_location = keyword/<index_version>/bm25.sqlite3
+embedding_model_id / version / dimensions / normalization
+lexical_index_version / tokenizer_settings
+schema_version
+document_population_hash
+chunk_population_hash
+fusion_version / reranker_version
+build_status
+```
+
+The population hashes are computed from the sorted active document/chunk IDs
+and source hashes. Query startup loads this record first, verifies that both
+locations exist and advertise the same generation, and refuses to combine
+incompatible projections. A missing or mismatched lexical projection is an
+index error, not permission to fall back to an older database silently.
+
+### Rebuild atomicity
+
+An explicit rebuild creates both projections under a new generation directory,
+validates row counts, dimensions, population hashes, FTS5 availability, and
+sampled provenance, then commits the matched generation in the catalog
+registry and atomically replaces the derived active-index pointer. The old
+complete generation remains intact for rollback/diagnostics. Activation never
+publishes a new vector table with an old lexical database, or the reverse; a
+startup reconciliation regenerates the pointer from the catalog if a crash
+occurs between the database commit and pointer replacement.
+
+### Incremental projection consistency
+
+Incremental ingestion may append to the current generation for a single
+document, but a document is not made active until its vector and lexical rows
+are both present, checksummed, and tagged with the same generation and
+population transaction. The catalog stores `vector_ready`, `lexical_ready`,
+and `projection_generation`; query filters require both readiness flags and a
+generation equal to the active registry entry. If either projection fails,
+the document remains `INDEX_FAILED` (or its previous version remains in
+service), staged rows are deactivated by run ID, and no partial document is
+visible. When an incremental document is committed, the active generation's
+population identity is advanced in the same catalog transaction after both
+projections are verified. An implementation that cannot safely update the
+active generation uses a side-by-side replacement generation for that
+incremental batch instead.
+
 For a small corpus, an exact/flat search is acceptable. LanceDB index type and
 build parameters are recorded in `index.json`; a future implementation may
 select an approximate index when corpus size warrants it without changing the
@@ -661,14 +769,17 @@ query contract. Metadata filters are applied in the vector query where
 supported and rechecked against the catalog before returning a hit.
 
 Deletes and replacements use `active=false` projection/tombstone semantics
-until a rebuild compacts the table. A query never returns inactive rows.
+until a rebuild compacts the table. A query never returns inactive rows or a
+row whose projection generation is not the active matched generation.
 
 ## 16. Lexical/BM25 strategy
 
-The keyword projection is a local SQLite database containing an FTS5 virtual
-table and a provenance side table keyed by `chunk_id`. FTS5's built-in
-`bm25()` rank supplies corpus-aware lexical scores without a server or a
-separate Python ranking dependency.
+Each index generation has its own local SQLite database at
+`keyword/<index_version>/bm25.sqlite3`. It contains an FTS5 virtual table and
+a provenance side table keyed by `chunk_id`. FTS5's built-in `bm25()` rank
+supplies corpus-aware lexical scores without a server or a separate Python
+ranking dependency. The database stores the same generation ID, population
+hashes, schema version, and lexical settings as the paired LanceDB table.
 
 The tokenizer is versioned and uses Unicode normalization, case folding,
 diacritic removal, and token characters that preserve `_` and `-` where they
@@ -682,7 +793,8 @@ Exact-term requests are not reduced to an embedding search. A query containing
 candidate set even when the dense model has no close neighbor. FTS5 metadata
 filters are applied through the side table and rechecked before a hit is
 returned. Lexical index version/settings are stored per row and in the active
-registry.
+registry. Query startup opens the lexical location named by the active matched
+generation; it never reuses a fixed or older `bm25.sqlite3` path.
 
 If FTS5 is unavailable in the Python SQLite build, indexing fails visibly with
 `INDEX_FAILED`; it does not silently substitute an unmeasured tokenizer.
@@ -793,8 +905,8 @@ Required behavior:
 - `index` accepts source/artifact overrides and reports per-state counts;
 - `rebuild` requires an explicit flag/command and reports the active-index
   swap only after all requested validation passes;
-- `status` answers approved-resource, indexed, `NEEDS_OCR`, failed, changed,
-  and version questions from the catalog alone;
+- `status` answers approved-resource, indexed, `UNSUPPORTED`, `NEEDS_OCR`,
+  failed, changed, removed, and version questions from the catalog alone;
 - `list --state NEEDS_OCR` and equivalent state filters expose every
   quarantined resource;
 - `search` prints provenance for every hit and supports `--content-type`,
@@ -813,20 +925,31 @@ The incremental coordinator uses source hashes and component fingerprints:
 
 | Source/index condition | Result |
 | --- | --- |
+| regular file with unsupported extension | `UNSUPPORTED`; visible in manifest/status; no parse/embed/index |
 | same path, same hash, compatible versions, indexed | `UNCHANGED`; no parse/embed/index |
 | new path, hash already indexed | `DUPLICATE`; attach alias only |
 | new path, new hash | parse and index one document |
 | existing path, changed hash | ingest new version; retain old until replacement succeeds |
 | parser/chunker version changed | reparse/rechunk affected document |
-| embedding model/dimensions changed | build a new vector index; lexical chunks may be reused |
-| lexical settings changed | rebuild the FTS5 projection |
-| source path removed | mark `REMOVED`, deactivate its active projection safely |
+| embedding model/dimensions changed | build a new matched vector+lexical generation; lexical chunk text may be reused |
+| lexical settings changed | build a new matched generation with a rebuilt FTS5 projection |
+| source path removed while another current alias remains | mark only that alias `REMOVED`; keep the shared document/projections active |
+| source path removed and it was the last current alias | mark `REMOVED`; deactivate the document in the default view; retain physical rows |
 
 Physical tombstone cleanup is explicit rebuild/maintenance work. Query filters
-use the catalog's active/current flags, so removed or superseded chunks cannot
-leak through a stale vector row. A rebuild swaps the complete vector and
-lexical projections atomically and leaves the previous active version for
-diagnostic rollback until an explicit cleanup operation.
+use the catalog's alias-current, document-active, projection-ready, and
+generation fields, so removing one duplicate alias cannot deactivate a shared
+document and removed/superseded chunks cannot leak through a stale vector row.
+A rebuild swaps the complete vector and lexical projections atomically and
+leaves the previous matched generation intact for diagnostic rollback until an
+explicit cleanup operation.
+
+For an incremental update, the catalog changes a resource's alias relation and
+the document's current-alias count only after both projections are ready in
+the active generation. If the vector or lexical half fails, the relation and
+active count remain at their prior committed values; staged rows are
+deactivated by run ID. This prevents the active catalog from pointing at a
+vector-only or lexical-only document.
 
 ## 21. Error, transaction, and recovery semantics
 
@@ -849,15 +972,23 @@ failed resource behind a successful aggregate message.
 Each document is processed in a staging directory named by run/resource IDs.
 Files are written to temporary names and atomically replaced only after a
 complete checksum. Catalog updates use SQLite transactions. Lexical rows and
-vector rows carry the run/index version so orphaned rows can be removed or
-deactivated during reconciliation.
+vector rows carry the run/generation version so orphaned rows can be removed
+or deactivated during reconciliation. A resource alias reassignment, its
+current-alias count, and the document/projection readiness flags are committed
+only after both projections report the same generation.
+
+For a rebuild, the catalog remains pointed at the previous complete generation
+until vector and lexical validation both pass. Activation records the matched
+locations and population hashes in one transaction; a crash before activation
+therefore leaves the previous generation queryable. A crash after activation
+can only expose the newly validated pair, never a mixed pair.
 
 At startup, an index writer acquires `locks/index.lock` and checks for stale
 `RUNNING` ingestion records. An interrupted run is marked `INTERRUPTED`; its
 partial artifacts and projections are deleted/deactivated by run ID, while
-the last active index remains queryable. Recovery is idempotent and safe to
-repeat. A crash cannot turn a parsed-but-unembedded or embedded-but-unindexed
-resource into `INDEXED`.
+the last active matched generation remains queryable. Recovery is idempotent
+and safe to repeat. A crash cannot turn a parsed-but-unembedded,
+embedded-but-unindexed, vector-only, or lexical-only resource into `INDEXED`.
 
 Quarantine diagnostics are bounded and machine-readable. They include stage,
 exception type/message fingerprint, resource/document hash, parser/index
@@ -892,9 +1023,10 @@ and document/chunk counts. A component mismatch is detected before query or
 incremental reuse:
 
 - parser/chunker mismatch invalidates affected parsed/chunk artifacts;
-- embedding ID/version/dimensions/normalization mismatch requires a new vector
-  index and forbids mixed vectors;
-- lexical tokenizer/settings mismatch requires an FTS5 rebuild;
+- embedding ID/version/dimensions/normalization mismatch requires a new
+  matched vector+lexical generation and forbids mixed vectors;
+- lexical tokenizer/settings mismatch requires a new matched generation with
+  an FTS5 rebuild;
 - fusion/reranker changes affect query ranking but not stored chunks; and
 - schema changes require an explicit migration or new index version.
 
@@ -914,26 +1046,42 @@ The test matrix must include:
 2. unchanged hash skip with zero parser/embed calls;
 3. changed-file re-ingestion and old-version retention;
 4. exact-byte duplicate detection and alias provenance;
-5. removed-resource/tombstone handling;
-6. unsupported extension classification;
-7. scanned/image-only quarantine as `NEEDS_OCR`;
-8. parser failure isolation while other resources index;
-9. deterministic chunk IDs and stable ordering;
-10. title/author/year/page/chapter/section provenance;
-11. equation metadata and variable-definition bundling;
-12. table caption/header/cell metadata and row-safe splitting;
-13. embedding dimension/model mismatch rejection;
-14. FTS5 exact-term and phrase retrieval;
-15. dense, lexical, and hybrid/RRF retrieval;
-16. content-type and document metadata filters;
-17. deterministic score/tie ordering;
-18. reranker interface and v1 feature-reranker ordering;
-19. explicit rebuild and atomic active-index swap;
-20. interrupted ingestion cleanup and restart recovery;
-21. provenance validation rejecting anonymous hits;
-22. source-folder hash and file-byte preservation before/after indexing;
-23. offline/no-network behavior when local model artifacts are present; and
-24. isolation checks proving no imports or storage paths reference forex,
+5. unsupported regular-file visibility in the manifest/status with zero parser
+   or embedding calls;
+6. removed-resource/tombstone handling;
+7. removing one of two duplicate aliases while the shared document remains
+   active and searchable;
+8. removing the last alias and deactivating only that document in the default
+   view;
+9. changing one duplicate alias to new bytes while the other alias keeps the
+   old document active, with the new document independently indexed after
+   success;
+10. failed changed-file ingestion retaining the prior relationship while a
+    second duplicate alias remains current and unaffected;
+11. scanned/image-only quarantine as `NEEDS_OCR`;
+12. parser failure isolation while other resources index;
+13. deterministic chunk IDs and stable ordering;
+14. title/author/year/page/chapter/section provenance;
+15. equation metadata and variable-definition bundling;
+16. table caption/header/cell metadata and row-safe splitting;
+17. embedding dimension/model mismatch rejection;
+18. FTS5 exact-term and phrase retrieval;
+19. dense, lexical, and hybrid/RRF retrieval;
+20. content-type and document metadata filters;
+21. deterministic score/tie ordering;
+22. reranker interface and v1 feature-reranker ordering;
+23. failed vector generation build not swapping the active pair;
+24. failed lexical generation build not swapping the active pair;
+25. successful rebuild swapping vector and lexical projections together;
+26. previous complete generation remaining intact after a successful swap;
+27. query rejection when vector and lexical generation IDs or population
+    identities do not match;
+28. incremental partial-projection failure not becoming visible;
+29. interrupted ingestion cleanup and restart recovery;
+30. provenance validation rejecting anonymous hits;
+31. source-folder hash and file-byte preservation before/after indexing;
+32. offline/no-network behavior when local model artifacts are present; and
+33. isolation checks proving no imports or storage paths reference forex,
     MT5, TradingAgents decisions, or experience memory.
 
 Optional dependency tests may run when the knowledge extra is installed, but
@@ -1104,6 +1252,12 @@ This document was reviewed against the requested boundaries:
   architecture;
 - catalog ownership, index projection ownership, and active-index swaps are
   explicit;
+- discovery covers every regular file, with an explicit terminal
+  `UNSUPPORTED` state before hashing/parsing;
+- shared-document currentness is derived from all current aliases, so removing
+  or changing one duplicate path cannot deactivate another path's knowledge;
+- vector and lexical projections are generation-scoped, validated as a pair,
+  and activated together with the previous complete generation retained;
 - incremental failure, duplicate, removal, and interruption semantics do not
   contradict one another;
 - PDF/EPUB support and `NEEDS_OCR` behavior are explicit;
