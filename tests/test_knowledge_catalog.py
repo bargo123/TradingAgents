@@ -38,22 +38,39 @@ def make_parsed_document(*, document_id: str, source_hash: str) -> ParsedDocumen
     )
 
 
-def make_generation(*, generation_id: str = "gen-1", ready: bool = True) -> IndexGeneration:
+def make_generation(
+    *,
+    generation_id: str = "gen-1",
+    ready: bool = True,
+    status: str = "VALIDATED",
+    vector_location: str | None = None,
+    lexical_location: str | None = None,
+    component_versions: dict[str, str] | None = None,
+) -> IndexGeneration:
+    population_hash = "population-fixture"
     return IndexGeneration(
         generation_id=generation_id,
-        vector_location=f"vector/lancedb/{generation_id}",
-        lexical_location=f"keyword/{generation_id}/bm25.sqlite3",
+        vector_location=vector_location if vector_location is not None else f"vector/lancedb/{generation_id}",
+        lexical_location=lexical_location if lexical_location is not None else f"keyword/{generation_id}/bm25.sqlite3",
         embedding_spec=EmbeddingSpec(model_id="fixture", dimensions=3),
         lexical_index_version="fts5-fixture-v1",
         lexical_tokenizer_settings={"unicode": "NFC"},
         index_version=generation_id,
-        population_hash="population-fixture",
+        population_hash=population_hash,
+        population_identity=population_hash,
         document_count=1,
         chunk_count=1,
         vector_ready=ready,
         lexical_ready=ready,
-        status="VALIDATED",
-        component_versions={"vector": "fixture-v1", "lexical": "fixture-v1"},
+        status=status,
+        component_versions=component_versions or {
+            "vector": "fixture-vector-v1",
+            "lexical": "fixture-lexical-v1",
+            "vector_generation_id": generation_id,
+            "lexical_generation_id": generation_id,
+            "vector_population_hash": population_hash,
+            "lexical_population_hash": population_hash,
+        },
     )
 
 
@@ -157,12 +174,48 @@ def test_projection_readiness_requires_active_matched_generation(tmp_path):
     assert stored.lexical_ready is True
 
 
-def test_generation_registry_rejects_partial_pair_and_persists_validated_generation(tmp_path):
+def test_generation_registry_rejects_invalid_pair_and_preserves_previous_active_generation(tmp_path):
     catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
     catalog.initialize()
+    previous = make_generation(generation_id="gen-previous")
+    catalog.set_active_generation(previous)
 
-    with pytest.raises(ValueError, match="ready"):
-        catalog.set_active_generation(make_generation(ready=False))
+    invalid_generations = (
+        make_generation(generation_id="gen-partial", ready=False),
+        make_generation(generation_id="gen-staged", status="STAGED"),
+        make_generation(generation_id="gen-blank-location", vector_location=""),
+        make_generation(
+            generation_id="gen-missing-pair-metadata",
+            component_versions={"vector": "fixture-vector-v1", "lexical": "fixture-lexical-v1"},
+        ),
+        make_generation(
+            generation_id="gen-mismatched-component-identity",
+            component_versions={
+                "vector": "fixture-vector-v1",
+                "lexical": "fixture-lexical-v1",
+                "vector_generation_id": "gen-mismatched-component-identity",
+                "lexical_generation_id": "other-generation",
+                "vector_population_hash": "population-fixture",
+                "lexical_population_hash": "population-fixture",
+            },
+        ),
+        make_generation(
+            generation_id="gen-mismatched-population-metadata",
+            component_versions={
+                "vector": "fixture-vector-v1",
+                "lexical": "fixture-lexical-v1",
+                "vector_generation_id": "gen-mismatched-population-metadata",
+                "lexical_generation_id": "gen-mismatched-population-metadata",
+                "vector_population_hash": "population-fixture",
+                "lexical_population_hash": "other-population",
+            },
+        ),
+    )
+
+    for invalid in invalid_generations:
+        with pytest.raises(ValueError):
+            catalog.set_active_generation(invalid)
+        assert catalog.active_generation().generation_id == previous.generation_id
 
     generation = make_generation(generation_id="gen-persisted")
     catalog.set_active_generation(generation)
@@ -175,6 +228,40 @@ def test_generation_registry_rejects_partial_pair_and_persists_validated_generat
     assert stored.population_hash == generation.population_hash
     assert stored.component_versions == generation.component_versions
     assert stored.activated_at is not None
+
+
+@pytest.mark.parametrize(
+    ("read_operation", "operation_id"),
+    (
+        (lambda catalog, document_id: catalog.get_document(document_id), "get_document"),
+        (lambda catalog, document_id: catalog.get_alias("res_a"), "get_alias"),
+        (lambda catalog, document_id: catalog.current_alias_count(document_id), "current_alias_count"),
+        (lambda catalog, document_id: catalog.document_is_active(document_id), "document_is_active"),
+        (lambda catalog, document_id: catalog.document_is_retrieval_ready(document_id), "document_is_retrieval_ready"),
+        (lambda catalog, document_id: catalog.active_generation(), "active_generation"),
+        (lambda catalog, document_id: catalog.list_resources(), "list_resources"),
+        (lambda catalog, document_id: catalog.list_runs(), "list_runs"),
+        (lambda catalog, document_id: catalog.list_quarantine(), "list_quarantine"),
+    ),
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_every_catalog_read_releases_database_for_immediate_rename_and_remove(
+    tmp_path, read_operation, operation_id
+):
+    path = tmp_path / f"{operation_id}.sqlite3"
+    catalog = KnowledgeCatalog(path)
+    catalog.initialize()
+    document_id = document_id_for("77" * 32)
+    catalog.register_document(make_parsed_document(document_id=document_id, source_hash="77" * 32))
+    catalog.commit_alias("res_a", document_id, "77" * 32, AliasRelation.CURRENT)
+    catalog.record_projection_ready(document_id, "gen-read", vector_ready=True, lexical_ready=True)
+    catalog.set_active_generation(make_generation(generation_id="gen-read"))
+
+    read_operation(catalog, document_id)
+
+    renamed = tmp_path / f"{operation_id}-renamed.sqlite3"
+    path.replace(renamed)
+    renamed.unlink()
 
 
 def test_run_and_quarantine_records_preserve_only_bounded_scalar_diagnostics(tmp_path):

@@ -102,6 +102,16 @@ class KnowledgeCatalog:
         finally:
             connection.close()
 
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        """Yield a read connection and deterministically release its handle."""
+
+        connection = self._connect()
+        try:
+            yield connection
+        finally:
+            connection.close()
+
     def initialize(self) -> None:
         """Create the catalog schema idempotently."""
 
@@ -328,14 +338,14 @@ class KnowledgeCatalog:
             )
 
     def get_document(self, document_id: str) -> CatalogDocument | None:
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 "SELECT * FROM knowledge_documents WHERE document_id = ?", (document_id,)
             ).fetchone()
         return None if row is None else self._row_document(row)
 
     def get_alias(self, resource_id: str) -> CatalogAlias | None:
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 "SELECT * FROM knowledge_aliases WHERE resource_id = ?", (resource_id,)
             ).fetchone()
@@ -443,7 +453,7 @@ class KnowledgeCatalog:
             self._refresh_document_currentness(connection, existing["document_id"])
 
     def current_alias_count(self, document_id: str) -> int:
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 """SELECT COUNT(*) AS count FROM knowledge_aliases
                    WHERE document_id = ? AND relation_status = ?""",
@@ -454,7 +464,7 @@ class KnowledgeCatalog:
     def document_is_active(self, document_id: str) -> bool:
         """Return source currentness independent of projection publication."""
 
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 """SELECT 1 FROM knowledge_documents AS document
                    WHERE document.document_id = ?
@@ -471,7 +481,7 @@ class KnowledgeCatalog:
     def document_is_retrieval_ready(self, document_id: str) -> bool:
         """Return the complete default-view predicate for later query readers."""
 
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 """SELECT 1 FROM knowledge_documents AS document
                    JOIN knowledge_index_generations AS generation
@@ -516,12 +526,25 @@ class KnowledgeCatalog:
     def _validate_generation(generation: IndexGeneration) -> None:
         if not generation.vector_ready or not generation.lexical_ready:
             raise ValueError("active generation requires both vector and lexical projections ready")
-        if not str(generation.vector_location).strip() or not str(generation.lexical_location).strip():
-            raise ValueError("active generation requires matched vector and lexical locations")
+        if generation.status != "VALIDATED":
+            raise ValueError("active generation requires VALIDATED status")
+        if generation.vector_location == Path(".") or generation.lexical_location == Path("."):
+            raise ValueError("active generation requires non-placeholder vector and lexical locations")
         if not generation.population_hash.strip():
             raise ValueError("active generation requires a population hash")
-        if not generation.component_versions:
-            raise ValueError("active generation requires component versions")
+        components = dict(generation.component_versions)
+        if not str(components.get("vector", "")).strip() or not str(components.get("lexical", "")).strip():
+            raise ValueError("active generation requires explicit vector and lexical component identities")
+        if (
+            components.get("vector_generation_id") != generation.generation_id
+            or components.get("lexical_generation_id") != generation.generation_id
+        ):
+            raise ValueError("active generation requires matching vector and lexical generation identities")
+        if (
+            components.get("vector_population_hash") != generation.population_hash
+            or components.get("lexical_population_hash") != generation.population_hash
+        ):
+            raise ValueError("active generation requires matching vector and lexical population hashes")
 
     def set_active_generation(self, generation: IndexGeneration) -> None:
         """Persist and atomically activate one complete matched generation."""
@@ -575,7 +598,7 @@ class KnowledgeCatalog:
             )
 
     def active_generation(self) -> IndexGeneration | None:
-        with self._connect() as connection:
+        with self._read() as connection:
             row = connection.execute(
                 "SELECT * FROM knowledge_index_generations WHERE is_active = 1"
             ).fetchone()
@@ -588,7 +611,7 @@ class KnowledgeCatalog:
             query += " WHERE state = ?"
             parameters = (IngestionState(state).value,)
         query += " ORDER BY COALESCE(relative_path, resource_id), resource_id"
-        with self._connect() as connection:
+        with self._read() as connection:
             rows = connection.execute(query, parameters).fetchall()
         return tuple(
             CatalogResource(
@@ -620,7 +643,7 @@ class KnowledgeCatalog:
             )
 
     def list_runs(self) -> tuple[IngestionRunSummary, ...]:
-        with self._connect() as connection:
+        with self._read() as connection:
             rows = connection.execute("SELECT * FROM knowledge_ingestion_runs ORDER BY COALESCE(started_at, run_id), run_id").fetchall()
         return tuple(
             IngestionRunSummary(
@@ -675,7 +698,7 @@ class KnowledgeCatalog:
             IngestionState.INTERRUPTED.value, IngestionState.RETAINED_PREVIOUS.value,
         )
         placeholders = ", ".join("?" for _ in quarantine_states)
-        with self._connect() as connection:
+        with self._read() as connection:
             rows = connection.execute(
                 f"SELECT * FROM knowledge_ingestion_events WHERE state IN ({placeholders}) ORDER BY event_id",
                 quarantine_states,
