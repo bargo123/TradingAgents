@@ -1015,9 +1015,9 @@ policy, tokenizer/config fingerprint, model/effective limits, truncation flag,
 and corpus/query instruction policy and versions (plus any other setting that
 changes vector semantics). Same dimensionality is not compatibility. A mismatch
 raises the typed `EmbeddingSpecMismatch` error and no dense retrieval call is
-made. The lexical reader may still be used only through an explicitly selected
-lexical-only mode; the default hybrid command fails closed rather than silently
-mixing semantic spaces.
+made. The default hybrid command fails closed rather than silently mixing
+semantic spaces; a future explicitly selected lexical-only mode is outside the
+V1 contract and must not be an implicit fallback.
 
 For the BGE V1 profile, corpus chunks use `none-v1` and queries use the exact
 versioned `bge-search-prefix-v1` instruction policy. The query provider applies
