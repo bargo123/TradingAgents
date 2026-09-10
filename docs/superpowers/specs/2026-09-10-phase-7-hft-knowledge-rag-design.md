@@ -726,7 +726,7 @@ FastEmbed:
 EmbeddingProvider.spec -> EmbeddingSpec
 EmbeddingProvider.tokenizer -> EmbeddingTokenizer
 EmbeddingProvider.embed(
-    texts: Sequence[str], *, purpose: Literal["corpus", "query"]
+    texts: Sequence[str], *, purpose: Literal["corpus", "query"] = "corpus"
 ) -> Sequence[Vector]
 ```
 
