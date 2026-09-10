@@ -147,7 +147,7 @@ source folder (read-only)
   deterministic discovery + SHA-256 identity
         |
         v
-  parser adapter (Docling-first PDF/EPUB)
+  parser adapter (Docling-first PDF/native EPUB, OCR-offline)
         |
         v
   normalized structured document IR
@@ -233,9 +233,16 @@ experience memory.
 - `source_root`, defaulting to the approved `new books` path;
 - `artifact_root`, defaulting to `data_cache/knowledge` in the repository;
 - parser ID/version and parser configuration hash;
+- a configurable local `docling_artifacts_path` (defaulting to
+  `<artifact_root>/docling`), `docling_offline=true`, and the V1 parser safety
+  setting `docling_do_ocr=false` (there is no V1 override that enables OCR);
+- `formula_enrichment_enabled=false` by default, plus the optional local
+  formula-model ID/version/artifact identity when enrichment is enabled;
 - chunker version and size policy;
 - embedding model ID, local model path/cache, runtime, dimensions, and
-  normalization policy;
+  normalization policy, resolved model version, artifact hash, tokenizer
+  fingerprint, actual model input limit, effective corpus-content limit, and
+  corpus/query instruction policies;
 - lexical tokenizer/index version;
 - active vector/index version;
 - query candidate, fusion, and reranker settings; and
@@ -253,6 +260,7 @@ The recommended default layout is:
 ```text
 data_cache/knowledge/
   catalog.sqlite3                         # authoritative manifest/state
+  docling/                                  # local prefetched Docling artifacts only
   manifests/
     resources.jsonl                       # deterministic exported catalog
     documents.jsonl
@@ -428,23 +436,52 @@ metadata. The parser contract includes a parser ID, parser version, config
 hash, warnings, and a deterministic source-location mapping. Parser failures
 are caught per resource and become `PARSE_FAILED` with a quarantine record.
 
-### Docling-first adapters
+### Docling-first adapters and explicit offline controls
 
-PDF parsing uses Docling's document conversion path and retains its reading
+PDF parsing uses a pinned Docling conversion path and retains its reading
 order, headings, page boundaries, tables, figures, equations, and references
-where the source exposes them.
+where the source exposes them. The pipeline is configured explicitly rather
+than relying on Docling defaults. Conceptually the PDF options are:
 
-EPUB parsing uses an EPUB container adapter that reads the OPF metadata and
-spine in order, then passes each XHTML/HTML spine item through the same
-Docling-first structure normalizer. The adapter preserves chapter names,
-section headings, anchors, MathML/equation blocks, tables, captions, and
-references. The EPUB package is read from bytes; it is never unpacked into the
-source folder. Generated intermediate files, if needed by the parser library,
-are placed under the artifact staging directory.
+```python
+PdfPipelineOptions(
+    do_ocr=False,
+    do_formula_enrichment=config.formula_enrichment_enabled,
+    artifacts_path=config.docling_artifacts_path,
+    # other pinned, non-network parser options
+)
+```
 
-If a future Docling release changes its native EPUB support, the adapter
-boundary remains stable: only the source-format adapter changes, and the
-normalized IR and provenance contract do not.
+The implementation binds these names to the installed Docling version and
+asserts the resulting options still have `do_ocr is False` before conversion.
+V1 accepts only local, prefetched Docling artifacts. `docling_offline` is
+always true; model/artifact resolution is restricted to
+`docling_artifacts_path`, and no missing artifact may trigger a download or
+other network access. A missing Docling dependency or required artifact raises
+the typed `ParserDependencyUnavailable` or `DoclingArtifactsUnavailable`
+error, which the ingestion coordinator records as a visible
+`PARSE_FAILED` diagnostic while leaving other resources independent.
+
+Formula enrichment is optional and disabled by default. When it is enabled,
+the configured local formula artifacts must exist and their model ID/version
+and artifact hash are recorded in parser provenance. If enrichment is disabled,
+unsupported by the installed Docling version, or otherwise unavailable without
+a requested local formula artifact, the parser preserves the best
+parser-native equation representation and records
+`formula_enrichment_status=DISABLED` or
+`UNAVAILABLE_NATIVE_PRESERVED`; it never invents LaTeX and never enables OCR
+as a side effect. If enrichment was explicitly requested but its required
+local artifacts are missing, the typed artifact error is surfaced instead of
+silently changing the requested mode.
+
+For EPUB, the parser first attempts Docling's native EPUB conversion. It then
+validates that the normalized IR preserves deterministic spine-item and anchor
+locations. Only when native output cannot satisfy that provenance contract is
+an explicit OPF/spine adapter used as a fallback; this fallback is not a second
+default parser. Both paths read the EPUB container from bytes, never unpacking
+into the source folder, and use deterministic spine order/anchors. The selected
+path (`NATIVE_DOCLING_EPUB` or `OPF_SPINE_FALLBACK`) is persisted in parser
+provenance so a future Docling change is auditable.
 
 ### Metadata and reading order
 
@@ -461,6 +498,11 @@ The IR records, where available:
 - figure captions and nearby explanatory text; and
 - references/citations with their source location.
 
+Parser provenance also records `docling_offline=true`, `docling_do_ocr=false`,
+the resolved `docling_artifacts_path` identity, formula-enrichment requested/
+status/model version (when applicable), and the native-EPUB versus fallback
+adapter path. These values participate in the parser configuration hash.
+
 Absent metadata is represented as `null` or an explicit empty list. It is not
 invented from unrelated documents. A filename-derived title may be recorded
 as `title_source=FILENAME_FALLBACK` so consumers can distinguish it.
@@ -470,8 +512,11 @@ as `title_source=FILENAME_FALLBACK` so consumers can distinguish it.
 V1 does not OCR. A likely scanned document is not indexed as trustworthy text.
 
 The detector runs after the parser's text/image inventory is available and
-records its version and scalar evidence. For PDFs, the default deterministic
-rule is:
+records its version and scalar evidence. The PDF parser must have been built
+with `PdfPipelineOptions(do_ocr=False)`; the detector is a classification step,
+never an OCR fallback. For an image-only fixture, the parser therefore leaves
+the text inventory empty, adds no OCR-generated blocks, and the detector emits
+`NEEDS_OCR`. For PDFs, the default deterministic rule is:
 
 - a page is text-bearing when it has at least 64 Unicode non-whitespace
   characters or a non-empty equation/table text block;
@@ -513,21 +558,37 @@ The chunker first forms semantic units:
 
 ### Size and overlap
 
-The v1 policy uses a shared tokenizer/word estimator only for size accounting,
-with these bounds:
+Chunking receives the active embedding provider's actual tokenizer and
+`EmbeddingSpec`; a character/word estimate is never authoritative. For every
+candidate chunk the tokenizer is called with `truncation=False` and the
+purpose `corpus`, including any corpus instruction/formatting and required
+special tokens. The chunker computes:
 
-- soft target: 512 estimated tokens;
-- hard maximum: 768 estimated tokens for a chunk;
-- overlap: at most 64 estimated tokens, only when a long prose unit must be
-  split within the same section; and
-- no overlap across a section boundary, equation-variable bundle, table row
-  group, or figure-caption bundle.
+```text
+effective_content_token_limit =
+    max_input_tokens - special_token_budget - corpus_instruction_tokens
+```
 
-The estimator is deterministic and versioned. A single atomic equation/table
-bundle may exceed the soft target so its meaning is not destroyed; if it
-exceeds the hard maximum, it is split only at defined row/definition units,
-with the required caption/header/variable context repeated. There is no
-per-book tuning.
+and rejects a non-positive limit. The final model input must be no longer than
+`max_input_tokens`; no embedding provider may silently truncate an indexed
+chunk.
+
+The default `BAAI/bge-small-en-v1.5` profile has a 512-token model limit and
+384 dimensions. With the V1 corpus policy (no query prefix on corpus chunks)
+and a two-token special-token budget, its effective content limit is 510
+tokens. The default structure policy therefore uses a 448-token soft target,
+510-token hard content limit, and at most 64 content-token overlap. The hard
+model-input limit, not an independent 768-token estimate, is the invariant;
+other models derive their limits from their loaded tokenizer.
+
+Adjacent paragraphs may be split at tokenizer-confirmed boundaries within a
+section. Large tables split between complete row groups while repeating
+caption/header context; equation bundles split only at complete definition
+units. If an indivisible structure still cannot fit, the chunker raises the
+typed `ChunkTooLargeForEmbedding` error and the resource is recorded as
+`EMBED_FAILED`; it is never truncated or indexed with an over-limit vector.
+Overlap is never used across a section boundary, equation-variable bundle,
+table row group, or figure-caption bundle. There is no per-book tuning.
 
 ### Deterministic IDs
 
@@ -569,7 +630,9 @@ or parser-native representation), a plain-text rendering for lexical search,
 variable definitions, and the surrounding explanatory text. The representation
 format and parser confidence are metadata. If LaTeX is unavailable, the
 original structured representation is preserved rather than replaced by a
-guessed transcription.
+guessed transcription. Formula-enrichment requested, enabled, model-version,
+artifact-hash, and fallback status are retained in the equation metadata and
+parser provenance.
 
 ### Tables
 
@@ -611,7 +674,12 @@ chunk_id
 chunk_ordinal
 parser_id / parser_version / parser_config_hash
 chunker_version
-embedding_model_id / embedding_model_version / embedding_dimensions
+embedding_model_id / embedding_model_version / embedding_artifact_hash
+embedding_dimensions / embedding_max_input_tokens /
+embedding_effective_content_token_limit / embedding_tokenizer_fingerprint /
+embedding_normalization / embedding_truncation
+embedding_corpus_instruction_policy /
+embedding_query_instruction_policy / embedding_query_instruction_version
 lexical_index_version
 index_version
 ```
@@ -656,18 +724,49 @@ FastEmbed:
 
 ```python
 EmbeddingProvider.spec -> EmbeddingSpec
-EmbeddingProvider.embed(texts: Sequence[str]) -> Sequence[Vector]
+EmbeddingProvider.tokenizer -> EmbeddingTokenizer
+EmbeddingProvider.embed(
+    texts: Sequence[str], *, purpose: Literal["corpus", "query"]
+) -> Sequence[Vector]
 ```
 
-`EmbeddingSpec` persists model ID, model artifact/version, runtime (`onnx`),
-dimensions, normalization, tokenizer/config hash, and local artifact hash.
-The provider validates finite values and exact dimensionality for every batch.
+`EmbeddingTokenizer` exposes the resolved tokenizer's special-token-aware
+length, without truncation, for both corpus and query formatting.
+`EmbeddingSpec` persists the complete vector-semantic contract:
+
+```text
+model_id
+resolved_model_version
+runtime
+artifact_hash
+dimensions
+normalization_policy
+tokenizer_fingerprint
+model_max_input_tokens
+special_token_budget
+effective_corpus_content_token_limit
+corpus_instruction_policy/version
+query_instruction_policy/version
+truncation=false
+```
+
+The provider validates finite values, exact dimensionality, and the actual
+tokenized input length before every batch. It calls the model with truncation
+disabled (or the equivalent version-pinned setting) and raises the typed
+`EmbeddingInputTooLong` error before inference if a chunk exceeds the
+effective limit. A provider must never return a vector for silently truncated
+text.
 
 The recommended v1 adapter is FastEmbed using a CPU-friendly ONNX model such
 as `BAAI/bge-small-en-v1.5` (384 dimensions), pinned and configured through a
-local model/cache path. The exact installed package/model artifact versions
-are recorded in the index registry. A stronger HFT/financial model can later
-implement the same interface and build a new index version.
+local model/cache path. BGE V1 uses `corpus_instruction_policy=none-v1` and
+`query_instruction_policy=bge-search-prefix-v1`, whose exact query prefix is
+`Represent this sentence for searching relevant passages: `; the policy and
+version are part of the persisted spec. Corpus and query encoding may therefore
+have different, explicit formatting while remaining reproducible. The exact
+installed package/model versions, tokenizer fingerprint, model limit, and
+artifact hash are recorded in the index registry. A stronger HFT/financial
+model can later implement the same interface and build a new index version.
 
 Indexing never silently downloads a model. If the configured local model is
 unavailable, the affected resource is `EMBED_FAILED` with a visible diagnostic
@@ -700,16 +799,25 @@ parser_version: string
 chunker_version: string
 embedding_model_id: string
 embedding_model_version: string
+embedding_artifact_hash: string
 embedding_dimensions: integer
+embedding_max_input_tokens: integer
+embedding_effective_content_token_limit: integer
+embedding_tokenizer_fingerprint: string
+embedding_normalization: string
+embedding_truncation: boolean
+embedding_corpus_instruction_policy: string
+embedding_query_instruction_policy: string
+embedding_query_instruction_version: string
 lexical_index_version: string
 index_version: string
 active: boolean
 ```
 
-The vector column dimension is fixed by `EmbeddingSpec`. Incompatible model
-IDs, dimensions, normalization policies, or index schemas are never mixed in
-one active table. A change creates a new versioned table and updates the
-registry only after validation.
+The vector column dimension is fixed by `EmbeddingSpec`. Any incompatible
+embedding-semantic field (not only model ID, dimensions, or normalization) or
+index schema is never mixed in one active table. A change creates a new
+versioned table and updates the registry only after validation.
 
 ### Generation contract
 
@@ -720,7 +828,10 @@ registry entry and `state/active-index.json` contain at least:
 generation_id / index_version
 vector_location = vector/lancedb/<index_version>/
 lexical_location = keyword/<index_version>/bm25.sqlite3
-embedding_model_id / version / dimensions / normalization
+embedding_spec: complete canonical `EmbeddingSpec` (including model ID,
+  resolved version, artifact hash, dimensions, normalization, tokenizer
+  fingerprint, model/effective limits, truncation flag, and corpus/query
+  instruction policies)
 lexical_index_version / tokenizer_settings
 schema_version
 document_population_hash
@@ -732,8 +843,11 @@ build_status
 The population hashes are computed from the sorted active document/chunk IDs
 and source hashes. Query startup loads this record first, verifies that both
 locations exist and advertise the same generation, and refuses to combine
-incompatible projections. A missing or mismatched lexical projection is an
-index error, not permission to fall back to an older database silently.
+incompatible projections. Before any dense query, the query provider's
+complete canonical `EmbeddingSpec` is compared field-for-field with the
+generation's stored spec; equal dimensions alone are insufficient. A missing
+or mismatched lexical projection or embedding spec is a typed index/
+compatibility error, not permission to fall back to an older database silently.
 
 ### Rebuild atomicity
 
@@ -882,8 +996,28 @@ hit remains self-contained and auditable.
 The API validates `top_k`, content types, document IDs, and provenance. It has
 no knowledge of `forex-watch`, MT5, portfolio decisions, action labels, Phase 5
 evaluation, or TradingAgents graph state. Empty indexes, missing model files,
-incompatible index versions, and provenance violations raise typed,
-deterministic errors rather than returning fabricated evidence.
+incompatible index versions, embedding-spec mismatches, and provenance
+violations raise typed, deterministic errors rather than returning fabricated
+evidence.
+
+### Query/index embedding compatibility
+
+Hybrid search may instantiate one read-only local embedding provider to encode
+the user's query. Before invoking the dense reader, it compares the provider's
+complete canonical `EmbeddingSpec` with the active generation's stored spec:
+model ID, resolved model version, local artifact hash, dimensions, normalization
+policy, tokenizer/config fingerprint, model/effective limits, truncation flag,
+and corpus/query instruction policy and versions (plus any other setting that
+changes vector semantics). Same dimensionality is not compatibility. A mismatch
+raises the typed `EmbeddingSpecMismatch` error and no dense retrieval call is
+made. The lexical reader may still be used only through an explicitly selected
+lexical-only mode; the default hybrid command fails closed rather than silently
+mixing semantic spaces.
+
+For the BGE V1 profile, corpus chunks use `none-v1` and queries use the exact
+versioned `bge-search-prefix-v1` instruction policy. The query provider applies
+that policy before token validation and embedding; the policy is persisted with
+the index generation so a later query can reproduce and verify it.
 
 ## 19. CLI design
 
@@ -910,9 +1044,19 @@ Required behavior:
 - `list --state NEEDS_OCR` and equivalent state filters expose every
   quarantined resource;
 - `search` prints provenance for every hit and supports `--content-type`,
-  `--document-id`, `--top-k`, and machine-readable JSON output; and
+   `--document-id`, `--top-k`, and machine-readable JSON output; and
 - `document` shows title, aliases, hash, parser/chunker/embedding/index
-  versions, locations, and chunk IDs without requiring an LLM.
+   versions, locations, and chunk IDs without requiring an LLM.
+
+Component construction is intentionally explicit: `status`, `list`,
+`document`, and `quarantine` instantiate only catalog/diagnostic readers. They
+do not instantiate a parser, embedder, ingestion coordinator, source scanner,
+or vector/lexical writer. `search` may instantiate the read-only local
+embedding provider needed for query encoding and the active vector/lexical
+readers, but it never instantiates the document parser, ingestion coordinator,
+source scanner, vector writer, lexical writer, or any source-mutating
+component. Embedding-spec compatibility is checked before the dense reader is
+called.
 
 No command starts indexing because another TradingAgents command was launched.
 The CLI opens source files read-only, refuses an artifact root inside the
@@ -953,7 +1097,9 @@ vector-only or lexical-only document.
 
 ## 21. Error, transaction, and recovery semantics
 
-Errors are per-resource and stage-specific:
+Errors are per-resource and stage-specific. The following typed diagnostics are
+recorded with their corresponding terminal state (artifact/input/spec errors
+are not additional successful states):
 
 ```text
 UNSUPPORTED
@@ -964,6 +1110,10 @@ INDEX_FAILED
 SOURCE_CHANGED
 INTERRUPTED
 ```
+
+`DoclingArtifactsUnavailable` is recorded under `PARSE_FAILED`, while
+`EmbeddingInputTooLong` and `EmbeddingSpecMismatch` are recorded under
+`EMBED_FAILED` or query-time compatibility diagnostics respectively.
 
 Successful outcomes are `INDEXED`, `UNCHANGED`, and `DUPLICATE`. A run may be
 `SUCCEEDED`, `PARTIAL_FAILURE`, or `FAILED` based on counts; it never hides a
@@ -1007,8 +1157,15 @@ parser_config_hash
 chunker_version
 embedding_model_id
 embedding_model_version
+embedding_artifact_hash
 embedding_dimensions
 embedding_normalization
+embedding_tokenizer_fingerprint
+embedding_max_input_tokens
+embedding_effective_content_token_limit
+embedding_truncation
+embedding_corpus_instruction_policy/version
+embedding_query_instruction_policy/version
 lexical_index_version
 lexical_tokenizer_settings
 fusion_version
@@ -1023,8 +1180,10 @@ and document/chunk counts. A component mismatch is detected before query or
 incremental reuse:
 
 - parser/chunker mismatch invalidates affected parsed/chunk artifacts;
-- embedding ID/version/dimensions/normalization mismatch requires a new
-  matched vector+lexical generation and forbids mixed vectors;
+- any embedding-semantic mismatch (ID, resolved version, artifact hash,
+  dimensions, normalization, tokenizer/config fingerprint, model/effective
+  limits, truncation setting, or corpus/query instruction policy/version)
+  requires a new matched vector+lexical generation and forbids mixed vectors;
 - lexical tokenizer/settings mismatch requires a new matched generation with
   an FTS5 rebuild;
 - fusion/reranker changes affect query ranking but not stored chunks; and
@@ -1058,30 +1217,48 @@ The test matrix must include:
    success;
 10. failed changed-file ingestion retaining the prior relationship while a
     second duplicate alias remains current and unaffected;
-11. scanned/image-only quarantine as `NEEDS_OCR`;
-12. parser failure isolation while other resources index;
-13. deterministic chunk IDs and stable ordering;
-14. title/author/year/page/chapter/section provenance;
-15. equation metadata and variable-definition bundling;
-16. table caption/header/cell metadata and row-safe splitting;
-17. embedding dimension/model mismatch rejection;
-18. FTS5 exact-term and phrase retrieval;
-19. dense, lexical, and hybrid/RRF retrieval;
-20. content-type and document metadata filters;
-21. deterministic score/tie ordering;
-22. reranker interface and v1 feature-reranker ordering;
-23. failed vector generation build not swapping the active pair;
-24. failed lexical generation build not swapping the active pair;
-25. successful rebuild swapping vector and lexical projections together;
-26. previous complete generation remaining intact after a successful swap;
-27. query rejection when vector and lexical generation IDs or population
+11. explicit Docling PDF options with `do_ocr=False`, offline artifact-path
+    resolution, and a missing-artifact typed failure with no network call;
+12. image-only PDF classification as `NEEDS_OCR` with zero OCR-generated text;
+13. formula enrichment disabled by default, local-only when enabled, and
+    parser-native equation preservation/status when unavailable;
+14. native Docling EPUB conversion preferred, deterministic spine/anchor
+    provenance, and OPF/spine fallback only when native provenance fails;
+15. parser failure isolation while other resources index;
+16. deterministic chunk IDs and stable ordering;
+17. title/author/year/page/chapter/section provenance;
+18. equation metadata and variable-definition bundling;
+19. table caption/header/cell metadata and row-safe structural splitting;
+20. tokenizer-aware chunk at the allowed maximum and rejection of an
+    over-capacity chunk without truncation;
+21. large-table structural splitting and equation/definition preservation
+    under the embedding limit;
+22. embedding input length validation proving the model saw no truncated text;
+23. complete embedding-spec mismatch rejection, including same-dimension
+    different model ID, artifact/version, normalization, tokenizer, and query
+    instruction policy;
+24. identical query/index embedding specs succeeding before dense retrieval;
+25. FTS5 exact-term and phrase retrieval;
+26. dense, lexical, and hybrid/RRF retrieval;
+27. content-type and document metadata filters;
+28. deterministic score/tie ordering;
+29. reranker interface and v1 feature-reranker ordering;
+30. failed vector generation build not swapping the active pair;
+31. failed lexical generation build not swapping the active pair;
+32. successful rebuild swapping vector and lexical projections together;
+33. previous complete generation remaining intact after a successful swap;
+34. query rejection when vector and lexical generation IDs or population
     identities do not match;
-28. incremental partial-projection failure not becoming visible;
-29. interrupted ingestion cleanup and restart recovery;
-30. provenance validation rejecting anonymous hits;
-31. source-folder hash and file-byte preservation before/after indexing;
-32. offline/no-network behavior when local model artifacts are present; and
-33. isolation checks proving no imports or storage paths reference forex,
+35. incremental partial-projection failure not becoming visible;
+36. interrupted ingestion cleanup and restart recovery;
+37. provenance validation rejecting anonymous hits;
+38. source-folder hash and file-byte preservation before/after indexing;
+39. status/list/document/quarantine constructing no parser, embedder,
+    ingestor, source scanner, or writer;
+40. search constructing only a read-only local query embedder/readers and no
+    parser, ingestor, source scanner, or writers;
+41. offline/no-network behavior when local model artifacts are present; and
+42. isolation checks proving no imports or storage paths reference forex,
     MT5, TradingAgents decisions, or experience memory.
 
 Optional dependency tests may run when the knowledge extra is installed, but
@@ -1218,7 +1395,7 @@ demonstrated with deterministic evidence:
 ```text
 new books/
   -> incremental discovery and hashing
-  -> Docling-first structured parsing
+  -> Docling-first structured parsing (offline, explicitly OCR-disabled)
   -> scan detection and NEEDS_OCR quarantine
   -> structure-aware HFT chunks
   -> local versioned embeddings
@@ -1231,12 +1408,21 @@ The evidence must also show:
 
 - originals remain byte-for-byte unchanged;
 - scanned resources are quarantined rather than indexed as trusted text;
+- Docling PDF options prove `do_ocr=False`, no model download occurs, and a
+  missing local artifact is a typed visible failure;
+- formula enrichment is disabled by default, local-only when enabled, and
+  parser-native equations remain available when enrichment is unavailable;
 - new and changed resources are handled incrementally;
 - exact-byte duplicates do not duplicate chunks or vectors;
 - removed resources cannot appear in default retrieval;
 - equations, tables, captions, and surrounding context survive sufficiently;
 - exact HFT terminology and semantic HFT concepts are both retrievable;
 - index/version mismatches fail closed or rebuild explicitly;
+- chunks are validated against the loaded tokenizer/model limit (BGE-small V1:
+  448-token soft target, 510-token effective content limit, 512-token model
+  input maximum) with no silent truncation;
+- query dense retrieval compares the complete embedding specification with the
+  active generation before issuing a vector search;
 - interrupted ingestion leaves the last active index usable;
 - no MT5, TradingAgents, stock CLI, execution, or shadow decision behavior
   changes;
@@ -1260,7 +1446,20 @@ This document was reviewed against the requested boundaries:
   and activated together with the previous complete generation retained;
 - incremental failure, duplicate, removal, and interruption semantics do not
   contradict one another;
-- PDF/EPUB support and `NEEDS_OCR` behavior are explicit;
+- PDF/EPUB support and `NEEDS_OCR` behavior are explicit, with Docling OCR
+  disabled in pipeline options and local/offline artifact resolution;
+- formula enrichment is explicitly optional/local-only and cannot enable OCR or
+  replace a parser-native equation representation with invented LaTeX;
+- native Docling EPUB conversion is preferred, with an auditable OPF/spine
+  fallback only when native provenance cannot satisfy the contract;
+- chunk limits are derived from the actual embedding tokenizer and model
+  context (including special tokens/instructions), and over-limit inputs fail
+  rather than truncate;
+- the complete embedding specification, including artifact, tokenizer, and
+  query-instruction identity, is checked before dense query retrieval;
+- search may construct only a read-only local query embedder/readers, while
+  status/list/document/quarantine construct no parser, embedder, ingestor, or
+  writer;
 - equations/tables retain structure instead of being flattened blindly;
 - every query result requires provenance;
 - published knowledge and future experience memory use different stores and
