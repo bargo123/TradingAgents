@@ -1,6 +1,7 @@
 """Validation tests for the local/offline Phase 7 configuration."""
 
 from dataclasses import FrozenInstanceError
+import json
 
 import pytest
 
@@ -48,6 +49,9 @@ def test_config_rejects_source_or_artifact_policy_violations(tmp_path):
 
     with pytest.raises(ValueError, match="OCR"):
         KnowledgeConfig(source_root=source, artifact_root=tmp_path / "out", docling_do_ocr=True)
+
+    with pytest.raises(ValueError, match="offline"):
+        KnowledgeConfig(source_root=source, artifact_root=tmp_path / "out", offline=False)
 
 
 @pytest.mark.parametrize("worker_count", (0, 7))
@@ -102,3 +106,35 @@ def test_config_serialization_is_json_safe_and_fingerprint_changes_on_semantic_c
         embedding_model_id="different-local-model",
     )
     assert changed.config_fingerprint != config.config_fingerprint
+
+
+def test_lexical_tokenizer_settings_are_recursively_immutable_and_json_safe(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    config = KnowledgeConfig(
+        source_root=source,
+        artifact_root=tmp_path / "out",
+        lexical_tokenizer_settings={
+            "casefold": True,
+            "tokenizer": {"name": "unicode", "options": {"strip": True}},
+            "stopwords": ["a", "the"],
+        },
+    )
+    before = config.config_fingerprint
+
+    with pytest.raises(TypeError):
+        config.lexical_tokenizer_settings["casefold"] = False
+    with pytest.raises(TypeError):
+        config.lexical_tokenizer_settings["tokenizer"]["options"]["strip"] = False
+    with pytest.raises(TypeError):
+        config.lexical_tokenizer_settings["stopwords"][0] = "changed"
+
+    assert config.config_fingerprint == before
+    payload = config.to_dict()
+    json.dumps(payload)
+    assert payload["lexical_tokenizer_settings"] == {
+        "casefold": True,
+        "tokenizer": {"name": "unicode", "options": {"strip": True}},
+        "stopwords": ["a", "the"],
+    }
+    assert KnowledgeConfig.from_dict(payload) == config

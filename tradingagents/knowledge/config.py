@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, fields
 import hashlib
 import json
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 
@@ -34,6 +35,32 @@ def _nonempty(value: str, name: str) -> str:
     if not result:
         raise ValueError(f"{name} must be non-empty")
     return result
+
+
+def _freeze(value: Any) -> Any:
+    """Recursively copy config values into immutable, deterministic shapes."""
+
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted((_freeze(item) for item in value), key=repr))
+    return value
+
+
+def _json_safe(value: Any) -> Any:
+    """Render immutable config values as ordinary JSON-compatible values."""
+
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 def _strict_int(value: int, name: str) -> int:
@@ -130,6 +157,8 @@ class KnowledgeConfig:
             raise ValueError("docling_offline must be True for the offline V1 parser")
         if self.docling_do_ocr is not False:
             raise ValueError("OCR is disabled in V1; docling_do_ocr must be False")
+        if self.offline is not True:
+            raise ValueError("offline must be True for the local-only V1 pipeline")
 
         if self.formula_artifacts_path is not None and self.formula_model_path is not None:
             first = _resolved_path(self.formula_artifacts_path, "formula_artifacts_path")
@@ -242,7 +271,7 @@ class KnowledgeConfig:
         object.__setattr__(
             self,
             "lexical_tokenizer_settings",
-            {str(key): value for key, value in (self.lexical_tokenizer_settings or {}).items()},
+            _freeze(self.lexical_tokenizer_settings or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -254,10 +283,7 @@ class KnowledgeConfig:
     def _base_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for item in fields(self):
-            value = getattr(self, item.name)
-            if isinstance(value, Path):
-                value = str(value)
-            result[item.name] = value
+            result[item.name] = _json_safe(getattr(self, item.name))
         return result
 
     def as_dict(self) -> dict[str, Any]:
