@@ -26,6 +26,7 @@
 - The query API returns only provenance-complete knowledge evidence. It has no BUY/SELL/HOLD, `PortfolioDecision`, MT5, `forex-watch`, TradingAgents graph, Phase 5 label, or experience-memory field.
 - No source content is sent to hosted LLMs, Ollama, cloud embeddings, external vector databases, telemetry services, or a network service. No credentials are accepted or stored.
 - CI tests use tiny fixtures and fakes. They do not parse the full library, download models, call Ollama or MT5, require network access, require CUDA, or start a long indexing job.
+- Phase 7 closure additionally requires one bounded real local integration smoke over 1–3 approved resources. Model/dependency provisioning is a separate explicit setup action; normal `knowledge index` and `knowledge search` runtime must remain offline and must never auto-download.
 - Do not modify `cli/main.py`, the existing `tradingagents` stock entry point, `tradingagents.forex`, MT5 provider code, shadow/evaluation stores, or agent prompts/registration.
 
 ## File Map
@@ -77,6 +78,8 @@
 - `tests/test_knowledge_quality.py`
 - `tests/test_knowledge_isolation.py`
 - `tests/fixtures/knowledge/` — tiny deterministic source/IR fixtures and benchmark labels.
+- `scripts/provision_knowledge_models.py` — explicit setup-only provisioning of local Docling and BGE-small artifacts; never called by normal indexing/search.
+- `scripts/knowledge_phase7_smoke.py` — bounded real local parser/embedding/index/query smoke with source-integrity and network guards.
 
 ## Deterministic fixture and fake conventions
 
@@ -90,7 +93,7 @@ The test suite defines these reusable fakes before the first dependent test:
 
 - `FakeParser` implements `DocumentParser`, returns a supplied `ParsedDocument`, and records `parse_calls`.
 - `FakeTokenizer` exposes deterministic special-token-aware corpus/query lengths, a configurable model limit, and a stable tokenizer fingerprint.
-- `FakeEmbeddingProvider` exposes a supplied `EmbeddingSpec` and `FakeTokenizer`, returns deterministic vectors derived from `sha256(text)`, records `embed_calls`, and fails if the service attempts truncation or an over-limit input; `RecordingFakeEmbeddingProvider` additionally records token lengths and the truncation flag.
+- `FakeEmbeddingProvider` exposes a supplied `EmbeddingSpec` and `FakeTokenizer`, returns deterministic vectors derived from `sha256(text)`, records `embed_calls`, and fails if the service attempts truncation or an over-limit input; `RecordingFakeEmbeddingProvider` additionally records `seen_content_tokens`, `seen_model_input_tokens`, and the truncation flag.
 - `FakeDoclingPipeline` records every constructed option, exposes `do_ocr`,
   formula-enrichment, artifact-path, and offline values, and can return an
   image-only document with an empty text inventory.
@@ -105,6 +108,9 @@ The test suite defines these reusable fakes before the first dependent test:
   `make_large_table_document()`, `make_large_equation_definition_document()`,
   and `forbid_parser_ingestor_source_scanner_and_writers(...)` provide the
   parser/chunker/CLI boundary fixtures without external dependencies.
+- `bge_chunker_fixture()` returns a `FakeTokenizer`, `EmbeddingSpec`, and
+  `StructureAwareChunker` wired together so no test can construct a chunker
+  without its tokenizer/spec.
 - `ingestion_harness(tmp_path, duplicate=False, interrupt_after=None, source=None)` returns `.source`, `.catalog`, `.parser`, `.embedder`, `.ingestor`, and `.shared_document_id`; its aliases are keyed by `resource_id_for("book.pdf")` and `resource_id_for("copy.pdf")`.
 - `make_generation_manager(tmp_path, vector=None, lexical=None, embedding_spec=None)`, `make_chunks()`, `make_vectors()`, and `write_fake_lexical_metadata(path, generation_id)` construct the Task 6 generation fakes.
 - `query_harness(dense=(), lexical=(), vector_generation=None, lexical_generation=None, index_embedding_spec=None, query_embedding_spec=None, dense_reader=None)`, `seed_query_fixture(path)`, `fixture_query_service()`, `load_cases(path)`, and `run_benchmark(cases, service)` construct the Task 8–10 query/benchmark fixtures; the harness exposes a spy query embedder and forbidden writer/parser/ingestor constructors.
@@ -524,14 +530,15 @@ git commit -m "feat: add structured document parsing and scan quarantine"
 - Consumes the active `EmbeddingSpec`/`EmbeddingTokenizer`; chunk limits are
   derived from the actual model tokenizer, not a character/word estimate.
 - Produces `ChunkPolicy(soft_token_target=448, hard_content_token_limit=510, overlap_tokens=64, version="structure-v2")` for the BGE-small V1 profile, plus a factory that derives the hard content limit from any loaded `EmbeddingSpec`.
-- Produces `StructureAwareChunker(policy, tokenizer).chunk(document) -> tuple[ChunkRecord, ...]` and validates every final corpus input with `truncation=False`.
+- Produces `StructureAwareChunker(policy, tokenizer).chunk(document) -> tuple[ChunkRecord, ...]`; the constructor requires both arguments and has no implicit tokenizer or default policy. Production wiring must derive `policy = ChunkPolicy.for_embedding(embedder.spec)` and pass the same provider's actual tokenizer.
 - Produces `deterministic_chunk_id(document_id, source_hash, policy_version, content_type, section_path, block_range, ordinal, normalized_text) -> str`.
 
 - [ ] **Step 1: Write failing chunking tests**
 
 ~~~python
 def test_equation_keeps_variable_definition_and_table_keeps_header():
-    chunks = StructureAwareChunker(ChunkPolicy()).chunk(make_structured_document())
+    _, _, chunker = bge_chunker_fixture()
+    chunks = chunker.chunk(make_structured_document())
 
     equation = next(item for item in chunks if item.content_type is ContentType.EQUATION)
     table = next(item for item in chunks if item.content_type is ContentType.TABLE)
@@ -541,7 +548,7 @@ def test_equation_keeps_variable_definition_and_table_keeps_header():
 
 
 def test_chunk_ids_and_order_are_repeatable():
-    chunker = StructureAwareChunker(ChunkPolicy())
+    _, _, chunker = bge_chunker_fixture()
     first = chunker.chunk(make_structured_document())
     second = chunker.chunk(make_structured_document())
 
@@ -615,6 +622,11 @@ location, section path, content type, structured equation/table metadata,
 parser/chunker versions, estimated token count, and the SHA-256 ID formula
 from the spec. Normalize line endings and Unicode before hashing, while
 retaining the display text separately.
+
+Add a wiring assertion that the ingestion path cannot construct a chunker from
+`ChunkPolicy()` alone: it must derive the policy from the active provider's
+complete `EmbeddingSpec` and pass that provider's tokenizer. Tests and
+production code use only `StructureAwareChunker(policy, tokenizer)`.
 
 - [ ] **Step 4: Run the focused chunking tests to verify they pass**
 
@@ -709,7 +721,8 @@ def test_allowed_embedding_input_reaches_model_without_truncation():
     )
     text = "token " * 510
     provider.embed((text,), purpose="corpus")
-    assert provider.seen_input_tokens == [510]
+    assert provider.seen_content_tokens == [510]
+    assert provider.seen_model_input_tokens == [512]
     assert provider.truncation_requested is False
 ~~~
 
@@ -961,6 +974,13 @@ def test_interrupted_run_recovery_removes_partial_projection_and_keeps_active_pa
     assert harness.catalog.active_generation().generation_id == old_generation
     assert harness.catalog.list_runs()[-1].state is IngestionState.INTERRUPTED
 ~~~
+
+Add `test_ingestion_derives_chunk_policy_from_provider_spec_and_tokenizer`.
+It spies on the chunker constructor and asserts that the production
+coordinator passes `ChunkPolicy.for_embedding(harness.embedder.spec)` and
+`harness.embedder.tokenizer`, with no character/word-limit fallback. This
+keeps every test and production call site on the required
+`StructureAwareChunker(policy, tokenizer)` contract.
 
 - [ ] **Step 2: Run the focused ingestion tests to verify they fail**
 
@@ -1386,6 +1406,10 @@ git commit -m "test: add knowledge retrieval quality and isolation gates"
 ### Task 11: Run the complete Phase 7 verification gate and prepare the handoff
 
 **Files:**
+- Create: `scripts/provision_knowledge_models.py` (explicit setup-only model and
+  artifact provisioning; never called by normal CLI/index/search)
+- Create: `scripts/knowledge_phase7_smoke.py` (bounded real local end-to-end
+  parser/embedding/index/query smoke with source-integrity and network guards)
 - Modify: none unless a verification command identifies a concrete defect in
   the owning task; any fix must add a regression test in that task's test file.
 
@@ -1423,7 +1447,7 @@ green. No test modifies `new books` or starts automatic indexing.
 ~~~powershell
 ruff check tradingagents/knowledge tests/test_knowledge_*.py
 python -m compileall -q tradingagents cli
-git diff --check a3715cc6df704b32761194c93ac1a31dce01055b..HEAD
+git diff --check 6bf750590ab3b5eece4a36af11d6629fde2d0885..HEAD
 ~~~
 
 Expected: Ruff and compileall pass; the diff contains only the knowledge
@@ -1440,24 +1464,68 @@ pytest tests/test_knowledge_quality.py::test_indexing_does_not_change_source_byt
 Expected: PASS with no HTTP request, no model download, no CUDA requirement,
 and identical source-tree snapshot.
 
-- [ ] **Step 5: Run optional local-model/index smoke only when dependencies are preinstalled**
+- [ ] **Step 5: Provision optional dependencies and local model artifacts explicitly**
+
+Use the project's existing virtual environment for this one-time setup step.
+Network access is allowed only for this explicit provisioning command; it is
+never allowed during normal indexing, search, or the smoke itself.
 
 ~~~powershell
-$env:RUN_KNOWLEDGE_INTEGRATION = "1"
-pytest tests/test_knowledge_indexes.py tests/test_knowledge_parser.py -m integration -q
+$ProjectPython = "C:\\AITrading\\TradingAgents\\.venv\\Scripts\\python.exe"
+& $ProjectPython -m pip install -e "C:\\AITrading\\TradingAgents-phase7-worktree[knowledge]"
+& $ProjectPython scripts/provision_knowledge_models.py `
+    --artifact-root "$env:TEMP\\phase7-knowledge-artifacts" `
+    --docling-artifacts-path "$env:TEMP\\phase7-knowledge-artifacts\\docling" `
+    --embedding-model-id "BAAI/bge-small-en-v1.5" `
+    --embedding-model-path "$env:TEMP\\phase7-knowledge-artifacts\\embeddings\\bge-small-en-v1.5" `
+    --allow-network
 ~~~
 
-If Docling, FastEmbed, ONNX Runtime, LanceDB, or a local model is unavailable,
-report the typed dependency/model/artifact failure and keep deterministic tests
-green; do not download or substitute a cloud service. The optional parser
-smoke must run with a configured local `docling_artifacts_path` and explicit
-offline mode only.
+`provision_knowledge_models.py` is the only command allowed to download or
+populate model artifacts. It must record resolved versions, artifact hashes,
+tokenizer fingerprints, and dimensions, and fail clearly if provisioning
+cannot complete. It must not touch `new books`.
 
-- [ ] **Step 6: Inspect final scope and report evidence**
+- [ ] **Step 6: Run one bounded real local end-to-end smoke (mandatory)**
+
+Select one to three deterministic PDF/EPUB resources from the approved source
+folder (not the entire library), snapshot their bytes and filesystem metadata,
+and run the real Docling parser, FastEmbed/ONNX provider, LanceDB projection,
+SQLite FTS5 projection, and hybrid query service. The smoke must set
+`KNOWLEDGE_OFFLINE=1`, use a dedicated artifact root outside `new books`, and
+install no models or dependencies. `scripts/knowledge_phase7_smoke.py` must
+fail closed if a network request is attempted, if Docling options do not show
+`do_ocr=False`, or if local artifacts are missing; it must not fall back to a
+fake parser/embedder or cloud service.
+
+~~~powershell
+$env:KNOWLEDGE_OFFLINE = "1"
+& $ProjectPython scripts/knowledge_phase7_smoke.py `
+    --source-root "C:\\Users\\Zaid barghouthi\\Downloads\\new books" `
+    --artifact-root "$env:TEMP\\phase7-knowledge-smoke" `
+    --docling-artifacts-path "$env:TEMP\\phase7-knowledge-artifacts\\docling" `
+    --embedding-model-path "$env:TEMP\\phase7-knowledge-artifacts\\embeddings\\bge-small-en-v1.5" `
+    --resource-limit 3 `
+    --offline
+~~~
+
+The bounded smoke is a closure gate, not an optional test. Its scalar report
+must include: selected resource paths and pre/post source hashes plus metadata;
+parser and Docling versions; `do_ocr=False`; formula-enrichment enabled/disabled
+and local model/version status; scan classifications; chunker version and
+soft/effective/model token limits; tokenizer fingerprint; complete embedding
+spec and generation ID; vector/lexical row counts and matched population hash;
+hybrid/RRF query count, query latency, and provenance-complete result fields;
+and a network-attempt count of zero. It must prove originals are byte- and
+metadata-identical after the run. A missing artifact, parser/index failure, or
+provenance/spec mismatch makes the Phase 7 result `NOT COMPLETE` and preserves
+the typed diagnostic; do not claim closure from deterministic tests alone.
+
+- [ ] **Step 7: Inspect final scope and report evidence**
 
 ~~~powershell
 git status --short
-git diff --stat a3715cc6df704b32761194c93ac1a31dce01055b..HEAD
+git diff --stat 6bf750590ab3b5eece4a36af11d6629fde2d0885..HEAD
 git log --oneline --decorate -15
 ~~~
 
