@@ -578,7 +578,7 @@ The default `BAAI/bge-small-en-v1.5` profile has a 512-token model limit and
 and a two-token special-token budget, its effective content limit is 510
 tokens. The default structure policy therefore uses a 448-token soft target,
 510-token hard content limit, and at most 64 content-token overlap. The hard
-model-input limit, not an independent 768-token estimate, is the invariant;
+model-input limit, not an arbitrary independent estimate, is the invariant;
 other models derive their limits from their loaded tokenizer.
 
 Adjacent paragraphs may be split at tokenizer-confirmed boundaries within a
