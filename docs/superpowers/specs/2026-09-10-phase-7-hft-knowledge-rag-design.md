@@ -750,6 +750,11 @@ query_instruction_policy/version
 truncation=false
 ```
 
+In row/registry field names, `embedding_model_version` is the serialized value
+of `resolved_model_version` and `embedding_artifact_hash` is the serialized
+value of `artifact_hash`; there is one canonical value for each field, not a
+second independently chosen version or hash.
+
 The provider validates finite values, exact dimensionality, and the actual
 tokenized input length before every batch. It calls the model with truncation
 disabled (or the equivalent version-pinned setting) and raises the typed
@@ -1044,9 +1049,9 @@ Required behavior:
 - `list --state NEEDS_OCR` and equivalent state filters expose every
   quarantined resource;
 - `search` prints provenance for every hit and supports `--content-type`,
-   `--document-id`, `--top-k`, and machine-readable JSON output; and
+  `--document-id`, `--top-k`, and machine-readable JSON output; and
 - `document` shows title, aliases, hash, parser/chunker/embedding/index
-   versions, locations, and chunk IDs without requiring an LLM.
+  versions, locations, and chunk IDs without requiring an LLM.
 
 Component construction is intentionally explicit: `status`, `list`,
 `document`, and `quarantine` instantiate only catalog/diagnostic readers. They
@@ -1075,7 +1080,7 @@ The incremental coordinator uses source hashes and component fingerprints:
 | new path, new hash | parse and index one document |
 | existing path, changed hash | ingest new version; retain old until replacement succeeds |
 | parser/chunker version changed | reparse/rechunk affected document |
-| embedding model/dimensions changed | build a new matched vector+lexical generation; lexical chunk text may be reused |
+| any embedding-semantic field changed (model/version/artifact/tokenizer/limits/policies/normalization/dimensions) | build a new matched vector+lexical generation; lexical chunk text may be reused |
 | lexical settings changed | build a new matched generation with a rebuilt FTS5 projection |
 | source path removed while another current alias remains | mark only that alias `REMOVED`; keep the shared document/projections active |
 | source path removed and it was the last current alias | mark `REMOVED`; deactivate the document in the default view; retain physical rows |
