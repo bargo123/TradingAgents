@@ -68,6 +68,22 @@ class LocalCompatibleChatOpenAI(NormalizedChatOpenAI):
         return super().with_structured_output(schema, method=method, **kwargs)
 
 
+class OllamaChatOpenAI(NormalizedChatOpenAI):
+    """Ollama's OpenAI-compatible Chat Completions client.
+
+    ``langchain-openai`` 1.6.x rewrites the legacy ``max_tokens`` constructor
+    argument to ``max_completion_tokens`` for the OpenAI API. Ollama's
+    ``/v1/chat/completions`` endpoint documents ``max_tokens`` instead, so
+    restore that field at the final payload boundary for Ollama only.
+    """
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if "max_completion_tokens" in payload and "max_tokens" not in payload:
+            payload["max_tokens"] = payload.pop("max_completion_tokens")
+        return payload
+
+
 def _input_to_messages(input_: Any) -> list:
     """Normalise a langchain LLM input to a list of message objects.
 
@@ -175,8 +191,10 @@ _PASSTHROUGH_KWARGS = (
 _OPENAI_REASONING_MODEL = re.compile(r"^(gpt-5|o[1-9])")
 
 
-def _supports_reasoning_effort(model: str) -> bool:
-    """Whether the (native OpenAI) model accepts ``reasoning_effort``."""
+def _supports_reasoning_effort(model: str, provider: str | None = None) -> bool:
+    """Whether a provider/model accepts the ``reasoning_effort`` field."""
+    if provider and provider.lower() == "ollama":
+        return True
     return bool(_OPENAI_REASONING_MODEL.match(model.lower().strip()))
 
 
@@ -225,7 +243,7 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "groq":       ProviderSpec(base_url="https://api.groq.com/openai/v1"),
     "nvidia":     ProviderSpec(base_url="https://integrate.api.nvidia.com/v1"),
     "ollama":     ProviderSpec(base_url="http://localhost:11434/v1", base_url_env="OLLAMA_BASE_URL",
-                               key_optional=True, placeholder_key="ollama"),
+                               key_optional=True, placeholder_key="ollama", chat_class=OllamaChatOpenAI),
     # Generic endpoint: user supplies base_url; key optional (keyless local).
     "openai_compatible": ProviderSpec(
         require_base_url=True, key_optional=True, chat_class=LocalCompatibleChatOpenAI
@@ -325,7 +343,9 @@ class OpenAIClient(BaseLLMClient):
         for key in _PASSTHROUGH_KWARGS:
             if key not in self.kwargs:
                 continue
-            if key == "reasoning_effort" and not _supports_reasoning_effort(self.model):
+            if key == "reasoning_effort" and not _supports_reasoning_effort(
+                self.model, provider=self.provider
+            ):
                 continue
             llm_kwargs[key] = self.kwargs[key]
 

@@ -94,6 +94,10 @@ class BenchmarkRecord:
     transport_ok: bool
     reasoning_present: bool
     reasoning_len: int
+    thinking_control_field: str | None = None
+    thinking_control_value: bool | str | None = None
+    output_limit_field: str | None = None
+    output_limit_value: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return JSON-safe scalar fields only."""
@@ -332,6 +336,10 @@ def run_agent_call(
     model: str | None = None,
     thinking: bool = False,
     max_output_tokens: int | None = 1024,
+    thinking_control_field: str | None = None,
+    thinking_control_value: bool | str | None = None,
+    output_limit_field: str | None = None,
+    output_limit_value: int | None = None,
 ) -> BenchmarkRecord:
     """Invoke one existing prose node and return metadata-only evidence."""
     spec = AGENT_SPECS.get(agent)
@@ -359,6 +367,10 @@ def run_agent_call(
             transport_ok=False,
             reasoning_present=False,
             reasoning_len=0,
+            thinking_control_field=thinking_control_field,
+            thinking_control_value=thinking_control_value,
+            output_limit_field=output_limit_field,
+            output_limit_value=output_limit_value,
         )
 
     response = recorder.last_response
@@ -379,6 +391,10 @@ def run_agent_call(
             transport_ok=False,
             reasoning_present=False,
             reasoning_len=0,
+            thinking_control_field=thinking_control_field,
+            thinking_control_value=thinking_control_value,
+            output_limit_field=output_limit_field,
+            output_limit_value=output_limit_value,
         )
 
     raw_content = getattr(response, "content", None)
@@ -411,6 +427,10 @@ def run_agent_call(
         transport_ok=True,
         reasoning_present=reasoning_present,
         reasoning_len=reasoning_len,
+        thinking_control_field=thinking_control_field,
+        thinking_control_value=thinking_control_value,
+        output_limit_field=output_limit_field,
+        output_limit_value=output_limit_value,
     )
 
 
@@ -475,6 +495,37 @@ def _quick_client(model: str, config: Mapping[str, Any]) -> tuple[Any, dict[str,
     return client.get_llm(), merged, quick_kwargs
 
 
+def _control_metadata(
+    quick_kwargs: Mapping[str, Any], max_output_tokens: int | None
+) -> tuple[str | None, bool | str | None, str | None, int | None]:
+    """Return the exact scalar controls represented by the client kwargs."""
+    if "reasoning_effort" in quick_kwargs:
+        thinking_field = "reasoning_effort"
+        thinking_value = quick_kwargs["reasoning_effort"]
+    else:
+        extra_body = quick_kwargs.get("extra_body")
+        if isinstance(extra_body, Mapping) and "think" in extra_body:
+            thinking_field = "think"
+            thinking_value = extra_body["think"]
+        else:
+            thinking_field = None
+            thinking_value = None
+
+    if "max_tokens" in quick_kwargs:
+        output_field = "max_tokens"
+        output_value = _as_int(quick_kwargs["max_tokens"])
+    elif "max_output_tokens" in quick_kwargs:
+        output_field = "max_output_tokens"
+        output_value = _as_int(quick_kwargs["max_output_tokens"])
+    elif max_output_tokens is not None:
+        output_field = "max_tokens"
+        output_value = max_output_tokens
+    else:
+        output_field = None
+        output_value = None
+    return thinking_field, thinking_value, output_field, output_value
+
+
 def render_summary_markdown(
     records: Sequence[BenchmarkRecord],
     *,
@@ -489,8 +540,9 @@ def render_summary_markdown(
         for agent in requested_agents
     }
     overall = summarize_records(records)
-    extra_body = quick_kwargs.get("extra_body")
-    thinking = extra_body.get("think") if isinstance(extra_body, Mapping) else None
+    thinking_field, thinking_value, output_field, output_value = _control_metadata(
+        quick_kwargs, _as_int(config.get("max_tokens"))
+    )
     lines = [
         "# Phase 6.3 Qwen3.5 Prose Reliability Benchmark",
         "",
@@ -501,9 +553,11 @@ def render_summary_markdown(
         f"- Provider: `{config.get('llm_provider')}`",
         f"- Quick model: `{config.get('quick_think_llm')}`",
         f"- Backend URL: `{config.get('backend_url')}`",
-        f"- Quick thinking control: `{thinking}`",
+        f"- Quick thinking control: `{thinking_value}`",
         f"- Temperature: `{config.get('temperature')}`",
         f"- Max tokens: `{config.get('max_tokens')}`",
+        f"- Thinking control: `{thinking_field}={thinking_value}`",
+        f"- Output limit: `{output_field}={output_value}`",
     ]
     if command:
         lines.extend([f"- Command: `{command}`"])
@@ -576,6 +630,9 @@ def run_benchmark(
     thinking = bool(extra_body.get("think")) if isinstance(extra_body, Mapping) else False
     max_output_tokens = merged_config.get("max_tokens")
     max_output_tokens = _as_int(max_output_tokens)
+    thinking_field, thinking_value, output_field, output_value = _control_metadata(
+        quick_kwargs, max_output_tokens
+    )
 
     output_file = None
     if output_path is not None:
@@ -594,6 +651,10 @@ def run_benchmark(
                     model=model,
                     thinking=thinking,
                     max_output_tokens=max_output_tokens,
+                    thinking_control_field=thinking_field,
+                    thinking_control_value=thinking_value,
+                    output_limit_field=output_field,
+                    output_limit_value=output_value,
                 )
                 records.append(record)
                 if output_file is not None:

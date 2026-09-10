@@ -179,6 +179,47 @@ def test_run_benchmark_is_sequential_four_agent_order_and_text_free(tmp_path: Pa
     assert "Bull Researcher" in summary_path.read_text(encoding="utf-8")
 
 
+def test_run_benchmark_records_exact_thinking_and_output_limit_scalars(
+    tmp_path: Path, monkeypatch
+):
+    output_path = tmp_path / "rows.jsonl"
+    summary_path = tmp_path / "summary.md"
+
+    def fake_quick_client(model, config):
+        return (
+            FakeLLM(),
+            {**config, "quick_think_llm": model, "max_tokens": 1024},
+            {
+                "reasoning_effort": "none",
+                "temperature": 0.1,
+                "max_tokens": 1024,
+            },
+        )
+
+    monkeypatch.setattr(benchmark, "_quick_client", fake_quick_client)
+    records = run_benchmark(
+        model="qwen3.5:2b",
+        calls_per_agent=1,
+        agents=("bear",),
+        output_path=output_path,
+        summary_path=summary_path,
+    )
+
+    record = records[0]
+    assert record.thinking_control_field == "reasoning_effort"
+    assert record.thinking_control_value == "none"
+    assert record.output_limit_field == "max_tokens"
+    assert record.output_limit_value == 1024
+    row = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])
+    assert row["thinking_control_field"] == "reasoning_effort"
+    assert row["thinking_control_value"] == "none"
+    assert row["output_limit_field"] == "max_tokens"
+    assert row["output_limit_value"] == 1024
+    summary = summary_path.read_text(encoding="utf-8")
+    assert "Thinking control: `reasoning_effort=none`" in summary
+    assert "Output limit: `max_tokens=1024`" in summary
+
+
 def test_quick_client_uses_existing_forex_provider_kwargs(monkeypatch):
     captured = {}
 
@@ -203,12 +244,13 @@ def test_quick_client_uses_existing_forex_provider_kwargs(monkeypatch):
     )
     assert isinstance(llm, FakeLLM)
     assert config["quick_think_llm"] == "qwen3.5:2b"
-    assert quick_kwargs["extra_body"] == {"think": False}
+    assert quick_kwargs["reasoning_effort"] == "none"
+    assert "extra_body" not in quick_kwargs
     assert captured == {
         "provider": "ollama",
         "model": "qwen3.5:2b",
         "base_url": "http://localhost:11434/v1",
-        "extra_body": {"think": False},
+        "reasoning_effort": "none",
         "temperature": 0.1,
         "max_tokens": 1024,
     }

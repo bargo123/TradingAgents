@@ -259,7 +259,20 @@ class TradingAgentsGraph:
 
         if provider == "ollama" and is_forex and role in {"quick", "deep"}:
             thinking = self.config.get(f"forex_{role}_thinking")
-            if thinking is not None and thinking != "":
+            if role == "quick" and thinking is not None and thinking != "":
+                quick_thinking = _coerce_bool(thinking, "forex_quick_thinking")
+                if not quick_thinking:
+                    # Ollama's OpenAI-compatible endpoint uses the documented
+                    # reasoning_effort field for non-thinking requests. The
+                    # Ollama client subclass preserves max_tokens on the wire.
+                    kwargs["reasoning_effort"] = (
+                        self.config.get("forex_quick_reasoning_effort") or "none"
+                    )
+                else:
+                    kwargs["extra_body"] = {"think": True}
+            elif thinking is not None and thinking != "":
+                # Keep deep-model thinking on Ollama's native control. Deep
+                # reasoning remains separate from the quick no-thinking path.
                 kwargs["extra_body"] = {
                     "think": _coerce_bool(thinking, f"forex_{role}_thinking")
                 }

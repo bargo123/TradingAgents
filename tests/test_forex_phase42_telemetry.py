@@ -115,14 +115,16 @@ def test_forex_provider_role_controls_are_separate_from_stock_defaults():
     assert graph._get_provider_kwargs(role="quick")["reasoning_effort"] == "medium"
 
 
-def test_ollama_forex_thinking_controls_use_extra_body_only_in_forex():
+def test_ollama_forex_thinking_controls_use_reasoning_effort_for_quick_and_extra_body_for_deep():
     config = {
         "llm_provider": "ollama",
         "forex_quick_thinking": False,
         "forex_deep_thinking": True,
     }
     graph = _bare_graph(config)
-    assert graph._get_provider_kwargs(role="quick")["extra_body"] == {"think": False}
+    quick_kwargs = graph._get_provider_kwargs(role="quick")
+    assert quick_kwargs["reasoning_effort"] == "none"
+    assert "extra_body" not in quick_kwargs
     assert graph._get_provider_kwargs(role="deep")["extra_body"] == {"think": True}
     graph.market_data_mode = "stock"
     assert "extra_body" not in graph._get_provider_kwargs(role="quick")
