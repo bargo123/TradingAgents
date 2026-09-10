@@ -511,6 +511,7 @@ class DoclingDocumentParser(DocumentParser):
             "references",
             "list_items",
             "key_value_items",
+            "groups",
         )
         indexed: dict[str, tuple[Mapping[str, object], str]] = {}
         all_items: list[tuple[Mapping[str, object], str]] = []
@@ -529,19 +530,55 @@ class DoclingDocumentParser(DocumentParser):
         ordered: list[tuple[Mapping[str, object], str]] = []
         seen: set[str] = set()
 
+        def resolve_ref_texts(value: object, visited: set[str] | None = None) -> tuple[str, ...]:
+            values = value if isinstance(value, Sequence) and not isinstance(value, (str, bytes)) else (value,)
+            visited = set() if visited is None else visited
+            resolved: list[str] = []
+            for entry in values:
+                if isinstance(entry, str):
+                    reference = entry
+                elif isinstance(entry, Mapping):
+                    reference = entry.get("$ref") or entry.get("ref") or entry.get("self_ref")
+                else:
+                    reference = None
+                if reference is None:
+                    continue
+                key = str(reference)
+                if key in visited or key not in indexed:
+                    continue
+                visited.add(key)
+                item, collection = indexed[key]
+                if collection == "groups":
+                    resolved.extend(resolve_ref_texts(item.get("children") or (), visited))
+                    continue
+                text = DoclingDocumentParser._item_text(item)
+                if text:
+                    resolved.append(text)
+            return tuple(resolved)
+
         def visit(node: object) -> None:
             if not isinstance(node, Mapping):
                 return
             reference = node.get("$ref") or node.get("ref")
             if reference is not None and str(reference) in indexed:
                 item, collection = indexed[str(reference)]
+                if collection == "groups":
+                    for child in item.get("children") or ():
+                        visit(child)
+                    return
                 key = str(item.get("self_ref") or reference)
                 if key not in seen:
                     seen.add(key)
                     ordered.append((item, collection))
+                for child in item.get("children") or ():
+                    visit(child)
                 return
             if node.get("self_ref") is not None and str(node["self_ref"]) in indexed:
                 item, collection = indexed[str(node["self_ref"])]
+                if collection == "groups":
+                    for child in item.get("children") or ():
+                        visit(child)
+                    return
                 key = str(item.get("self_ref"))
                 if key not in seen:
                     seen.add(key)
@@ -557,11 +594,14 @@ class DoclingDocumentParser(DocumentParser):
             if isinstance(children, Sequence) and not isinstance(children, (str, bytes)):
                 for child in children:
                     visit(child)
-        for item, collection in all_items:
-            key = str(item.get("self_ref") or id(item))
-            if key not in seen:
-                seen.add(key)
-                ordered.append((item, collection))
+        if not ordered:
+            for item, collection in all_items:
+                if collection == "groups":
+                    continue
+                key = str(item.get("self_ref") or id(item))
+                if key not in seen:
+                    seen.add(key)
+                    ordered.append((item, collection))
 
         blocks: list[dict[str, object]] = []
         section_path: list[str] = []
@@ -592,11 +632,18 @@ class DoclingDocumentParser(DocumentParser):
             if content_type is ContentType.EQUATION:
                 block["equation"] = DoclingDocumentParser._equation_data(item, text)
             elif content_type is ContentType.TABLE:
-                block["table"] = DoclingDocumentParser._table_data(item)
+                block["table"] = DoclingDocumentParser._table_data(item, resolve_ref_texts)
             elif content_type is ContentType.FIGURE_CAPTION:
+                captions = resolve_ref_texts(item.get("captions") or item.get("caption_refs") or ())
+                related_references = resolve_ref_texts(item.get("references") or ())
+                footnotes = resolve_ref_texts(item.get("footnotes") or ())
                 block["figure_metadata"] = {
-                    "caption": str(item.get("caption") or text or "") or None,
+                    "caption": str(item.get("caption") or (captions[0] if captions else text) or "") or None,
                     "figure_id": str(item.get("self_ref") or "") or None,
+                    "extra": {
+                        "related_references": related_references,
+                        "footnotes": footnotes,
+                    },
                 }
             elif content_type is ContentType.REFERENCE:
                 block["reference_metadata"] = {
@@ -732,7 +779,9 @@ class DoclingDocumentParser(DocumentParser):
         }
 
     @staticmethod
-    def _table_data(item: Mapping[str, object]) -> dict[str, object]:
+    def _table_data(
+        item: Mapping[str, object], resolve_ref_texts: Callable[[object], tuple[str, ...]]
+    ) -> dict[str, object]:
         data = item.get("data") if isinstance(item.get("data"), Mapping) else {}
         assert isinstance(data, Mapping)
         raw_cells = data.get("table_cells") or item.get("cells") or data.get("cells") or ()
@@ -755,14 +804,18 @@ class DoclingDocumentParser(DocumentParser):
         ]
         headers = tuple(rows[0]) if rows else tuple(str(item) for item in (data.get("headers") or ()))
         body = tuple(rows[1:]) if rows else tuple(tuple(row) for row in (data.get("rows") or ()))
+        captions = resolve_ref_texts(item.get("captions") or item.get("caption_refs") or ())
+        related_references = resolve_ref_texts(item.get("references") or ())
+        footnotes = resolve_ref_texts(item.get("footnotes") or ())
         return {
-            "caption": item.get("caption") or data.get("caption"),
+            "caption": item.get("caption") or data.get("caption") or (captions[0] if captions else None),
             "headers": headers,
             "cells": body,
             "units": tuple(str(item) for item in (data.get("units") or ())),
-            "notes": tuple(str(item) for item in (data.get("notes") or ())),
+            "notes": tuple(str(item) for item in (data.get("notes") or ())) + footnotes,
             "row_count": len(body),
             "column_count": len(headers),
+            "extra": {"related_references": related_references},
         }
 
     @staticmethod
@@ -952,29 +1005,17 @@ class DoclingDocumentParser(DocumentParser):
         except (OSError, KeyError, ElementTree.ParseError, zipfile.BadZipFile) as exc:
             raise ParseFailure("EPUB OPF/spine fallback failed", resource_id=resource.resource_id) from exc
         fallback = self._normalized(payload, resource, adapter_path="OPF_SPINE_FALLBACK")
-        locations = [
-            (block.epub_spine_item, block.anchor)
-            for block in fallback.blocks
-            if block.epub_spine_item and block.anchor
-        ]
-        if not native.blocks or not locations:
-            return fallback
-        reconciled = tuple(
-            replace(
-                block,
-                epub_spine_item=locations[min(position, len(locations) - 1)][0],
-                anchor=locations[min(position, len(locations) - 1)][1],
-            )
-            for position, block in enumerate(native.blocks)
-        )
-        provenance = dict(native.parser_provenance)
+        # A failed native provenance contract provides no auditable one-to-one
+        # source mapping. Do not match by ordinal or reuse an unrelated anchor:
+        # the OPF document is the only verified source-location representation.
+        provenance = dict(fallback.parser_provenance)
         provenance.update(
             {
                 "adapter_path": "OPF_SPINE_FALLBACK",
-                "native_epub_location_contract": "FAILED_RECONCILED",
+                "native_epub_location_contract": "FAILED_USED_VERIFIED_OPF",
             }
         )
-        return replace(native, blocks=reconciled, parser_provenance=provenance)
+        return replace(fallback, parser_provenance=provenance)
 
     @classmethod
     def _opf_spine_payload(cls, epub_path: Path) -> dict[str, object]:

@@ -125,6 +125,25 @@ def write_minimal_epub(path: Path) -> None:
         )
 
 
+def write_two_anchor_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            '<container><rootfiles><rootfile full-path="OPS/book.opf"/></rootfiles></container>',
+        )
+        archive.writestr(
+            "OPS/book.opf",
+            '<package><metadata><title>Two anchors</title></metadata><manifest>'
+            '<item id="chapter" href="chapter.xhtml"/></manifest><spine>'
+            '<itemref idref="chapter"/></spine></package>',
+        )
+        archive.writestr(
+            "OPS/chapter.xhtml",
+            '<html><body><p id="first">Verified first paragraph.</p>'
+            '<p id="second">Verified second paragraph.</p></body></html>',
+        )
+
+
 def make_config(tmp_path: Path, **overrides: object) -> KnowledgeConfig:
     source = tmp_path / "source"
     source.mkdir(exist_ok=True)
@@ -235,6 +254,77 @@ def test_docling_export_mapping_preserves_ordered_structure_and_page_inventory(t
     assert document.blocks[5].reference_metadata.identifier == "doi:fixture"
     assert document.parser_provenance["page_text_chars"] == (45, 85)
     assert document.parser_provenance["image_pages"] == (True, False)
+
+
+def test_docling_refitems_resolve_floating_captions_notes_and_nested_body_order(tmp_path):
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+
+    docling_export = {
+        "texts": [
+            {"self_ref": "#/texts/0", "text": "Table caption", "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/1", "text": "Figure caption", "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/2", "text": "Related citation", "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/3", "text": "Footnote text", "prov": [{"page_no": 1}]},
+            {"self_ref": "#/texts/4", "text": "Nested list text", "prov": [{"page_no": 1}]},
+        ],
+        "tables": [
+            {
+                "self_ref": "#/tables/0",
+                "captions": [{"$ref": "#/texts/0"}],
+                "references": [{"$ref": "#/texts/2"}],
+                "footnotes": [{"$ref": "#/texts/3"}],
+                "data": {"table_cells": [{"text": "H", "row": 0, "col": 0}]},
+            }
+        ],
+        "pictures": [
+            {
+                "self_ref": "#/pictures/0",
+                "captions": [{"$ref": "#/texts/1"}],
+                "references": [{"$ref": "#/texts/2"}],
+                "footnotes": [{"$ref": "#/texts/3"}],
+            }
+        ],
+        "list_items": [
+            {"self_ref": "#/list_items/0", "text": "Nested list text", "prov": [{"page_no": 1}]}
+        ],
+        "groups": [
+            {
+                "self_ref": "#/groups/0",
+                "children": [
+                    {"$ref": "#/tables/0"},
+                    {"$ref": "#/groups/1"},
+                ],
+            },
+            {
+                "self_ref": "#/groups/1",
+                "children": [
+                    {"$ref": "#/pictures/0"},
+                    {"$ref": "#/list_items/0"},
+                ],
+            },
+        ],
+        "body": {"children": [{"$ref": "#/groups/0"}]},
+    }
+    parser = DoclingDocumentParser(
+        make_config(tmp_path),
+        converter_factory=lambda _options, _format: FakePipeline(docling_export),
+        pdf_options_factory=FakeOptions,
+    )
+
+    document = parser.parse(fixture_resource("refs.pdf", tmp_path), tmp_path / "staging")
+
+    assert [block.content_type.value for block in document.blocks] == [
+        "TABLE",
+        "FIGURE_CAPTION",
+        "LIST",
+    ]
+    table, figure, _ = document.blocks
+    assert table.table.caption == "Table caption"
+    assert table.table.notes == ("Footnote text",)
+    assert table.table.extra["related_references"] == ("Related citation",)
+    assert figure.figure_metadata.caption == "Figure caption"
+    assert figure.figure_metadata.extra["related_references"] == ("Related citation",)
+    assert figure.figure_metadata.extra["footnotes"] == ("Footnote text",)
 
 
 def test_incomplete_docling_artifact_manifest_fails_before_converter_runs(tmp_path):
@@ -560,7 +650,7 @@ def test_epub_opf_fallback_is_used_only_when_native_provenance_fails(tmp_path):
     ("spine_item", "anchor"),
     (("missing.xhtml", "first"), ("OPS/chapter.xhtml", "missing-anchor")),
 )
-def test_invalid_native_epub_location_falls_back_without_discarding_table_structure(
+def test_invalid_native_epub_location_uses_verified_opf_block(
     tmp_path, spine_item, anchor
 ):
     from tradingagents.knowledge.docling_parser import DoclingDocumentParser
@@ -594,10 +684,54 @@ def test_invalid_native_epub_location_falls_back_without_discarding_table_struct
     document = parser.parse(resource, tmp_path / "staging")
 
     assert document.parser_provenance["adapter_path"] == "OPF_SPINE_FALLBACK"
-    assert document.blocks[0].content_type.value == "TABLE"
-    assert document.blocks[0].table.caption == "Native retained table"
+    assert document.blocks[0].content_type.value == "PROSE"
+    assert document.blocks[0].text == "Spine fallback paragraph."
     assert document.blocks[0].epub_spine_item == "OPS/chapter.xhtml"
     assert document.blocks[0].anchor == "first"
+
+
+def test_epub_fallback_never_repeats_anchor_for_unmatched_native_structured_blocks(tmp_path):
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+
+    resource = fixture_resource("chapter.epub", tmp_path)
+    write_two_anchor_epub(resource.path)
+    parser = DoclingDocumentParser(
+        make_config(tmp_path),
+        converter_factory=lambda _options, _format: FakePipeline(
+            {
+                "metadata": {"format": "epub"},
+                "blocks": [
+                    {
+                        "block_id": "native-heading",
+                        "content_type": "PROSE",
+                        "text": "Unmatched heading",
+                    },
+                    {
+                        "block_id": "native-table",
+                        "content_type": "TABLE",
+                        "text": "Unmatched table",
+                        "table": {"headers": ["H"], "cells": [["1"]]},
+                    },
+                    {
+                        "block_id": "native-figure",
+                        "content_type": "FIGURE_CAPTION",
+                        "text": "Unmatched figure",
+                    },
+                ],
+            }
+        ),
+        pdf_options_factory=FakeOptions,
+    )
+
+    document = parser.parse(resource, tmp_path / "staging")
+
+    assert document.parser_provenance["adapter_path"] == "OPF_SPINE_FALLBACK"
+    assert [block.text for block in document.blocks] == [
+        "Verified first paragraph.",
+        "Verified second paragraph.",
+    ]
+    assert [block.anchor for block in document.blocks] == ["first", "second"]
+    assert all(block.content_type.value == "PROSE" for block in document.blocks)
 
 
 def test_converter_failure_keeps_the_resource_identity_for_isolated_diagnostics(tmp_path):
