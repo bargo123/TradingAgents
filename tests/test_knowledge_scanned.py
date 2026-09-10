@@ -39,6 +39,9 @@ def test_scan_detector_marks_image_only_pdf_needs_ocr():
     assert decision.state is IngestionState.NEEDS_OCR
     assert decision.text_bearing_pages == 0
     assert decision.image_bearing_pages == 4
+    assert decision.parser_id == "fixture"
+    assert decision.parser_version == "1"
+    assert decision.parser_config_hash == "cfg"
 
 
 def test_scan_detector_requires_image_evidence_before_quarantining_empty_document():

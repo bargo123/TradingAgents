@@ -20,6 +20,9 @@ class ScanDecision:
     total_pages: int
     text_bearing_pages: int
     image_bearing_pages: int
+    parser_id: str
+    parser_version: str
+    parser_config_hash: str
     scanner_version: str = "scan-v1"
 
     @property
@@ -54,6 +57,9 @@ class ScannedDetector:
                 total_pages=0,
                 text_bearing_pages=0,
                 image_bearing_pages=0,
+                parser_id=document.parser_id,
+                parser_version=document.parser_version,
+                parser_config_hash=document.parser_config_hash,
                 scanner_version=self.version,
             )
 
@@ -73,6 +79,9 @@ class ScannedDetector:
             total_pages=total,
             text_bearing_pages=text_bearing,
             image_bearing_pages=image_bearing,
+            parser_id=document.parser_id,
+            parser_version=document.parser_version,
+            parser_config_hash=document.parser_config_hash,
             scanner_version=self.version,
         )
 

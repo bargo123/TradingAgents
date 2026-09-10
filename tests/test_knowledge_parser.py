@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
+import sys
+import types
 import zipfile
 
 import pytest
@@ -51,19 +54,261 @@ class FakeOptions:
     do_ocr: bool
     do_formula_enrichment: bool
     artifacts_path: str | None = None
+    formula_artifacts_path: str | None = None
+    formula_model_id: str | None = None
+    formula_model_version: str | None = None
+    formula_artifact_hash: str | None = None
+
+
+def provision_docling_artifacts(artifacts: Path, *, version: str = "fake-docling-v1") -> Path:
+    model = artifacts / "models" / "layout.bin"
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"local-docling-artifact")
+    (artifacts / "docling-artifacts.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "docling-artifacts-v1",
+                "docling_version": version,
+                "artifacts": [
+                    {
+                        "path": "models/layout.bin",
+                        "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifacts
+
+
+def provision_formula_artifacts(
+    artifacts: Path,
+    *,
+    model_id: str,
+    model_version: str,
+) -> tuple[Path, str]:
+    model = artifacts / "formula.bin"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"local-formula-artifact")
+    artifact_hash = hashlib.sha256(model.read_bytes()).hexdigest()
+    (artifacts / "formula-artifacts.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "formula-artifacts-v1",
+                "model_id": model_id,
+                "model_version": model_version,
+                "artifact_hash": artifact_hash,
+                "artifacts": [{"path": "formula.bin", "sha256": artifact_hash}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return artifacts, artifact_hash
+
+
+def write_minimal_epub(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            "META-INF/container.xml",
+            '<container><rootfiles><rootfile full-path="OPS/book.opf"/></rootfiles></container>',
+        )
+        archive.writestr(
+            "OPS/book.opf",
+            '<package><metadata><title>Fixture EPUB</title></metadata><manifest>'
+            '<item id="chapter" href="chapter.xhtml"/></manifest><spine>'
+            '<itemref idref="chapter"/></spine></package>',
+        )
+        archive.writestr(
+            "OPS/chapter.xhtml",
+            '<html><body><p id="first">Spine fallback paragraph.</p></body></html>',
+        )
 
 
 def make_config(tmp_path: Path, **overrides: object) -> KnowledgeConfig:
     source = tmp_path / "source"
     source.mkdir(exist_ok=True)
     artifacts = tmp_path / "docling-artifacts"
-    artifacts.mkdir(exist_ok=True)
+    provision_docling_artifacts(artifacts)
     return KnowledgeConfig(
         source_root=source,
         artifact_root=tmp_path / "artifacts",
         docling_artifacts_path=artifacts,
         **overrides,
     )
+
+
+def test_docling_export_mapping_preserves_ordered_structure_and_page_inventory(tmp_path):
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+
+    docling_export = {
+        "origin": {"filename": "actual.pdf", "mimetype": "application/pdf"},
+        "pages": {
+            "1": {"image": {"uri": "page-1.png"}},
+            "2": {"image": None},
+        },
+        "texts": [
+            {
+                "self_ref": "#/texts/0",
+                "label": "section_header",
+                "text": "Results",
+                "prov": [{"page_no": 1}],
+            },
+            {
+                "self_ref": "#/texts/1",
+                "label": "text",
+                "text": "Order flow predicts short-horizon returns.",
+                "prov": [{"page_no": 1}],
+            },
+        ],
+        "tables": [
+            {
+                "self_ref": "#/tables/0",
+                "caption": "Prediction accuracy",
+                "prov": [{"page_no": 2}],
+                "data": {
+                    "table_cells": [
+                        {"text": "Horizon", "row": 0, "col": 0},
+                        {"text": "Accuracy", "row": 0, "col": 1},
+                        {"text": "1", "row": 1, "col": 0},
+                        {"text": "0.71", "row": 1, "col": 1},
+                    ]
+                },
+            }
+        ],
+        "formulas": [
+            {
+                "self_ref": "#/formulas/0",
+                "text": "p_t = m_t + lambda I_t",
+                "latex": "p_t = m_t + \\lambda I_t",
+                "prov": [{"page_no": 2}],
+            }
+        ],
+        "pictures": [
+            {
+                "self_ref": "#/pictures/0",
+                "caption": "Queue imbalance figure",
+                "prov": [{"page_no": 2}],
+            }
+        ],
+        "references": [
+            {
+                "self_ref": "#/references/0",
+                "text": "Kyle (1985)",
+                "identifier": "doi:fixture",
+                "prov": [{"page_no": 2}],
+            }
+        ],
+        "body": {
+            "children": [
+                {"$ref": "#/texts/0"},
+                {"$ref": "#/texts/1"},
+                {"$ref": "#/formulas/0"},
+                {"$ref": "#/tables/0"},
+                {"$ref": "#/pictures/0"},
+                {"$ref": "#/references/0"},
+            ]
+        },
+    }
+    parser = DoclingDocumentParser(
+        make_config(tmp_path),
+        converter_factory=lambda _options, _format: FakePipeline(docling_export),
+        pdf_options_factory=FakeOptions,
+    )
+
+    document = parser.parse(fixture_resource("actual.pdf", tmp_path), tmp_path / "staging")
+
+    assert [block.content_type.value for block in document.blocks] == [
+        "PROSE",
+        "PROSE",
+        "EQUATION",
+        "TABLE",
+        "FIGURE_CAPTION",
+        "REFERENCE",
+    ]
+    assert [block.reading_order for block in document.blocks] == [0, 1, 2, 3, 4, 5]
+    assert document.blocks[1].section_path == ("Results",)
+    assert document.blocks[2].equation.latex == r"p_t = m_t + \lambda I_t"
+    assert document.blocks[3].table.headers == ("Horizon", "Accuracy")
+    assert document.blocks[3].table.cells == (("1", "0.71"),)
+    assert document.blocks[4].figure_metadata.caption == "Queue imbalance figure"
+    assert document.blocks[5].reference_metadata.identifier == "doi:fixture"
+    assert document.parser_provenance["page_text_chars"] == (45, 85)
+    assert document.parser_provenance["image_pages"] == (True, False)
+
+
+def test_incomplete_docling_artifact_manifest_fails_before_converter_runs(tmp_path):
+    from tradingagents.knowledge.docling_parser import (
+        DoclingArtifactsUnavailable,
+        DoclingDocumentParser,
+    )
+
+    config = make_config(tmp_path)
+    (config.docling_artifacts_path / "models" / "layout.bin").unlink()
+    calls: list[object] = []
+    parser = DoclingDocumentParser(
+        config,
+        converter_factory=lambda _options, _format: calls.append("converter"),
+        pdf_options_factory=FakeOptions,
+    )
+
+    with pytest.raises(DoclingArtifactsUnavailable):
+        parser.parse(fixture_resource("paper.pdf", tmp_path), tmp_path / "staging")
+
+    assert calls == []
+
+
+def test_default_adapter_binds_offline_local_runtime_for_pdf_and_epub(tmp_path, monkeypatch):
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+
+    calls: list[dict[str, object]] = []
+
+    class InstalledPdfOptions:
+        def __init__(self, **kwargs: object) -> None:
+            self.__dict__.update(kwargs)
+
+    class InstalledPdfFormatOption:
+        def __init__(self, *, pipeline_options: object) -> None:
+            self.pipeline_options = pipeline_options
+
+    class InstalledConverter:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(dict(kwargs))
+
+        def convert(self, path: Path) -> dict[str, object]:
+            return {"metadata": {"format": path.suffix.lstrip(".")}, "blocks": []}
+
+    docling = types.ModuleType("docling")
+    docling.__path__ = []
+    docling.__version__ = "fake-docling-v1"
+    datamodel = types.ModuleType("docling.datamodel")
+    datamodel.__path__ = []
+    base_models = types.ModuleType("docling.datamodel.base_models")
+    base_models.InputFormat = types.SimpleNamespace(PDF="PDF", EPUB="EPUB")
+    pipeline_options = types.ModuleType("docling.datamodel.pipeline_options")
+    pipeline_options.PdfPipelineOptions = InstalledPdfOptions
+    converter_module = types.ModuleType("docling.document_converter")
+    converter_module.DocumentConverter = InstalledConverter
+    converter_module.PdfFormatOption = InstalledPdfFormatOption
+    monkeypatch.setitem(sys.modules, "docling", docling)
+    monkeypatch.setitem(sys.modules, "docling.datamodel", datamodel)
+    monkeypatch.setitem(sys.modules, "docling.datamodel.base_models", base_models)
+    monkeypatch.setitem(sys.modules, "docling.datamodel.pipeline_options", pipeline_options)
+    monkeypatch.setitem(sys.modules, "docling.document_converter", converter_module)
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: pytest.fail("network"))
+    monkeypatch.setattr("socket.create_connection", lambda *args, **kwargs: pytest.fail("network"))
+    parser = DoclingDocumentParser(make_config(tmp_path))
+
+    parser.parse(fixture_resource("paper.pdf", tmp_path), tmp_path / "staging")
+    epub = fixture_resource("chapter.epub", tmp_path)
+    write_minimal_epub(epub.path)
+    parser.parse(epub, tmp_path / "staging")
+
+    assert len(calls) == 2
+    assert all(call["offline"] is True for call in calls)
+    assert all(call["allow_download"] is False for call in calls)
+    assert all(call["artifacts_path"] == str(parser.config.docling_artifacts_path) for call in calls)
+    assert calls[0]["format_options"]["PDF"].pipeline_options.do_ocr is False
 
 
 def test_parser_preserves_equation_table_caption_and_locations(tmp_path):
@@ -175,8 +420,7 @@ def test_requested_formula_enrichment_requires_local_artifact_without_network(tm
     monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: pytest.fail("network"))
     source = tmp_path / "source"
     source.mkdir()
-    docling_artifacts = tmp_path / "docling-artifacts"
-    docling_artifacts.mkdir()
+    docling_artifacts = provision_docling_artifacts(tmp_path / "docling-artifacts")
     formula = tmp_path / "formula-artifacts"
     formula.mkdir()
     config = KnowledgeConfig(
@@ -192,6 +436,68 @@ def test_requested_formula_enrichment_requires_local_artifact_without_network(tm
         DoclingDocumentParser(config).build_pdf_pipeline_options()
 
 
+def test_requested_formula_enrichment_requires_complete_local_identity(tmp_path):
+    from tradingagents.knowledge.docling_parser import (
+        DoclingArtifactsUnavailable,
+        DoclingDocumentParser,
+    )
+
+    formula = tmp_path / "formula-artifacts"
+    formula.mkdir()
+    config = make_config(
+        tmp_path,
+        formula_enrichment_enabled=True,
+        formula_artifacts_path=formula,
+    )
+
+    with pytest.raises(DoclingArtifactsUnavailable):
+        DoclingDocumentParser(config, pdf_options_factory=FakeOptions).build_pdf_pipeline_options()
+
+
+def test_formula_pipeline_uses_local_identity_and_disabled_native_equation_is_preserved(tmp_path):
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+
+    formula, artifact_hash = provision_formula_artifacts(
+        tmp_path / "formula-artifacts", model_id="local-formula", model_version="v1"
+    )
+    config = make_config(
+        tmp_path,
+        formula_enrichment_enabled=True,
+        formula_artifacts_path=formula,
+        formula_model_id="local-formula",
+        formula_model_version="v1",
+        formula_artifact_hash=artifact_hash,
+    )
+    options = DoclingDocumentParser(config, pdf_options_factory=FakeOptions).build_pdf_pipeline_options()
+
+    assert options.formula_artifacts_path == str(formula)
+    assert options.formula_model_id == "local-formula"
+    assert options.formula_model_version == "v1"
+    assert options.formula_artifact_hash == artifact_hash
+
+    parser = DoclingDocumentParser(
+        make_config(tmp_path),
+        converter_factory=lambda _options, _format: FakePipeline(
+            {
+                "metadata": {"format": "pdf"},
+                "blocks": [
+                    {
+                        "block_id": "native-eq",
+                        "content_type": "EQUATION",
+                        "equation": {"parser_native": "x=y"},
+                    }
+                ],
+            }
+        ),
+        pdf_options_factory=FakeOptions,
+    )
+    document = parser.parse(fixture_resource("paper.pdf", tmp_path), tmp_path / "staging")
+
+    assert document.blocks[0].equation.parser_native == "x=y"
+    assert document.blocks[0].equation.latex is None
+    assert document.parser_provenance["formula_enrichment_status"] == "DISABLED_NATIVE_PRESERVED"
+
+
 def test_native_epub_path_is_preferred_and_fallback_records_spine_anchor(tmp_path):
     from tradingagents.knowledge.docling_parser import DoclingDocumentParser
 
@@ -205,15 +511,17 @@ def test_native_epub_path_is_preferred_and_fallback_records_spine_anchor(tmp_pat
                         "block_id": "native-1",
                         "content_type": "PROSE",
                         "text": "Native EPUB paragraph.",
-                        "epub_spine_item": "chapter-1.xhtml",
-                        "anchor": "p-1",
+                        "epub_spine_item": "OPS/chapter.xhtml",
+                        "anchor": "first",
                     }
                 ],
             }
         ),
         pdf_options_factory=FakeOptions,
     )
-    document = parser.parse(fixture_resource("chapter.epub", tmp_path), tmp_path / "staging")
+    resource = fixture_resource("chapter.epub", tmp_path)
+    write_minimal_epub(resource.path)
+    document = parser.parse(resource, tmp_path / "staging")
 
     assert document.parser_provenance["adapter_path"] == "NATIVE_DOCLING_EPUB"
     assert document.blocks[0].epub_spine_item and document.blocks[0].anchor
@@ -223,21 +531,7 @@ def test_epub_opf_fallback_is_used_only_when_native_provenance_fails(tmp_path):
     from tradingagents.knowledge.docling_parser import DoclingDocumentParser
 
     resource = fixture_resource("chapter.epub", tmp_path)
-    with zipfile.ZipFile(resource.path, "w") as archive:
-        archive.writestr(
-            "META-INF/container.xml",
-            '<container><rootfiles><rootfile full-path="OPS/book.opf"/></rootfiles></container>',
-        )
-        archive.writestr(
-            "OPS/book.opf",
-            '<package><metadata><title>Fallback EPUB</title></metadata><manifest>'
-            '<item id="chapter" href="chapter.xhtml"/></manifest><spine>'
-            '<itemref idref="chapter"/></spine></package>',
-        )
-        archive.writestr(
-            "OPS/chapter.xhtml",
-            '<html><body><p id="first">Spine fallback paragraph.</p></body></html>',
-        )
+    write_minimal_epub(resource.path)
     parser = DoclingDocumentParser(
         make_config(tmp_path),
         converter_factory=lambda _options, _format: FakePipeline(
@@ -258,6 +552,50 @@ def test_epub_opf_fallback_is_used_only_when_native_provenance_fails(tmp_path):
     document = parser.parse(resource, tmp_path / "staging")
 
     assert document.parser_provenance["adapter_path"] == "OPF_SPINE_FALLBACK"
+    assert document.blocks[0].epub_spine_item == "OPS/chapter.xhtml"
+    assert document.blocks[0].anchor == "first"
+
+
+@pytest.mark.parametrize(
+    ("spine_item", "anchor"),
+    (("missing.xhtml", "first"), ("OPS/chapter.xhtml", "missing-anchor")),
+)
+def test_invalid_native_epub_location_falls_back_without_discarding_table_structure(
+    tmp_path, spine_item, anchor
+):
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+
+    resource = fixture_resource("chapter.epub", tmp_path)
+    write_minimal_epub(resource.path)
+    parser = DoclingDocumentParser(
+        make_config(tmp_path),
+        converter_factory=lambda _options, _format: FakePipeline(
+            {
+                "metadata": {"format": "epub"},
+                "blocks": [
+                    {
+                        "block_id": "native-table",
+                        "content_type": "TABLE",
+                        "text": "Horizon Accuracy",
+                        "epub_spine_item": spine_item,
+                        "anchor": anchor,
+                        "table": {
+                            "caption": "Native retained table",
+                            "headers": ["Horizon", "Accuracy"],
+                            "cells": [["1", "0.71"]],
+                        },
+                    }
+                ],
+            }
+        ),
+        pdf_options_factory=FakeOptions,
+    )
+
+    document = parser.parse(resource, tmp_path / "staging")
+
+    assert document.parser_provenance["adapter_path"] == "OPF_SPINE_FALLBACK"
+    assert document.blocks[0].content_type.value == "TABLE"
+    assert document.blocks[0].table.caption == "Native retained table"
     assert document.blocks[0].epub_spine_item == "OPS/chapter.xhtml"
     assert document.blocks[0].anchor == "first"
 
