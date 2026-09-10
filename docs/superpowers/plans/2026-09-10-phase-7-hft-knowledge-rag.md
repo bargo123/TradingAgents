@@ -14,12 +14,13 @@
 
 - The only approved source is `C:\Users\Zaid barghouthi\Downloads\new books`; every source operation is read-only, and generated artifacts live outside that tree.
 - Recursively enumerate all regular files in deterministic relative-path order. PDF and EPUB are the only supported formats; every other regular file is visible as `UNSUPPORTED` and is never parsed, embedded, or indexed. Directories, reparse targets escaping the root, and internal filesystem metadata are not resources.
-- V1 detects likely image-only/scanned documents as `NEEDS_OCR`; it never performs OCR and never indexes those documents as trusted text.
+- V1 detects likely image-only/scanned documents as `NEEDS_OCR`; it never performs OCR and never indexes those documents as trusted text. Docling PDF options must explicitly set `do_ocr=False`; local Docling artifacts are resolved through a configurable path in offline mode, with no automatic download.
+- Formula enrichment is disabled by default. It may be enabled only when the required local formula artifacts are present; otherwise preserve parser-native equation structure and record the limitation without inventing LaTeX or enabling OCR.
 - Preserve title, authors, type, chapter/section hierarchy, page or EPUB location, reading order, equations, tables, captions, references, and structured metadata whenever the parser exposes them.
-- Chunk by semantic structure. The policy is a 512-token soft target, 768-token hard maximum, and at most 64-token overlap only within a section-level prose split; equation/variable and table/header/caption bundles remain intact.
+- Chunk by semantic structure using the actual configured embedding tokenizer with truncation disabled. For BGE-small V1, use a 448-token soft target, a 510-token effective corpus-content limit, and a 512-token model-input maximum (including special tokens); no indexed input may exceed the loaded model's real limit.
 - `source_hash` is SHA-256 of bytes; exact byte duplicates share one `document_id` and separate aliases. A document remains active while at least one current non-removed alias references its hash.
 - Failed changed-file ingestion keeps the previous relationship as `RETAINED_PREVIOUS` for diagnostics; another current duplicate alias remains unaffected, and stale content is excluded from the default view when no current alias remains.
-- FastEmbed/ONNX embeddings are local and CPU-only. The v1 default is a configurable local `BAAI/bge-small-en-v1.5`-compatible 384-dimensional model; the resolved model artifact hash and dimensions are persisted.
+- FastEmbed/ONNX embeddings are local and CPU-only. The v1 default is a configurable local `BAAI/bge-small-en-v1.5`-compatible 384-dimensional model; the complete `EmbeddingSpec` (resolved version, artifact hash, dimensions, normalization, tokenizer fingerprint, model/effective limits, truncation flag, and corpus/query instruction policies) is persisted and compared before dense retrieval.
 - LanceDB and SQLite FTS5 are local files. Vector and lexical projections are generation-scoped, carry identical population/version identity, and are activated as one matched generation. A query must reject incompatible generations.
 - Rebuilds are explicit, side-by-side, validated, and atomically activated; the previous complete generation remains available for rollback/diagnostics. Incremental documents are visible only after both projections are ready in the active generation.
 - The query API returns only provenance-complete knowledge evidence. It has no BUY/SELL/HOLD, `PortfolioDecision`, MT5, `forex-watch`, TradingAgents graph, Phase 5 label, or experience-memory field.
@@ -33,12 +34,12 @@
 
 - `tradingagents/knowledge/__init__.py` — public knowledge-only exports.
 - `tradingagents/knowledge/models.py` — enums and immutable contracts for resources, parsed blocks, chunks, embeddings, generations, queries, hits, and run summaries.
-- `tradingagents/knowledge/config.py` — validated source/artifact paths, component settings, and CPU/offline limits.
+- `tradingagents/knowledge/config.py` — validated source/artifact paths, local Docling artifact/formula settings, embedding context policy, and CPU/offline limits.
 - `tradingagents/knowledge/identity.py` — canonical relative paths, SHA-256 identity, duplicate aliases, and source-integrity checks.
 - `tradingagents/knowledge/discovery.py` — deterministic recursive scanner including unsupported regular files and excluding directories/internal metadata.
 - `tradingagents/knowledge/catalog.py` — SQLite catalog, alias currentness, ingestion events, projection readiness, and active-generation registry.
 - `tradingagents/knowledge/parser.py` — parser protocol and normalized IR helpers.
-- `tradingagents/knowledge/docling_parser.py` — PDF and EPUB source adapters using Docling-first normalization.
+- `tradingagents/knowledge/docling_parser.py` — PDF and native-EPUB Docling adapters, explicit OCR/formula/offline controls, and provenance-safe OPF/spine fallback.
 - `tradingagents/knowledge/scanned.py` — deterministic image-only detection and `NEEDS_OCR` evidence.
 - `tradingagents/knowledge/chunking.py` — semantic-unit assembly, size policy, and deterministic chunk IDs.
 - `tradingagents/knowledge/embeddings.py` — embedding protocol, FastEmbed/ONNX adapter, model validation, and artifact cache.
@@ -88,16 +89,25 @@ never writes generated artifacts below the source tree.
 The test suite defines these reusable fakes before the first dependent test:
 
 - `FakeParser` implements `DocumentParser`, returns a supplied `ParsedDocument`, and records `parse_calls`.
-- `FakeEmbeddingProvider` exposes a supplied `EmbeddingSpec`, returns deterministic vectors derived from `sha256(text)`, and records `embed_calls`.
-- `FakeVectorBackend` and `FakeLexicalBackend` implement the index protocols and expose failure switches for vector-build, lexical-build, and activation tests.
+- `FakeTokenizer` exposes deterministic special-token-aware corpus/query lengths, a configurable model limit, and a stable tokenizer fingerprint.
+- `FakeEmbeddingProvider` exposes a supplied `EmbeddingSpec` and `FakeTokenizer`, returns deterministic vectors derived from `sha256(text)`, records `embed_calls`, and fails if the service attempts truncation or an over-limit input; `RecordingFakeEmbeddingProvider` additionally records token lengths and the truncation flag.
+- `FakeDoclingPipeline` records every constructed option, exposes `do_ocr`,
+  formula-enrichment, artifact-path, and offline values, and can return an
+  image-only document with an empty text inventory.
+- `FakeVectorBackend` and `FakeLexicalBackend` implement the index protocols and expose failure switches for vector-build, lexical-build, and activation tests; `FakeVectorReader(fail_if_called=True)` proves spec mismatches stop before dense retrieval.
 - `FakeReranker` records candidate metadata and returns a deterministic order without reading hidden text.
 - `make_parsed_document(...)` creates blocks for prose, equation/variable definitions, table/caption/notes, figure caption, and reference locations.
 - `make_indexed_catalog(...)` creates two duplicate aliases for one hash and a second unique document, with a known active generation ID.
 - `fixture_resource(name)`, `structured_fixture()`, `make_structured_document()`, `make_long_section_document()`, `make_chunk(text)`, and `make_source_tree(tmp_path)` return the fixed resources/documents/chunks used by parser, chunking, query, and integrity tests.
-- `max_overlap_tokens(chunks)`, `snapshot_tree(path)`, `imported_modules_under(path)`, `candidate(label, rank, chunk_id)`, `make_hit(**overrides)`, and `forbidden_constructor()` are pure test assertions/builders.
+- `max_overlap_tokens(chunks)`, `snapshot_tree(path)`, `imported_modules_under(path)`, `candidate(label, rank, chunk_id)`, `make_hit(**overrides)`, `make_embedding_spec(**overrides)`, `make_docling_options(**overrides)`, and `forbidden_constructor()` are pure test assertions/builders.
+- `fake_docling_parser(...)`, `fake_docling_parser_with_image_only_pdf(...)`,
+  `fake_docling_document_with_native_equation(...)`,
+  `make_large_table_document()`, `make_large_equation_definition_document()`,
+  and `forbid_parser_ingestor_source_scanner_and_writers(...)` provide the
+  parser/chunker/CLI boundary fixtures without external dependencies.
 - `ingestion_harness(tmp_path, duplicate=False, interrupt_after=None, source=None)` returns `.source`, `.catalog`, `.parser`, `.embedder`, `.ingestor`, and `.shared_document_id`; its aliases are keyed by `resource_id_for("book.pdf")` and `resource_id_for("copy.pdf")`.
-- `make_generation_manager(tmp_path, vector=None, lexical=None)`, `make_chunks()`, `make_vectors()`, and `write_fake_lexical_metadata(path, generation_id)` construct the Task 6 generation fakes.
-- `query_harness(dense=(), lexical=(), vector_generation=None, lexical_generation=None)`, `seed_query_fixture(path)`, `fixture_query_service()`, `load_cases(path)`, and `run_benchmark(cases, service)` construct the Task 8–10 query/benchmark fixtures.
+- `make_generation_manager(tmp_path, vector=None, lexical=None, embedding_spec=None)`, `make_chunks()`, `make_vectors()`, and `write_fake_lexical_metadata(path, generation_id)` construct the Task 6 generation fakes.
+- `query_harness(dense=(), lexical=(), vector_generation=None, lexical_generation=None, index_embedding_spec=None, query_embedding_spec=None, dense_reader=None)`, `seed_query_fixture(path)`, `fixture_query_service()`, `load_cases(path)`, and `run_benchmark(cases, service)` construct the Task 8–10 query/benchmark fixtures; the harness exposes a spy query embedder and forbidden writer/parser/ingestor constructors.
 
 Every test that checks text checks only fixture text or scalar lengths. No test prints or stores prompts, model reasoning, or unrelated source copies.
 
@@ -118,7 +128,7 @@ Every test that checks text checks only fixture text or scalar lengths. No test 
 
 **Interfaces:**
 - Produces `IngestionState`, `AliasRelation`, `ContentType`, `DiscoveredResource`, `DocumentMetadata`, `ParsedBlock`, `ParsedDocument`, `ChunkRecord`, `EmbeddingSpec`, `IndexGeneration`, `KnowledgeQuery`, `KnowledgeHit`, `IngestionRunSummary`, and `KnowledgeConfig` for every later task.
-- `KnowledgeConfig(source_root, artifact_root, embedding_model_id, embedding_model_path, embedding_dimensions, offline, worker_count, embedding_batch_size, parser/chunker/index settings)` is immutable and serializable; its validated paths and component fingerprints drive all later reuse checks.
+- `KnowledgeConfig(source_root, artifact_root, docling_artifacts_path, docling_offline, docling_do_ocr=False, formula_enrichment_enabled, embedding_model_id, embedding_model_path, embedding_dimensions, offline, worker_count, embedding_batch_size, parser/chunker/index settings)` is immutable and serializable; its validated paths and component fingerprints drive all later reuse checks. V1 rejects `docling_offline=False` and any request to set `docling_do_ocr=True`.
 - Produces `canonical_relative_path(path, source_root) -> str`, `resource_id_for(relative_path) -> str`, `document_id_for(source_hash) -> str`, and `sha256_file(path) -> tuple[str, int]`.
 - Produces `SourceScanner(config).discover() -> tuple[DiscoveredResource, ...]`; it includes all regular non-metadata files, marks unsupported extensions before hashing, and sorts by case-folded relative path then display path.
 
@@ -164,10 +174,14 @@ Expected: FAIL because the knowledge package and its contracts do not yet exist.
 
 Use string-valued enums so SQLite/JSON values are stable. `KnowledgeConfig`
 validates that `source_root` is a directory, `artifact_root` is outside it,
-worker count is 1–6, embedding batch size is positive, and offline mode is
-true by default. `SourceScanner` uses `os.scandir` recursion, rejects symlinks
-or reparse points that escape the root, skips `desktop.ini`, `Thumbs.db`, and
-filesystem metadata directories, and records every other regular file.
+`docling_artifacts_path` is a local path outside the source tree (defaulting to
+`artifact_root / "docling"`), `docling_offline` is true, and OCR is disabled;
+worker count is 1–6, embedding batch size is positive, and general offline mode
+is true by default. Formula enrichment defaults to false and may be true only
+with an explicitly configured local formula artifact path. `SourceScanner` uses
+`os.scandir` recursion, rejects symlinks or reparse points that escape the root,
+skips `desktop.ini`, `Thumbs.db`, and filesystem metadata directories, and
+records every other regular file.
 Unsupported extensions terminate at `UNSUPPORTED` before a content hash is
 requested.
 
@@ -332,9 +346,9 @@ git commit -m "feat: add knowledge catalog and alias currentness"
 **Interfaces:**
 - Consumes `DiscoveredResource` and `KnowledgeConfig` from Tasks 1–2.
 - Produces `DocumentParser` with `parse(resource: DiscoveredResource, staging_dir: Path) -> ParsedDocument`.
-- Produces `DoclingDocumentParser`, which routes PDF bytes through Docling conversion and EPUB bytes through an OPF/spine adapter into the same normalized IR.
+- Produces `DoclingDocumentParser`, which routes PDF bytes through an explicitly configured offline Docling pipeline (`PdfPipelineOptions(do_ocr=False, ...)`) and tries native Docling EPUB conversion first. An OPF/spine adapter is a provenance-checked fallback only when native EPUB output cannot preserve deterministic spine/anchor locations.
 - Produces `ScanDecision` and `ScannedDetector.classify(document: ParsedDocument) -> ScanDecision`.
-- Produces typed `ParseFailure` and `ParserDependencyUnavailable` exceptions; the ingestion coordinator records them per resource without aborting unrelated documents.
+- Produces typed `ParseFailure`, `ParserDependencyUnavailable`, and `DoclingArtifactsUnavailable` exceptions; the ingestion coordinator records them per resource without aborting unrelated documents.
 
 - [ ] **Step 1: Write failing parser/scan tests**
 
@@ -363,6 +377,76 @@ def test_scan_detector_marks_image_only_pdf_needs_ocr():
     assert decision.image_bearing_pages == 4
 
 
+def test_docling_pdf_options_disable_ocr_and_image_only_text_is_not_ocr_generated(monkeypatch):
+    options = make_docling_options(do_ocr=False, do_formula_enrichment=False)
+    assert options.do_ocr is False
+    parser = fake_docling_parser_with_image_only_pdf(options, monkeypatch)
+
+    document = parser.parse(fixture_resource("scanned.pdf"), Path("staging"))
+    assert not document.text_blocks
+    assert ScannedDetector().classify(document).state is IngestionState.NEEDS_OCR
+
+
+@pytest.mark.integration
+def test_installed_docling_pdf_pipeline_options_are_explicitly_ocr_disabled(tmp_path):
+    pytest.importorskip("docling")
+    parser = DoclingDocumentParser(
+        KnowledgeConfig(
+            artifact_root=tmp_path / "artifacts",
+            docling_artifacts_path=tmp_path / "docling-artifacts",
+        )
+    )
+    options = parser.build_pdf_pipeline_options()
+    assert options.do_ocr is False
+    assert parser.config.docling_offline is True
+
+
+def test_missing_docling_artifacts_fails_offline_without_network(tmp_path, monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: pytest.fail("network"))
+
+    with pytest.raises(DoclingArtifactsUnavailable):
+        DoclingDocumentParser(
+            KnowledgeConfig(
+                artifact_root=tmp_path / "artifacts",
+                docling_artifacts_path=tmp_path / "missing-docling",
+            )
+        ).parse(fixture_resource("paper.pdf"), tmp_path / "staging")
+
+
+def test_formula_enrichment_is_local_optional_and_preserves_native_equation():
+    disabled = make_docling_options(formula_enrichment_enabled=False)
+    assert disabled.do_formula_enrichment is False
+    document = fake_docling_document_with_native_equation(formula_status="UNAVAILABLE_NATIVE_PRESERVED")
+    assert document.blocks[0].equation.parser_native
+    assert document.parser_provenance["formula_enrichment_status"] == "UNAVAILABLE_NATIVE_PRESERVED"
+
+
+def test_requested_formula_enrichment_requires_local_artifact_without_network(tmp_path, monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", lambda *args, **kwargs: pytest.fail("network"))
+    with pytest.raises(DoclingArtifactsUnavailable):
+        DoclingDocumentParser(
+            KnowledgeConfig(
+                artifact_root=tmp_path / "artifacts",
+                docling_artifacts_path=tmp_path / "missing-docling",
+                formula_enrichment_enabled=True,
+            )
+        ).build_pdf_pipeline_options()
+
+
+def test_native_epub_path_is_preferred_and_fallback_records_spine_anchor():
+    parser = fake_docling_parser(native_epub=True)
+    document = parser.parse(fixture_resource("chapter.epub"), Path("staging"))
+    assert document.parser_provenance["adapter_path"] == "NATIVE_DOCLING_EPUB"
+    assert document.blocks[0].epub_spine_item and document.blocks[0].anchor
+
+
+def test_epub_opf_fallback_is_used_only_when_native_provenance_fails():
+    parser = fake_docling_parser(native_epub=False, native_missing_locations=True)
+    document = parser.parse(fixture_resource("chapter.epub"), Path("staging"))
+    assert document.parser_provenance["adapter_path"] == "OPF_SPINE_FALLBACK"
+    assert document.blocks[0].epub_spine_item and document.blocks[0].anchor
+
+
 def test_parser_exception_is_parse_failed_not_scanned():
     with pytest.raises(ParseFailure):
         FailingParser().parse(fixture_resource("broken.pdf"), Path("staging"))
@@ -381,11 +465,22 @@ Expected: FAIL because the normalized IR, parser adapters, and scan detector are
 Define `ParsedBlock` fields for block ID, content type, text, reading order,
 page/spine location, chapter, section path, equation data, table data, and
 figure/reference metadata. The PDF adapter maps Docling document items without
-flattening equations/tables. The EPUB adapter reads the container/OPF/spine
-with `zipfile` and XML, sends XHTML content through the Docling-first
-normalizer, and records spine item plus anchor when a page number is absent.
-Source bytes are opened read-only; temporary parser inputs are written only
-under the staging directory.
+flattening equations/tables. Construct the pinned PDF options explicitly with
+`do_ocr=False`, `do_formula_enrichment=config.formula_enrichment_enabled`, and
+the configured `docling_artifacts_path`; assert OCR remains false immediately
+before conversion. Resolve all Docling artifacts locally with offline mode and
+raise `DoclingArtifactsUnavailable` rather than download when required files
+are absent. Formula enrichment is disabled by default; when requested it must
+use local formula artifacts and persist model/version/hash. If enrichment is
+disabled or unavailable without a requested artifact, retain the parser-native
+equation representation and a bounded limitation status; never invent LaTeX
+or enable OCR as a side effect.
+
+Attempt native Docling EPUB conversion first, validate deterministic spine and
+anchor provenance, and use an explicit OPF/spine adapter only for that failed
+contract. Both paths read source bytes read-only and write temporary parser
+inputs only under staging; the selected adapter path is persisted in parser
+provenance.
 
 The detector applies the fixed 64 non-whitespace character page/item rule:
 `NEEDS_OCR` requires fewer than 20% text-bearing pages/items and at least 80%
@@ -394,8 +489,12 @@ exception remains `PARSE_FAILED`. Detection records parser/scanner versions
 and scalar counts in `ScanDecision`; it never emits OCR text.
 
 Use lazy imports for Docling/EPUB libraries. Missing optional packages raise a
-typed `ParserDependencyUnavailable` and produce a visible per-resource failure
-without affecting already indexed documents.
+typed `ParserDependencyUnavailable`; missing local Docling/formula artifacts
+raise `DoclingArtifactsUnavailable`. Both produce visible per-resource
+`PARSE_FAILED` diagnostics without affecting already indexed documents. Add an
+integration-marked test that inspects the actual constructed Docling options,
+proves `do_ocr is False`, and verifies an image-only PDF produces no parser
+text before `NEEDS_OCR` classification.
 
 - [ ] **Step 4: Run the focused parser tests to verify they pass**
 
@@ -403,7 +502,8 @@ without affecting already indexed documents.
 pytest tests/test_knowledge_parser.py tests/test_knowledge_scanned.py -q
 ~~~
 
-Expected: PASS for structure preservation, PDF/EPUB location fields, scan
+Expected: PASS for structure preservation, native-EPUB preference and fallback
+locations, explicit OCR-off/offline artifact behavior, formula policy, scan
 classification thresholds, and parser-failure isolation.
 
 - [ ] **Step 5: Commit**
@@ -421,8 +521,10 @@ git commit -m "feat: add structured document parsing and scan quarantine"
 
 **Interfaces:**
 - Consumes `ParsedDocument`, `ParsedBlock`, `ContentType`, and `KnowledgeConfig` from Tasks 1 and 3.
-- Produces `ChunkPolicy(soft_token_target=512, hard_token_limit=768, overlap_tokens=64, version="structure-v1")`.
-- Produces `StructureAwareChunker(policy).chunk(document) -> tuple[ChunkRecord, ...]`.
+- Consumes the active `EmbeddingSpec`/`EmbeddingTokenizer`; chunk limits are
+  derived from the actual model tokenizer, not a character/word estimate.
+- Produces `ChunkPolicy(soft_token_target=448, hard_content_token_limit=510, overlap_tokens=64, version="structure-v2")` for the BGE-small V1 profile, plus a factory that derives the hard content limit from any loaded `EmbeddingSpec`.
+- Produces `StructureAwareChunker(policy, tokenizer).chunk(document) -> tuple[ChunkRecord, ...]` and validates every final corpus input with `truncation=False`.
 - Produces `deterministic_chunk_id(document_id, source_hash, policy_version, content_type, section_path, block_range, ordinal, normalized_text) -> str`.
 
 - [ ] **Step 1: Write failing chunking tests**
@@ -448,11 +550,40 @@ def test_chunk_ids_and_order_are_repeatable():
 
 
 def test_long_prose_splits_only_inside_section_and_uses_bounded_overlap():
-    chunks = StructureAwareChunker(ChunkPolicy()).chunk(make_long_section_document())
+    tokenizer = FakeTokenizer(model_max_input_tokens=512, special_token_budget=2)
+    policy = ChunkPolicy.for_embedding(make_embedding_spec(model_max_input_tokens=512, effective_corpus_content_token_limit=510))
+    chunks = StructureAwareChunker(policy, tokenizer).chunk(make_long_section_document())
 
-    assert all(item.estimated_tokens <= 768 for item in chunks)
+    assert all(item.embedding_input_tokens <= 512 for item in chunks)
+    assert all(item.content_tokens <= 510 for item in chunks)
     assert max_overlap_tokens(chunks) <= 64
     assert all(item.section_path == ("Methods",) for item in chunks)
+
+
+def test_chunk_at_model_capacity_is_allowed_but_over_capacity_fails_without_truncation():
+    tokenizer = FakeTokenizer(model_max_input_tokens=512, special_token_budget=2)
+    policy = ChunkPolicy.for_embedding(make_embedding_spec(model_max_input_tokens=512, effective_corpus_content_token_limit=510))
+    allowed = make_long_section_document(tokens=510)
+    assert StructureAwareChunker(policy, tokenizer).chunk(allowed)
+
+    with pytest.raises(ChunkTooLargeForEmbedding):
+        StructureAwareChunker(policy, tokenizer).chunk(make_long_section_document(tokens=511, indivisible=True))
+
+
+def test_large_table_splits_by_complete_rows_and_repeats_context():
+    tokenizer = FakeTokenizer(model_max_input_tokens=512, special_token_budget=2)
+    policy = ChunkPolicy.for_embedding(make_embedding_spec(model_max_input_tokens=512, effective_corpus_content_token_limit=510))
+    chunks = StructureAwareChunker(policy, tokenizer).chunk(make_large_table_document())
+    assert len(chunks) > 1
+    assert all(item.table_metadata["headers"] for item in chunks)
+    assert all(item.table_metadata["row_group_is_complete"] for item in chunks)
+
+
+def test_equation_definition_bundle_is_preserved_when_splitting():
+    tokenizer = FakeTokenizer(model_max_input_tokens=128, special_token_budget=2)
+    policy = ChunkPolicy.for_embedding(make_embedding_spec(model_max_input_tokens=128, effective_corpus_content_token_limit=126))
+    chunks = StructureAwareChunker(policy, tokenizer).chunk(make_large_equation_definition_document())
+    assert all(item.equation_metadata["variable_definitions"] for item in chunks)
 ~~~
 
 - [ ] **Step 2: Run the focused chunking tests to verify they fail**
@@ -467,12 +598,17 @@ Expected: FAIL because the structure-aware chunker and deterministic ID function
 
 Build units in reading order: section paragraph groups, equation plus adjacent
 variable definitions, table plus caption/header/units/notes, figure caption
-plus nearby explanation, and reference entries. Use the versioned token
-estimator for the soft/hard budgets. Split oversized prose only between
-paragraphs or within the same paragraph using the 64-token overlap; split
-oversized tables only between complete row groups while repeating caption and
-headers. Never place a heading in an anonymous chunk; carry it in
-`section_path`.
+plus nearby explanation, and reference entries. Tokenize each candidate with
+the actual embedding tokenizer, `add_special_tokens=True`, the corpus
+instruction policy, and `truncation=False`. Derive the effective content limit
+from the model's real maximum; for BGE-small V1 this is 510 content tokens and
+512 model-input tokens. Split oversized prose only at tokenizer-confirmed
+paragraph boundaries or within the same paragraph using the 64-token overlap;
+split oversized tables only between complete row groups while repeating
+caption and headers; split equation bundles only at complete definition units.
+If no legal structural split fits, raise `ChunkTooLargeForEmbedding` and let
+ingestion record `EMBED_FAILED`. Never truncate or send an over-limit input.
+Never place a heading in an anonymous chunk; carry it in `section_path`.
 
 Populate every `ChunkRecord` with source hash, document metadata, page/spine
 location, section path, content type, structured equation/table metadata,
@@ -486,7 +622,8 @@ retaining the display text separately.
 pytest tests/test_knowledge_chunking.py -q
 ~~~
 
-Expected: PASS for equation/variable bundling, table context, section boundaries,
+Expected: PASS for equation/variable bundling, table context and structural
+splits, section boundaries, tokenizer-derived limits, no-truncation checks,
 bounded overlap, deterministic IDs, and stable ordering.
 
 - [ ] **Step 5: Commit**
@@ -505,10 +642,11 @@ git commit -m "feat: add structure-aware knowledge chunking"
 
 **Interfaces:**
 - Consumes `ChunkRecord` and `KnowledgeConfig` from Tasks 1 and 4.
-- Produces `EmbeddingProvider` with `spec: EmbeddingSpec` and `embed(texts: Sequence[str]) -> tuple[tuple[float, ...], ...]`.
+- Produces `EmbeddingProvider` with `spec: EmbeddingSpec`, an actual
+  `EmbeddingTokenizer`, and `embed(texts: Sequence[str], *, purpose: Literal["corpus", "query"] = "corpus") -> tuple[tuple[float, ...], ...]`.
 - Produces `FastEmbedProvider.from_config(config)`, with lazy imports and local-model-only validation.
-- Produces `EmbeddingArtifactStore(root).load_or_compute(chunks, provider)`, keyed by document/chunk hash, model ID/version, dimensions, normalization, and artifact hash.
-- Produces typed `EmbeddingContractError`, `LocalModelUnavailable`, and `EmbeddingVersionMismatch` exceptions.
+- Produces `EmbeddingArtifactStore(root).load_or_compute(chunks, provider)`, keyed by document/chunk hash and the complete canonical embedding spec.
+- Produces typed `EmbeddingContractError`, `LocalModelUnavailable`, `EmbeddingInputTooLong`, `EmbeddingVersionMismatch`, and `EmbeddingSpecMismatch` exceptions.
 
 - [ ] **Step 1: Write failing embedding tests**
 
@@ -537,6 +675,42 @@ def test_missing_local_model_fails_without_network(tmp_path, monkeypatch):
 
     with pytest.raises(LocalModelUnavailable):
         FastEmbedProvider.from_config(KnowledgeConfig(artifact_root=tmp_path, embedding_model_path=tmp_path / "missing"))
+
+
+def test_embedding_rejects_over_limit_without_truncation():
+    provider = FakeEmbeddingProvider(
+        spec=make_embedding_spec(model_max_input_tokens=512, effective_corpus_content_token_limit=510),
+        tokenizer=FakeTokenizer(model_max_input_tokens=512, special_token_budget=2),
+    )
+    with pytest.raises(EmbeddingInputTooLong):
+        provider.embed(("token " * 511,), purpose="corpus")
+
+
+def test_embedding_spec_persists_tokenizer_limit_and_instruction_policies():
+    spec = make_embedding_spec(
+        model_id="BAAI/bge-small-en-v1.5",
+        dimensions=384,
+        model_max_input_tokens=512,
+        effective_corpus_content_token_limit=510,
+        tokenizer_fingerprint="tok-v1",
+        corpus_instruction_policy="none-v1",
+        query_instruction_policy="bge-search-prefix-v1",
+    )
+    assert spec.model_max_input_tokens == 512
+    assert spec.effective_corpus_content_token_limit == 510
+    assert spec.tokenizer_fingerprint == "tok-v1"
+    assert spec.query_instruction_policy == "bge-search-prefix-v1"
+
+
+def test_allowed_embedding_input_reaches_model_without_truncation():
+    provider = RecordingFakeEmbeddingProvider(
+        spec=make_embedding_spec(model_max_input_tokens=512, effective_corpus_content_token_limit=510),
+        tokenizer=FakeTokenizer(model_max_input_tokens=512, special_token_budget=2),
+    )
+    text = "token " * 510
+    provider.embed((text,), purpose="corpus")
+    assert provider.seen_input_tokens == [510]
+    assert provider.truncation_requested is False
 ~~~
 
 - [ ] **Step 2: Run the focused embedding tests to verify they fail**
@@ -550,19 +724,38 @@ Expected: FAIL because the provider contract and artifact cache do not exist.
 - [ ] **Step 3: Implement local provider and cache**
 
 Add an optional `knowledge` extra containing Docling, FastEmbed, ONNX Runtime,
-and LanceDB. Keep all imports inside adapter factory
-functions. `FastEmbedProvider` must require a local model path/cache, set CPU
-thread limits from `KnowledgeConfig`, validate the returned dimension and
-finite float32 values, and expose an `EmbeddingSpec` containing model ID,
-resolved version, dimension, normalization, runtime, and local artifact hash.
-It must not call a download helper.
+and LanceDB. Keep all imports inside adapter factory functions.
+`FastEmbedProvider` must require a local model path/cache, set CPU thread
+limits from `KnowledgeConfig`, resolve the actual tokenizer/model limit, and
+expose an `EmbeddingSpec` containing model ID, resolved version, runtime,
+artifact hash, dimensions, normalization, tokenizer/config fingerprint,
+special-token budget, model/effective limits, `truncation=false`, and explicit
+corpus/query instruction policies. The BGE-small V1 default is 512 model-input
+tokens, 510 effective corpus-content tokens, `none-v1` corpus formatting, and
+the versioned `bge-search-prefix-v1` query prefix. It must not call a download
+helper.
+
+Persist the canonical `resolved_model_version` and `artifact_hash` under the
+row/registry names `embedding_model_version` and `embedding_artifact_hash`
+respectively; they are direct serialization mappings, not separate values.
+
+Before every corpus or query inference, tokenize with the actual configured
+tokenizer and `truncation=False` (including special tokens and the relevant
+instruction policy). Raise `EmbeddingInputTooLong` before model invocation if
+the effective limit would be exceeded. The provider and fake tokenizer must
+prove that no input is silently truncated; a returned vector is valid only for
+the exact supplied text.
 
 Cache files live under
 `embeddings/<embedding_model_id>/<model_version>/<document_id>.npy` plus a
 JSON sidecar. A cache hit is accepted only when chunk IDs, source hashes,
 embedding spec, and dimensions match exactly. A mismatch raises
 `EmbeddingVersionMismatch` for reuse checks and causes a new generation during
-ingestion; it never mixes vectors.
+ingestion; it never mixes vectors. Persist the complete spec in every cache
+sidecar and generation metadata so query/index compatibility can compare model
+ID, resolved version, artifact hash, dimensions, normalization, tokenizer
+fingerprint, model/effective limits, truncation, and instruction policies—not
+just dimensionality.
 
 - [ ] **Step 4: Run the focused embedding tests to verify they pass**
 
@@ -570,8 +763,10 @@ ingestion; it never mixes vectors.
 pytest tests/test_knowledge_embeddings.py -q
 ~~~
 
-Expected: PASS for dimension/finite validation, cache reuse, model-version
-mismatch, missing-model failure, bounded batches, and no-network behavior.
+Expected: PASS for dimension/finite validation, cache reuse, model-version and
+artifact/spec mismatch, actual tokenizer limits, no-truncation behavior,
+missing-model failure, bounded batches, explicit BGE query formatting, and
+no-network behavior.
 
 - [ ] **Step 5: Commit**
 
@@ -592,8 +787,8 @@ git commit -m "feat: add local knowledge embeddings"
 - Consumes `ChunkRecord`, `EmbeddingSpec`, `IndexGeneration`, catalog registry methods, and embedding vectors from Tasks 1–5.
 - Produces `VectorIndexWriter`, `VectorIndexReader`, `LexicalIndexWriter`, `LexicalIndexReader`, and `IndexGenerationManager`.
 - `IndexGenerationManager.build_generation(chunks, vectors, generation_id) -> IndexGeneration` writes `vector/lancedb/<generation_id>/` and `keyword/<generation_id>/bm25.sqlite3`.
-- `IndexGenerationManager.validate_generation(generation) -> None`, `build_and_activate(chunks, vectors, generation_id) -> IndexGeneration`, `activate_generation(generation) -> None`, and `resolve_active_generation() -> IndexGeneration` enforce matched locations, versions, dimensions, and population hashes.
-- Produces typed `VectorIndexError`, `LexicalIndexError`, and `IncompatibleIndexGeneration` exceptions.
+- `IndexGenerationManager.validate_generation(generation) -> None`, `build_and_activate(chunks, vectors, generation_id) -> IndexGeneration`, `activate_generation(generation) -> None`, and `resolve_active_generation() -> IndexGeneration` enforce matched locations, versions, complete embedding specs, dimensions, and population hashes.
+- Produces typed `VectorIndexError`, `LexicalIndexError`, `IncompatibleIndexGeneration`, and `EmbeddingSpecMismatch` exceptions.
 
 - [ ] **Step 1: Write failing generation and projection tests**
 
@@ -628,6 +823,21 @@ def test_query_rejects_vector_lexical_generation_mismatch(tmp_path):
 
     with pytest.raises(IncompatibleIndexGeneration):
         manager.resolve_active_generation()
+
+
+def test_generation_persists_complete_embedding_spec_not_dimensions_only(tmp_path):
+    spec = make_embedding_spec(
+        model_id="BAAI/bge-small-en-v1.5",
+        resolved_model_version="2026-01",
+        artifact_hash="sha256:local-model",
+        dimensions=384,
+        tokenizer_fingerprint="tok-v1",
+        query_instruction_policy="bge-search-prefix-v1",
+    )
+    generation = make_generation_manager(tmp_path, embedding_spec=spec).active_generation()
+    assert generation.embedding_spec == spec
+    assert generation.embedding_spec.artifact_hash == "sha256:local-model"
+    assert generation.embedding_spec.query_instruction_policy == "bge-search-prefix-v1"
 ~~~
 
 - [ ] **Step 2: Run the focused index tests to verify they fail**
@@ -650,10 +860,12 @@ state/active-index.json
 
 The LanceDB row contains `chunk_id`, `document_id`, `source_hash`, text,
 vector, content type, all source location fields, component versions,
-`projection_generation`, and `active`. The lexical database stores FTS5 text,
-`chunk_id`, provenance, generation ID, tokenizer settings, schema version, and
-population hashes. The FTS5 tokenizer uses Unicode normalization, case folding,
-diacritic removal, and `_`/`-` token characters.
+the complete `EmbeddingSpec` fields (including artifact hash, tokenizer
+fingerprint, model/effective limits, truncation flag, and corpus/query
+instruction policies), `projection_generation`, and `active`. The lexical
+database stores FTS5 text, `chunk_id`, provenance, generation ID, tokenizer
+settings, schema version, and population hashes. The FTS5 tokenizer uses Unicode
+normalization, case folding, diacritic removal, and `_`/`-` token characters.
 
 `build_generation` writes into a staging directory, validates vector dimensions,
 finite values, FTS5 availability, row counts, sorted document/chunk population
@@ -671,7 +883,8 @@ pytest tests/test_knowledge_indexes.py -q
 
 Expected: PASS for failed vector/lexical builds, successful paired swap,
 previous-generation retention, FTS5 exact terms, population validation,
-metadata storage, and incompatible-generation rejection.
+complete embedding-spec metadata storage, and incompatible-generation/spec
+rejection.
 
 - [ ] **Step 5: Commit**
 
@@ -811,7 +1024,7 @@ git commit -m "feat: add incremental knowledge ingestion and recovery"
 - Consumes active-generation readers, `KnowledgeQuery`, `KnowledgeHit`, `ChunkRecord`, and catalog filters from Tasks 1–7.
 - Produces `DenseCandidate`, `LexicalCandidate`, `FusedCandidate`, `RRFConfig(k=60)`, `reciprocal_rank_fuse(dense, lexical, config)`, and `Reranker.rerank(query, candidates)`.
 - Produces `KnowledgeQueryService(vector_reader, lexical_reader, catalog, embedder, reranker).search(request: KnowledgeQuery) -> tuple[KnowledgeHit, ...]` and `validate_hit_provenance(hit) -> None`.
-- Produces typed `ProvenanceError` and reuses `IncompatibleIndexGeneration` for active-pair mismatches.
+- Produces typed `ProvenanceError`, `EmbeddingSpecMismatch`, and reuses `IncompatibleIndexGeneration` for active-pair mismatches.
 
 - [ ] **Step 1: Write failing query and ranking tests**
 
@@ -849,6 +1062,54 @@ def test_anonymous_hit_and_generation_mismatch_fail_closed():
         query_harness(vector_generation="gen-a", lexical_generation="gen-b").search(
             KnowledgeQuery(text="OFI")
         )
+
+
+def test_identical_query_and_index_embedding_specs_allow_dense_search():
+    spec = make_embedding_spec()
+    service = query_harness(index_embedding_spec=spec, query_embedding_spec=spec)
+    assert service.search(KnowledgeQuery(text="OFI"))
+
+
+@pytest.mark.parametrize("field", [
+    "model_id",
+    "resolved_model_version",
+    "artifact_hash",
+    "normalization_policy",
+    "tokenizer_fingerprint",
+    "model_max_input_tokens",
+    "query_instruction_policy",
+    "query_instruction_version",
+])
+def test_embedding_spec_mismatch_fails_before_dense_retrieval(field):
+    index_spec = make_embedding_spec()
+    value = 513 if field == "model_max_input_tokens" else f"different-{field}"
+    query_spec = make_embedding_spec(**{field: value})
+    service = query_harness(
+        index_embedding_spec=index_spec,
+        query_embedding_spec=query_spec,
+        dense_reader=FakeVectorReader(fail_if_called=True),
+    )
+
+    with pytest.raises(EmbeddingSpecMismatch):
+        service.search(KnowledgeQuery(text="inventory risk"))
+
+
+def test_same_dimensions_do_not_make_different_specs_compatible():
+    index_spec = make_embedding_spec(model_id="model-a", dimensions=384)
+    query_spec = make_embedding_spec(model_id="model-b", dimensions=384)
+    with pytest.raises(EmbeddingSpecMismatch):
+        query_harness(index_embedding_spec=index_spec, query_embedding_spec=query_spec).search(
+            KnowledgeQuery(text="microprice")
+        )
+
+
+def test_search_constructs_read_only_query_embedder_once_and_no_writers():
+    harness = query_harness()
+    service = harness.service
+    result = service.search(KnowledgeQuery(text="queue imbalance"))
+    assert result
+    assert harness.embedder.embed_calls == 1
+    assert harness.forbidden_constructors.all_zero()
 ~~~
 
 - [ ] **Step 2: Run the focused query tests to verify they fail**
@@ -863,7 +1124,14 @@ Expected: FAIL because candidate fusion, provenance validation, and the query se
 
 Fetch bounded candidate sets from both readers using the active matched
 generation. Apply document/content-type filters at each reader and recheck
-them against the catalog. Fuse with:
+them against the catalog. Before the first dense reader call, compare the
+query provider's complete canonical `EmbeddingSpec` with the generation spec
+field-for-field (model ID, resolved version, artifact hash, dimensions,
+normalization, tokenizer fingerprint, model/effective limits, truncation,
+and corpus/query instruction policies/versions). Raise
+`EmbeddingSpecMismatch` on any difference, including same-dimension models,
+without invoking the dense reader. Encode the query through the provider's
+versioned query-instruction policy with truncation disabled. Fuse with:
 
 ~~~python
 score(chunk) = sum(1.0 / (60 + rank) for rank in available_ranks)
@@ -877,8 +1145,10 @@ rerank score, fused score, semantic score, lexical score, then ascending
 `validate_hit_provenance` requires document ID, source filename/path, source
 hash, chunk ID, content type, source location, parser/chunker/index versions,
 and generation identity. `KnowledgeQueryService` rejects empty/missing model
-or mismatched indexes, never silently falls back to another generation, and
-returns only active documents with both projections ready.
+or mismatched indexes/specs, never silently falls back to another generation,
+and returns only active documents with both projections ready. The service
+depends on read-only readers and a query embedder; it never constructs a
+parser, ingestion coordinator, source scanner, or writer.
 
 - [ ] **Step 4: Run the focused query tests to verify they pass**
 
@@ -887,8 +1157,9 @@ pytest tests/test_knowledge_query.py -q
 ~~~
 
 Expected: PASS for exact HFT terminology, semantic/lexical fusion, filters,
-RRF scores, reranker ordering, tie behavior, provenance, stale exclusion, and
-generation mismatch rejection.
+RRF scores, reranker ordering, tie behavior, provenance, stale exclusion,
+complete embedding-spec compatibility (including all required mismatch
+variants), no dense call on mismatch, and generation mismatch rejection.
 
 - [ ] **Step 5: Commit**
 
@@ -914,10 +1185,29 @@ git commit -m "feat: add provenance-safe hybrid knowledge search"
 
 ~~~python
 def test_status_does_not_construct_parser_or_embedding_provider(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr("tradingagents.knowledge.cli.KnowledgeIngestor", forbidden_constructor)
+    forbidden = forbidden_constructor()
+    monkeypatch.setattr("tradingagents.knowledge.cli.KnowledgeIngestor", forbidden)
+    monkeypatch.setattr("tradingagents.knowledge.cli.EmbeddingProvider", forbidden)
 
     assert main(["status", "--artifact-root", str(tmp_path)]) == 0
     assert "INDEXED" in capsys.readouterr().out
+    assert forbidden.calls == 0
+
+
+@pytest.mark.parametrize("command", ["status", "list", "document", "quarantine"])
+def test_metadata_commands_construct_no_parser_embedder_ingestor_or_writers(command, tmp_path, monkeypatch):
+    forbidden = forbidden_constructor()
+    monkeypatch.setattr("tradingagents.knowledge.cli.DocumentParser", forbidden)
+    monkeypatch.setattr("tradingagents.knowledge.cli.EmbeddingProvider", forbidden)
+    monkeypatch.setattr("tradingagents.knowledge.cli.KnowledgeIngestor", forbidden)
+    monkeypatch.setattr("tradingagents.knowledge.cli.VectorIndexWriter", forbidden)
+    monkeypatch.setattr("tradingagents.knowledge.cli.LexicalIndexWriter", forbidden)
+
+    argv = [command, "--artifact-root", str(tmp_path)]
+    if command == "document":
+        argv.insert(1, "doc-test")
+    assert main(argv) == 0
+    assert forbidden.calls == 0
 
 
 def test_search_prints_provenance_and_supports_content_type_filter(tmp_path, capsys):
@@ -928,6 +1218,16 @@ def test_search_prints_provenance_and_supports_content_type_filter(tmp_path, cap
     assert payload[0]["chunk_id"]
     assert payload[0]["source_hash"]
     assert payload[0]["content_type"] == "EQUATION"
+
+
+def test_search_constructs_only_read_only_local_query_embedder(tmp_path, monkeypatch):
+    seed_query_fixture(tmp_path)
+    constructors = forbid_parser_ingestor_source_scanner_and_writers(monkeypatch)
+    embedder = spy_query_embedder(monkeypatch)
+
+    assert main(["search", "order flow imbalance", "--artifact-root", str(tmp_path)]) == 0
+    assert embedder.calls == 1
+    assert constructors.all_zero()
 
 
 def test_stock_console_entrypoint_is_unchanged():
@@ -949,8 +1249,8 @@ Use `argparse` and preserve machine-readable JSON output. The command
 contracts are:
 
 ~~~text
-knowledge index [--source-root PATH] [--artifact-root PATH] [--json]
-knowledge rebuild [--source-root PATH] [--artifact-root PATH] [--json]
+knowledge index [--source-root PATH] [--artifact-root PATH] [--docling-artifacts-path PATH] [--json]
+knowledge rebuild [--source-root PATH] [--artifact-root PATH] [--docling-artifacts-path PATH] [--json]
 knowledge status [--artifact-root PATH] [--json]
 knowledge list [--artifact-root PATH] [--state STATE] [--json]
 knowledge search TEXT [--artifact-root PATH] [--top-k N] [--content-type TYPE] [--document-id ID] [--include-stale] [--json]
@@ -958,12 +1258,17 @@ knowledge document DOCUMENT_ID [--artifact-root PATH] [--json]
 knowledge quarantine [--artifact-root PATH] [--json]
 ~~~
 
-`status`, `list`, `document`, `quarantine`, and `search` are read-only and
-never instantiate a parser, embedder, or writer. `index` and `rebuild` refuse
-an artifact root inside the source root, print per-state counts, return a
-nonzero code for partial/failure runs, and leave the source untouched. Add
-`knowledge = "tradingagents.knowledge.cli:main"` without changing the stock
-`tradingagents` script.
+`status`, `list`, `document`, and `quarantine` instantiate only catalog/
+diagnostic readers; they do not instantiate a parser, embedder, ingestor,
+source scanner, or vector/lexical writer. `search` may instantiate one
+read-only local embedding provider for query encoding and the active index
+readers, but it never instantiates the document parser, ingestion coordinator,
+source scanner, vector writer, lexical writer, or any source-mutating
+component. It validates the complete query/index `EmbeddingSpec` before dense
+retrieval. `index` and `rebuild` refuse an artifact root inside the source root,
+print per-state counts, return a nonzero code for partial/failure runs, and
+leave the source untouched. Add `knowledge = "tradingagents.knowledge.cli:main"`
+without changing the stock `tradingagents` script.
 
 Document `data_cache/knowledge`, the full generated layout, status meanings,
 alias/currentness examples, versioned generation activation, offline model
@@ -976,9 +1281,10 @@ requirements, provenance output, and the explicit Phase 8 boundary in
 pytest tests/test_knowledge_cli.py -q
 ~~~
 
-Expected: PASS for command parsing, no implicit indexing, JSON provenance,
-state listing, source/artifact-root safety, exit codes, and unchanged stock
-entry-point configuration.
+Expected: PASS for command parsing, no implicit indexing, metadata-command
+constructor isolation, read-only search-embedder construction, query/index
+spec validation, JSON provenance, state listing, source/artifact-root safety,
+exit codes, and unchanged stock entry-point configuration.
 
 - [ ] **Step 5: Commit**
 
@@ -1085,18 +1391,23 @@ git commit -m "test: add knowledge retrieval quality and isolation gates"
 
 **Interfaces:**
 - Verification covers discovery, unsupported visibility, aliases, removals,
-  changed-file recovery, scan quarantine, parser structure, chunk IDs,
-  equations/tables, local embeddings, generation pairing, incremental/rebuild
-  behavior, hybrid retrieval, metadata filtering, provenance, CLI, benchmark,
-  source integrity, offline operation, and stock/forex isolation.
+  changed-file recovery, scan quarantine, explicit Docling OCR-offline/formula
+  controls, native-EPUB/fallback provenance, parser structure, tokenizer-aware
+  chunk limits/no truncation, complete embedding-spec compatibility, local
+  embeddings, generation pairing, incremental/rebuild behavior, hybrid
+  retrieval, metadata filtering, provenance, CLI, benchmark, source integrity,
+  offline operation, and stock/forex isolation.
 
 - [ ] **Step 1: Run the focused knowledge suite**
 
 ~~~powershell
-pytest tests/test_knowledge_models.py tests/test_knowledge_config.py tests/test_knowledge_identity.py tests/test_knowledge_discovery.py tests/test_knowledge_catalog.py tests/test_knowledge_parser.py tests/test_knowledge_scanned.py tests/test_knowledge_chunking.py tests/test_knowledge_embeddings.py tests/test_knowledge_indexes.py tests/test_knowledge_ingestion.py tests/test_knowledge_query.py tests/test_knowledge_cli.py tests/test_knowledge_quality.py tests/test_knowledge_isolation.py -q
+pytest tests/test_knowledge_models.py tests/test_knowledge_config.py tests/test_knowledge_identity.py tests/test_knowledge_discovery.py tests/test_knowledge_catalog.py tests/test_knowledge_parser.py tests/test_knowledge_scanned.py tests/test_knowledge_chunking.py tests/test_knowledge_embeddings.py tests/test_knowledge_indexes.py tests/test_knowledge_ingestion.py tests/test_knowledge_query.py tests/test_knowledge_cli.py tests/test_knowledge_quality.py tests/test_knowledge_isolation.py -m "not integration" -q
 ~~~
 
-Expected: all deterministic knowledge tests pass without downloading models or calling a network/MT5/Ollama service.
+Expected: all deterministic knowledge tests pass without downloading models or
+calling a network/MT5/Ollama service. The Docling-option tests either use a
+fake adapter or an already-installed optional dependency and assert
+`do_ocr=False`; they never enable OCR or download artifacts.
 
 - [ ] **Step 2: Run the complete repository suite**
 
@@ -1112,7 +1423,7 @@ green. No test modifies `new books` or starts automatic indexing.
 ~~~powershell
 ruff check tradingagents/knowledge tests/test_knowledge_*.py
 python -m compileall -q tradingagents cli
-git diff --check 7d58e952b63468d9d615f081856f2b7a4b21545a..HEAD
+git diff --check a3715cc6df704b32761194c93ac1a31dce01055b..HEAD
 ~~~
 
 Expected: Ruff and compileall pass; the diff contains only the knowledge
@@ -1137,14 +1448,16 @@ pytest tests/test_knowledge_indexes.py tests/test_knowledge_parser.py -m integra
 ~~~
 
 If Docling, FastEmbed, ONNX Runtime, LanceDB, or a local model is unavailable,
-report the typed dependency/model failure and keep deterministic tests green;
-do not download or substitute a cloud service.
+report the typed dependency/model/artifact failure and keep deterministic tests
+green; do not download or substitute a cloud service. The optional parser
+smoke must run with a configured local `docling_artifacts_path` and explicit
+offline mode only.
 
 - [ ] **Step 6: Inspect final scope and report evidence**
 
 ~~~powershell
 git status --short
-git diff --stat 7d58e952b63468d9d615f081856f2b7a4b21545a..HEAD
+git diff --stat a3715cc6df704b32761194c93ac1a31dce01055b..HEAD
 git log --oneline --decorate -15
 ~~~
 
@@ -1160,17 +1473,22 @@ training, fine-tuning, and experience-memory mixing. This plan stops at Phase
 
 The plan maps every approved design section to an implementation task: goals
 and boundaries (header/global constraints), architecture and package layout
-(file map), storage/identity/state (Tasks 1–2 and 6–7), parsing and scan
-detection (Task 3), chunk/equation/table handling (Task 4), embeddings (Task
-5), LanceDB/FTS5/fusion/reranking/query (Tasks 6 and 8), CLI and docs (Task
-9), incremental/rebuild/recovery (Task 7), versioning/provenance/privacy and
-performance (Tasks 2, 5–8, 10–11), benchmark/acceptance (Task 10), and Phase 8
-handoff isolation (global constraints and Tasks 9–11).
+(file map), storage/identity/state (Tasks 1–2 and 6–7), parsing, explicit
+Docling OCR-offline/formula controls, native EPUB preference and scan detection
+(Task 3), tokenizer-aware chunk/equation/table handling (Task 4), complete
+local embedding specification and no-truncation validation (Task 5),
+LanceDB/FTS5/fusion/reranking/query compatibility (Tasks 6 and 8), CLI and
+query-embedder construction boundaries (Task 9), incremental/rebuild/recovery
+(Task 7), versioning/provenance/privacy and performance (Tasks 2, 5–8, 10–11),
+benchmark/acceptance (Task 10), and Phase 8 handoff isolation (global
+constraints and Tasks 9–11).
 
 The task interfaces use the same names and field meanings throughout. The
 unsupported-file branch is terminal before hashing/parsing; alias activity is
-derived from all current aliases; and vector/lexical generation activation is
-paired. Each task has a failing test, a bounded implementation action, a
-focused passing command, and its own commit. No production implementation,
-implicit indexing, cloud service, trading integration, or experience-memory
-mixing is included.
+derived from all current aliases; vector/lexical generation activation is
+paired; Docling OCR is explicitly false and offline; formula enrichment is
+local-only and optional; chunks are bounded by the actual tokenizer; and query
+dense retrieval requires complete embedding-spec equality. Each task has a
+failing test, a bounded implementation action, a focused passing command, and
+its own commit. No production implementation, implicit indexing, cloud
+service, trading integration, or experience-memory mixing is included.
