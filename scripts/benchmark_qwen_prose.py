@@ -1,6 +1,7 @@
 """Standalone, metadata-only reliability benchmark for forex prose agents.
 
-The module deliberately does not construct ``TradingAgentsGraph``.  It creates
+The module deliberately does not initialize or compile ``TradingAgentsGraph``.
+It creates
 the same quick LLM client used by the graph, then invokes the existing prose
 agent factories with deterministic synthetic forex state.  Prompts,
 completions, and private reasoning are never written to benchmark records.
