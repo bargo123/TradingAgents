@@ -30,7 +30,7 @@ def create_source_db(path: Path) -> Path:
             decision_reference_error TEXT, snapshot_json TEXT, executed INTEGER
         );
         CREATE TABLE shadow_decision_evaluations (
-            decision_id TEXT, evaluation_basis TEXT, horizon_seconds INTEGER,
+            decision_id TEXT, resolved_symbol TEXT, evaluation_basis TEXT, horizon_seconds INTEGER,
             evaluation_version TEXT, market_data_source TEXT,
             source_context_eligible INTEGER, training_eligible INTEGER,
             training_eligibility_reason TEXT, target_timestamp TEXT,
@@ -64,11 +64,12 @@ def create_source_db(path: Path) -> Path:
             bar_close_timestamp TEXT, eligibility_timestamp TEXT, config_fingerprint TEXT,
             status TEXT, skip_reason TEXT, run_id TEXT, decision_id TEXT
         );
-        CREATE TABLE forex_watcher_state (singleton INTEGER PRIMARY KEY, status TEXT);
+        CREATE TABLE forex_watcher_state (singleton_id INTEGER PRIMARY KEY, lifecycle_status TEXT, owner_token TEXT, owner_pid INTEGER, owner_host TEXT, process_started_at TEXT, lease_acquired_at TEXT, heartbeat_at TEXT, lease_expires_at TEXT, current_run_id TEXT, current_opportunity_key TEXT, last_loop_at TEXT, last_analysis_completed_at TEXT, next_eligible_at TEXT, last_evaluation_at TEXT, last_evaluation_status TEXT, evaluation_due_pending INTEGER, last_error_code TEXT, last_error TEXT, circuit_reason TEXT, circuit_opened_at TEXT, consecutive_mt5_failures INTEGER, consecutive_analysis_failures INTEGER, consecutive_incomplete_decisions INTEGER, consecutive_normalization_failures INTEGER, consecutive_runtime_exceeded INTEGER, updated_at TEXT);
         INSERT INTO shadow_decisions VALUES ('d1','2026-01-01T00:00:00+00:00','2026-01-01','run1','EURUSD','EURUSD','p','5m',300,NULL,'BUY','VALID',NULL,'COMPLETE',NULL,NULL,NULL,NULL,NULL,'luna','quick','deep','2026-01-01T00:00:00+00:00',1.1,1.2,1.15,0.1,1,'2026-01-01T00:00:00+00:00',1.1,1.2,0.1,1,'2026-01-01T00:00:01+00:00',1,'2026-01-01T00:00:02+00:00',1.1,1.2,0.1,1,'VALID',2,NULL,'{}',0);
         INSERT INTO shadow_decision_evaluations (decision_id,evaluation_basis,horizon_seconds,evaluation_status) VALUES ('d1','ANALYSIS_SNAPSHOT',300,'PENDING');
         INSERT INTO forex_watch_runs (run_id,source_run_id,run_status) VALUES ('wr1','run1','COMPLETE');
         INSERT INTO forex_watch_opportunities (opportunity_key,run_id,decision_id,status) VALUES ('op1','wr1','d1','ELIGIBLE');
+        INSERT INTO forex_watcher_state (singleton_id,lifecycle_status,updated_at) VALUES (1,'STOPPED','2026-01-01T00:00:00+00:00');
         """
     )
     connection.commit()

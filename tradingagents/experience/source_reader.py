@@ -25,7 +25,7 @@ _DECISION_COLUMNS = {
     "reference_ask", "reference_mid", "spread", "spread_points",
 }
 _EVALUATION_COLUMNS = {
-    "decision_id", "evaluation_basis", "horizon_seconds", "evaluation_version", "market_data_source",
+    "decision_id", "resolved_symbol", "evaluation_basis", "horizon_seconds", "evaluation_version", "market_data_source",
     "source_context_eligible", "training_eligible", "training_eligibility_reason", "target_timestamp",
     "observation_timestamp", "observation_lag_ms", "entry_timestamp", "entry_bid", "entry_ask",
     "entry_spread", "entry_spread_points", "future_bid", "future_ask", "future_spread",
@@ -38,6 +38,15 @@ _EVALUATION_COLUMNS = {
 }
 _WATCH_RUN_COLUMNS = {"run_id", "source_run_id"}
 _WATCH_OPPORTUNITY_COLUMNS = {"opportunity_key", "run_id", "decision_id"}
+_WATCH_STATE_COLUMNS = {
+    "singleton_id", "lifecycle_status", "owner_token", "owner_pid", "owner_host", "process_started_at",
+    "lease_acquired_at", "heartbeat_at", "lease_expires_at", "current_run_id", "current_opportunity_key",
+    "last_loop_at", "last_analysis_completed_at", "next_eligible_at", "last_evaluation_at",
+    "last_evaluation_status", "evaluation_due_pending", "last_error_code", "last_error", "circuit_reason",
+    "circuit_opened_at", "consecutive_mt5_failures", "consecutive_analysis_failures",
+    "consecutive_incomplete_decisions", "consecutive_normalization_failures", "consecutive_runtime_exceeded",
+    "updated_at",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,9 +98,10 @@ class ReadonlySourceReader:
     def _wal_fingerprint(self) -> dict[str, Any]:
         wal = Path(str(self.path) + "-wal")
         if not wal.is_file():
-            return {"sha256": None, "size": 0}
+            return {"sha256": None, "size": 0, "mtime_ns": None}
         digest = hashlib.sha256(wal.read_bytes()).hexdigest()
-        return {"sha256": digest, "size": wal.stat().st_size}
+        stat = wal.stat()
+        return {"sha256": digest, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
     def _open(self) -> sqlite3.Connection:
         if self._connection is None:
@@ -143,11 +153,12 @@ class ReadonlySourceReader:
         self._require(schema, "shadow_decision_evaluations", _EVALUATION_COLUMNS, required=False)
         self._require(schema, "forex_watch_runs", _WATCH_RUN_COLUMNS, required=False)
         self._require(schema, "forex_watch_opportunities", _WATCH_OPPORTUNITY_COLUMNS, required=False)
+        self._require(schema, "forex_watcher_state", _WATCH_STATE_COLUMNS, required=False)
         decisions = self._rows(connection, "shadow_decisions", '"decision_id"')
         evaluations = self._rows(connection, "shadow_decision_evaluations", "decision_id, evaluation_basis, horizon_seconds") if "shadow_decision_evaluations" in schema["tables"] else ()
         runs = self._rows(connection, "forex_watch_runs", '"run_id"') if "forex_watch_runs" in schema["tables"] else ()
         opportunities = self._rows(connection, "forex_watch_opportunities", '"opportunity_key"') if "forex_watch_opportunities" in schema["tables"] else ()
-        state = self._rows(connection, "forex_watcher_state", '"singleton"') if "forex_watcher_state" in schema["tables"] else ()
+        state = self._rows(connection, "forex_watcher_state", '"singleton_id"') if "forex_watcher_state" in schema["tables"] else ()
         after_file, after_wal = self._file_fingerprint(), self._wal_fingerprint()
         if before_file != after_file or before_wal != after_wal:
             raise SourceSnapshotChangedError("source SQLite or WAL changed during read")
