@@ -197,14 +197,48 @@ class OutcomeStatsRequest(Serializable):
 
 
 @dataclass(frozen=True, slots=True)
+class OutcomeDirectionStatistics(Serializable):
+    net_points: tuple[float, ...] = ()
+    win_rate: float | None = None
+    count: int = 0
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "net_points", tuple(self.net_points))
+
+
+@dataclass(frozen=True, slots=True)
+class OutcomeHoldStatistics(Serializable):
+    opportunity_cost_points: tuple[float, ...] = ()
+    normal_win_rate: float | None = None
+    count: int = 0
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "opportunity_cost_points", tuple(self.opportunity_cost_points))
+
+
+@dataclass(frozen=True, slots=True)
 class OutcomeStatistics(Serializable):
     eligible_sample_denominator: int = 0
     evaluation_basis: str | None = None
     horizon_seconds: int | None = None
     excluded_counts: Mapping[str, int] = None
     source_evaluation_fingerprints: Mapping[str, str] = None
+    eligible_count: int = 0
+    requested_basis: str | None = None
+    requested_horizon_seconds: int | None = None
+    exclusions_by_status: Mapping[str, int] = None
+    exclusions_by_tier: Mapping[str, int] = None
+    buy: OutcomeDirectionStatistics = None
+    sell: OutcomeDirectionStatistics = None
+    hold: OutcomeHoldStatistics = None
     def __post_init__(self) -> None:
         object.__setattr__(self, "excluded_counts", _freeze(self.excluded_counts or {})); object.__setattr__(self, "source_evaluation_fingerprints", _freeze(self.source_evaluation_fingerprints or {}))
+        object.__setattr__(self, "eligible_count", self.eligible_count or self.eligible_sample_denominator)
+        object.__setattr__(self, "requested_basis", self.requested_basis or self.evaluation_basis)
+        object.__setattr__(self, "requested_horizon_seconds", self.requested_horizon_seconds if self.requested_horizon_seconds is not None else self.horizon_seconds)
+        object.__setattr__(self, "exclusions_by_status", _freeze(self.exclusions_by_status or {}))
+        object.__setattr__(self, "exclusions_by_tier", _freeze(self.exclusions_by_tier or {}))
+        object.__setattr__(self, "buy", self.buy or OutcomeDirectionStatistics())
+        object.__setattr__(self, "sell", self.sell or OutcomeDirectionStatistics())
+        object.__setattr__(self, "hold", self.hold or OutcomeHoldStatistics())
 
 
 @dataclass(frozen=True, slots=True)

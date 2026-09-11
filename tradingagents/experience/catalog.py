@@ -196,7 +196,7 @@ class ExperienceCatalog:
 
     def evaluation_snapshots(self, experience_id: str) -> tuple[dict[str, Any], ...]:
         with self._connect() as db:
-            return tuple({**json.loads(r["evaluation_json"]), "fingerprint": r["fingerprint"], "provenance": json.loads(r["provenance_json"])} for r in db.execute("SELECT * FROM experience_outcome_snapshots WHERE experience_id=? ORDER BY rowid", (experience_id,)))
+            return tuple({**json.loads(r["evaluation_json"]), "fingerprint": r["fingerprint"], "provenance": json.loads(r["provenance_json"]), "observed_at": r["observed_at"]} for r in db.execute("SELECT * FROM experience_outcome_snapshots WHERE experience_id=? ORDER BY rowid", (experience_id,)))
 
     def evaluation_snapshot_fingerprints(self, experience_id: str) -> tuple[str, ...]: return tuple(s["fingerprint"] for s in self.evaluation_snapshots(experience_id))
 
