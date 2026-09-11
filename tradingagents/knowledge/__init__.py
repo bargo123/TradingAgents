@@ -2,6 +2,14 @@
 
 from .config import KnowledgeConfig
 from .discovery import SourceScanner
+from .fusion import (
+    DenseCandidate,
+    FusedCandidate,
+    LexicalCandidate,
+    RankedCandidate,
+    RRFConfig,
+    reciprocal_rank_fuse,
+)
 from .identity import (
     SourceChangedError,
     canonical_relative_path,
@@ -30,6 +38,9 @@ from .models import (
     TableData,
     TableMetadata,
 )
+from .provenance import ProvenanceError, validate_hit_provenance
+from .query import KnowledgeQueryService
+from .reranking import Reranker
 
 __all__ = [
     "AliasRelation",
@@ -47,6 +58,14 @@ __all__ = [
     "KnowledgeConfig",
     "KnowledgeHit",
     "KnowledgeQuery",
+    "KnowledgeQueryService",
+    "DenseCandidate",
+    "FusedCandidate",
+    "LexicalCandidate",
+    "RRFConfig",
+    "RankedCandidate",
+    "Reranker",
+    "ProvenanceError",
     "ParsedBlock",
     "ParsedDocument",
     "ReferenceMetadata",
@@ -58,4 +77,6 @@ __all__ = [
     "document_id_for",
     "resource_id_for",
     "sha256_file",
+    "reciprocal_rank_fuse",
+    "validate_hit_provenance",
 ]
