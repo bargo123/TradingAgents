@@ -1,0 +1,31 @@
+# Task 10 report — explicit Experience CLI
+
+## Scope
+
+Implemented only the Phase 8 Task 10 CLI surface. Added the `experience`
+console entry point, argparse routing for import/rebuild/status/list/show/
+similar/stats/quarantine/evidence, stable compact JSON serialization, exact
+symbol/profile/timeframe/trust/as-of/basis/horizon options, and bounded typed
+error output. Metadata commands avoid creating a missing artifact catalog.
+Numeric similarity uses Phase 8 services only; the market-state evidence path
+does not construct Phase 7 components.
+
+## Verification
+
+- RED: `pytest tests/test_experience_cli.py -q` — 4 failed with the expected
+  missing `tradingagents.experience.cli` module.
+- GREEN: `pytest tests/test_experience_cli.py -q` — 4 passed.
+- Regression: all 17 existing `tests/test_experience_*.py` files — 87 passed.
+- `python -m compileall -q tradingagents/experience` — passed.
+- `git diff --check` — passed.
+- Ruff was unavailable in the environment (`ruff` command not found).
+- Full repository collection was not runnable because the environment lacks
+  existing optional dependencies (including langchain, typer, requests, and
+  yfinance); no repository files were changed for that condition.
+
+## Changed files
+
+- `tradingagents/experience/cli.py`
+- `tests/test_experience_cli.py`
+- `pyproject.toml` (added only `experience = "tradingagents.experience.cli:main"`)
+

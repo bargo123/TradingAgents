@@ -1,0 +1,65 @@
+from __future__ import annotations
+
+import json
+
+def _fail_if_constructed(*args, **kwargs):
+    raise AssertionError("forbidden Phase 7 writer/parser/embedder was constructed")
+
+
+def test_parser_exposes_all_experience_commands():
+    from tradingagents.experience.cli import build_parser
+
+    parser = build_parser()
+    help_text = parser.format_help()
+    for command in ("import", "rebuild", "status", "list", "show", "similar", "stats", "quarantine", "evidence"):
+        assert command in help_text
+
+
+def test_status_emits_stable_json_without_constructing_phase7_components(monkeypatch, tmp_path, capsys):
+    from tradingagents.experience import cli
+
+    monkeypatch.setattr("tradingagents.knowledge.docling_parser.DoclingDocumentParser", _fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider", _fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.vector_index.VectorIndexWriter", _fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.lexical_index.LexicalIndexWriter", _fail_if_constructed)
+
+    assert cli.main(["status", "--artifact-root", str(tmp_path), "--json"]) == 0
+    output = capsys.readouterr().out
+    assert json.loads(output) == {
+        "active_generation": None,
+        "artifact_root_initialized": False,
+        "experience_counts": {"active": 0, "historical": 0},
+        "quarantine_count": 0,
+    }
+    assert not (tmp_path / "catalog.sqlite3").exists()
+
+
+def test_similar_market_state_does_not_construct_embedder(monkeypatch, tmp_path, capsys):
+    from tradingagents.experience import cli
+
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"values": [1.0], "mask": [True]}), encoding="utf-8")
+    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider", _fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.docling_parser.DoclingDocumentParser", _fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.vector_index.VectorIndexWriter", _fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.lexical_index.LexicalIndexWriter", _fail_if_constructed)
+    monkeypatch.setattr(cli, "_similar_service", lambda args: _EmptyService())
+
+    assert cli.main(["similar", "--market-state-json", str(state), "--artifact-root", str(tmp_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["hits"] == []
+
+
+class _EmptyService:
+    def search(self, query):
+        from tradingagents.experience.models import ExperienceSearchResult
+
+        return ExperienceSearchResult()
+
+
+def test_cli_help_has_no_trading_or_model_options():
+    from tradingagents.experience.cli import build_parser
+
+    text = build_parser().format_help()
+    assert "--mt5" not in text
+    assert "--model" not in text
+    assert "--order" not in text

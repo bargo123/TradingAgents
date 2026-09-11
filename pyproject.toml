@@ -57,6 +57,7 @@ mt5 = [
 
 [project.scripts]
 tradingagents = "cli.main:app"
+experience = "tradingagents.experience.cli:main"
 knowledge = "tradingagents.knowledge.cli:main"
 forex-shadow = "cli.forex_shadow:main"
 forex-evaluate = "cli.forex_evaluate:main"
