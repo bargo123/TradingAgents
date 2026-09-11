@@ -81,3 +81,35 @@ def test_evidence_question_uses_phase7_read_only_service_when_root_supplied(monk
     ]) == 0
     assert calls == [tmp_path.resolve(), "order flow"]
     assert json.loads(capsys.readouterr().out)["status"] == "EMPTY"
+
+
+def test_similar_omitted_trust_uses_tier_a_and_b():
+    from tradingagents.experience import cli
+
+    args = cli.build_parser().parse_args(["similar", "--market-state-json", "state.json"])
+    query = cli._query(args, {"values": [1.0], "mask": [True]})
+    assert query.trust_tiers == (cli.TrustTier.TIER_A_HIGH_TRUST, cli.TrustTier.TIER_B_LIMITED)
+
+
+def test_stats_omitted_trust_uses_tier_a(monkeypatch, tmp_path):
+    from tradingagents.experience import cli
+    from tradingagents.experience.catalog import ExperienceCatalog
+
+    ExperienceCatalog(tmp_path)
+    captured = {}
+
+    class Calculator:
+        def __init__(self, catalog):
+            pass
+
+        def calculate(self, request):
+            captured["request"] = request
+            return {}
+
+    monkeypatch.setattr(cli, "OutcomeStatsCalculator", Calculator)
+    args = cli.build_parser().parse_args([
+        "stats", "--basis", "ANALYSIS_SNAPSHOT", "--horizon-seconds", "300",
+        "--experience-id", "exp-1", "--artifact-root", str(tmp_path),
+    ])
+    cli._run(args)
+    assert captured["request"].trust_tiers == (cli.TrustTier.TIER_A_HIGH_TRUST,)

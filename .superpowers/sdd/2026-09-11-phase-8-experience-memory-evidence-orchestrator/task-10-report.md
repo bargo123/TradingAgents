@@ -43,3 +43,15 @@ the question reaches the Phase 7 service.
   absent.
 - Follow-up GREEN: focused test passed.
 - Final Phase 8 regression: 88 passed.
+
+## Reviewer follow-up 2
+
+Fixed omitted trust defaults at the CLI boundary. `similar` now passes Tier A
+and Tier B to `ExperienceQuery`; `stats` now passes Tier A to
+`OutcomeStatsRequest`. Explicit repeated `--trust-tier` values remain
+unchanged. Added regression tests for both defaults.
+
+- Follow-up RED: both new tests failed with an empty trust tuple.
+- Follow-up GREEN: CLI tests 7 passed; full Phase 8 regression 90 passed.
+- `python -m compileall -q tradingagents/experience` — passed.
+- `git diff --check` — passed.

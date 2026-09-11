@@ -68,8 +68,8 @@ def _as_of(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
-def _trust(values: list[str] | None) -> tuple[TrustTier, ...]:
-    return tuple(TrustTier(v) for v in (values or ()))
+def _trust(values: list[str] | None, default: tuple[TrustTier, ...] = ()) -> tuple[TrustTier, ...]:
+    return tuple(TrustTier(v) for v in (values if values else default))
 
 
 def _filters(parser: argparse.ArgumentParser) -> None:
@@ -181,7 +181,7 @@ def _build_knowledge_service(artifact_root: Path) -> Any:
 
 
 def _query(args: argparse.Namespace, state: dict[str, Any]) -> Any:
-    tiers = _trust(args.trust_tiers)
+    tiers = _trust(args.trust_tiers, (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED))
     return ExperienceQuery(market_state=state, top_k=args.top_k, symbol=args.symbol,
                            analysis_profile=args.analysis_profile, analysis_timeframe=args.analysis_timeframe,
                            trust_tiers=tiers, as_of=_as_of(args.as_of))
@@ -221,7 +221,7 @@ def _run(args: argparse.Namespace) -> Any:
         return _similar_service(args).search(_query(args, state))
     if command == "stats":
         if catalog is None: return {"eligible_count": 0, "excluded_counts": {"EXPERIENCE_MEMORY_UNAVAILABLE": len(args.experience_id)}}
-        return OutcomeStatsCalculator(catalog).calculate(OutcomeStatsRequest(tuple(args.experience_id), args.basis, args.horizon_seconds, trust_tiers=_trust(args.trust_tiers), as_of=_as_of(args.as_of)))
+        return OutcomeStatsCalculator(catalog).calculate(OutcomeStatsRequest(tuple(args.experience_id), args.basis, args.horizon_seconds, trust_tiers=_trust(args.trust_tiers, (TrustTier.TIER_A_HIGH_TRUST,)), as_of=_as_of(args.as_of)))
     if command == "evidence":
         state = json.loads(Path(args.market_state_json).read_text(encoding="utf-8")) if args.market_state_json else None
         service = _similar_service(args) if state is not None else ExperienceQueryService(())
