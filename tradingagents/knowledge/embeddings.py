@@ -281,8 +281,13 @@ class FastEmbedProvider(EmbeddingProvider):
         )
         if "local_files_only" not in parameters and not accepts_kwargs:
             raise LocalModelUnavailable("installed FastEmbed cannot enforce local_files_only")
+        if "specific_model_path" not in parameters and not accepts_kwargs:
+            raise LocalModelUnavailable(
+                "installed FastEmbed cannot bind the configured specific_model_path"
+            )
         kwargs: dict[str, Any] = {
             "model_name": config.embedding_model_id,
+            "specific_model_path": str(model_path),
             "cache_dir": str(model_path.parent),
             "threads": config.worker_count,
             "providers": ["CPUExecutionProvider"],
@@ -313,7 +318,7 @@ class FastEmbedProvider(EmbeddingProvider):
             dimensions=dimensions,
             normalization_policy=config.embedding_normalization,
             tokenizer_fingerprint=config.embedding_tokenizer_fingerprint
-            or _directory_hash(model_path, names_only=True),
+            or _tokenizer_asset_fingerprint(model_path),
             model_max_input_tokens=model_limit,
             special_token_budget=tokenizer.special_token_budget,
             effective_corpus_content_token_limit=(
@@ -392,15 +397,58 @@ def _resolved_version(config: KnowledgeConfig) -> str:
         return "fastembed-unknown"
 
 
-def _directory_hash(path: Path, *, names_only: bool = False) -> str:
+def _directory_hash(path: Path) -> str:
     digest = hashlib.sha256()
     for entry in sorted((item for item in path.rglob("*") if item.is_file()), key=lambda item: item.as_posix()):
         digest.update(entry.relative_to(path).as_posix().encode("utf-8"))
         digest.update(b"\0")
-        if not names_only:
-            with entry.open("rb") as handle:
-                for block in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(block)
+        with entry.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    return "sha256:" + digest.hexdigest()
+
+
+def _tokenizer_asset_fingerprint(model_path: Path) -> str:
+    """Hash resolved tokenizer/config bytes, not only their filenames.
+
+    FastEmbed's ONNX artifact can contain weights unrelated to tokenization.  A
+    dedicated tokenizer/config digest records the files that change how text
+    becomes input IDs, while ``artifact_hash`` retains full-model identity.
+    """
+
+    names = {
+        "config.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "vocab.txt",
+        "merges.txt",
+        "spiece.model",
+        "sentencepiece.bpe.model",
+    }
+    assets = sorted(
+        (
+            entry
+            for entry in model_path.rglob("*")
+            if entry.is_file()
+            and (
+                entry.name.lower() in names
+                or "tokenizer" in entry.name.lower()
+                or "vocab" in entry.name.lower()
+            )
+        ),
+        key=lambda item: item.as_posix(),
+    )
+    if not assets:
+        raise LocalModelUnavailable("local model has no tokenizer/config assets to fingerprint")
+    digest = hashlib.sha256()
+    for asset in assets:
+        digest.update(asset.relative_to(model_path).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with asset.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
     return "sha256:" + digest.hexdigest()
 
 
@@ -443,6 +491,8 @@ class EmbeddingArtifactStore:
         self._validate_document_chunks(chunks)
         vector_path, sidecar_path = self._paths(chunks[0].document_id, provider.spec)
         if not vector_path.is_file() or not sidecar_path.is_file():
+            if self._has_incompatible_document_artifact(chunks[0].document_id, provider.spec):
+                raise EmbeddingVersionMismatch("embedding specification/cache mismatch")
             raise FileNotFoundError(vector_path)
         try:
             metadata = json.loads(sidecar_path.read_text(encoding="utf-8"))
@@ -491,7 +541,21 @@ class EmbeddingArtifactStore:
         version = _safe_path_component(spec.resolved_model_version, "resolved model version")
         document = _safe_path_component(document_id, "document id")
         directory = self.root.joinpath(*model_parts, version)
-        return directory / f"{document}.npy", directory / f"{document}.json"
+        fingerprint = _embedding_spec_fingerprint(spec)
+        return (
+            directory / f"{document}.{fingerprint}.npy",
+            directory / f"{document}.{fingerprint}.json",
+        )
+
+    def _has_incompatible_document_artifact(self, document_id: str, spec: EmbeddingSpec) -> bool:
+        """Distinguish a first generation from an incompatible reuse attempt."""
+
+        _, expected_sidecar = self._paths(document_id, spec)
+        document = _safe_path_component(document_id, "document id")
+        for candidate in expected_sidecar.parent.glob(f"{document}.*.json"):
+            if candidate != expected_sidecar:
+                return True
+        return False
 
     @staticmethod
     def _metadata(chunks: Sequence[ChunkRecord], spec: EmbeddingSpec) -> dict[str, Any]:
@@ -502,6 +566,7 @@ class EmbeddingArtifactStore:
             "source_hashes": [chunk.source_hash for chunk in chunks],
             "chunk_content_hashes": [_chunk_content_hash(chunk) for chunk in chunks],
             "embedding_spec": spec.to_dict(),
+            "embedding_spec_fingerprint": _embedding_spec_fingerprint(spec),
             "embedding_model_version": spec.resolved_model_version,
             "embedding_artifact_hash": spec.artifact_hash,
             "dimensions": spec.dimensions,
@@ -568,6 +633,12 @@ def _chunk_content_hash(chunk: ChunkRecord) -> str:
     if chunk.content_hash:
         return chunk.content_hash
     return "sha256:" + hashlib.sha256(chunk.text.encode("utf-8")).hexdigest()
+
+
+def _embedding_spec_fingerprint(spec: EmbeddingSpec) -> str:
+    """Stable complete-spec identity used as part of the cache storage key."""
+
+    return hashlib.sha256(spec.to_json().encode("utf-8")).hexdigest()
 
 
 __all__ = [
