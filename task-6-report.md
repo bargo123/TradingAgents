@@ -44,3 +44,12 @@ The service intentionally uses dependency seams for feature projections and
 profiles. Import, outcome statistics, orchestrator, CLI, smoke, and forbidden
 integrations remain outside this task.
 
+## Reviewer-fix evidence
+
+- Added RED tests for explicit feature schema/extractor mismatch, timezone-safe
+  missing-timestamp ordering, and invalid naive timestamps under `as_of`.
+- Focused suite after fixes: `8 passed`.
+- Full experience regression after fixes: `60 passed`.
+- `python -m compileall -q tradingagents/experience` and `git diff --check`
+  passed.
+

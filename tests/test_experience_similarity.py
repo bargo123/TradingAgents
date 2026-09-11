@@ -38,3 +38,9 @@ def test_search_uses_masked_float32_weighted_rms_and_deterministic_ties():
 def test_search_rejects_insufficient_overlap():
     idx = ExactSimilarityIndex({"x": {"values": [1] * 8, "mask": [1] + [0] * 7}})
     assert idx.search([0] * 8, [1] * 8, ("x",), 5, profile()) == ()
+
+
+def test_sort_fallback_handles_missing_timestamp_with_aware_timestamp():
+    idx = ExactSimilarityIndex({"missing": {"values": [0] * 8, "mask": [1] * 8}, "dated": {"values": [0] * 8, "mask": [1] * 8}}, metadata={"dated": {"analysis_snapshot_timestamp": datetime(2026, 1, 1, tzinfo=UTC)}})
+    hits = idx.search([0] * 8, [1] * 8, ("missing", "dated"), 5, profile())
+    assert [h.experience_id for h in hits] == ["missing", "dated"]

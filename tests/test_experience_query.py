@@ -49,3 +49,21 @@ def test_tier_c_numeric_similarity_is_rejected():
     with pytest.raises(ValueError, match="Tier C"):
         ExperienceQueryService([row("c", tier=TrustTier.TIER_C_DIAGNOSTIC_ONLY)], profile=profile()).search(
             ExperienceQuery({"values": [0.0] * 8, "mask": [True] * 8, "feature_names": NAMES, "cohort": COHORT}, trust_tiers=(TrustTier.TIER_C_DIAGNOSTIC_ONLY,)))
+
+
+def test_query_excludes_explicit_schema_or_extractor_mismatch():
+    bad_schema = row("bad-schema") | {"feature_schema_version": "wrong-schema"}
+    bad_extractor = row("bad-extractor") | {"feature_extractor_version": "wrong-extractor"}
+    service = ExperienceQueryService([row("good"), bad_schema, bad_extractor], profile=profile())
+    result = service.search(ExperienceQuery({"values": [0.0] * 8, "mask": [True] * 8, "feature_names": NAMES, "cohort": COHORT}))
+    assert [h.experience_id for h in result.hits] == ["good"]
+    assert result.excluded_counts["feature_schema"] == 1
+    assert result.excluded_counts["feature_extractor"] == 1
+
+
+def test_query_excludes_invalid_timestamp_under_as_of():
+    invalid = row("invalid") | {"analysis_snapshot_timestamp": datetime(2026, 1, 1)}
+    service = ExperienceQueryService([row("good"), invalid], profile=profile())
+    result = service.search(ExperienceQuery({"values": [0.0] * 8, "mask": [True] * 8, "feature_names": NAMES, "cohort": COHORT}, as_of=datetime(2026, 1, 2, tzinfo=UTC)))
+    assert [h.experience_id for h in result.hits] == ["good"]
+    assert result.excluded_counts["as_of"] == 1

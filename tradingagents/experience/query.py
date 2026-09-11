@@ -17,6 +17,8 @@ def _get(row: Any, name: str, default: Any = None) -> Any:
 def _utc(v):
     if isinstance(v, str):
         v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    if not isinstance(v, datetime) or v.tzinfo is None or v.utcoffset() != timezone.utc.utcoffset(v):
+        return None
     return v
 
 
@@ -72,6 +74,10 @@ class ExperienceQueryService:
             cohort = self._cohort(row)
             if cohort != profile.cohort:
                 eligible.remove(row); exclusions["cohort"] = exclusions.get("cohort", 0) + 1
+            elif _get(row, "feature_schema_version", profile.cohort.feature_schema_version) != profile.cohort.feature_schema_version:
+                eligible.remove(row); exclusions["feature_schema"] = exclusions.get("feature_schema", 0) + 1
+            elif _get(row, "feature_extractor_version", profile.cohort.feature_extractor_version) != profile.cohort.feature_extractor_version:
+                eligible.remove(row); exclusions["feature_extractor"] = exclusions.get("feature_extractor", 0) + 1
         if not eligible: return ExperienceSearchResult(candidate_count=len(rows), excluded_counts=exclusions, active_generation_id=self.generation_id)
         state = query.market_state
         values = state.get("values") if isinstance(state, Mapping) else None

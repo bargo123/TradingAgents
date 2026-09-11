@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -71,7 +71,7 @@ class ExactSimilarityIndex:
             distance = float(np.sqrt(np.sum(weights[comparable] * delta * delta, dtype=np.float32) / np.sum(weights[comparable], dtype=np.float32)))
             meta = self._metadata.get(eid, {})
             rows.append(SimilarityHit(str(eid), distance, 1.0 / (1.0 + distance), count, _get(meta, "analysis_snapshot_timestamp")))
-        rows.sort(key=lambda h: (h.distance, h.analysis_snapshot_timestamp or datetime.min.replace(tzinfo=None), h.experience_id))
+        rows.sort(key=lambda h: (h.distance, h.analysis_snapshot_timestamp or datetime.min.replace(tzinfo=timezone.utc), h.experience_id))
         return tuple(rows[:top_k])
 
 
