@@ -308,3 +308,28 @@ class EvidenceBundle(Serializable):
     provenance: Mapping[str, Any] = None
     def __post_init__(self) -> None:
         object.__setattr__(self, "knowledge", tuple(self.knowledge)); object.__setattr__(self, "experience", tuple(self.experience)); object.__setattr__(self, "source_status", _freeze(self.source_status or {})); object.__setattr__(self, "provenance", _freeze(self.provenance or {}))
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceSourceError(Serializable):
+    """Bounded, source-qualified failure returned by the evidence boundary."""
+
+    source: str
+    error_type: str
+    message: str
+    fingerprint: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceWarning(Serializable):
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class OrchestrationProvenance(Serializable):
+    """Small immutable provenance envelope; source details stay on each hit."""
+
+    query_normalization_fingerprint: str | None = None
+    knowledge_requested: bool = False
+    experience_requested: bool = False
