@@ -17,6 +17,12 @@ The catalog snapshot read contract preserves its append-observation timestamp.
 `OutcomeStatistics` gained immutable directional, HOLD, denominator, request,
 and exclusion fields while preserving existing defaults.
 
+Reviewer follow-up adds BUY/SELL counterfactual distributions for every
+eligible row, including HOLD rows; positive/negative/zero counts and rates,
+mean/median net points, MFE/MAE distributions and summaries; and HOLD missed
+opportunity plus best-counterfactual counts. Status exclusions now contain only
+excluded snapshots, never eligible COMPLETE rows.
+
 ## TDD and verification
 
 - RED: `pytest tests/test_experience_outcomes.py -q` failed at collection
@@ -26,6 +32,9 @@ and exclusion fields while preserving existing defaults.
 - `python -m compileall -q tradingagents/experience/outcomes.py tradingagents/experience/models.py` — passed.
 - `git diff --check` — passed.
 - Ruff was unavailable as a command; no Ruff result is claimed.
+
+Reviewer follow-up verification: focused outcomes tests — 9 passed; all Phase 8
+experience tests — 77 passed; compileall and diff checks passed.
 
 ## Boundaries
 

@@ -201,8 +201,28 @@ class OutcomeDirectionStatistics(Serializable):
     net_points: tuple[float, ...] = ()
     win_rate: float | None = None
     count: int = 0
+    positive_net_count: int = 0
+    positive_net_rate: float | None = None
+    negative_net_count: int = 0
+    negative_net_rate: float | None = None
+    zero_net_count: int = 0
+    zero_net_rate: float | None = None
+    mean_net_points: float | None = None
+    median_net_points: float | None = None
+    mfe_points: tuple[float, ...] = ()
+    mae_points: tuple[float, ...] = ()
+    mfe_mean: float | None = None
+    mfe_median: float | None = None
+    mae_mean: float | None = None
+    mae_median: float | None = None
     def __post_init__(self) -> None:
         object.__setattr__(self, "net_points", tuple(self.net_points))
+        object.__setattr__(self, "mfe_points", tuple(self.mfe_points))
+        object.__setattr__(self, "mae_points", tuple(self.mae_points))
+    @property
+    def positive_count(self) -> int: return self.positive_net_count
+    @property
+    def negative_count(self) -> int: return self.negative_net_count
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,8 +230,18 @@ class OutcomeHoldStatistics(Serializable):
     opportunity_cost_points: tuple[float, ...] = ()
     normal_win_rate: float | None = None
     count: int = 0
+    missed_buy_opportunity_points: tuple[float, ...] = ()
+    missed_sell_opportunity_points: tuple[float, ...] = ()
+    best_counterfactual_counts: Mapping[str, int] = None
     def __post_init__(self) -> None:
         object.__setattr__(self, "opportunity_cost_points", tuple(self.opportunity_cost_points))
+        object.__setattr__(self, "missed_buy_opportunity_points", tuple(self.missed_buy_opportunity_points))
+        object.__setattr__(self, "missed_sell_opportunity_points", tuple(self.missed_sell_opportunity_points))
+        object.__setattr__(self, "best_counterfactual_counts", _freeze(self.best_counterfactual_counts or {}))
+    @property
+    def buy_missed_opportunity_points(self) -> tuple[float, ...]: return self.missed_buy_opportunity_points
+    @property
+    def sell_missed_opportunity_points(self) -> tuple[float, ...]: return self.missed_sell_opportunity_points
 
 
 @dataclass(frozen=True, slots=True)

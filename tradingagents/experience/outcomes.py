@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -117,6 +118,13 @@ class OutcomeStatsCalculator:
         buy: list[float] = []
         sell: list[float] = []
         hold: list[float] = []
+        buy_mfe: list[float] = []
+        buy_mae: list[float] = []
+        sell_mfe: list[float] = []
+        sell_mae: list[float] = []
+        hold_buy_missed: list[float] = []
+        hold_sell_missed: list[float] = []
+        best_counterfactuals: dict[str, int] = {}
         eligible_count = 0
         records = {str(_get(record, "experience_id")): record for record in self.records}
         for experience_id in request.experience_ids:
@@ -131,7 +139,6 @@ class OutcomeStatsCalculator:
                     reason = "TRUST_TIER_NOT_ALLOWED"
                 if reason is None:
                     status = str(snapshot.get("evaluation_status", ""))
-                    by_status[status] = by_status.get(status, 0) + 1
                     if status != "COMPLETE":
                         reason = status or "EVALUATION_STATUS_UNKNOWN"
                     elif self._availability(snapshot) is None:
@@ -148,17 +155,43 @@ class OutcomeStatsCalculator:
                     eligible_count += 1
                     fingerprints[str(experience_id)] = str(snapshot.get("fingerprint", ""))
                     action = str(snapshot.get("selected_action", "")).upper()
+                    if _finite(snapshot.get("buy_mfe_points")): buy_mfe.append(float(snapshot["buy_mfe_points"]))
+                    if _finite(snapshot.get("buy_mae_points")): buy_mae.append(float(snapshot["buy_mae_points"]))
+                    if _finite(snapshot.get("sell_mfe_points")): sell_mfe.append(float(snapshot["sell_mfe_points"]))
+                    if _finite(snapshot.get("sell_mae_points")): sell_mae.append(float(snapshot["sell_mae_points"]))
+                    buy.append(float(snapshot["buy_net_points"]))
+                    sell.append(float(snapshot["sell_net_points"]))
                     if action == "HOLD":
                         hold.append(float(snapshot["hold_opportunity_cost_points"]))
-                    else:
-                        buy.append(float(snapshot["buy_net_points"]))
-                        sell.append(float(snapshot["sell_net_points"]))
+                        if float(snapshot["buy_net_points"]) > 0: hold_buy_missed.append(float(snapshot["buy_net_points"]))
+                        if float(snapshot["sell_net_points"]) > 0: hold_sell_missed.append(float(snapshot["sell_net_points"]))
+                        best = str(snapshot.get("best_counterfactual_action", "")).upper()
+                        if best in {"BUY", "SELL"}: best_counterfactuals[best] = best_counterfactuals.get(best, 0) + 1
                     continue
+                status = str(snapshot.get("evaluation_status", "")) if snapshot is not None else ""
+                if status:
+                    by_status[status] = by_status.get(status, 0) + 1
                 by_tier[tier.value] = by_tier.get(tier.value, 0) + 1
             by_reason[reason] = by_reason.get(reason, 0) + 1
 
-        def directional(values: list[float]) -> OutcomeDirectionStatistics:
-            return OutcomeDirectionStatistics(tuple(values), (sum(v > 0 for v in values) / len(values)) if values else None, len(values))
+        def directional(values: list[float], mfe: list[float], mae: list[float]) -> OutcomeDirectionStatistics:
+            n = len(values)
+            positive = sum(v > 0 for v in values)
+            negative = sum(v < 0 for v in values)
+            zero = sum(v == 0 for v in values)
+            return OutcomeDirectionStatistics(
+                tuple(values), positive / n if n else None, n,
+                positive, positive / n if n else None,
+                negative, negative / n if n else None,
+                zero, zero / n if n else None,
+                statistics.mean(values) if values else None,
+                statistics.median(values) if values else None,
+                tuple(mfe), tuple(mae),
+                statistics.mean(mfe) if mfe else None,
+                statistics.median(mfe) if mfe else None,
+                statistics.mean(mae) if mae else None,
+                statistics.median(mae) if mae else None,
+            )
 
         return OutcomeStatistics(
             eligible_sample_denominator=eligible_count,
@@ -171,8 +204,8 @@ class OutcomeStatsCalculator:
             exclusions_by_status=by_status,
             exclusions_by_tier=by_tier,
             source_evaluation_fingerprints=fingerprints,
-            buy=directional(buy), sell=directional(sell),
-            hold=OutcomeHoldStatistics(tuple(hold), None, len(hold)),
+            buy=directional(buy, buy_mfe, buy_mae), sell=directional(sell, sell_mfe, sell_mae),
+            hold=OutcomeHoldStatistics(tuple(hold), None, len(hold), tuple(hold_buy_missed), tuple(hold_sell_missed), best_counterfactuals),
         )
 
 

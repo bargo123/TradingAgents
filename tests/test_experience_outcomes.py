@@ -90,3 +90,32 @@ def test_genuine_prior_unavailable_snapshot_is_used_before_recovery():
     result = calculator().calculate(request)
     assert result.excluded_counts["DATA_UNAVAILABLE"] == 1
     assert result.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
+
+
+def test_directional_counterfactuals_include_hold_and_expose_distribution_summary():
+    result = calculator().calculate(OutcomeStatsRequest(("hold-exp",), "ANALYSIS_SNAPSHOT", 300))
+    assert result.buy.net_points == (4.0,)
+    assert result.sell.net_points == (-3.0,)
+    assert result.buy.positive_net_count == 1
+    assert result.sell.negative_net_count == 1
+    assert result.buy.mean_net_points == 4.0
+    assert result.sell.median_net_points == -3.0
+
+
+def test_mfe_mae_and_hold_missed_opportunity_fields_are_reported():
+    row = _complete("rich", selected_action="HOLD", buy_net_points=5.0,
+                    sell_net_points=-2.0, hold_opportunity_cost_points=5.0,
+                    buy_mfe_points=8.0, buy_mae_points=-3.0,
+                    sell_mfe_points=2.0, sell_mae_points=-4.0,
+                    best_counterfactual_action="BUY")
+    calc = OutcomeStatsCalculator((_record("rich", snapshots=(row,)),))
+    result = calc.calculate(OutcomeStatsRequest(("rich",), "ANALYSIS_SNAPSHOT", 300))
+    assert result.buy.mfe_points == (8.0,)
+    assert result.sell.mae_points == (-4.0,)
+    assert result.hold.missed_buy_opportunity_points == (5.0,)
+    assert result.hold.best_counterfactual_counts == {"BUY": 1}
+
+
+def test_eligible_complete_status_is_not_an_exclusion():
+    result = calculator().calculate(OutcomeStatsRequest(("exp1",), "ANALYSIS_SNAPSHOT", 300))
+    assert result.exclusions_by_status == {}
