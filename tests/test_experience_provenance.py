@@ -38,3 +38,12 @@ def test_catalog_snapshot_retains_provenance_and_status(tmp_path) -> None:
     assert snapshot["evaluation_status"] == "COMPLETE"
     assert snapshot["provenance"]["training_eligible"] is True
     assert snapshot["fingerprint"] == "eval-fp"
+
+
+def test_catalog_rejects_mismatched_provenance_fingerprint(tmp_path) -> None:
+    catalog = ExperienceCatalog(tmp_path / "experience")
+    with pytest.raises(ProvenanceViolationError):
+        catalog.append_evaluation_snapshot(
+            "exp1", {"evaluation_status": "COMPLETE"}, "eval-fp",
+            provenance={"evaluation_fingerprint": "different-fp"},
+        )

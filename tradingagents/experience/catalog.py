@@ -115,7 +115,7 @@ class ExperienceCatalog:
 
     def _record(self, db: sqlite3.Connection, experience_id: str) -> ExperienceRecord:
         row = db.execute("SELECT * FROM experience_records WHERE experience_id=?", (experience_id,)).fetchone()
-        aliases = {r["source_database_id"]: r["state"] for r in db.execute("SELECT source_database_id,state FROM experience_source_aliases WHERE experience_id=?", (experience_id,))}
+        aliases = {f"{r['source_database_id']}:{r['source_decision_id']}": r["state"] for r in db.execute("SELECT source_database_id,source_decision_id,state FROM experience_source_aliases WHERE experience_id=?", (experience_id,))}
         return ExperienceRecord(experience_id=row["experience_id"], source_database_id=row["source_database_id"], source_decision_id=row["source_decision_id"], symbol=row["symbol"], analysis_snapshot_timestamp=datetime.fromisoformat(row["analysis_snapshot_timestamp"]), source_aliases=aliases, source_run_id=row["source_run_id"], requested_symbol=row["requested_symbol"], analysis_profile=row["analysis_profile"], analysis_timeframe=row["analysis_timeframe"], decision_completed_timestamp=datetime.fromisoformat(row["decision_completed_timestamp"]) if row["decision_completed_timestamp"] else None, decision_reference_timestamp=datetime.fromisoformat(row["decision_reference_timestamp"]) if row["decision_reference_timestamp"] else None, market_state=json.loads(row["market_state_json"]), decision_evidence=json.loads(row["decision_evidence_json"]), provenance=json.loads(row["provenance_json"]), trust=row["trust"], source_decision_fingerprint=row["source_decision_fingerprint"], source_evaluation_fingerprints=json.loads(row["source_evaluation_fingerprints_json"]))
 
     def current_alias_count(self, experience_id: str) -> int:
@@ -150,6 +150,9 @@ class ExperienceCatalog:
 
     def append_evaluation_snapshot(self, experience_id: str, evaluation: dict[str, Any], fingerprint: str, provenance: dict[str, Any] | None = None, **kwargs: Any) -> bool:
         prov = dict(provenance or {})
+        if "evaluation_fingerprint" in prov and prov["evaluation_fingerprint"] != fingerprint:
+            from .errors import ProvenanceViolationError
+            raise ProvenanceViolationError("provenance evaluation fingerprint does not match snapshot fingerprint")
         prov.setdefault("evaluation_fingerprint", fingerprint)
         prov = validate_evaluation_provenance(prov)
         with self._connect() as db:

@@ -21,13 +21,22 @@ def test_duplicate_aliases_share_one_logical_record(catalog: ExperienceCatalog) 
     assert catalog.current_alias_count(first.experience_id) == 2
 
 
+def test_alias_identity_preserves_multiple_decisions_from_one_source(catalog: ExperienceCatalog) -> None:
+    first = catalog.upsert_source_alias("db-a", decision_id="d1", fingerprint="fp1")
+    second = catalog.upsert_source_alias("db-a", decision_id="d2", fingerprint="fp2")
+    assert first.experience_id != second.experience_id
+    records = {record.experience_id: record for record in catalog.active_records()}
+    assert set(records[first.experience_id].source_aliases) == {"db-a:d1"}
+    assert set(records[second.experience_id].source_aliases) == {"db-a:d2"}
+
+
 def test_last_alias_removal_tombstones_but_failed_scan_does_not(catalog: ExperienceCatalog) -> None:
     catalog.upsert_source_alias("db-a", decision_id="d1", fingerprint="fp1")
     catalog.upsert_source_alias("db-b", decision_id="d1", fingerprint="fp1")
     catalog.mark_alias_removed("db-a", "d1", "fp1")
-    assert catalog.active_records()[0].source_aliases["db-b"] == "CURRENT"
+    assert catalog.active_records()[0].source_aliases["db-b:d1"] == "CURRENT"
     catalog.record_failed_scan("db-b", "SOURCE_DATABASE_UNAVAILABLE")
-    assert catalog.active_records()[0].source_aliases["db-b"] == "CURRENT"
+    assert catalog.active_records()[0].source_aliases["db-b:d1"] == "CURRENT"
     catalog.mark_alias_removed("db-b", "d1", "fp1")
     record = catalog.historical_records()[0]
     assert catalog.is_tombstoned(record.experience_id) is True
