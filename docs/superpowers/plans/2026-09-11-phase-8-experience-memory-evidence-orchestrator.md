@@ -695,10 +695,17 @@ def test_recovered_complete_participates_after_recovery(calculator) -> None:
     assert calculator.calculate(request).eligible_count == 1
 
 def test_genuine_prior_unavailable_snapshot_is_used_before_recovery(calculator) -> None:
-    request = OutcomeStatsRequest(("exp-with-prior",), "ANALYSIS_SNAPSHOT", 300, as_of=utc("2026-01-02T14:00:00Z"))
+    request = OutcomeStatsRequest(
+        ("exp-with-prior",),
+        "ANALYSIS_SNAPSHOT",
+        300,
+        as_of=utc("2026-01-02T14:00:00Z"),
+    )
     result = calculator.calculate(request)
     assert result.excluded_counts["DATA_UNAVAILABLE"] == 1
-    assert result.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
+    assert result.excluded_counts.get(
+        "EVALUATION_NOT_YET_AVAILABLE", 0
+    ) == 0
 ```
 
 - [ ] **Step 2: Run RED**
@@ -715,9 +722,11 @@ evaluation availability when `as_of` is present. Do not inspect
 `training_eligible` to include/exclude a descriptive row. Select
 `evaluation_available_at` as recovered timestamp, otherwise evaluated timestamp,
 otherwise created timestamp; require trustworthy UTC and observation timestamp
-no later than `as_of`. For each experience/basis/horizon, historical statistics
-first select at most one effective source-evaluation snapshot known by `as_of`.
-Exclusion counts are based on that selected state, not every retained snapshot.
+no later than `as_of`. Historical statistics first select at most one effective
+evaluation snapshot/state for each experience, evaluation basis, and horizon at
+the requested `as_of`. Exclusion counts are derived from that selected state
+only; retained snapshots must never cause the same experience/basis/horizon to
+be counted twice.
 If no earlier Phase 8 snapshot was observed for a recovered COMPLETE row,
 report `EVALUATION_NOT_YET_AVAILABLE` and never fabricate one. If a genuine
 prior DATA_UNAVAILABLE snapshot was observed, select it for an earlier cutoff
@@ -1022,6 +1031,13 @@ def test_smoke_rejects_existing_published_experience_generation(tmp_path, real_f
     with pytest.raises(ExperienceArtifactNotEmptyError):
         run_smoke(real_fixture_db, experience_artifact_root=root, knowledge_artifact_root=knowledge_root, knowledge_embedding_model_path=embedding_model_path, offline=True)
 
+def test_smoke_rejects_any_existing_phase8_state(tmp_path, real_fixture_db, knowledge_root, embedding_model_path) -> None:
+    root = tmp_path / "experience"
+    root.mkdir()
+    (root / "catalog.sqlite3").touch()
+    with pytest.raises(ExperienceArtifactNotEmptyError):
+        run_smoke(real_fixture_db, experience_artifact_root=root, knowledge_artifact_root=knowledge_root, knowledge_embedding_model_path=embedding_model_path, offline=True)
+
 def test_network_guard_blocks_unexpected_connect(monkeypatch, real_fixture_db, tmp_path, knowledge_root, embedding_model_path) -> None:
     with OfflineNetworkGuard() as guard:
         with pytest.raises(NetworkAttempt):
@@ -1048,10 +1064,15 @@ Require an existing source DB path, a new empty/dedicated Phase 8 artifact
 root whose parent exists, existing Phase 7 artifact root, and existing local
 embedding model path; never launch a new analysis. The harness may create the
 requested Phase 8 directory, but must fail with `ExperienceArtifactNotEmptyError`
-when it already contains a published Experience generation. It must not delete
-or overwrite arbitrary existing Phase 8 data; no reset mode is needed for
-acceptance. Record source SQLite SHA-256, size, mtime, and WAL SHA-256/size
-before and after. Set `KNOWLEDGE_OFFLINE=1`, `HF_HUB_OFFLINE=1`, and
+if the target already contains `catalog.sqlite3`, an active-generation
+pointer, any previously published Experience projection, or any other
+Phase 8 state. A non-empty target directory is rejected conservatively as
+`ExperienceArtifactNotEmptyError`; only an absent directory may be created
+under its existing parent. It must not delete or overwrite arbitrary existing
+Phase 8 data; no reset mode is needed for acceptance. Record source SQLite
+SHA-256, size, mtime, and WAL SHA-256/size before and after. Set
+`KNOWLEDGE_OFFLINE=1`,
+`HF_HUB_OFFLINE=1`, and
 `TRANSFORMERS_OFFLINE=1` (plus the Phase 7 local-model flags in its current
 configuration) and install the Phase 7-style `OfflineNetworkGuard` before
 constructing either query service. Any unexpected socket/URL connection raises
