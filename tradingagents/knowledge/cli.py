@@ -223,7 +223,6 @@ def _search(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         content_types=content_types,
         document_ids=(args.document_id,) if args.document_id else (),
-        include_stale=args.include_stale,
     )
     _emit(service.search(request), as_json=args.json)
     return _EXIT_OK
@@ -299,7 +298,6 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--top-k", type=_positive_int, default=10, help="maximum result count (default: 10)")
     search.add_argument("--content-type", choices=[item.value for item in ContentType], help="filter one content type")
     search.add_argument("--document-id", metavar="ID", help="filter one document")
-    search.add_argument("--include-stale", action="store_true", help="request stale aliases where supported")
     _add_json_argument(search)
     document = commands.add_parser("document", help="show document/chunk provenance from the catalog")
     document.add_argument("document_id", metavar="DOCUMENT_ID")

@@ -103,6 +103,10 @@ Each search result includes provenance such as `chunk_id`, `document_id`,
 parser/chunker/index versions, and ranking scores. Prefer `--json` for tools;
 the output is a JSON array of those provenance-complete results.
 
+Search returns only active, current, retrieval-ready documents. It deliberately
+does not offer `--include-stale`: stale-alias retrieval has no approved safe
+catalog path yet and must not be implied by a no-op option.
+
 ## Boundary after Phase 7
 
 Phase 7 ends at offline ingestion, catalog diagnostics, and read-only local

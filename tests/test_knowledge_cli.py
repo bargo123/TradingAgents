@@ -176,6 +176,19 @@ def test_search_constructs_only_read_only_local_query_embedder(tmp_path, monkeyp
     assert forbidden.calls == 0
 
 
+def test_search_rejects_unimplemented_include_stale(tmp_path, monkeypatch):
+    """Do not expose stale retrieval before the catalog has a safe path for it."""
+
+    from tradingagents.knowledge.cli import main
+
+    _search_doubles(monkeypatch)
+    with pytest.raises(SystemExit) as error:
+        main([
+            "search", "order flow imbalance", "--include-stale", "--artifact-root", str(tmp_path),
+        ])
+    assert error.value.code == 2
+
+
 def test_index_refuses_an_artifact_root_inside_source_root(tmp_path, capsys):
     from tradingagents.knowledge.cli import main
 

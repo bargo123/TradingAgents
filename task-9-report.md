@@ -23,3 +23,14 @@
 - Repository virtual-environment Ruff check — passed.
 - `py_compile` for the CLI and its tests — passed.
 - `git diff --check` — passed.
+
+## Review fix: stale retrieval option
+
+- Removed the CLI-only `--include-stale` flag. The underlying query service
+  always enforces active/current retrieval readiness, so forwarding that flag
+  was a misleading no-op rather than an approved stale-catalog path.
+- Added a regression test that proves `knowledge search --include-stale` is
+  rejected by argument parsing.
+- Re-verified: focused CLI suite — 10 passed; Tasks 1–9 knowledge suite — 151
+  passed, 1 optional-Docling skip; Ruff, `py_compile`, and `git diff --check`
+  passed.
