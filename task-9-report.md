@@ -34,3 +34,15 @@
 - Re-verified: focused CLI suite — 10 passed; Tasks 1–9 knowledge suite — 151
   passed, 1 optional-Docling skip; Ruff, `py_compile`, and `git diff --check`
   passed.
+
+## Review fix: local model configuration
+
+- `_safe_query_source_root` now selects a real directory disjoint from both
+  the artifact root and the resolved local embedding-model path before it
+  constructs the read-only `KnowledgeConfig` used by search.
+- Added a regression covering `KNOWLEDGE_EMBEDDING_MODEL_PATH` below the user
+  profile; this previously failed because the synthetic source root was the
+  user profile itself.
+- Re-verified: focused CLI suite — 11 passed; Tasks 1–9 knowledge suite — 152
+  passed, 1 optional-Docling skip; Ruff, `py_compile`, and `git diff --check`
+  passed.

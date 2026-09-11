@@ -74,6 +74,22 @@ def _spec() -> EmbeddingSpec:
     )
 
 
+def test_query_config_allows_local_model_below_user_profile(monkeypatch):
+    from tradingagents.knowledge.cli import _query_config
+
+    artifact_root = Path.cwd() / "knowledge-query-artifacts"
+    model_path = Path.home() / "prefetched-knowledge-model"
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL_PATH", str(model_path))
+
+    config = _query_config(artifact_root, _spec())
+
+    assert config.embedding_model_path == model_path.resolve(strict=False)
+    assert config.source_root not in (Path.home(), artifact_root)
+    assert config.artifact_root == artifact_root.resolve(strict=False)
+    with pytest.raises(ValueError):
+        config.embedding_model_path.relative_to(config.source_root)
+
+
 class _Catalog:
     def __init__(self, *_args, **_kwargs):
         self.generation = IndexGeneration(

@@ -151,7 +151,21 @@ def _metadata_command(args: argparse.Namespace) -> int:
     raise ValueError(f"unsupported metadata command: {args.command}")
 
 
-def _safe_query_source_root(artifact_root: Path) -> Path:
+def _paths_overlap(first: Path, second: Path) -> bool:
+    """Return whether either local path contains the other."""
+
+    try:
+        first.relative_to(second)
+        return True
+    except ValueError:
+        try:
+            second.relative_to(first)
+            return True
+        except ValueError:
+            return False
+
+
+def _safe_query_source_root(artifact_root: Path, model_path: Path | None) -> Path:
     """Find an existing, disjoint path solely to satisfy config validation.
 
     Search never scans this directory.  The selection avoids creating a
@@ -163,15 +177,16 @@ def _safe_query_source_root(artifact_root: Path) -> Path:
     for candidate in candidates:
         try:
             candidate = candidate.resolve(strict=True)
-            artifact_root.relative_to(candidate)
-        except ValueError:
-            try:
-                candidate.relative_to(artifact_root)
-            except ValueError:
+            if not _paths_overlap(candidate, artifact_root) and (
+                model_path is None or not _paths_overlap(candidate, model_path)
+            ):
                 return candidate
         except (OSError, RuntimeError):
             continue
-    raise ValueError("cannot find a local path disjoint from artifact_root for read-only query configuration")
+    raise ValueError(
+        "cannot find a local path disjoint from artifact_root and embedding_model_path "
+        "for read-only query configuration"
+    )
 
 
 def _query_config(artifact_root: Path, embedding_spec: Any) -> KnowledgeConfig:
@@ -181,11 +196,12 @@ def _query_config(artifact_root: Path, embedding_spec: Any) -> KnowledgeConfig:
     if not model_path:
         candidate = artifact_root / "models" / "embedding"
         model_path = str(candidate) if candidate.is_dir() else None
+    resolved_model_path = _path(model_path) if model_path is not None else None
     return KnowledgeConfig(
-        source_root=_safe_query_source_root(artifact_root),
+        source_root=_safe_query_source_root(artifact_root, resolved_model_path),
         artifact_root=artifact_root,
         embedding_model_id=embedding_spec.model_id,
-        embedding_model_path=model_path,
+        embedding_model_path=resolved_model_path,
         embedding_dimensions=embedding_spec.dimensions,
         embedding_runtime=embedding_spec.runtime,
         embedding_normalization=embedding_spec.normalization_policy,
