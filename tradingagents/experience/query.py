@@ -97,7 +97,30 @@ class ExperienceQueryService:
             mask = [v is not None for v in values]
         cohort = self._cohort(eligible[0])
         hits = self.index.search(values, mask, [str(_get(r, "experience_id")) for r in eligible], query.top_k, profile)
-        result_hits = tuple(ExperienceHit(experience_id=h.experience_id, distance=h.distance, similarity_score=h.similarity_score, comparable_feature_count=h.comparable_feature_count, trust_tier=_get(next(r for r in eligible if str(_get(r, "experience_id")) == h.experience_id), "trust_tier", _get(next(r for r in eligible if str(_get(r, "experience_id")) == h.experience_id), "trust")), currently_tombstoned=bool(_get(next(r for r in eligible if str(_get(r, "experience_id")) == h.experience_id), "tombstoned", False)) or (bool(_get(next(r for r in eligible if str(_get(r, "experience_id")) == h.experience_id), "source_aliases", {})) and not any(str(v) == "CURRENT" or getattr(v, "value", None) == "CURRENT" for v in (_get(next(r for r in eligible if str(_get(r, "experience_id")) == h.experience_id), "source_aliases", {}) or {}).values())), timestamps={"analysis_snapshot": h.analysis_snapshot_timestamp} if h.analysis_snapshot_timestamp else {}) for h in hits)
+        by_id = {str(_get(row, "experience_id")): row for row in eligible}
+        result_hits = tuple(
+            ExperienceHit(
+                experience_id=h.experience_id,
+                distance=h.distance,
+                similarity_score=h.similarity_score,
+                comparable_feature_count=h.comparable_feature_count,
+                trust_tier=_get(by_id[h.experience_id], "trust_tier", _get(by_id[h.experience_id], "trust")),
+                market_state=_get(by_id[h.experience_id], "market_state", {}),
+                action=_get(by_id[h.experience_id], "action"),
+                provenance=_get(by_id[h.experience_id], "provenance", {}),
+                feature_schema_version=_get(by_id[h.experience_id], "feature_schema_version"),
+                similarity_profile_version=_get(by_id[h.experience_id], "similarity_profile_version"),
+                currently_tombstoned=bool(_get(by_id[h.experience_id], "tombstoned", False)) or (
+                    bool(_get(by_id[h.experience_id], "source_aliases", {})) and not any(
+                        str(v) == "CURRENT" or getattr(v, "value", None) == "CURRENT"
+                        for v in (_get(by_id[h.experience_id], "source_aliases", {}) or {}).values()
+                    )
+                ),
+                timestamps={"analysis_snapshot": h.analysis_snapshot_timestamp}
+                if h.analysis_snapshot_timestamp else {},
+            )
+            for h in hits
+        )
         return ExperienceSearchResult(result_hits, query_normalization_fingerprint(profile, cohort, query.trust_tiers, query.as_of), self.generation_id, len(rows), exclusions)
 
 
