@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from tradingagents.experience.models import ExperienceQuery, TrustTier
-from tradingagents.experience.normalization import NormalizationCohortV1, SimilarityProfileV1
+from tradingagents.experience.normalization import NormalizationCohortV1, SimilarityProfileV1, build_profile, query_normalization_fingerprint
 from tradingagents.experience.query import ExperienceQueryService
 
 
@@ -67,3 +67,21 @@ def test_query_excludes_invalid_timestamp_under_as_of():
     result = service.search(ExperienceQuery({"values": [0.0] * 8, "mask": [True] * 8, "feature_names": NAMES, "cohort": COHORT}, as_of=datetime(2026, 1, 2, tzinfo=UTC)))
     assert [h.experience_id for h in result.hits] == ["good"]
     assert result.excluded_counts["as_of"] == 1
+
+
+def test_query_excludes_malformed_timestamp_string_under_as_of():
+    invalid = row("invalid") | {"analysis_snapshot_timestamp": "not-a-timestamp"}
+    service = ExperienceQueryService([row("good"), invalid], profile=profile())
+    result = service.search(ExperienceQuery({"values": [0.0] * 8, "mask": [True] * 8, "feature_names": NAMES, "cohort": COHORT}, as_of=datetime(2026, 1, 2, tzinfo=UTC)))
+    assert [h.experience_id for h in result.hits] == ["good"]
+    assert result.excluded_counts["as_of"] == 1
+
+
+def test_non_default_tiers_use_query_local_profile():
+    a = row("a", tier=TrustTier.TIER_A_HIGH_TRUST) | {"values": tuple([0.0] * 8)}
+    b = row("b", tier=TrustTier.TIER_B_LIMITED) | {"values": tuple([100.0] * 8)}
+    service = ExperienceQueryService([a, b], profile=profile())
+    query = ExperienceQuery({"values": [0.0] * 8, "mask": [True] * 8, "feature_names": NAMES, "cohort": COHORT}, trust_tiers=(TrustTier.TIER_A_HIGH_TRUST,))
+    result = service.search(query)
+    local = build_profile([a], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+    assert result.query_normalization_fingerprint == query_normalization_fingerprint(local, COHORT, query.trust_tiers, None)

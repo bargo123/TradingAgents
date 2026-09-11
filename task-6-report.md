@@ -53,3 +53,11 @@ integrations remain outside this task.
 - `python -m compileall -q tradingagents/experience` and `git diff --check`
   passed.
 
+## Reviewer-fix round 2
+
+- Malformed timestamp strings are now treated as invalid and excluded by the
+  strict `as_of` gate.
+- Non-default trust-tier or cutoff policies rebuild a query-local profile from
+  the gated projections and use its matching normalization fingerprint.
+- Focused suite: `10 passed`; full experience regression: `62 passed`.
+

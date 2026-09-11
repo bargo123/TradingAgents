@@ -16,7 +16,10 @@ def _get(row: Any, name: str, default: Any = None) -> Any:
 
 def _utc(v):
     if isinstance(v, str):
-        v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        try:
+            v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except (TypeError, ValueError, OverflowError):
+            return None
     if not isinstance(v, datetime) or v.tzinfo is None or v.utcoffset() != timezone.utc.utcoffset(v):
         return None
     return v
@@ -79,6 +82,13 @@ class ExperienceQueryService:
             elif _get(row, "feature_extractor_version", profile.cohort.feature_extractor_version) != profile.cohort.feature_extractor_version:
                 eligible.remove(row); exclusions["feature_extractor"] = exclusions.get("feature_extractor", 0) + 1
         if not eligible: return ExperienceSearchResult(candidate_count=len(rows), excluded_counts=exclusions, active_generation_id=self.generation_id)
+        # A persisted profile is reusable only when its population policy is
+        # exactly this query's policy. Otherwise rebuild a deterministic,
+        # query-local profile from the already-gated projections.
+        cohort = self._cohort(eligible[0])
+        if profile.trust_tiers != query.trust_tiers or profile.normalization_cutoff != query.as_of:
+            from .normalization import build_profile
+            profile = build_profile(eligible, cohort, query.trust_tiers, query.as_of)
         state = query.market_state
         values = state.get("values") if isinstance(state, Mapping) else None
         mask = state.get("mask") if isinstance(state, Mapping) else None
