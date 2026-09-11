@@ -237,7 +237,9 @@ git commit -m "feat: add read-only phase 5 source reader"
   diagnostic FTS5.
 - Produces `upsert_source_alias`, `append_evaluation_snapshot`,
   `mark_alias_removed`, `active_records`, `historical_records`,
-  `record_quarantine`, and `publish_generation` methods.
+  `is_tombstoned`, `current_alias_count`, `mark_last_alias_removed`,
+  `evaluation_snapshots`, `record_failed_scan`, `record_quarantine`, and
+  `publish_generation` methods.
 - Consumes `ReadonlySourceSnapshot` and identity fingerprints from Task 2;
   writes only inside the Phase 8 artifact root.
 
@@ -258,7 +260,8 @@ def test_last_alias_removal_tombstones_but_failed_scan_does_not(catalog: Experie
     catalog.record_failed_scan("db-b", "SOURCE_DATABASE_UNAVAILABLE")
     assert catalog.active_records()[0].source_aliases["db-b"] == "CURRENT"
     catalog.mark_alias_removed("db-b", "d1", "fp1")
-    assert catalog.historical_records()[0].currently_tombstoned is True
+    record = catalog.historical_records()[0]
+    assert catalog.is_tombstoned(record.experience_id) is True
 
 def test_conflicting_fingerprint_is_quarantined(catalog: ExperienceCatalog) -> None:
     catalog.upsert_source_alias("db-a", "d1", "fp1")
@@ -419,6 +422,16 @@ def test_extreme_future_row_cannot_change_historical_profile(rows) -> None:
     before = build_profile(rows_before(cutoff), EURUSD_M15, AB, cutoff)
     after = build_profile(rows_before(cutoff) + extreme_rows_after(cutoff), EURUSD_M15, AB, cutoff)
     assert before.to_fingerprint() == after.to_fingerprint()
+
+def test_historical_profile_keeps_retained_tombstone(catalog, service) -> None:
+    query = ExperienceQuery(state, as_of=utc("2026-01-03T00:00:00Z"))
+    before = service.search(query)
+    catalog.mark_last_alias_removed("exp1")
+    rebuild_projection(catalog)
+    after = service.search(query)
+    assert before.query_normalization_fingerprint == after.query_normalization_fingerprint
+    assert [(h.experience_id, h.distance) for h in before.hits] == [(h.experience_id, h.distance) for h in after.hits]
+    assert after.hits[0].currently_tombstoned is True
 ```
 
 - [ ] **Step 2: Run RED**
@@ -429,11 +442,15 @@ Expected: FAIL because cohort profiles, fallback scales, and fingerprints are no
 
 - [ ] **Step 3: Implement profile construction**
 
-Define the exact cohort tuple and filter rows by exact cohort, requested trust
-tiers, active alias state, and (when supplied) both analysis snapshot and
-decision completion strictly before `as_of`. For current queries use the
-persisted exact-cohort A+B profile when present; otherwise compute the same
-cohort-local view. For non-default trust tiers compute a query-local view.
+Define the exact cohort tuple. For current queries (`as_of is None`), filter
+rows by exact cohort, requested Tier A/B trust tiers, and at least one CURRENT
+source alias. For historical queries (`as_of` supplied), use retained accepted
+experiences with a valid decision fingerprint, no conflict/provenance failure,
+the exact cohort and requested Tier A/B trust tiers, and both analysis snapshot
+and decision completion strictly before `as_of`; current alias state must not
+exclude an experience merely because it was removed later. For current queries
+use the persisted exact-cohort A+B profile when present; otherwise compute the
+same cohort-local view. For non-default trust tiers compute a query-local view.
 Reject Tier C numeric normalization in V1.
 
 Use scale order IQR when greater than configured epsilon, otherwise
@@ -449,7 +466,8 @@ fingerprint. Include all requested cohort/trust/cutoff/policy fields in
 Run: `pytest tests/test_experience_normalization.py -q`
 
 Expected: PASS, including zero-IQR behavior, cohort isolation, trust-tier
-population changes, and future-row invariance.
+population changes, current-alias filtering, retained historical tombstones,
+and future-row invariance.
 
 - [ ] **Step 5: Commit**
 
@@ -548,7 +566,7 @@ git commit -m "feat: add exact experience similarity queries"
 
 - Produces `ExperienceImporter.import_sources(source_paths) -> ImportReport`.
 - Produces `ExperienceImporter.reconcile_removed_aliases(successful_source_scan)`.
-- Produces `ExperienceRebuilder.rebuild() -> GenerationManifest`.
+- Produces `ExperienceRebuilder.rebuild(fail_after_stage: str | None = None) -> GenerationManifest`.
 - Consumes `ReadonlySourceReader`, identity, feature/trust, and catalog APIs;
   never writes to source DBs.
 
@@ -565,18 +583,34 @@ def test_first_import_is_idempotent(importer, source_db) -> None:
 def test_recovered_complete_without_prior_snapshot_is_not_fabricated(importer, source_db) -> None:
     report = importer.import_sources((source_db_with_only_recovered_complete,))
     assert report.fabricated_evaluation_snapshot_count == 0
-    assert report.historical_exclusion_reasons["EVALUATION_NOT_YET_AVAILABLE"] >= 1
+    snapshots = importer.catalog.evaluation_snapshots("exp-recovered")
+    assert len(snapshots) == 1
+    assert snapshots[0].evaluation_status == "COMPLETE"
+    assert snapshots[0].recovered_from_unavailable_at == utc("2026-01-02T15:00:00Z")
+    assert snapshots[0].previous_unavailable_reason == "NO_QUOTE"
+    assert snapshots[0].source_evaluation_fingerprint == "complete-fp"
+    assert not any(snapshot.source_evaluation_fingerprint == "fake-prior-fp" for snapshot in snapshots)
 
 def test_failed_scan_does_not_remove_alias(importer, catalog) -> None:
     importer.import_sources((source_db_a,))
     importer.import_sources((missing_or_unavailable_source_db,))
     assert catalog.current_alias_count("d1") == 1
 
-def test_rebuild_failure_preserves_previous_generation(importer) -> None:
-    old = importer.rebuild()
+def test_rebuild_failure_preserves_previous_generation(rebuilder) -> None:
+    old = rebuilder.rebuild()
     with pytest.raises(RuntimeError):
-        importer.rebuild(fail_after_stage="features")
-    assert importer.catalog.active_generation_id() == old.generation_id
+        rebuilder.rebuild(fail_after_stage="features")
+    assert rebuilder.catalog.active_generation_id() == old.generation_id
+
+def test_rebuild_retains_feature_evidence_for_historical_tombstone(rebuilder, catalog, service) -> None:
+    cutoff = utc("2026-01-03T00:00:00Z")
+    before = service.search(ExperienceQuery(state, as_of=cutoff))
+    catalog.mark_last_alias_removed("exp1")
+    rebuilder.rebuild()
+    after = service.search(ExperienceQuery(state, as_of=cutoff))
+    assert before.query_normalization_fingerprint == after.query_normalization_fingerprint
+    assert [(h.experience_id, h.distance) for h in before.hits] == [(h.experience_id, h.distance) for h in after.hits]
+    assert after.hits[0].currently_tombstoned is True
 ```
 
 - [ ] **Step 2: Run RED**
@@ -598,8 +632,11 @@ successful scan, mark that alias removed; if the scan fails, preserve it.
 Use `locks/import.lock`, `.staging/<run-id>`, RUNNING/INTERRUPTED events, and
 atomic generation publication. Rebuild feature matrices, exact-cohort
 profiles, diagnostics, and generation metadata from retained catalog evidence;
-on failure keep the prior generation active. Never initialize/migrate source
-stores and never synthesize an old recovered evaluation.
+feature projections remain retained for historical as-of queries after the last
+source alias is removed, while current queries exclude the resulting
+tombstone. On failure keep the prior generation active. Never
+initialize/migrate source stores and never synthesize an old recovered
+evaluation.
 
 - [ ] **Step 4: Run GREEN**
 
@@ -651,6 +688,16 @@ def test_as_of_excludes_late_recovery_without_prior_snapshot(calculator) -> None
     request = OutcomeStatsRequest(("exp-recovered",), "ANALYSIS_SNAPSHOT", 300, as_of=utc("2026-01-02T14:00:00Z"))
     result = calculator.calculate(request)
     assert result.excluded_counts["EVALUATION_NOT_YET_AVAILABLE"] == 1
+
+def test_recovered_complete_participates_after_recovery(calculator) -> None:
+    request = OutcomeStatsRequest(("exp-recovered",), "ANALYSIS_SNAPSHOT", 300, as_of=utc("2026-01-02T16:00:00Z"))
+    assert calculator.calculate(request).eligible_count == 1
+
+def test_genuine_prior_unavailable_snapshot_is_used_before_recovery(calculator) -> None:
+    request = OutcomeStatsRequest(("exp-with-prior",), "ANALYSIS_SNAPSHOT", 300, as_of=utc("2026-01-02T14:00:00Z"))
+    result = calculator.calculate(request)
+    assert result.excluded_counts["EVALUATION_NOT_YET_AVAILABLE"] == 1
+    assert result.excluded_counts["DATA_UNAVAILABLE"] == 1
 ```
 
 - [ ] **Step 2: Run RED**
@@ -778,15 +825,26 @@ git commit -m "feat: add read-only evidence orchestrator"
 
 ```python
 def test_status_does_not_construct_parser_embedder_or_writer(monkeypatch, runner) -> None:
-    monkeypatch.setattr(cli, "DocumentParser", fail_if_constructed)
-    monkeypatch.setattr(cli, "EmbeddingProvider", fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.docling_parser.DoclingDocumentParser", fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider", fail_if_constructed)
     assert runner(["status", "--artifact-root", str(tmp_path)]).exit_code == 0
 
-def test_similar_constructs_only_read_only_query_embedder(monkeypatch, runner) -> None:
-    monkeypatch.setattr(cli, "DocumentParser", fail_if_constructed)
-    monkeypatch.setattr(cli, "VectorIndexWriter", fail_if_constructed)
-    monkeypatch.setattr(cli, "LexicalIndexWriter", fail_if_constructed)
+def test_similar_never_constructs_any_embedding_provider(monkeypatch, runner) -> None:
+    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider", fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.docling_parser.DoclingDocumentParser", fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.vector_index.VectorIndexWriter", fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.lexical_index.LexicalIndexWriter", fail_if_constructed)
     assert runner(["similar", "--market-state-json", str(state_file)]).exit_code == 0
+
+def test_evidence_market_state_only_never_constructs_embedding_provider(monkeypatch, runner) -> None:
+    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider", fail_if_constructed)
+    assert runner(["evidence", "--market-state-json", str(state_file)]).exit_code == 0
+
+def test_evidence_question_may_use_phase7_embedder_but_no_writers(monkeypatch, runner) -> None:
+    monkeypatch.setattr("tradingagents.knowledge.docling_parser.DoclingDocumentParser", fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.vector_index.VectorIndexWriter", fail_if_constructed)
+    monkeypatch.setattr("tradingagents.knowledge.lexical_index.LexicalIndexWriter", fail_if_constructed)
+    assert runner(["evidence", "--question", "order flow"]).exit_code == 0
 
 def test_cli_has_no_trading_or_model_options(runner) -> None:
     help_text = runner(["--help"]).stdout
@@ -804,11 +862,15 @@ Expected: FAIL because the `experience` command surface and entry point are miss
 Use argparse and stable JSON output. Resolve artifact paths without creating
 directories for metadata-only commands. `status`, `list`, `show`, and
 `quarantine` must not instantiate parser/embedder/ingestor/writers. `similar`
-may instantiate the local read-only query embedder only if the Phase 8 query
-requires one; it must not instantiate Phase 7 document parsers or writers.
-Expose exact filters for symbol/profile/timeframe/trust/as-of/basis/horizon,
-but no MT5, order, model, prompt, training, or execution options. Return typed
-errors and bounded diagnostics without source reports or reasoning.
+must construct only the Phase 8 catalog/projection readers, normalization
+service, `ExactSimilarityIndex`, and `ExperienceQueryService`; Phase 8 numeric
+similarity has no embedding model. `evidence --market-state-json` likewise
+constructs no embedder. Only `evidence --question` may indirectly instantiate
+the existing Phase 7 local query embedder, and it must still construct no
+parser, ingestor, vector writer, or lexical writer. Expose exact filters for
+symbol/profile/timeframe/trust/as-of/basis/horizon, but no MT5, order, model,
+prompt, training, or execution options. Return typed errors and bounded
+diagnostics without source reports or reasoning.
 
 - [ ] **Step 4: Run GREEN**
 
@@ -907,16 +969,25 @@ git commit -m "test: add phase 8 leakage and quality gates"
 **Interfaces:**
 
 - Produces a bounded JSON/text report from an existing Phase 5/6 validation
-  SQLite path, Phase 8 artifact root, and optional Phase 7 artifact root.
+  SQLite path, Phase 8 artifact root, existing Phase 7 artifact root, and
+  existing local Phase 7 embedding model path. The command requires explicit
+  arguments equivalent to `--source-db`, `--experience-artifact-root`,
+  `--knowledge-artifact-root`, `--knowledge-embedding-model-path`, and
+  `--offline`.
 - Consumes `ReadonlySourceReader`, importer, feature/trust/catalog/query,
   outcomes, and Evidence Orchestrator services. It must not construct MT5,
-  TradingAgents, Ollama/Qwen, or any source writer.
+  TradingAgents, Ollama/Qwen, or any source writer. The final smoke must use
+  the actual Phase 7 `KnowledgeConfig(artifact_root=..., embedding_model_path=...)`,
+  `KnowledgeCatalog`, `VectorIndexReader`, `LexicalIndexReader`,
+  `FastEmbedProvider.from_config`, and `KnowledgeQueryService` read contracts;
+  it must not instantiate `DoclingDocumentParser`, `SourceScanner`,
+  `KnowledgeIngestor`, `VectorIndexWriter`, or `LexicalIndexWriter`.
 
 - [ ] **Step 1: Write the failing harness tests**
 
 ```python
-def test_smoke_records_source_integrity_and_counts(tmp_path, real_fixture_db) -> None:
-    report = run_smoke(real_fixture_db, artifact_root=tmp_path / "experience")
+def test_smoke_records_source_integrity_and_counts(tmp_path, real_fixture_db, knowledge_root, embedding_model_path) -> None:
+    report = run_smoke(real_fixture_db, experience_artifact_root=tmp_path / "experience", knowledge_artifact_root=knowledge_root, knowledge_embedding_model_path=embedding_model_path, offline=True)
     assert report["source_hash_before"] == report["source_hash_after"]
     assert report["source_unchanged"] is True
     assert set(report) >= {
@@ -928,10 +999,27 @@ def test_smoke_records_source_integrity_and_counts(tmp_path, real_fixture_db) ->
         "network_attempts",
     }
 
-def test_smoke_does_not_run_new_analysis(monkeypatch, real_fixture_db, tmp_path) -> None:
+def test_smoke_does_not_run_new_analysis(monkeypatch, real_fixture_db, tmp_path, knowledge_root, embedding_model_path) -> None:
     monkeypatch.setattr("tradingagents.forex.runner.ForexShadowRunner", fail_if_constructed)
-    report = run_smoke(real_fixture_db, artifact_root=tmp_path / "experience")
+    report = run_smoke(real_fixture_db, experience_artifact_root=tmp_path / "experience", knowledge_artifact_root=knowledge_root, knowledge_embedding_model_path=embedding_model_path, offline=True)
     assert report["analysis_invocations"] == 0
+
+def test_smoke_requires_real_phase7_query_configuration(tmp_path, real_fixture_db) -> None:
+    with pytest.raises(SystemExit):
+        run_cli(["--source-db", str(real_fixture_db), "--experience-artifact-root", str(tmp_path / "experience"), "--offline"])
+
+def test_network_guard_blocks_unexpected_connect(monkeypatch, real_fixture_db, tmp_path, knowledge_root, embedding_model_path) -> None:
+    with OfflineNetworkGuard() as guard:
+        with pytest.raises(NetworkAttempt):
+            socket.create_connection(("203.0.113.1", 9), timeout=0.01)
+    assert guard.attempt_count == 1
+
+def test_smoke_installs_guard_before_query_service_construction(monkeypatch, real_fixture_db, tmp_path, knowledge_root, embedding_model_path) -> None:
+    def constructor_that_connects(*args, **kwargs):
+        socket.create_connection(("203.0.113.1", 9), timeout=0.01)
+    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider.from_config", constructor_that_connects)
+    with pytest.raises(NetworkAttempt):
+        run_smoke(real_fixture_db, experience_artifact_root=tmp_path / "experience", knowledge_artifact_root=knowledge_root, knowledge_embedding_model_path=embedding_model_path, offline=True)
 ```
 
 - [ ] **Step 2: Run RED**
@@ -942,23 +1030,38 @@ Expected: FAIL because the acceptance harness does not exist.
 
 - [ ] **Step 3: Implement the bounded real smoke**
 
-Require an existing source DB path; never launch a new analysis. Record source
-SQLite SHA-256, size, mtime, and WAL SHA-256/size before and after. Run the
-read-only import, real feature extraction, trust classification, exact-cohort
-normalization, representative exact similarity queries, explicit
-basis/horizon statistics where available, and a combined Phase 7 knowledge +
-Phase 8 evidence query. Report decision/evaluation/import/experience counts,
+Require an existing source DB path, existing Phase 8 artifact root, existing
+Phase 7 artifact root, and existing local embedding model path; never launch a
+new analysis. Record source SQLite SHA-256, size, mtime, and WAL SHA-256/size
+before and after. Set `KNOWLEDGE_OFFLINE=1`, `HF_HUB_OFFLINE=1`, and
+`TRANSFORMERS_OFFLINE=1` (plus the Phase 7 local-model flags in its current
+configuration) and install the Phase 7-style `OfflineNetworkGuard` before
+constructing either query service. Any unexpected socket/URL connection raises
+`NetworkAttempt` and fails the smoke; the report records the observed attempt
+count, which must be zero.
+
+Run the read-only import, real feature extraction, trust classification,
+exact-cohort normalization, representative exact similarity queries, explicit
+basis/horizon statistics where available, and a mandatory combined Phase 7
+knowledge + Phase 8 evidence query. Construct Phase 7 only through its actual
+read contracts (`KnowledgeConfig`, `KnowledgeCatalog`, `VectorIndexReader`,
+`LexicalIndexReader`, `FastEmbedProvider.from_config`, and
+`KnowledgeQueryService`); do not construct its parser, source scanner,
+ingestor, or writers. Report decision/evaluation/import/experience counts,
 Tier A/B/C counts, quarantine and duplicate/alias counts, feature population,
-generation ID, normalization cohort/population/fingerprint, top IDs and
-comparable dimensions, statistic eligibility/exclusions, Phase 7 result count,
-EvidenceBundle status, bounded latency, and network attempts. If no eligible
-COMPLETE outcome exists, report the honest exclusion reason rather than
-fabricating eligibility.
+generation IDs, normalization cohort/population/fingerprint, Phase 7
+generation and embedding-spec/artifact identity, top IDs and comparable
+dimensions, statistic eligibility/exclusions, Knowledge and Experience hit
+counts, EvidenceBundle status, bounded latency, and network attempts. If no
+eligible COMPLETE outcome exists, report the honest exclusion reason rather
+than fabricating eligibility.
 
 The harness must prove source hashes/sizes/WAL metadata are unchanged and
 must not write under the source path or `new books`. Keep the smoke bounded to
-the existing data and local services; no Qwen, MT5, execution, or network call
-is allowed.
+the existing data and local services; no Qwen, MT5, execution, or unguarded
+network call is allowed. Missing or incompatible Phase 7 local query artifacts
+returns `PHASE 8 NOT COMPLETE`; the combined EvidenceBundle gate may not be
+skipped.
 
 - [ ] **Step 4: Run GREEN**
 
@@ -971,7 +1074,7 @@ report as verification evidence.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/experience_phase8_smoke.py tests/test_experience_task12_scripts.py README.md docs/phase8
+git add scripts/experience_phase8_smoke.py tests/test_experience_task12_scripts.py
 git commit -m "test: add phase 8 real acceptance smoke"
 ```
 
@@ -1055,6 +1158,9 @@ valid generation.
   propagated unchanged by Task 9.
 - Normalization cohorts, trust tiers, fingerprints, and historical cutoffs
   are consistent across Tasks 5, 6, 7, 9, and 11.
+- Current normalization requires a CURRENT alias; historical normalization uses
+  retained accepted evidence available before `as_of` even after later alias
+  removal, and Task 7 rebuild preserves that feature evidence.
 - Tier C is diagnostic-only and cannot enter V1 numeric similarity.
 - Outcome/action, candidate-time, completion-time, normalization, evaluation,
   and cohort leakage gates are explicit and require zero violations.
@@ -1062,7 +1168,14 @@ valid generation.
 - Duplicate alias removal and historical tombstone semantics are explicit.
 - `training_eligible` remains provenance only; HOLD remains separate.
 - Knowledge and Experience stores, scores, and provenance remain separate.
-- The bounded real smoke is mandatory and uses existing data only.
+- The bounded real smoke is mandatory, uses existing data only, and requires a
+  real Phase 7 read query with explicit artifact/model paths.
+- The real smoke installs an active offline network guard before constructing
+  query services and fails on any unexpected network attempt.
+- Catalog tombstone state is derived via `is_tombstoned`; only query hits carry
+  `currently_tombstoned`.
+- Task 12 stages only its declared smoke script and test files; Task 13 owns
+  the separate verification report.
 - No task modifies MT5, TradingAgents/LangGraph, forex-watch, Qwen/Ollama,
   execution, training, Phase 7 ingestion, or Phase 9.
 - No unfinished markers or unspecified owner remains in this plan.
