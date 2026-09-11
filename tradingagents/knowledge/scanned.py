@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 from .models import IngestionState, ParsedBlock, ParsedDocument
 
-
 _MIN_TEXT_CHARS = 64
 
 

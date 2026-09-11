@@ -7,21 +7,20 @@ ensures that a local ONNX adapter never silently changes their text.
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from collections.abc import Sequence
-from dataclasses import dataclass
 import hashlib
 import inspect
 import json
 import math
 import os
-from pathlib import Path, PurePosixPath
 import tempfile
+from collections import OrderedDict
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 from .config import KnowledgeConfig
 from .models import ChunkRecord, EmbeddingSpec
-
 
 BGE_SEARCH_PREFIX = "Represent this sentence for searching relevant passages: "
 _CACHE_SCHEMA_VERSION = "embedding-artifact-v1"

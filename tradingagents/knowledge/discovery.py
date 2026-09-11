@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import stat
+from pathlib import Path
 
 from .config import KnowledgeConfig
 from .identity import SourceChangedError, resource_id_for, sha256_file
 from .models import DiscoveredResource, IngestionState
-
 
 _REPARSE_POINT = 0x0400
 _SUPPORTED_EXTENSIONS = frozenset({".pdf", ".epub"})

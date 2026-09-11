@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from contextlib import closing
 import json
-from pathlib import Path
 import shutil
 import sqlite3
+from contextlib import closing
+from pathlib import Path
 
 import pytest
 
@@ -17,9 +17,17 @@ from tradingagents.knowledge.index_generation import (
     IncompatibleIndexGeneration,
     IndexGenerationManager,
 )
-from tradingagents.knowledge.lexical_index import LexicalIndexError, LexicalIndexReader, LexicalIndexWriter
+from tradingagents.knowledge.lexical_index import (
+    LexicalIndexError,
+    LexicalIndexReader,
+    LexicalIndexWriter,
+)
 from tradingagents.knowledge.models import ChunkRecord, ContentType, EmbeddingSpec
-from tradingagents.knowledge.vector_index import VectorIndexError, VectorIndexReader, VectorIndexWriter
+from tradingagents.knowledge.vector_index import (
+    VectorIndexError,
+    VectorIndexReader,
+    VectorIndexWriter,
+)
 
 
 class FakeVectorBackend:

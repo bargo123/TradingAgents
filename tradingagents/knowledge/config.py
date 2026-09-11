@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field, fields
 import hashlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
-
 
 _DEFAULT_SOURCE_ROOT = Path(r"C:\Users\Zaid barghouthi\Downloads\new books")
 _DEFAULT_ARTIFACT_ROOT = Path(__file__).resolve().parents[2] / "data_cache" / "knowledge"

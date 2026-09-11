@@ -9,12 +9,12 @@ dependency.
 
 from __future__ import annotations
 
+import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime
 from enum import Enum
-import json
-import math
 from pathlib import Path
 from typing import Any
 

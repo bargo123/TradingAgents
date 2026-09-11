@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from contextlib import closing
 import json
-from pathlib import Path
 import sqlite3
 import unicodedata
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from contextlib import closing
+from pathlib import Path
+from typing import Any
 
 from .models import ChunkRecord, EmbeddingSpec
-
 
 _SCHEMA_VERSION = "lexical-projection-v1"
 _METADATA_TABLE = "knowledge_index_metadata"

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
 import json
 import math
 import socket
 import sys
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 
 import pytest

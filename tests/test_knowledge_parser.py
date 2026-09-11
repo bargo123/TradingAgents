@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
-from dataclasses import dataclass
-from pathlib import Path
+import json
 import sys
 import types
 import zipfile
+from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from tradingagents.knowledge.config import KnowledgeConfig
-from tradingagents.knowledge.identity import document_id_for, resource_id_for
+from tradingagents.knowledge.identity import resource_id_for
 from tradingagents.knowledge.models import DiscoveredResource, IngestionState
-
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "knowledge" / "structured_ir.json"
 

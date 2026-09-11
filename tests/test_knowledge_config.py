@@ -1,7 +1,7 @@
 """Validation tests for the local/offline Phase 7 configuration."""
 
-from dataclasses import FrozenInstanceError
 import json
+from dataclasses import FrozenInstanceError
 
 import pytest
 

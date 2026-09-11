@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import os
-from pathlib import Path
 import re
 import stat
 import unicodedata
+from pathlib import Path
 
 
 class SourceChangedError(RuntimeError):

@@ -7,11 +7,12 @@ same embedding provider's specification and tokenizer to this boundary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import hashlib
 import json
-from typing import Any, Protocol, Sequence
 import unicodedata
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
+from typing import Any, Protocol
 
 from .models import (
     ChunkRecord,

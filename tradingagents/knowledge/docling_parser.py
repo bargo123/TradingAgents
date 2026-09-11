@@ -7,19 +7,19 @@ that model into the immutable contracts shared by later knowledge stages.
 
 from __future__ import annotations
 
+import hashlib
+import inspect
+import json
+import os
+import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import replace
 from html.parser import HTMLParser
 from importlib import import_module
 from pathlib import Path, PurePosixPath
 from typing import Any
 from xml.etree import ElementTree
-import hashlib
-import inspect
-import json
-import os
-import zipfile
 
 from .config import KnowledgeConfig
 from .models import ContentType, ParsedDocument
@@ -30,7 +30,6 @@ from .parser import (
     ParserDependencyUnavailable,
     normalize_parsed_document,
 )
-
 
 _DOCLING_MANIFEST = "docling-artifacts.json"
 _DOCLING_MANIFEST_SCHEMA = "docling-artifacts-v1"
@@ -383,10 +382,8 @@ class DoclingDocumentParser(DocumentParser):
             yield
         finally:
             for target, name, old in reversed(changed_settings):
-                try:
+                with suppress(AttributeError, TypeError, ValueError):
                     setattr(target, name, old)
-                except (AttributeError, TypeError, ValueError):
-                    pass
             for name, old in previous.items():
                 if old is None:
                     os.environ.pop(name, None)
@@ -415,7 +412,7 @@ class DoclingDocumentParser(DocumentParser):
         self._assert_docling_manifest_version(manifest, resource_id)
         format_options: dict[Any, Any] = {}
         if format_name == "pdf":
-            format_options[getattr(InputFormat, "PDF")] = PdfFormatOption(pipeline_options=options)
+            format_options[InputFormat.PDF] = PdfFormatOption(pipeline_options=options)
         elif format_name == "epub" and hasattr(InputFormat, "EPUB"):
             # EPUB has no OCR pipeline, but receives the same local resolver controls below.
             format_options = {}

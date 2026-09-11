@@ -204,7 +204,7 @@ def bge_chunker_fixture():
 def max_overlap_tokens(chunks: tuple[object, ...]) -> int:
     texts = [item.text.split() for item in chunks]
     overlaps = []
-    for previous, current in zip(texts, texts[1:]):
+    for previous, current in zip(texts, texts[1:], strict=False):
         maximum = min(len(previous), len(current))
         overlaps.append(
             max(
@@ -310,7 +310,7 @@ def test_adjacent_prose_paragraphs_in_one_section_share_a_structural_chunk():
 
     assert len(chunks) == 1
     assert chunks[0].block_range == (0, 1)
-    assert "First Methods paragraph.\n\nSecond Methods paragraph." == chunks[0].text
+    assert chunks[0].text == "First Methods paragraph.\n\nSecond Methods paragraph."
 
 
 def test_adjacent_paragraphs_flush_before_the_next_whole_paragraph_exceeds_target():

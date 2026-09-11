@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import tempfile
-from typing import Any, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
 
 from .catalog import KnowledgeCatalog
 from .embeddings import EmbeddingSpecMismatch

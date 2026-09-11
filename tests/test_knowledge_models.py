@@ -1,7 +1,7 @@
 """Contract tests for the Phase 7 knowledge value objects."""
 
-from dataclasses import FrozenInstanceError, asdict
 import json
+from dataclasses import FrozenInstanceError, asdict
 
 import pytest
 

@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Protocol, Sequence
+from typing import Any, Protocol
 
 from .models import ChunkRecord, EmbeddingSpec
-
 
 _METADATA_FILE = "index-metadata.json"
 _SCHEMA_VERSION = "vector-projection-v1"
