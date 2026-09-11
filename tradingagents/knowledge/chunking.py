@@ -193,68 +193,116 @@ class StructureAwareChunker:
         position = 0
         while position < len(ordered_blocks):
             index, block = ordered_blocks[position]
+            if self._is_parser_heading(block):
+                position += 1
+                continue
+            if block.content_type is ContentType.DEFINITION:
+                leading_definitions, after_leading = self._definition_sequence(
+                    ordered_blocks, position, block.section_path
+                )
+                if (
+                    after_leading < len(ordered_blocks)
+                    and ordered_blocks[after_leading][1].content_type is ContentType.EQUATION
+                    and not self._is_parser_heading(ordered_blocks[after_leading][1])
+                    and ordered_blocks[after_leading][1].section_path == block.section_path
+                ):
+                    equation_index, equation_block = ordered_blocks[after_leading]
+                    trailing_definitions, after_equation = self._definition_sequence(
+                        ordered_blocks, after_leading + 1, equation_block.section_path
+                    )
+                    drafts.extend(
+                        self._equation_bundle_drafts(
+                            document,
+                            equation_block,
+                            equation_index,
+                            leading_definitions,
+                            trailing_definitions,
+                        )
+                    )
+                    position = after_equation
+                    continue
+                drafts.extend(self._drafts_for_block(document, block, index))
+                position += 1
+                continue
             if block.content_type is ContentType.PROSE:
-                group = [(index, block)]
+                paragraphs = [(index, block)]
                 position += 1
                 while position < len(ordered_blocks):
                     next_index, next_block = ordered_blocks[position]
                     if (
                         next_block.content_type is not ContentType.PROSE
                         or next_block.section_path != block.section_path
+                        or self._is_parser_heading(next_block)
                     ):
                         break
-                    group.append((next_index, next_block))
+                    paragraphs.append((next_index, next_block))
                     position += 1
-                final_block = group[-1][1]
-                grouped_block = replace(
-                    block,
-                    text="\n\n".join(item.text for _, item in group if item.text.strip()),
-                    page_end=final_block.page_end or final_block.page_start or block.page_end,
-                )
-                drafts.extend(self._prose_drafts(document, grouped_block, group[0][0], group[-1][0]))
+                drafts.extend(self._paragraph_group_drafts(document, paragraphs))
                 continue
             if block.content_type is ContentType.EQUATION:
-                definition_group: list[tuple[int, ParsedBlock]] = []
-                position += 1
-                while position < len(ordered_blocks):
-                    definition_index, definition = ordered_blocks[position]
-                    if (
-                        definition.content_type is not ContentType.DEFINITION
-                        or definition.section_path != block.section_path
-                    ):
-                        break
-                    definition_group.append((definition_index, definition))
-                    position += 1
-                if definition_group:
-                    equation = block.equation or EquationMetadata()
-                    bundled_equation = EquationMetadata(
-                        latex=equation.latex,
-                        mathml=equation.mathml,
-                        parser_native=equation.parser_native,
-                        plain_text=equation.plain_text,
-                        variable_definitions=(
-                            *equation.variable_definitions,
-                            *(item.text for _, item in definition_group if item.text.strip()),
-                        ),
-                        representation_format=equation.representation_format,
-                        parser_confidence=equation.parser_confidence,
-                        formula_enrichment_status=equation.formula_enrichment_status,
-                        formula_model_id=equation.formula_model_id,
-                        formula_model_version=equation.formula_model_version,
-                        formula_artifact_hash=equation.formula_artifact_hash,
-                        extra=equation.extra,
-                    )
-                    bundled_block = replace(block, equation=bundled_equation)
-                    drafts.extend(
-                        self._equation_drafts(document, bundled_block, index, definition_group[-1][0])
-                    )
-                else:
-                    drafts.extend(self._drafts_for_block(document, block, index))
+                trailing_definitions, after_equation = self._definition_sequence(
+                    ordered_blocks, position + 1, block.section_path
+                )
+                drafts.extend(
+                    self._equation_bundle_drafts(document, block, index, (), trailing_definitions)
+                )
+                position = after_equation
                 continue
             drafts.extend(self._drafts_for_block(document, block, index))
             position += 1
 
         return tuple(self._record(document, draft, ordinal) for ordinal, draft in enumerate(drafts))
+
+    @staticmethod
+    def _is_parser_heading(block: ParsedBlock) -> bool:
+        return bool(block.metadata.get("is_heading"))
+
+    def _definition_sequence(
+        self,
+        ordered_blocks: Sequence[tuple[int, ParsedBlock]],
+        position: int,
+        section_path: tuple[str, ...],
+    ) -> tuple[list[tuple[int, ParsedBlock]], int]:
+        definitions: list[tuple[int, ParsedBlock]] = []
+        while position < len(ordered_blocks):
+            index, block = ordered_blocks[position]
+            if (
+                block.content_type is not ContentType.DEFINITION
+                or self._is_parser_heading(block)
+                or block.section_path != section_path
+            ):
+                break
+            definitions.append((index, block))
+            position += 1
+        return definitions, position
+
+    def _equation_bundle_drafts(
+        self,
+        document: ParsedDocument,
+        equation_block: ParsedBlock,
+        equation_index: int,
+        leading_definitions: Sequence[tuple[int, ParsedBlock]],
+        trailing_definitions: Sequence[tuple[int, ParsedBlock]],
+    ) -> list[_ChunkDraft]:
+        equation = equation_block.equation or EquationMetadata()
+        definition_texts = tuple(
+            block.text
+            for _, block in (*leading_definitions, *trailing_definitions)
+            if block.text.strip()
+        )
+        bundled_block = replace(
+            equation_block,
+            equation=replace(
+                equation,
+                variable_definitions=(
+                    *equation.variable_definitions,
+                    *definition_texts,
+                ),
+            ),
+        )
+        first_index = leading_definitions[0][0] if leading_definitions else equation_index
+        last_index = trailing_definitions[-1][0] if trailing_definitions else equation_index
+        return self._equation_drafts(document, bundled_block, first_index, last_index)
 
     def _drafts_for_block(
         self, document: ParsedDocument, block: ParsedBlock, block_index: int
@@ -284,6 +332,57 @@ class StructureAwareChunker:
     ) -> _ChunkDraft:
         self._require_fit(document, text, block)
         return _ChunkDraft(text, block.content_type, block_index, block_index, block)
+
+    def _paragraph_group_drafts(
+        self, document: ParsedDocument, paragraphs: Sequence[tuple[int, ParsedBlock]]
+    ) -> list[_ChunkDraft]:
+        """Accumulate complete same-section paragraphs up to the soft target.
+
+        Overlap belongs only to a single paragraph that is intrinsically too
+        large.  It is never carried over from a preceding paragraph into the
+        next one.
+        """
+
+        drafts: list[_ChunkDraft] = []
+        current: list[tuple[int, ParsedBlock]] = []
+        for paragraph in paragraphs:
+            _, block = paragraph
+            if not block.text.strip():
+                continue
+            if not self._fits(block.text, self.policy.soft_token_target):
+                if current:
+                    drafts.append(self._complete_paragraph_draft(document, current))
+                    current = []
+                drafts.extend(self._prose_drafts(document, block, paragraph[0]))
+                continue
+            candidate = (*current, paragraph)
+            candidate_text = self._paragraph_text(candidate)
+            if current and not self._fits(candidate_text, self.policy.soft_token_target):
+                drafts.append(self._complete_paragraph_draft(document, current))
+                current = [paragraph]
+            else:
+                current.append(paragraph)
+        if current:
+            drafts.append(self._complete_paragraph_draft(document, current))
+        return drafts
+
+    @staticmethod
+    def _paragraph_text(paragraphs: Sequence[tuple[int, ParsedBlock]]) -> str:
+        return "\n\n".join(block.text for _, block in paragraphs)
+
+    def _complete_paragraph_draft(
+        self, document: ParsedDocument, paragraphs: Sequence[tuple[int, ParsedBlock]]
+    ) -> _ChunkDraft:
+        first_index, first_block = paragraphs[0]
+        last_index, last_block = paragraphs[-1]
+        text = self._paragraph_text(paragraphs)
+        grouped_block = replace(
+            first_block,
+            text=text,
+            page_end=last_block.page_end or last_block.page_start or first_block.page_end,
+        )
+        self._require_fit(document, text, grouped_block)
+        return _ChunkDraft(text, ContentType.PROSE, first_index, last_index, grouped_block)
 
     def _prose_drafts(
         self, document: ParsedDocument, block: ParsedBlock, block_index: int, block_end: int | None = None

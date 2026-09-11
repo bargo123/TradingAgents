@@ -313,6 +313,167 @@ def test_adjacent_prose_paragraphs_in_one_section_share_a_structural_chunk():
     assert "First Methods paragraph.\n\nSecond Methods paragraph." == chunks[0].text
 
 
+def test_adjacent_paragraphs_flush_before_the_next_whole_paragraph_exceeds_target():
+    _, _, chunker = bge_chunker_fixture()
+    first_paragraph = "P1_SENTINEL " + " ".join(f"first_{index}" for index in range(299))
+    second_paragraph = "P2_SENTINEL " + " ".join(f"second_{index}" for index in range(299))
+    document = make_document(
+        (
+            ParsedBlock(
+                block_id="p-1",
+                content_type=ContentType.PROSE,
+                text=first_paragraph,
+                reading_order=0,
+                section_path=("Methods",),
+            ),
+            ParsedBlock(
+                block_id="p-2",
+                content_type=ContentType.PROSE,
+                text=second_paragraph,
+                reading_order=1,
+                section_path=("Methods",),
+            ),
+        )
+    )
+
+    chunks = chunker.chunk(document)
+
+    assert [item.block_range for item in chunks] == [(0, 0), (1, 1)]
+    assert all(not ("P1_SENTINEL" in item.text and "P2_SENTINEL" in item.text) for item in chunks)
+    assert [item.text for item in chunks] == [first_paragraph, second_paragraph]
+
+
+def test_parser_marked_heading_is_not_emitted_but_body_keeps_its_section_path():
+    _, _, chunker = bge_chunker_fixture()
+    heading = ParsedBlock(
+        block_id="heading",
+        content_type=ContentType.PROSE,
+        text="Methods",
+        reading_order=0,
+        section_path=("Methods",),
+        metadata={"is_heading": True},
+    )
+    body = ParsedBlock(
+        block_id="body",
+        content_type=ContentType.PROSE,
+        text="The body discusses inventory risk.",
+        reading_order=1,
+        section_path=("Methods",),
+    )
+
+    assert chunker.chunk(make_document((heading,))) == ()
+    chunks = chunker.chunk(make_document((heading, body)))
+    assert len(chunks) == 1
+    assert chunks[0].text == body.text
+    assert chunks[0].section_path == ("Methods",)
+    assert chunks[0].block_range == (1, 1)
+
+
+def test_equation_absorbs_immediately_preceding_and_trailing_definition_sequences():
+    _, _, chunker = bge_chunker_fixture()
+    document = make_document(
+        (
+            ParsedBlock(
+                block_id="before-1",
+                content_type=ContentType.DEFINITION,
+                text="inventory is the signed position.",
+                reading_order=0,
+                section_path=("Risk",),
+            ),
+            ParsedBlock(
+                block_id="before-2",
+                content_type=ContentType.DEFINITION,
+                text="volatility is the forecast scale.",
+                reading_order=1,
+                section_path=("Risk",),
+            ),
+            ParsedBlock(
+                block_id="equation",
+                content_type=ContentType.EQUATION,
+                text="risk = inventory * volatility",
+                reading_order=2,
+                section_path=("Risk",),
+                equation=EquationMetadata(latex="risk = inventory * volatility"),
+            ),
+            ParsedBlock(
+                block_id="after",
+                content_type=ContentType.DEFINITION,
+                text="risk is marked in currency units.",
+                reading_order=3,
+                section_path=("Risk",),
+            ),
+        )
+    )
+
+    chunks = chunker.chunk(document)
+
+    assert len(chunks) == 1
+    assert chunks[0].content_type is ContentType.EQUATION
+    assert chunks[0].block_range == (0, 3)
+    assert all(marker in chunks[0].text for marker in ("signed position", "forecast scale", "currency units"))
+    assert chunks[0].equation_metadata["variable_definitions"]
+
+
+def test_definition_sequence_is_not_stolen_across_a_section_boundary():
+    _, _, chunker = bge_chunker_fixture()
+    other_section_definition = ParsedBlock(
+        block_id="other-section",
+        content_type=ContentType.DEFINITION,
+        text="alpha is unrelated.",
+        reading_order=0,
+        section_path=("Other",),
+    )
+    equation = ParsedBlock(
+        block_id="equation",
+        content_type=ContentType.EQUATION,
+        text="risk = inventory",
+        reading_order=1,
+        section_path=("Risk",),
+        equation=EquationMetadata(latex="risk = inventory"),
+    )
+    chunks = chunker.chunk(make_document((other_section_definition, equation)))
+
+    assert [item.content_type for item in chunks] == [ContentType.DEFINITION, ContentType.EQUATION]
+    assert "alpha is unrelated" not in chunks[1].text
+    assert chunks[1].block_range == (1, 1)
+
+
+def test_definition_sequence_is_not_stolen_across_an_unrelated_block():
+    _, _, chunker = bge_chunker_fixture()
+    definition = ParsedBlock(
+        block_id="definition",
+        content_type=ContentType.DEFINITION,
+        text="inventory is the signed position.",
+        reading_order=0,
+        section_path=("Risk",),
+    )
+    intervening_prose = ParsedBlock(
+        block_id="intervening",
+        content_type=ContentType.PROSE,
+        text="This explanation separates the definition from the formula.",
+        reading_order=1,
+        section_path=("Risk",),
+    )
+    equation = ParsedBlock(
+        block_id="equation",
+        content_type=ContentType.EQUATION,
+        text="risk = inventory",
+        reading_order=2,
+        section_path=("Risk",),
+        equation=EquationMetadata(latex="risk = inventory"),
+    )
+
+    chunks = chunker.chunk(make_document((definition, intervening_prose, equation)))
+
+    assert [item.content_type for item in chunks] == [
+        ContentType.DEFINITION,
+        ContentType.PROSE,
+        ContentType.EQUATION,
+    ]
+    assert "signed position" not in chunks[-1].text
+    assert chunks[-1].block_range == (2, 2)
+
+
 def test_chunk_ids_and_order_are_repeatable_and_normalize_hash_input():
     from tradingagents.knowledge.chunking import deterministic_chunk_id
 
