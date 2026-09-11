@@ -23,8 +23,8 @@ def validate_hit_provenance(hit: KnowledgeHit | Mapping[str, Any]) -> None:
     values = hit if isinstance(hit, Mapping) else hit.to_dict()
     for field in ("document_id", "chunk_id", "source_hash", "content_type"):
         _required(values.get(field), field)
-    if not (values.get("source_filename") or values.get("source_relative_path")):
-        raise ProvenanceError("knowledge hit is missing source filename/path")
+    _required(values.get("source_filename"), "source filename")
+    _required(values.get("source_relative_path"), "source relative path")
 
     location = next(
         (

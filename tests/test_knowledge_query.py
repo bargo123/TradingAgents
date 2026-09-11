@@ -221,6 +221,10 @@ def test_content_type_and_document_filters_are_applied_before_return():
 def test_anonymous_hit_and_generation_mismatch_fail_closed():
     with pytest.raises(ProvenanceError):
         validate_hit_provenance(make_hit(source_hash=None))
+    with pytest.raises(ProvenanceError):
+        validate_hit_provenance(make_hit(source_filename=None))
+    with pytest.raises(ProvenanceError):
+        validate_hit_provenance(make_hit(source_relative_path=None))
     with pytest.raises(IncompatibleIndexGeneration):
         query_harness(vector_generation="gen-a", lexical_generation="gen-b").search(KnowledgeQuery(text="OFI"))
 

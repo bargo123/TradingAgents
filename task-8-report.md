@@ -21,3 +21,14 @@ the Task 8 modules were absent. After implementation:
   is not installed.
 - Ruff check via the repository virtual environment — passed.
 - `python -m py_compile` for all Task 8 modules and tests — passed.
+
+## Review fix
+
+Added regression coverage for missing `source_filename` and missing
+`source_relative_path`, then made both fields mandatory in
+`validate_hit_provenance`.
+
+- `python -m pytest tests/test_knowledge_query.py -q` — 16 passed.
+- Tasks 1–8 knowledge suite — 141 passed, 1 skipped because optional `docling`
+  is not installed.
+- Ruff and compilation checks — passed.
