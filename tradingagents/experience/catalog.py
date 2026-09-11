@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,13 +30,46 @@ class ExperienceCatalog:
         self.artifact_root = Path(artifact_root).resolve()
         self.artifact_root.mkdir(parents=True, exist_ok=True)
         self.database_path = self.artifact_root / "catalog.sqlite3"
+        self._transaction_connection: sqlite3.Connection | None = None
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
+        if self._transaction_connection is not None:
+            @contextmanager
+            def existing():
+                yield self._transaction_connection
+            return existing()
+        @contextmanager
+        def standalone():
+            connection = sqlite3.connect(self.database_path)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+            try:
+                yield connection
+                connection.commit()
+            finally:
+                connection.close()
+        return standalone()
+
+    @contextmanager
+    def transaction(self):
+        """Commit or roll back all catalog writes in one importer unit."""
+        if self._transaction_connection is not None:
+            yield self._transaction_connection
+            return
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        self._transaction_connection = connection
+        try:
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            self._transaction_connection = None
+            connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as db:
@@ -193,6 +227,34 @@ class ExperienceCatalog:
         with self._connect() as db:
             row = db.execute("SELECT * FROM experience_generations WHERE active=1 ORDER BY published_at DESC LIMIT 1").fetchone()
             return {"generation_id": row["generation_id"], "population_fingerprint": row["population_fingerprint"], "metadata": json.loads(row["metadata_json"]), "published_at": row["published_at"]} if row else None
+
+    def register_source(self, source_database_id: str, *, canonical_path: str,
+                        source_fingerprint: str, source_schema_fingerprint: str,
+                        metadata: dict[str, Any] | None = None) -> None:
+        """Record an immutable source observation for importer audit."""
+        with self._connect() as db:
+            db.execute("INSERT OR REPLACE INTO experience_sources VALUES (?,?,?,?,?,?)",
+                       (source_database_id, canonical_path, source_fingerprint,
+                        source_schema_fingerprint, _now(), _json(metadata)))
+
+    def record_import_event(self, event_type: str, *, source_database_id: str | None = None,
+                            detail: Any = None, decision_id: str | None = None,
+                            experience_id: str | None = None) -> None:
+        with self._connect() as db:
+            db.execute("INSERT INTO experience_import_events(event_type,source_database_id,decision_id,experience_id,detail_json,observed_at) VALUES (?,?,?,?,?,?)",
+                       (event_type, source_database_id, decision_id, experience_id, _json(detail), _now()))
+
+    def aliases_for_source(self, source_database_id: str) -> tuple[dict[str, str], ...]:
+        with self._connect() as db:
+            return tuple(dict(r) for r in db.execute(
+                "SELECT source_database_id,source_decision_id,accepted_fingerprint,experience_id,state FROM experience_source_aliases WHERE source_database_id=?",
+                (source_database_id,)).fetchall())
+
+    def store_feature_projection(self, experience_id: str, projection: Any,
+                                 schema_version: str = "experience-features.v1") -> None:
+        with self._connect() as db:
+            db.execute("DELETE FROM experience_feature_projections WHERE experience_id=?", (experience_id,))
+            db.execute("INSERT INTO experience_feature_projections VALUES (?,?,?)", (experience_id, schema_version, _json(projection)))
 
 
 __all__ = ["ExperienceCatalog"]
