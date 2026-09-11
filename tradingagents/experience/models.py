@@ -215,10 +215,14 @@ class OutcomeDirectionStatistics(Serializable):
     mfe_median: float | None = None
     mae_mean: float | None = None
     mae_median: float | None = None
+    mfe_quantiles: Mapping[str, float] = None
+    mae_quantiles: Mapping[str, float] = None
     def __post_init__(self) -> None:
         object.__setattr__(self, "net_points", tuple(self.net_points))
         object.__setattr__(self, "mfe_points", tuple(self.mfe_points))
         object.__setattr__(self, "mae_points", tuple(self.mae_points))
+        object.__setattr__(self, "mfe_quantiles", _freeze(self.mfe_quantiles or {}))
+        object.__setattr__(self, "mae_quantiles", _freeze(self.mae_quantiles or {}))
     @property
     def positive_count(self) -> int: return self.positive_net_count
     @property

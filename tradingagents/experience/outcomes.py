@@ -166,7 +166,7 @@ class OutcomeStatsCalculator:
                         if float(snapshot["buy_net_points"]) > 0: hold_buy_missed.append(float(snapshot["buy_net_points"]))
                         if float(snapshot["sell_net_points"]) > 0: hold_sell_missed.append(float(snapshot["sell_net_points"]))
                         best = str(snapshot.get("best_counterfactual_action", "")).upper()
-                        if best in {"BUY", "SELL"}: best_counterfactuals[best] = best_counterfactuals.get(best, 0) + 1
+                        if best in {"BUY", "SELL", "TIE"}: best_counterfactuals[best] = best_counterfactuals.get(best, 0) + 1
                     continue
                 status = str(snapshot.get("evaluation_status", "")) if snapshot is not None else ""
                 if status:
@@ -179,6 +179,12 @@ class OutcomeStatsCalculator:
             positive = sum(v > 0 for v in values)
             negative = sum(v < 0 for v in values)
             zero = sum(v == 0 for v in values)
+            def quantiles(points: list[float]) -> dict[str, float]:
+                if len(points) < 2:
+                    return {}
+                ordered = sorted(points)
+                return {"p50": float(statistics.median(ordered)),
+                        "p95": float(statistics.quantiles(ordered, n=100, method="inclusive")[94])}
             return OutcomeDirectionStatistics(
                 tuple(values), positive / n if n else None, n,
                 positive, positive / n if n else None,
@@ -191,6 +197,7 @@ class OutcomeStatsCalculator:
                 statistics.median(mfe) if mfe else None,
                 statistics.mean(mae) if mae else None,
                 statistics.median(mae) if mae else None,
+                quantiles(mfe), quantiles(mae),
             )
 
         return OutcomeStatistics(

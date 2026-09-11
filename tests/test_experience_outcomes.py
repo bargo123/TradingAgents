@@ -119,3 +119,23 @@ def test_mfe_mae_and_hold_missed_opportunity_fields_are_reported():
 def test_eligible_complete_status_is_not_an_exclusion():
     result = calculator().calculate(OutcomeStatsRequest(("exp1",), "ANALYSIS_SNAPSHOT", 300))
     assert result.exclusions_by_status == {}
+
+
+def test_hold_preserves_tie_best_counterfactual_and_directional_quantiles():
+    rows = [
+        _complete("tie-1", selected_action="HOLD", buy_net_points=1.0,
+                  sell_net_points=1.0, hold_opportunity_cost_points=1.0,
+                  best_counterfactual_action="TIE", buy_mfe_points=2.0,
+                  buy_mae_points=-1.0, sell_mfe_points=3.0, sell_mae_points=-2.0),
+        _complete("tie-2", selected_action="HOLD", buy_net_points=2.0,
+                  sell_net_points=2.0, hold_opportunity_cost_points=2.0,
+                  best_counterfactual_action="TIE", buy_mfe_points=4.0,
+                  buy_mae_points=-3.0, sell_mfe_points=5.0, sell_mae_points=-4.0),
+    ]
+    records = tuple(_record(f"tie-{i}", snapshots=(row,)) for i, row in enumerate(rows, 1))
+    result = OutcomeStatsCalculator(records).calculate(
+        OutcomeStatsRequest(("tie-1", "tie-2"), "ANALYSIS_SNAPSHOT", 300)
+    )
+    assert result.hold.best_counterfactual_counts == {"TIE": 2}
+    assert result.buy.mfe_quantiles["p50"] == 3.0
+    assert result.sell.mae_quantiles["p95"] == -2.1

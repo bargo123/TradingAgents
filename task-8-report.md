@@ -36,6 +36,11 @@ excluded snapshots, never eligible COMPLETE rows.
 Reviewer follow-up verification: focused outcomes tests — 9 passed; all Phase 8
 experience tests — 77 passed; compileall and diff checks passed.
 
+Second review follow-up preserves `TIE` in best-counterfactual counts and adds
+deterministic p50/p95 MFE/MAE quantile maps when at least two values exist.
+Focused outcomes tests now pass 10 cases; the full experience suite passes 78
+cases.
+
 ## Boundaries
 
 No orchestrator, CLI, smoke harness, trading, MT5, model, execution, training,
