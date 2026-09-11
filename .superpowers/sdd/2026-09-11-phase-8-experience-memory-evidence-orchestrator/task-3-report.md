@@ -37,6 +37,18 @@ execution behavior was added.
 
 Implementation commit: `c72277e32b29d77db00355df74a1f129958e3285`
 
+## Reviewer follow-up
+
+The follow-up RED tests covered two catalog integrity defects: mismatched
+provenance fingerprints and multiple decisions originating from one source
+database. Both failed before the fix. The corrected implementation rejects a
+provenance fingerprint that differs from the observed snapshot fingerprint and
+keys `ExperienceRecord.source_aliases` by `source_database_id:source_decision_id`
+so aliases cannot overwrite one another. Focused follow-up tests pass (`11
+passed`), and the Task 1/2 regression set passes (`35 passed`).
+
+Follow-up fix commit: `c97f3701b0659e7b379ace4c83bb40bd69327b21`
+
 ## Risks / follow-up
 
 The catalog API is intentionally minimal for Task 3. Later tasks must add
