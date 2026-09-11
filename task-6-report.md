@@ -1,28 +1,46 @@
-# Task 6 review-fix report
+# Phase 8 Task 6 implementation report
 
 ## Scope
 
-- Validated every lexical provenance row against the paired vector row,
-  generation ID, source identity, and population identity during both build
-  and active-generation resolution.
-- Enforced canonical, generation-scoped vector and lexical artifact locations.
-- Persisted and validated all `EmbeddingSpec` fields as direct vector-row
-  columns, including `embedding_runtime` and
-  `embedding_special_token_budget`; retained canonical
-  `embedding_spec_json` validation.
+Implemented the exact NumPy similarity index and read-only experience query
+service only. It consumes caller-provided vectors, records, and
+`SimilarityProfileV1`; it does not open source databases or MT5.
 
 ## TDD evidence
 
-The new index tests were run before implementation and failed for the expected
-missing direct embedding columns and missing row/location integrity checks.
+- RED: `pytest tests/test_experience_similarity.py tests/test_experience_query.py -q` failed during collection because the requested modules did not exist.
+- GREEN: focused suite — `5 passed`.
+- Regression: all `tests/test_experience_*.py` — `57 passed`.
+- `python -m compileall -q tradingagents/experience` — passed.
+- `git diff --check` — passed.
 
 After implementation:
 
-- `pytest tests/test_knowledge_indexes.py -q` — 27 passed.
-- Tasks 1–6 suite — 113 passed, 1 skipped because optional `docling` is not
-  installed.
-- `python -m compileall -q tradingagents/knowledge` — passed.
-- `git diff --check` — passed.
+## Behavior delivered
 
-`ruff` is not installed in the active Python environment (`python -m ruff`
-reports `No module named ruff`).
+- Masked float32 weighted RMS with profile normalization, clipping, minimum
+  eight dimensions and 50% overlap, score `1 / (1 + distance)`.
+- Deterministic ordering by distance, analysis snapshot timestamp, and ID.
+- Query gates for symbol/profile/timeframe, cohort/schema compatibility, trust
+  tiers, provenance/acceptance, strict as-of analysis/completion, and current
+  versus historical tombstones. Tier C is rejected from numeric similarity.
+- Result envelope includes normalization fingerprint, generation ID, candidate
+  count, exclusion counts, and immutable `ExperienceHit` values.
+
+## Files
+
+- `tradingagents/experience/similarity.py`
+- `tradingagents/experience/query.py`
+- `tests/test_experience_similarity.py`
+- `tests/test_experience_query.py`
+
+## Commit
+
+Recorded in the Git commit created for this task.
+
+## Risks / follow-up
+
+The service intentionally uses dependency seams for feature projections and
+profiles. Import, outcome statistics, orchestrator, CLI, smoke, and forbidden
+integrations remain outside this task.
+
