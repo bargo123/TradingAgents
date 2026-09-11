@@ -39,6 +39,12 @@ dev = [
     "pytest>=8.0",
     "pytest-subtests>=0.13",
 ]
+knowledge = [
+    "docling>=2.0",
+    "fastembed>=0.4",
+    "onnxruntime>=1.18",
+    "lancedb>=0.18",
+]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
 # stays lean: pip install "tradingagents[bedrock]".
 bedrock = [
