@@ -50,3 +50,10 @@ timezone-aware UTC.
 - GREEN: focused suite passed: 13 tests.
 - Compileall and `git diff --check` passed.
 - Fix commit: recorded by the follow-up commit containing this report update.
+
+## Review round 2 fixes
+
+Deep-froze `ExperienceQuery.market_state`, including nested mappings, and
+applied the provenance-only reserved-key validation at the query boundary.
+The focused suite passed 14 tests, with compileall and `git diff --check` also
+passing.

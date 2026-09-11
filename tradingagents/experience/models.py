@@ -140,7 +140,9 @@ class ExperienceQuery(Serializable):
     action_filter: str | None = None
     def __post_init__(self) -> None:
         if not isinstance(self.market_state, Mapping): raise ValueError("market_state must be a mapping")
+        _reject_reserved(self.market_state)
         if self.top_k < 1: raise ValueError("top_k must be positive")
+        object.__setattr__(self, "market_state", _freeze(self.market_state))
         object.__setattr__(self, "trust_tiers", _tiers(self.trust_tiers)); object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
 
 

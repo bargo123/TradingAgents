@@ -79,3 +79,11 @@ def test_training_eligible_is_rejected_outside_provenance() -> None:
 def test_hit_timestamps_require_utc() -> None:
     with pytest.raises(ValueError, match="UTC"):
         ExperienceHit("x", timestamps={"completed": datetime(2026, 1, 1)})
+
+
+def test_query_market_state_is_deeply_immutable() -> None:
+    query = ExperienceQuery({"nested": {"price": 1}})
+    with pytest.raises(TypeError):
+        query.market_state["nested"]["price"] = 2
+    with pytest.raises(ValueError, match="training_eligible"):
+        ExperienceQuery({"training_eligible": True})
