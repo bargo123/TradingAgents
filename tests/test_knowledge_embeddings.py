@@ -281,6 +281,54 @@ def test_fastembed_binds_the_exact_configured_local_model_path_without_network(t
     assert LocalOnlyTextEmbedding.calls[0]["providers"] == ["CPUExecutionProvider"]
 
 
+def test_fastembed_uses_setup_manifest_hash_excluding_manifest_bytes(tmp_path, monkeypatch):
+    from tradingagents.knowledge.embeddings import FastEmbedProvider, _directory_hash
+
+    class LocalTokenizer:
+        model_max_length = 512
+
+        def encode(self, text, *, add_special_tokens, truncation=False):
+            return ("<s>", "</s>") + tuple(text.split()) if add_special_tokens else tuple(text.split())
+
+    class LocalOnlyTextEmbedding:
+        def __init__(self, *, model_name, specific_model_path, local_files_only, cache_dir, threads, providers):
+            self.tokenizer = LocalTokenizer()
+            self.embedding_size = 3
+
+    _install_fake_fastembed(monkeypatch, LocalOnlyTextEmbedding)
+    config = _local_model_config(tmp_path)
+    expected = _directory_hash(config.embedding_model_path)
+    (config.embedding_model_path / "embedding-artifacts.json").write_text(
+        json.dumps({"artifact_hash": expected}), encoding="utf-8"
+    )
+
+    assert FastEmbedProvider.from_config(config).spec.artifact_hash == expected
+
+
+def test_fastembed_rejects_tampered_setup_manifest_hash(tmp_path, monkeypatch):
+    from tradingagents.knowledge.embeddings import FastEmbedProvider, LocalModelUnavailable
+
+    class LocalTokenizer:
+        model_max_length = 512
+
+        def encode(self, text, *, add_special_tokens, truncation=False):
+            return ("<s>", "</s>") + tuple(text.split()) if add_special_tokens else tuple(text.split())
+
+    class LocalOnlyTextEmbedding:
+        def __init__(self, *, model_name, specific_model_path, local_files_only, cache_dir, threads, providers):
+            self.tokenizer = LocalTokenizer()
+            self.embedding_size = 3
+
+    _install_fake_fastembed(monkeypatch, LocalOnlyTextEmbedding)
+    config = _local_model_config(tmp_path)
+    (config.embedding_model_path / "embedding-artifacts.json").write_text(
+        json.dumps({"artifact_hash": "sha256:wrong"}), encoding="utf-8"
+    )
+
+    with pytest.raises(LocalModelUnavailable, match="manifest hash"):
+        FastEmbedProvider.from_config(config)
+
+
 def test_fastembed_rejects_adapter_without_exact_local_path_argument(tmp_path, monkeypatch):
     from tradingagents.knowledge.embeddings import FastEmbedProvider, LocalModelUnavailable
 

@@ -307,7 +307,7 @@ class FastEmbedProvider(EmbeddingProvider):
             special_token_budget=_resolved_special_token_budget(raw_tokenizer),
         )
         dimensions = _resolve_dimensions(embedder, config.embedding_dimensions)
-        artifact_hash = config.embedding_artifact_hash or _directory_hash(model_path)
+        artifact_hash = _resolve_artifact_hash(model_path, config.embedding_artifact_hash)
         version = _resolved_version(config)
         spec = EmbeddingSpec(
             model_id=config.embedding_model_id,
@@ -399,15 +399,37 @@ def _resolved_version(config: KnowledgeConfig) -> str:
         return "fastembed-unknown"
 
 
-def _directory_hash(path: Path) -> str:
+def _directory_hash(path: Path, *, exclude_names: frozenset[str] = frozenset()) -> str:
     digest = hashlib.sha256()
-    for entry in sorted((item for item in path.rglob("*") if item.is_file()), key=lambda item: item.as_posix()):
+    for entry in sorted(
+        (item for item in path.rglob("*") if item.is_file() and item.name not in exclude_names),
+        key=lambda item: item.as_posix(),
+    ):
         digest.update(entry.relative_to(path).as_posix().encode("utf-8"))
         digest.update(b"\0")
         with entry.open("rb") as handle:
             for block in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(block)
     return "sha256:" + digest.hexdigest()
+
+
+def _resolve_artifact_hash(path: Path, configured: str) -> str:
+    """Use the setup manifest's hash while excluding that manifest from the hash."""
+
+    if configured:
+        return configured
+    manifest_path = path / "embedding-artifacts.json"
+    if not manifest_path.is_file():
+        return _directory_hash(path)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LocalModelUnavailable("embedding artifact manifest is unreadable") from exc
+    manifest_hash = payload.get("artifact_hash") if isinstance(payload, dict) else None
+    computed_hash = _directory_hash(path, exclude_names=frozenset({manifest_path.name}))
+    if not isinstance(manifest_hash, str) or manifest_hash != computed_hash:
+        raise LocalModelUnavailable("embedding artifact manifest hash does not match local files")
+    return manifest_hash
 
 
 def _tokenizer_asset_fingerprint(model_path: Path) -> str:
