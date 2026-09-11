@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -13,6 +13,7 @@ from typing import Any, Iterator, Mapping
 from .diagnostics import QuarantineRecord, bounded_error_metadata
 from .models import (
     AliasRelation,
+    ChunkRecord,
     DiscoveredResource,
     IndexGeneration,
     IngestionRunSummary,
@@ -60,6 +61,7 @@ class CatalogDocument:
     lexical_ready: bool
     projection_generation: str | None
     projection_population_hash: str | None
+    component_fingerprints: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +147,8 @@ class KnowledgeCatalog:
                     lexical_ready INTEGER NOT NULL DEFAULT 0 CHECK(lexical_ready IN (0, 1)),
                     projection_generation TEXT,
                     projection_population_hash TEXT,
+                    component_fingerprints_json TEXT NOT NULL DEFAULT '{}',
+                    ingestion_run_id TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -168,6 +172,7 @@ class KnowledgeCatalog:
                     lexical_ready INTEGER NOT NULL DEFAULT 0 CHECK(lexical_ready IN (0, 1)),
                     projection_generation TEXT,
                     projection_population_hash TEXT
+                    ,ingestion_run_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS knowledge_ingestion_runs (
                     run_id TEXT PRIMARY KEY,
@@ -220,6 +225,19 @@ class KnowledgeCatalog:
                     ON knowledge_index_generations(is_active) WHERE is_active = 1;
                 """
             )
+            # SQLite's CREATE IF NOT EXISTS does not add columns to catalogs
+            # created by earlier Phase 7 tasks.  These additive migrations
+            # keep existing local metadata usable without rewriting sources.
+            self._add_column_if_missing(connection, "knowledge_documents", "component_fingerprints_json TEXT NOT NULL DEFAULT '{}'")
+            self._add_column_if_missing(connection, "knowledge_documents", "ingestion_run_id TEXT")
+            self._add_column_if_missing(connection, "knowledge_chunks", "ingestion_run_id TEXT")
+
+    @staticmethod
+    def _add_column_if_missing(connection: sqlite3.Connection, table: str, definition: str) -> None:
+        name = definition.split()[0]
+        columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if name not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
 
     @staticmethod
     def _row_document(row: sqlite3.Row) -> CatalogDocument:
@@ -236,6 +254,7 @@ class KnowledgeCatalog:
             lexical_ready=bool(row["lexical_ready"]),
             projection_generation=row["projection_generation"],
             projection_population_hash=row["projection_population_hash"],
+            component_fingerprints=_json_mapping(row["component_fingerprints_json"]),
         )
 
     @staticmethod
@@ -317,24 +336,107 @@ class KnowledgeCatalog:
                 ),
             )
 
-    def register_document(self, document: ParsedDocument) -> None:
+    def register_document(
+        self,
+        document: ParsedDocument,
+        *,
+        component_fingerprints: Mapping[str, str] | None = None,
+        run_id: str | None = None,
+    ) -> None:
         with self._write() as connection:
             timestamp = _now()
             connection.execute(
                 """INSERT INTO knowledge_documents
                    (document_id, source_hash, metadata_json, parser_id, parser_version,
-                    parser_config_hash, state, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    parser_config_hash, state, component_fingerprints_json, ingestion_run_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(document_id) DO UPDATE SET
                      source_hash=excluded.source_hash, metadata_json=excluded.metadata_json,
                      parser_id=excluded.parser_id, parser_version=excluded.parser_version,
                      parser_config_hash=excluded.parser_config_hash, state=excluded.state,
+                     component_fingerprints_json=excluded.component_fingerprints_json,
+                     ingestion_run_id=excluded.ingestion_run_id,
                      updated_at=excluded.updated_at""",
                 (
                     document.document_id, document.source_hash, _json(document.metadata.to_dict()),
                     document.parser_id, document.parser_version, document.parser_config_hash,
-                    IngestionState.PARSED.value, timestamp, timestamp,
+                    IngestionState.PARSED.value, _json(dict(component_fingerprints or {})), run_id,
+                    timestamp, timestamp,
                 ),
+            )
+
+    def find_document_by_source_hash(self, source_hash: str) -> CatalogDocument | None:
+        with self._read() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_documents WHERE source_hash = ?", (source_hash,)
+            ).fetchone()
+        return None if row is None else self._row_document(row)
+
+    def document_is_compatible(self, document_id: str, component_fingerprints: Mapping[str, str]) -> bool:
+        document = self.get_document(document_id)
+        return document is not None and dict(document.component_fingerprints) == dict(component_fingerprints)
+
+    def set_resource_state(
+        self,
+        resource_id: str,
+        state: IngestionState,
+        *,
+        source_hash: str | None = None,
+        attempted_hash: str | None = None,
+    ) -> None:
+        with self._write() as connection:
+            self._ensure_resource(connection, resource_id)
+            connection.execute(
+                """UPDATE knowledge_resources SET state = ?,
+                   source_hash = COALESCE(?, source_hash), attempted_hash = COALESCE(?, attempted_hash),
+                   updated_at = ? WHERE resource_id = ?""",
+                (state.value, source_hash, attempted_hash, _now(), resource_id),
+            )
+
+    def current_document_ids(self) -> tuple[str, ...]:
+        with self._read() as connection:
+            rows = connection.execute(
+                """SELECT DISTINCT document_id FROM knowledge_aliases
+                   WHERE relation_status = ? AND document_id IS NOT NULL ORDER BY document_id""",
+                (AliasRelation.CURRENT.value,),
+            ).fetchall()
+        return tuple(str(row["document_id"]) for row in rows)
+
+    def store_chunks(
+        self, document_id: str, chunks: tuple[ChunkRecord, ...], *, run_id: str | None = None
+    ) -> None:
+        with self._write() as connection:
+            if connection.execute("SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)).fetchone() is None:
+                raise ValueError(f"unknown document_id: {document_id}")
+            connection.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
+            connection.executemany(
+                """INSERT INTO knowledge_chunks
+                   (chunk_id, document_id, source_hash, provenance_json, ingestion_run_id)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [
+                    (chunk.chunk_id, document_id, chunk.source_hash, _json(chunk.to_dict()), run_id)
+                    for chunk in chunks
+                ],
+            )
+
+    def chunks_for_document(self, document_id: str) -> tuple[ChunkRecord, ...]:
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT provenance_json FROM knowledge_chunks WHERE document_id = ? ORDER BY chunk_id",
+                (document_id,),
+            ).fetchall()
+        return tuple(ChunkRecord.from_dict(json.loads(row["provenance_json"])) for row in rows)
+
+    def discard_staged_run(self, run_id: str) -> None:
+        """Remove unaliased document/chunk rows created by an interrupted run."""
+
+        with self._write() as connection:
+            connection.execute("DELETE FROM knowledge_chunks WHERE ingestion_run_id = ?", (run_id,))
+            connection.execute(
+                """DELETE FROM knowledge_documents WHERE ingestion_run_id = ?
+                   AND NOT EXISTS (SELECT 1 FROM knowledge_aliases
+                                   WHERE knowledge_aliases.document_id = knowledge_documents.document_id)""",
+                (run_id,),
             )
 
     def get_document(self, document_id: str) -> CatalogDocument | None:
@@ -642,12 +744,66 @@ class KnowledgeCatalog:
                 ),
             )
 
+    def start_run(self, run_id: str, *, source_count: int = 0) -> None:
+        """Persist a RUNNING marker before any artifact can be staged."""
+
+        self.record_run(
+            IngestionRunSummary(
+                run_id=run_id,
+                state="RUNNING",
+                counts={},
+                started_at=_now(),
+                source_count=source_count,
+                document_count=0,
+                chunk_count=0,
+            )
+        )
+
+    def running_run_ids(self) -> tuple[str, ...]:
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT run_id FROM knowledge_ingestion_runs WHERE state = 'RUNNING' ORDER BY run_id"
+            ).fetchall()
+        return tuple(str(row["run_id"]) for row in rows)
+
+    def mark_run_interrupted(self, run_id: str) -> None:
+        with self._write() as connection:
+            row = connection.execute(
+                "SELECT counts_json, source_count, document_count, chunk_count, diagnostics_json "
+                "FROM knowledge_ingestion_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None or row["counts_json"] is None:
+                return
+            counts = json.loads(row["counts_json"])
+            counts[IngestionState.INTERRUPTED.value] = int(counts.get(IngestionState.INTERRUPTED.value, 0)) + 1
+            connection.execute(
+                """UPDATE knowledge_ingestion_runs SET state = ?, counts_json = ?, completed_at = ?
+                   WHERE run_id = ?""",
+                ("INTERRUPTED", _json(counts), _now(), run_id),
+            )
+            self._record_event_in_transaction(
+                connection,
+                resource_id=None,
+                document_id=None,
+                attempted_hash=None,
+                state=IngestionState.INTERRUPTED,
+                stage="RECOVERY",
+                run_id=run_id,
+            )
+
     def list_runs(self) -> tuple[IngestionRunSummary, ...]:
         with self._read() as connection:
             rows = connection.execute("SELECT * FROM knowledge_ingestion_runs ORDER BY COALESCE(started_at, run_id), run_id").fetchall()
         return tuple(
             IngestionRunSummary(
-                run_id=row["run_id"], state=row["state"], counts=json.loads(row["counts_json"]),
+                run_id=row["run_id"],
+                state=(
+                    IngestionState(row["state"])
+                    if row["state"] in {state.value for state in IngestionState}
+                    else row["state"]
+                ),
+                counts=json.loads(row["counts_json"]),
                 started_at=row["started_at"], completed_at=row["completed_at"],
                 source_count=row["source_count"], document_count=row["document_count"],
                 chunk_count=row["chunk_count"], diagnostics=tuple(json.loads(row["diagnostics_json"])),
