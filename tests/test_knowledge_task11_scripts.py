@@ -235,3 +235,40 @@ def test_fastembed_dimension_probe_falls_back_when_model_property_is_unimplement
         model = Model()
 
     assert _resolve_dimensions(Embedder(), 384) == 384
+
+
+def test_docling_setup_requests_only_required_non_ocr_models(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        destination = Path(command[command.index("--output-dir") + 1])
+        destination.mkdir(parents=True, exist_ok=True)
+        (destination / "layout.bin").write_bytes(b"layout")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(provision.subprocess, "run", fake_run)
+    destination = tmp_path / "docling"
+    provision._download_docling(destination)
+
+    command = captured["command"]
+    assert command[-2:] == ["layout", "tableformer"]
+    assert "ocr" not in [str(value).casefold() for value in command]
+    assert captured["env"]["HF_HUB_DISABLE_XET"] == "1"
+
+
+def test_failed_all_stage_does_not_publish_success_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    source = tmp_path / "source"
+    source.mkdir()
+
+    monkeypatch.setattr(provision, "_provision_docling_stage", lambda *args: (_ for _ in ()).throw(RuntimeError("docling failed")))
+    monkeypatch.setattr(provision, "_provision_embedding_stage", lambda *args: {"ok": True})
+
+    artifact_root = tmp_path / "artifacts"
+    assert provision.main([
+        "provision", "all", "--source-root", str(source), "--artifact-root", str(artifact_root), "--allow-network"
+    ]) != 0
+    assert not (artifact_root / "provisioning-manifest.json").exists()

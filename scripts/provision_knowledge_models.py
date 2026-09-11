@@ -305,6 +305,7 @@ def _download_embedding(model_id: str, destination: Path) -> None:
             cache_dir=str(destination.parent),
             threads=1,
             providers=["CPUExecutionProvider"],
+            local_files_only=False,
         )
         tuple(downloaded.embed(["phase seven local artifact verification"], batch_size=1))
     except Exception as exc:
