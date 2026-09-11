@@ -126,6 +126,9 @@ class InterruptingManager:
     def active_generation(self):
         return self.inner.active_generation()
 
+    def resolve_active_generation(self):
+        return self.inner.resolve_active_generation()
+
 
 @dataclass
 class Harness:
@@ -345,6 +348,72 @@ def test_index_failure_discards_unpublished_catalog_rows_and_artifacts(tmp_path)
         assert connection.execute(
             "SELECT COUNT(*) FROM knowledge_chunks WHERE ingestion_run_id = ?", (result.run_id,)
         ).fetchone()[0] == 0
+
+
+def test_failed_rebuild_preserves_prior_active_generation_and_current_aliases(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionMode
+
+    harness = ingestion_harness(tmp_path)
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    old_generation = harness.catalog.active_generation()
+    assert old_generation is not None
+    old_document_ids = harness.catalog.current_document_ids()
+    old_aliases = {
+        name: harness.catalog.get_alias(resource_id_for(name))
+        for name in ("book.pdf", "copy.pdf", "second.pdf")
+    }
+    assert all(alias is not None and alias.relation is AliasRelation.CURRENT for alias in old_aliases.values())
+
+    harness.ingestor.generation_manager.fail_after_build = True
+    result = harness.ingestor.run(IngestionMode.REBUILD)
+
+    assert result.counts[IngestionState.INDEX_FAILED] >= 1
+    assert harness.catalog.active_generation().generation_id == old_generation.generation_id
+    assert harness.catalog.current_document_ids() == old_document_ids
+    assert all(harness.catalog.document_is_retrieval_ready(document_id) for document_id in old_document_ids)
+    for name, old_alias in old_aliases.items():
+        alias = harness.catalog.get_alias(resource_id_for(name))
+        assert alias.relation is AliasRelation.CURRENT
+        assert alias.document_id == old_alias.document_id
+        assert alias.source_hash == old_alias.source_hash
+    with sqlite3.connect(harness.catalog.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM knowledge_documents WHERE ingestion_run_id = ?", (result.run_id,)
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM knowledge_chunks WHERE ingestion_run_id = ?", (result.run_id,)
+        ).fetchone()[0] == 0
+
+
+def test_successful_ingestion_writes_and_repairs_active_pointer(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionMode, KnowledgeIngestor
+
+    harness = ingestion_harness(tmp_path)
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    active = harness.catalog.active_generation()
+    assert active is not None
+    pointer = harness.catalog.path.parent / "state" / "active-index.json"
+
+    assert json.loads(pointer.read_text(encoding="utf-8")) == active.to_dict()
+
+    pointer.write_text('{"generation_id":"stale"}', encoding="utf-8")
+    manager = IndexGenerationManager(
+        config=harness.ingestor.config,
+        catalog=harness.catalog,
+        embedding_spec=harness.embedder.spec,
+        vector_writer=VectorIndexWriter(backend=JsonVectorBackend()),
+        lexical_writer=LexicalIndexWriter(),
+    )
+    KnowledgeIngestor(
+        harness.ingestor.config,
+        scanner=SourceScanner(harness.ingestor.config),
+        catalog=harness.catalog,
+        parser=FakeParser(),
+        embedder=FakeEmbedder(),
+        generation_manager=manager,
+    )
+
+    assert json.loads(pointer.read_text(encoding="utf-8")) == active.to_dict()
 
 
 def test_recovery_uses_crash_safe_lock_for_stale_runs_and_excludes_live_writer(tmp_path):

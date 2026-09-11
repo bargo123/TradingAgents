@@ -104,3 +104,47 @@ C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m ruff check tradingagents\
 git diff --check
 # exit 0
 ```
+
+## Review-fix completion evidence — round 2 — 2026-09-11
+
+Addressed the remaining Round 2 review findings:
+
+- Failed `REBUILD` no longer makes already-current, same-hash aliases
+  `RETAINED_PREVIOUS`. Parsed rebuild candidates are kept in memory until
+  catalog publication succeeds, and same-hash projection failures leave prior
+  aliases, document readiness, and the active generation untouched.
+- Successful ingestion now writes `state/active-index.json` from the active
+  catalog registry after the catalog publication transaction commits. Startup
+  repair still reconciles a stale pointer through `resolve_active_generation()`.
+
+RED tests added and observed:
+
+```powershell
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m pytest tests/test_knowledge_ingestion.py::test_failed_rebuild_preserves_prior_active_generation_and_current_aliases tests/test_knowledge_ingestion.py::test_successful_ingestion_writes_and_repairs_active_pointer -q
+# initial RED: failed rebuild emptied current_document_ids; pointer file was missing
+```
+
+Fresh GREEN commands:
+
+```powershell
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m pytest tests/test_knowledge_ingestion.py::test_failed_rebuild_preserves_prior_active_generation_and_current_aliases tests/test_knowledge_ingestion.py::test_successful_ingestion_writes_and_repairs_active_pointer -q
+# 2 passed in 1.05s
+
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m pytest tests/test_knowledge_ingestion.py -q
+# 12 passed in 5.44s
+
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m pytest tests/test_knowledge_models.py tests/test_knowledge_config.py tests/test_knowledge_identity.py tests/test_knowledge_discovery.py tests/test_knowledge_catalog.py tests/test_knowledge_parser.py tests/test_knowledge_scanned.py tests/test_knowledge_chunking.py tests/test_knowledge_embeddings.py tests/test_knowledge_indexes.py tests/test_knowledge_ingestion.py -m "not integration" -q
+# 125 passed, 1 deselected in 12.31s
+
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m compileall -q tradingagents\knowledge tests\test_knowledge_ingestion.py
+# exit 0
+
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m compileall -q tradingagents cli
+# exit 0
+
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m ruff check tradingagents\knowledge\catalog.py tradingagents\knowledge\ingestion.py tests\test_knowledge_ingestion.py
+# All checks passed!
+
+git diff --check
+# exit 0
+```

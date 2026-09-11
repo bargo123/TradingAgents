@@ -647,6 +647,8 @@ class KnowledgeCatalog:
         self,
         generation: IndexGeneration | None,
         *,
+        documents_by_id: Mapping[str, ParsedDocument],
+        component_fingerprints: Mapping[str, str],
         chunks_by_document: Mapping[str, tuple[ChunkRecord, ...]],
         aliases: tuple[tuple[str, str, str, IngestionState], ...],
         removed_resource_ids: tuple[str, ...],
@@ -673,6 +675,29 @@ class KnowledgeCatalog:
                 self._set_active_generation_in_transaction(connection, generation)
 
             affected_documents: set[str] = set(ready_document_ids)
+            for document_id, document in documents_by_id.items():
+                if document.document_id != document_id:
+                    raise ValueError(f"document map key mismatch: {document_id}")
+                timestamp = _now()
+                connection.execute(
+                    """INSERT INTO knowledge_documents
+                       (document_id, source_hash, metadata_json, parser_id, parser_version,
+                        parser_config_hash, state, component_fingerprints_json, ingestion_run_id,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                       ON CONFLICT(document_id) DO UPDATE SET
+                         source_hash=excluded.source_hash, metadata_json=excluded.metadata_json,
+                         parser_id=excluded.parser_id, parser_version=excluded.parser_version,
+                         parser_config_hash=excluded.parser_config_hash, state=excluded.state,
+                         component_fingerprints_json=excluded.component_fingerprints_json,
+                         ingestion_run_id=NULL, updated_at=excluded.updated_at""",
+                    (
+                        document.document_id, document.source_hash, _json(document.metadata.to_dict()),
+                        document.parser_id, document.parser_version, document.parser_config_hash,
+                        IngestionState.PARSED.value, _json(dict(component_fingerprints)),
+                        timestamp, timestamp,
+                    ),
+                )
             for document_id, chunks in chunks_by_document.items():
                 if connection.execute(
                     "SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)

@@ -91,6 +91,7 @@ class KnowledgeIngestor:
             "embedding_spec": embedder.spec.to_json(),
         }
         self.recover_interrupted_runs()
+        self._repair_active_pointer()
 
     def run(self, mode: IngestionMode | str = IngestionMode.INCREMENTAL) -> IngestionRunSummary:
         mode = IngestionMode(mode)
@@ -146,7 +147,7 @@ class KnowledgeIngestor:
                         continue
                     if resource.source_hash in pending:
                         pending_aliases.append((resource, pending[resource.source_hash].document.document_id, previous))
-                        self._event(run_id, resource, pending[resource.source_hash].document.document_id, IngestionState.DUPLICATE, "DEDUPLICATE", counts)
+                        self._event(run_id, resource, None, IngestionState.DUPLICATE, "DEDUPLICATE", counts)
                         changed = True
                         continue
 
@@ -233,27 +234,21 @@ class KnowledgeIngestor:
             self._cleanup_resource_staging(run_id, resource.resource_id)
             self._failure(run_id, resource, previous, IngestionState.EMBED_FAILED, "EMBED", error, counts)
             return None
-        self.catalog.register_document(
-            document,
-            component_fingerprints=self._fingerprints,
-            run_id=run_id,
-        )
         return _PendingDocument(resource, document, chunks, vectors, previous)
 
     def _publish(self, run_id, pending, pending_aliases, removed_resource_ids, counts, *, source_count) -> IngestionRunSummary:
         current_ids = set(self.catalog.current_document_ids())
         pending_by_id = {item.document.document_id: item for item in pending.values()}
-        replacement_resources = list(pending.values()) + [
-            _PendingDocument(resource, self._document_for_id(document_id), (), (), previous)
-            for resource, document_id, previous in pending_aliases
+        replacement_aliases = [item.previous_alias for item in pending.values()] + [
+            previous for _, _, previous in pending_aliases
         ]
-        for item in replacement_resources:
+        for previous_alias in replacement_aliases:
             if (
-                item.previous_alias
-                and item.previous_alias.relation is AliasRelation.CURRENT
-                and self.catalog.current_alias_count(item.previous_alias.document_id) == 1
+                previous_alias
+                and previous_alias.relation is AliasRelation.CURRENT
+                and self.catalog.current_alias_count(previous_alias.document_id) == 1
             ):
-                current_ids.discard(item.previous_alias.document_id)
+                current_ids.discard(previous_alias.document_id)
         for resource_id in removed_resource_ids:
             previous = self.catalog.get_alias(resource_id)
             if (
@@ -284,7 +279,7 @@ class KnowledgeIngestor:
         alias_updates = tuple(
             [(item.resource.resource_id, item.document.document_id, item.document.source_hash, IngestionState.INDEXED)
              for item in pending.values()]
-            + [(resource.resource_id, document_id, self._document_for_id(document_id).source_hash, IngestionState.DUPLICATE)
+            + [(resource.resource_id, document_id, self._source_hash_for(document_id, pending_by_id), IngestionState.DUPLICATE)
                for resource, document_id, _ in pending_aliases]
         )
         events = tuple(
@@ -298,6 +293,8 @@ class KnowledgeIngestor:
                 generation = self.generation_manager.build_generation(chunks, vectors, f"gen_{run_id}")
             self.catalog.publish_generation(
                 generation,
+                documents_by_id={item.document.document_id: item.document for item in pending.values()},
+                component_fingerprints=self._fingerprints,
                 chunks_by_document={item.document.document_id: item.chunks for item in pending.values()},
                 aliases=alias_updates,
                 removed_resource_ids=tuple(removed_resource_ids),
@@ -314,6 +311,8 @@ class KnowledgeIngestor:
                 self._failure(run_id, resource, previous, IngestionState.INDEX_FAILED, "INDEX", error, counts)
             self._discard_unpublished_run(run_id)
             return self._finish(run_id, counts, source_count=source_count)
+        if generation is not None:
+            self.generation_manager.resolve_active_generation()
         counts.clear()
         counts.update(publication_counts)
         shutil.rmtree(self.config.artifact_root / ".ingestion-staging" / run_id, ignore_errors=True)
@@ -325,6 +324,12 @@ class KnowledgeIngestor:
             raise ValueError(f"unknown duplicate document: {document_id}")
         return document
 
+    def _source_hash_for(self, document_id: str, pending_by_id: Mapping[str, _PendingDocument]) -> str:
+        pending = pending_by_id.get(document_id)
+        if pending is not None:
+            return pending.document.source_hash
+        return self._document_for_id(document_id).source_hash
+
     def _reconcile_removed(self, run_id: str, observed_ids: set[str], counts: dict[IngestionState, int]) -> tuple[str, ...]:
         removed: list[str] = []
         for resource in self.catalog.list_resources():
@@ -334,7 +339,7 @@ class KnowledgeIngestor:
         return tuple(removed)
 
     def _failure(self, run_id, resource, previous, state, stage, error, counts) -> None:
-        if previous and previous.document_id:
+        if previous and previous.document_id and previous.source_hash != resource.source_hash:
             self.catalog.retain_previous(
                 resource.resource_id,
                 attempted_hash=resource.source_hash or "",
@@ -376,6 +381,10 @@ class KnowledgeIngestor:
         self.catalog.discard_staged_run(run_id)
         shutil.rmtree(self.config.artifact_root / "vector" / "lancedb" / generation_id, ignore_errors=True)
         shutil.rmtree(self.config.artifact_root / "keyword" / generation_id, ignore_errors=True)
+
+    def _repair_active_pointer(self) -> None:
+        if self.catalog.active_generation() is not None:
+            self.generation_manager.resolve_active_generation()
 
     def _event(self, run_id, resource, document_id, state, stage, counts) -> None:
         self.catalog.record_event(
