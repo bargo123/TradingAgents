@@ -17,6 +17,15 @@ query, outcome, CLI, smoke, MT5, or TradingAgents behavior was added.
   **21 passed**; `python -m compileall -q tradingagents/experience` and
   `git diff --check` passed.
 
+### Reviewer regression fixes
+
+- RED: reviewer regression tests failed for missing evaluation
+  `resolved_symbol` validation and incomplete watcher-state validation.
+- GREEN: focused reader/identity suite passed: **10 passed**; the experience
+  regression set passed: **24 passed**.
+- Added WAL `mtime_ns` to before/after stability fingerprints and ordered
+  watcher state by the real `singleton_id` column.
+
 ## Files
 
 - `tradingagents/experience/source_reader.py`
@@ -27,7 +36,8 @@ query, outcome, CLI, smoke, MT5, or TradingAgents behavior was added.
 
 ## Commit
 
-Implementation commit: `c046b2900f2ae3fa7558325b34a3abaddc86ea9d`
+Initial implementation commit: `c046b2900f2ae3fa7558325b34a3abaddc86ea9d`
+Reviewer-fix commit: `9108bb11f3927dae9749937cf4b7d86952bd66bf`
 
 ## Risks and limits
 
