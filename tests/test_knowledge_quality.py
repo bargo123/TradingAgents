@@ -38,6 +38,7 @@ def _hit(
     text: str,
     *,
     content_type: ContentType = ContentType.PROSE,
+    extra: dict[str, object] | None = None,
 ) -> KnowledgeHit:
     return KnowledgeHit(
         chunk_id=chunk_id,
@@ -52,7 +53,7 @@ def _hit(
         parser_version="fixture-parser-v1",
         chunker_version="fixture-chunker-v1",
         index_version="fixture-index-v1",
-        extra={"projection_generation": "fixture-generation"},
+        extra=extra if extra is not None else {"projection_generation": "fixture-generation"},
     )
 
 
@@ -263,3 +264,22 @@ def test_benchmark_results_expose_no_action_or_trade_fields():
     report = run_benchmark(load_cases(FIXTURE), fixture_query_service())
 
     assert report.forbidden_result_fields == ()
+
+
+def test_benchmark_recursively_rejects_nested_experience_and_action_fields():
+    """Would fail if decision or experience payloads hide inside serialized metadata."""
+    hit = _hit(
+        "nested-1",
+        "doc-nested",
+        "order flow evidence",
+        extra={"metadata": {"experience": {"trade_action": "BUY"}}},
+    )
+    report = run_benchmark(
+        ({"query": "nested", "documents": ["doc-nested"]},),
+        FixtureQueryService({"nested": (hit,)}),
+    )
+
+    assert report.forbidden_result_fields == (
+        "extra.metadata.experience",
+        "extra.metadata.experience.trade_action",
+    )

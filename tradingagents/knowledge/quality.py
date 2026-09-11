@@ -80,12 +80,20 @@ def _rate(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
 
 
-def _forbidden_fields(hit: KnowledgeHit) -> tuple[str, ...]:
-    return tuple(
-        key
-        for key in hit.to_dict()
-        if key.casefold() == "action" or "trade" in key.casefold()
-    )
+def _forbidden_fields(value: Any, path: str = "") -> tuple[str, ...]:
+    """Find prohibited decision/experience keys through serialized metadata."""
+    found: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}" if path else key_text
+            if any(token in key_text.casefold() for token in ("action", "trade", "experience")):
+                found.add(child_path)
+            found.update(_forbidden_fields(child, child_path))
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for index, child in enumerate(value):
+            found.update(_forbidden_fields(child, f"{path}[{index}]"))
+    return tuple(sorted(found))
 
 
 def run_benchmark(
@@ -125,7 +133,7 @@ def run_benchmark(
         result_total += len(ids)
         duplicate_total += len(ids) - len(set(ids))
         for hit in hits:
-            forbidden_fields.update(_forbidden_fields(hit))
+            forbidden_fields.update(_forbidden_fields(hit.to_dict()))
             provenance_total += 1
             try:
                 validate_hit_provenance(hit)
@@ -188,16 +196,56 @@ def snapshot_tree(root: Path | str) -> tuple[SourceSnapshotEntry, ...]:
     return tuple(entries)
 
 
+def _package_name(package_root: Path) -> str:
+    """Derive the qualified package name from contiguous ``__init__.py`` parents."""
+    parts = [package_root.name]
+    parent = package_root.parent
+    while (parent / "__init__.py").is_file():
+        parts.append(parent.name)
+        parent = parent.parent
+    return ".".join(reversed(parts))
+
+
+def _module_package(path: Path, package_root: Path, package_name: str) -> str:
+    relative = path.relative_to(package_root).with_suffix("")
+    parts = relative.parts
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    if not parts:
+        return package_name
+    if path.name == "__init__.py":
+        return ".".join((package_name, *parts))
+    return ".".join((package_name, *parts[:-1]))
+
+
+def _resolve_relative_import(node: ast.ImportFrom, module_package: str) -> tuple[str, ...]:
+    """Resolve ``ImportFrom.level`` using the package that owns the scanned file."""
+    parts = module_package.split(".")
+    trim = node.level - 1
+    if trim >= len(parts):
+        return ()
+    base = parts[: len(parts) - trim]
+    if node.module:
+        return (".".join((*base, node.module)),)
+    return tuple(".".join((*base, alias.name)) for alias in node.names if alias.name != "*")
+
+
 def imported_modules_under(package_root: Path | str, pyproject_path: Path | str | None = None) -> frozenset[str]:
     """Return static imports plus console entry modules without importing target code."""
+    package_root = Path(package_root)
+    package_name = _package_name(package_root)
     modules: set[str] = set()
-    for path in Path(package_root).rglob("*.py"):
+    for path in package_root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        module_package = _module_package(path, package_root, package_name)
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules.update(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                modules.add(node.module)
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    modules.add(node.module)
+                elif node.level:
+                    modules.update(_resolve_relative_import(node, module_package))
     if pyproject_path is not None:
         in_scripts = False
         for line in Path(pyproject_path).read_text(encoding="utf-8").splitlines():

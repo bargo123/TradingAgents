@@ -126,8 +126,8 @@ strategy quality, trading performance, or profitability.
 The same gate snapshots every source file's relative path, bytes, mode, size,
 and nanosecond modification timestamp before and after a real local ingestion
 run using tiny parser/embedder/index fakes. A change to a source document or
-its metadata fails the check. It also rejects query-result fields named
-`action` or containing `trade`.
+its metadata fails the check. It recursively rejects query-result fields or
+serialized metadata keys containing `experience`, `action`, or `trade`.
 
 `tests/test_knowledge_isolation.py` AST-scans the knowledge package without
 importing optional runtimes. It rejects forex, graph, agent, experience,

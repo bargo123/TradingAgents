@@ -26,6 +26,31 @@ def test_knowledge_package_has_no_trading_or_external_experience_imports():
     assert forbidden.isdisjoint(imported_modules_under(ROOT / "tradingagents" / "knowledge"))
 
 
+def test_isolation_scanner_resolves_relative_imports_against_the_scanned_package(tmp_path):
+    """Would fail if a relative import could hide a forbidden parent package."""
+    package = tmp_path / "tradingagents"
+    knowledge = package / "knowledge"
+    nested = knowledge / "nested"
+    nested.mkdir(parents=True)
+    for directory in (package, knowledge, nested):
+        (directory / "__init__.py").write_text("", encoding="utf-8")
+    (knowledge / "relative_forex.py").write_text(
+        "from ..forex import broker\n", encoding="utf-8"
+    )
+    (nested / "relative_graph.py").write_text(
+        "from ...graph import workflow\n", encoding="utf-8"
+    )
+    (nested / "relative_experience.py").write_text(
+        "from ...experience import store\n", encoding="utf-8"
+    )
+
+    imports = imported_modules_under(knowledge)
+
+    assert {"tradingagents.forex", "tradingagents.graph", "tradingagents.experience"}.issubset(
+        imports
+    )
+
+
 def test_knowledge_package_has_no_network_client_imports():
     """Would fail if ordinary knowledge imports gained a direct network client."""
     forbidden_roots = {

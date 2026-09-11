@@ -43,3 +43,23 @@ Compilation, scoped Ruff, and whitespace validation exited zero. A full
 knowledge-package Ruff invocation still reports pre-existing unrelated style
 findings in earlier Task 1–9 files; Task 10's new/changed Python files are
 clean.
+
+## Review-fix continuation
+
+Two Task 10 P1 regressions were added and intentionally observed red:
+
+```powershell
+C:\AITrading\TradingAgents\.venv\Scripts\python.exe -m pytest tests/test_knowledge_quality.py::test_benchmark_recursively_rejects_nested_experience_and_action_fields tests/test_knowledge_isolation.py::test_isolation_scanner_resolves_relative_imports_against_the_scanned_package -q
+# 2 failed: nested extra metadata returned no forbidden fields; relative imports returned no modules
+```
+
+The scanner now derives the qualified package from contiguous `__init__.py`
+parents and resolves every relative `ImportFrom.level` against the owning
+module package, including `from .. import name`. The privacy field gate now
+walks mappings and sequences from serialized `KnowledgeHit` output and reports
+dotted nested paths for `experience`, `action`, and `trade` variants such as
+`extra.metadata.experience.trade_action`.
+
+Fresh green verification: focused Task 10 suite — `10 passed`; Tasks 1–10
+knowledge suite — `162 passed, 1 deselected`; compilation, scoped Ruff, and
+`git diff --check` exited zero.
