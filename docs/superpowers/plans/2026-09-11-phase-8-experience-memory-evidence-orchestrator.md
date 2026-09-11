@@ -83,7 +83,7 @@ unrelated behavior into a broad implementation.
 **Interfaces:**
 
 - Produces `TrustTier`, `SourceAliasState`, `EvaluationStatus`, `ImportState`, `ExperienceRecord`, `ExperienceQuery`, `ExperienceHit`, `ExperienceSearchResult`, `OutcomeStatsRequest`, `OutcomeStatistics`, `EvidenceRequest`, and `EvidenceBundle` as frozen, JSON-serializable dataclasses/enums.
-- Produces typed exception classes named in the design, including `SourceDatabaseUnavailableError`, `SourceSchemaIncompatibleError`, `SourceSnapshotChangedError`, `SourceDecisionConflictError`, `DecisionEvidenceMalformedError`, `FeatureExtractionIncompleteError`, `InsufficientComparableFeaturesError`, `SimilarityProjectionIncompatibleError`, `SimilarityProfileMismatchError`, `TrustPolicyMismatchError`, `EvaluationEvidenceUnavailableError`, `Phase7KnowledgeUnavailableError`, `ExperienceMemoryUnavailableError`, `PartialEvidenceError`, `ProvenanceViolationError`, `ExperienceImportLockedError`, and `ExperienceImportInterrupted`.
+- Produces typed exception classes named in the design, including `SourceDatabaseUnavailableError`, `SourceSchemaIncompatibleError`, `SourceSnapshotChangedError`, `SourceDecisionConflictError`, `DecisionEvidenceMalformedError`, `FeatureExtractionIncompleteError`, `InsufficientComparableFeaturesError`, `SimilarityProjectionIncompatibleError`, `SimilarityProfileMismatchError`, `TrustPolicyMismatchError`, `EvaluationEvidenceUnavailableError`, `Phase7KnowledgeUnavailableError`, `ExperienceMemoryUnavailableError`, `ExperienceArtifactNotEmptyError`, `PartialEvidenceError`, `ProvenanceViolationError`, `ExperienceImportLockedError`, and `ExperienceImportInterrupted`.
 - `OutcomeStatsRequest` must have the exact field `as_of: datetime | None = None`.
 
 - [ ] **Step 1: Write the failing contract tests**
@@ -688,6 +688,7 @@ def test_as_of_excludes_late_recovery_without_prior_snapshot(calculator) -> None
     request = OutcomeStatsRequest(("exp-recovered",), "ANALYSIS_SNAPSHOT", 300, as_of=utc("2026-01-02T14:00:00Z"))
     result = calculator.calculate(request)
     assert result.excluded_counts["EVALUATION_NOT_YET_AVAILABLE"] == 1
+    assert result.excluded_counts.get("DATA_UNAVAILABLE", 0) == 0
 
 def test_recovered_complete_participates_after_recovery(calculator) -> None:
     request = OutcomeStatsRequest(("exp-recovered",), "ANALYSIS_SNAPSHOT", 300, as_of=utc("2026-01-02T16:00:00Z"))
@@ -696,8 +697,8 @@ def test_recovered_complete_participates_after_recovery(calculator) -> None:
 def test_genuine_prior_unavailable_snapshot_is_used_before_recovery(calculator) -> None:
     request = OutcomeStatsRequest(("exp-with-prior",), "ANALYSIS_SNAPSHOT", 300, as_of=utc("2026-01-02T14:00:00Z"))
     result = calculator.calculate(request)
-    assert result.excluded_counts["EVALUATION_NOT_YET_AVAILABLE"] == 1
     assert result.excluded_counts["DATA_UNAVAILABLE"] == 1
+    assert result.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
 ```
 
 - [ ] **Step 2: Run RED**
@@ -714,8 +715,14 @@ evaluation availability when `as_of` is present. Do not inspect
 `training_eligible` to include/exclude a descriptive row. Select
 `evaluation_available_at` as recovered timestamp, otherwise evaluated timestamp,
 otherwise created timestamp; require trustworthy UTC and observation timestamp
-no later than `as_of`. If no earlier Phase 8 snapshot was observed, report
-`EVALUATION_NOT_YET_AVAILABLE` and never fabricate one.
+no later than `as_of`. For each experience/basis/horizon, historical statistics
+first select at most one effective source-evaluation snapshot known by `as_of`.
+Exclusion counts are based on that selected state, not every retained snapshot.
+If no earlier Phase 8 snapshot was observed for a recovered COMPLETE row,
+report `EVALUATION_NOT_YET_AVAILABLE` and never fabricate one. If a genuine
+prior DATA_UNAVAILABLE snapshot was observed, select it for an earlier cutoff
+and report only `DATA_UNAVAILABLE`; the later COMPLETE snapshot is not
+inspected for that historical request.
 
 Report BUY and SELL counterfactuals separately, preserve ANALYSIS_SNAPSHOT vs
 DECISION_REFERENCE and each horizon, and keep HOLD separate from normal win
@@ -969,7 +976,7 @@ git commit -m "test: add phase 8 leakage and quality gates"
 **Interfaces:**
 
 - Produces a bounded JSON/text report from an existing Phase 5/6 validation
-  SQLite path, Phase 8 artifact root, existing Phase 7 artifact root, and
+  SQLite path, a new empty/dedicated Phase 8 artifact root, existing Phase 7 artifact root, and
   existing local Phase 7 embedding model path. The command requires explicit
   arguments equivalent to `--source-db`, `--experience-artifact-root`,
   `--knowledge-artifact-root`, `--knowledge-embedding-model-path`, and
@@ -993,9 +1000,10 @@ def test_smoke_records_source_integrity_and_counts(tmp_path, real_fixture_db, kn
     assert set(report) >= {
         "decision_count", "evaluation_count", "experience_count",
         "tier_counts", "quarantine_count", "alias_count",
-        "feature_population_count", "active_generation_id",
+        "feature_population_count", "experience_artifact_root", "active_generation_id",
         "normalization_fingerprint", "similarity_examples",
-        "statistics", "knowledge_hit_count", "evidence_status",
+        "statistics", "phase7_generation_id", "knowledge_embedding_spec",
+        "knowledge_hit_count", "experience_hit_count", "evidence_status",
         "network_attempts",
     }
 
@@ -1007,6 +1015,12 @@ def test_smoke_does_not_run_new_analysis(monkeypatch, real_fixture_db, tmp_path,
 def test_smoke_requires_real_phase7_query_configuration(tmp_path, real_fixture_db) -> None:
     with pytest.raises(SystemExit):
         run_cli(["--source-db", str(real_fixture_db), "--experience-artifact-root", str(tmp_path / "experience"), "--offline"])
+
+def test_smoke_rejects_existing_published_experience_generation(tmp_path, real_fixture_db, knowledge_root, embedding_model_path) -> None:
+    root = tmp_path / "experience"
+    seed_published_generation(root)
+    with pytest.raises(ExperienceArtifactNotEmptyError):
+        run_smoke(real_fixture_db, experience_artifact_root=root, knowledge_artifact_root=knowledge_root, knowledge_embedding_model_path=embedding_model_path, offline=True)
 
 def test_network_guard_blocks_unexpected_connect(monkeypatch, real_fixture_db, tmp_path, knowledge_root, embedding_model_path) -> None:
     with OfflineNetworkGuard() as guard:
@@ -1030,9 +1044,13 @@ Expected: FAIL because the acceptance harness does not exist.
 
 - [ ] **Step 3: Implement the bounded real smoke**
 
-Require an existing source DB path, existing Phase 8 artifact root, existing
-Phase 7 artifact root, and existing local embedding model path; never launch a
-new analysis. Record source SQLite SHA-256, size, mtime, and WAL SHA-256/size
+Require an existing source DB path, a new empty/dedicated Phase 8 artifact
+root whose parent exists, existing Phase 7 artifact root, and existing local
+embedding model path; never launch a new analysis. The harness may create the
+requested Phase 8 directory, but must fail with `ExperienceArtifactNotEmptyError`
+when it already contains a published Experience generation. It must not delete
+or overwrite arbitrary existing Phase 8 data; no reset mode is needed for
+acceptance. Record source SQLite SHA-256, size, mtime, and WAL SHA-256/size
 before and after. Set `KNOWLEDGE_OFFLINE=1`, `HF_HUB_OFFLINE=1`, and
 `TRANSFORMERS_OFFLINE=1` (plus the Phase 7 local-model flags in its current
 configuration) and install the Phase 7-style `OfflineNetworkGuard` before
@@ -1040,7 +1058,7 @@ constructing either query service. Any unexpected socket/URL connection raises
 `NetworkAttempt` and fails the smoke; the report records the observed attempt
 count, which must be zero.
 
-Run the read-only import, real feature extraction, trust classification,
+Run from the fresh Phase 8 root: read-only import, real feature extraction, trust classification,
 exact-cohort normalization, representative exact similarity queries, explicit
 basis/horizon statistics where available, and a mandatory combined Phase 7
 knowledge + Phase 8 evidence query. Construct Phase 7 only through its actual
@@ -1052,9 +1070,9 @@ Tier A/B/C counts, quarantine and duplicate/alias counts, feature population,
 generation IDs, normalization cohort/population/fingerprint, Phase 7
 generation and embedding-spec/artifact identity, top IDs and comparable
 dimensions, statistic eligibility/exclusions, Knowledge and Experience hit
-counts, EvidenceBundle status, bounded latency, and network attempts. If no
-eligible COMPLETE outcome exists, report the honest exclusion reason rather
-than fabricating eligibility.
+counts, the fresh Phase 8 artifact root, EvidenceBundle status, bounded
+latency, and network attempts. If no eligible COMPLETE outcome exists, report
+the honest exclusion reason rather than fabricating eligibility.
 
 The harness must prove source hashes/sizes/WAL metadata are unchanged and
 must not write under the source path or `new books`. Keep the smoke bounded to
@@ -1068,8 +1086,9 @@ skipped.
 Run: `pytest tests/test_experience_task12_scripts.py -q`
 
 Expected: PASS for fixture validation. During final acceptance run the script
-once against an already-produced real Phase 5/6 validation DB and archive its
-report as verification evidence.
+once against an already-produced real Phase 5/6 validation DB, existing Phase
+7 artifacts/model, and a new empty dedicated Phase 8 artifact root; archive
+the report as verification evidence and record that fresh root.
 
 - [ ] **Step 5: Commit**
 
@@ -1120,10 +1139,13 @@ MT5 test, Ollama test, or CUDA requirement may be introduced.
 
 - [ ] **Step 3: Run the real smoke once and audit source integrity**
 
-Run the supported script against one existing Phase 5/6 validation DB, record
-its exact path and report, and verify source SQLite/WAL hashes, sizes, and
-timestamps remain unchanged. Confirm the real smoke's network-attempt count is
-zero and that the Phase 7 query used only its existing read-only public API.
+Run the supported script against one existing Phase 5/6 validation DB, existing
+Phase 7 artifacts/model, and a new empty dedicated Phase 8 artifact root;
+record all exact paths (including the fresh root) and report, and verify source
+SQLite/WAL hashes, sizes, and timestamps remain unchanged. Confirm the real
+smoke's network-attempt count is zero and that the Phase 7 query used only its
+existing read-only public API. A target containing a published Phase 8
+generation must fail preflight rather than be deleted or overwritten.
 
 - [ ] **Step 4: Inspect scope and forbidden boundaries**
 
@@ -1156,6 +1178,10 @@ valid generation.
 - Every approved design requirement maps to Tasks 1–13.
 - `OutcomeStatsRequest.as_of` is defined in Task 1, consumed in Task 8, and
   propagated unchanged by Task 9.
+- Task 8 resolves at most one effective evaluation snapshot per
+  experience/basis/horizon/as_of before counting eligibility or exclusions;
+  genuine prior DATA_UNAVAILABLE and missing-prior recovery states are
+  mutually exclusive.
 - Normalization cohorts, trust tiers, fingerprints, and historical cutoffs
   are consistent across Tasks 5, 6, 7, 9, and 11.
 - Current normalization requires a CURRENT alias; historical normalization uses
@@ -1169,7 +1195,8 @@ valid generation.
 - `training_eligible` remains provenance only; HOLD remains separate.
 - Knowledge and Experience stores, scores, and provenance remain separate.
 - The bounded real smoke is mandatory, uses existing data only, and requires a
-  real Phase 7 read query with explicit artifact/model paths.
+  real Phase 7 read query with explicit artifact/model paths plus a new empty
+  dedicated Phase 8 artifact root.
 - The real smoke installs an active offline network guard before constructing
   query services and fails on any unexpected network attempt.
 - Catalog tombstone state is derived via `is_tombstoned`; only query hits carry
