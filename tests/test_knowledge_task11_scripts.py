@@ -22,9 +22,13 @@ def _load_script(name: str):
 
 def test_provision_requires_explicit_network_opt_in(tmp_path: Path) -> None:
     provision = _load_script("provision_knowledge_models.py")
+    source = tmp_path / "source"
+    source.mkdir()
 
     result = provision.main(
         [
+            "--source-root",
+            str(source),
             "--artifact-root",
             str(tmp_path / "artifacts"),
             "--docling-artifacts-path",
@@ -36,6 +40,15 @@ def test_provision_requires_explicit_network_opt_in(tmp_path: Path) -> None:
 
     assert result != 0
     assert not (tmp_path / "artifacts").exists()
+
+
+def test_provision_rejects_artifact_root_inside_the_mandatory_source_root(tmp_path: Path) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    source = tmp_path / "source"
+    source.mkdir()
+
+    with pytest.raises(ValueError, match="artifact_root must be outside source_root"):
+        provision._validate_source_exclusion(source, source / "artifacts")
 
 
 def test_smoke_fails_before_parsing_when_local_artifacts_are_missing(tmp_path: Path) -> None:
@@ -123,3 +136,19 @@ def test_smoke_rejects_report_path_inside_source_root(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="report_path must be outside source_root"):
         smoke._validate_paths(source, tmp_path / "artifacts", source / "smoke-report.json")
+
+
+def test_epub_only_smoke_records_explicit_ocr_disabled_policy() -> None:
+    smoke = _load_script("knowledge_phase7_smoke.py")
+
+    policy = smoke._ocr_policy_report(
+        False,
+        (SimpleNamespace(path=Path("chapter.epub")),),
+        (),
+    )
+
+    assert policy == {
+        "configured_do_ocr": False,
+        "pdf_resource_count": 0,
+        "observed_pdf_option_count": 0,
+    }

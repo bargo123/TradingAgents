@@ -98,6 +98,19 @@ def _validate_destinations(artifact_root: Path, docling_path: Path, embedding_pa
     _ensure_outside(docling_path, embedding_path, "docling_artifacts_path", "embedding_model_path")
 
 
+def _validate_source_exclusion(source_root: Path, artifact_root: Path) -> None:
+    if not source_root.is_dir():
+        raise ValueError(f"source_root must be an existing directory: {source_root}")
+    try:
+        artifact_root.relative_to(source_root)
+    except ValueError:
+        try:
+            source_root.relative_to(artifact_root)
+        except ValueError:
+            return
+    raise ValueError("artifact_root must be outside source_root")
+
+
 def _download_docling(destination: Path) -> None:
     try:
         from docling.utils.model_downloader import download_models
@@ -237,6 +250,7 @@ def _write_embedding_manifest(model_id: str, destination: Path) -> dict[str, Any
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Explicitly provision Phase 7 local Docling and FastEmbed artifacts.")
+    parser.add_argument("--source-root", required=True, help="approved read-only source root excluded from setup artifacts")
     parser.add_argument("--artifact-root", required=True, help="setup-only artifact parent outside the book source")
     parser.add_argument("--docling-artifacts-path", required=True, help="destination for Docling local assets")
     parser.add_argument("--embedding-model-id", default="BAAI/bge-small-en-v1.5")
@@ -251,9 +265,11 @@ def main(argv: list[str] | None = None) -> int:
         print("PROVISION ERROR: --allow-network is required; normal knowledge commands never download", file=sys.stderr)
         return 2
     try:
+        source_root = _require_directory(args.source_root, "source_root")
         artifact_root = _require_directory(args.artifact_root, "artifact_root")
         docling_path = _require_directory(args.docling_artifacts_path, "docling_artifacts_path")
         embedding_path = _require_directory(args.embedding_model_path, "embedding_model_path")
+        _validate_source_exclusion(source_root, artifact_root)
         _validate_destinations(artifact_root, docling_path, embedding_path)
         artifact_root.mkdir(parents=True, exist_ok=True)
         _download_docling(docling_path)

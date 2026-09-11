@@ -116,6 +116,27 @@ def _select_resources(resources: tuple[Any, ...], *, limit: int) -> tuple[Any, .
     )[:limit]
 
 
+def _ocr_policy_report(
+    configured_do_ocr: bool,
+    selected: tuple[Any, ...],
+    observed_pdf_options: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+) -> dict[str, Any]:
+    """Prove OCR is disabled even when the bounded set contains EPUBs only."""
+
+    if configured_do_ocr is not False:
+        raise RuntimeError("Docling OCR policy must be configured false")
+    pdf_count = sum(resource.path.suffix.casefold() == ".pdf" for resource in selected)
+    if pdf_count and len(observed_pdf_options) != pdf_count:
+        raise RuntimeError("Docling PDF option observations do not cover every selected PDF")
+    if any(option.get("do_ocr") is not False for option in observed_pdf_options):
+        raise RuntimeError("Docling PDF options did not prove do_ocr=False")
+    return {
+        "configured_do_ocr": configured_do_ocr,
+        "pdf_resource_count": pdf_count,
+        "observed_pdf_option_count": len(observed_pdf_options),
+    }
+
+
 def _first_query(chunks: tuple[Any, ...]) -> str:
     for chunk in chunks:
         candidates = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", chunk.text)
@@ -244,12 +265,15 @@ def main(argv: list[str] | None = None) -> int:
         after = tuple(_snapshot(resource.path) for resource in selected)
         if before != after:
             raise RuntimeError("source hashes or filesystem metadata changed during smoke")
-        if any(option["do_ocr"] is not False for option in observed_pdf_options):
-            raise RuntimeError("Docling PDF options did not prove do_ocr=False")
+        ocr_policy = _ocr_policy_report(
+            config.docling_do_ocr,
+            selected,
+            observed_pdf_options,
+        )
         report = {
             "state": "COMPLETE",
             "resources": {"selected": [resource.relative_path for resource in selected], "before": before, "after": after},
-            "parser": {"id": parser.parser_id, "docling_version": _package_version("docling"), "pdf_options": observed_pdf_options, "formula_enrichment": "disabled"},
+            "parser": {"id": parser.parser_id, "docling_version": _package_version("docling"), "pdf_options": observed_pdf_options, "ocr_policy": ocr_policy, "formula_enrichment": "disabled"},
             "scan_classifications": dict(summary.to_dict()["counts"]),
             "chunker": {"version": config.chunker_version, "soft_target": config.chunk_soft_token_target, "effective_content_limit": embedder.spec.effective_corpus_content_token_limit, "model_input_limit": embedder.spec.model_max_input_tokens, "tokenizer_fingerprint": embedder.spec.tokenizer_fingerprint},
             "embedding_spec": embedder.spec.to_dict(),

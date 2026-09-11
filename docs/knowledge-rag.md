@@ -92,6 +92,11 @@ and keeps OCR disabled. Querying needs a local FastEmbed/ONNX model; set
 at `<artifact-root>/models/embedding`. No command downloads models or accepts
 credentials.
 
+The separate setup-only `scripts/provision_knowledge_models.py` command is the
+only allowed downloader. It requires the approved `--source-root` as a safety
+reference and rejects an overlapping artifact root or artifact destination;
+normal `knowledge` commands and the offline smoke never invoke it.
+
 Search creates only the local query embedder and read-only active index
 readers. Before dense retrieval it compares the full query provider
 `EmbeddingSpec` with the active index: model/version/artifact, dimensions,

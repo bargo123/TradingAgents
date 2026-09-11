@@ -1474,6 +1474,7 @@ never allowed during normal indexing, search, or the smoke itself.
 $ProjectPython = "C:\\AITrading\\TradingAgents\\.venv\\Scripts\\python.exe"
 & $ProjectPython -m pip install -e "C:\\AITrading\\TradingAgents-phase7-worktree[knowledge]"
 & $ProjectPython scripts/provision_knowledge_models.py `
+    --source-root "C:\\Users\\Zaid barghouthi\\Downloads\\new books" `
     --artifact-root "$env:TEMP\\phase7-knowledge-artifacts" `
     --docling-artifacts-path "$env:TEMP\\phase7-knowledge-artifacts\\docling" `
     --embedding-model-id "BAAI/bge-small-en-v1.5" `
@@ -1484,7 +1485,8 @@ $ProjectPython = "C:\\AITrading\\TradingAgents\\.venv\\Scripts\\python.exe"
 `provision_knowledge_models.py` is the only command allowed to download or
 populate model artifacts. It must record resolved versions, artifact hashes,
 tokenizer fingerprints, and dimensions, and fail clearly if provisioning
-cannot complete. It must not touch `new books`.
+cannot complete. Its required `--source-root` guard rejects every overlapping
+artifact root or destination, so it cannot touch `new books`.
 
 - [ ] **Step 6: Run one bounded real local end-to-end smoke (mandatory)**
 
