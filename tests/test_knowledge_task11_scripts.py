@@ -172,3 +172,41 @@ def test_epub_only_smoke_records_explicit_ocr_disabled_policy() -> None:
         "pdf_resource_count": 0,
         "observed_pdf_option_count": 0,
     }
+
+
+def test_provision_parser_exposes_independent_artifact_stages() -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    parser = provision.build_parser()
+
+    args = parser.parse_args(["provision", "docling", "--source-root", "source", "--artifact-root", "artifacts", "--allow-network"])
+
+    assert args.command == "provision"
+    assert args.stage == "docling"
+
+
+def test_stage_failure_does_not_publish_partial_target(tmp_path: Path) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    target = tmp_path / "artifacts" / "docling"
+    calls: list[Path] = []
+
+    def fail(stage: Path) -> dict[str, object]:
+        calls.append(stage)
+        (stage / "partial.bin").write_bytes(b"partial")
+        raise RuntimeError("download failed")
+
+    with pytest.raises(RuntimeError, match="download failed"):
+        provision._run_staged(target, fail)
+
+    assert len(calls) == 1
+    assert not target.exists()
+    assert not list(target.parent.glob("docling.partial-*"))
+
+
+def test_embedding_provision_resolves_fastembed_snapshot_layout(tmp_path: Path) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    root = tmp_path / "cache" / "models--qdrant--bge-small-en-v1.5-onnx-q"
+    snapshot = root / "snapshots" / "abc123"
+    snapshot.mkdir(parents=True)
+    (snapshot / "model_optimized.onnx").write_bytes(b"onnx")
+
+    assert provision._resolve_fastembed_model_dir(root) == snapshot

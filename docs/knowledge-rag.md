@@ -97,6 +97,22 @@ only allowed downloader. It requires the approved `--source-root` as a safety
 reference and rejects an overlapping artifact root or artifact destination;
 normal `knowledge` commands and the offline smoke never invoke it.
 
+Provisioning is staged and independently retryable:
+
+```powershell
+python scripts/provision_knowledge_models.py provision docling --source-root "C:\\Users\\Zaid barghouthi\\Downloads\\new books" --artifact-root "$env:TEMP\\phase7-artifacts" --allow-network
+python scripts/provision_knowledge_models.py provision embedding --source-root "C:\\Users\\Zaid barghouthi\\Downloads\\new books" --artifact-root "$env:TEMP\\phase7-artifacts" --allow-network
+python scripts/provision_knowledge_models.py verify --source-root "C:\\Users\\Zaid barghouthi\\Downloads\\new books" --artifact-root "$env:TEMP\\phase7-artifacts"
+```
+
+`provision all` is also available. Each stage uses a partial directory and
+publishes its manifest only after validation; a failed Docling stage does not
+prevent an embedding stage from being retried independently. Verification
+opens the exact local embedding model and performs a tiny offline inference,
+and builds production PDF options with `do_ocr=False`. An optional `HF_TOKEN`
+may be inherited only by these explicit setup commands; it is never logged or
+accepted by normal indexing/search.
+
 Search creates only the local query embedder and read-only active index
 readers. Before dense retrieval it compares the full query provider
 `EmbeddingSpec` with the active index: model/version/artifact, dimensions,

@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import inspect
 import json
+import os
+import re
 import shutil
+import subprocess
 import sys
+import uuid
 from collections.abc import Callable, Iterable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -23,6 +26,7 @@ _DOCLING_MANIFEST = "docling-artifacts.json"
 _DOCLING_SCHEMA = "docling-artifacts-v1"
 _EMBEDDING_MANIFEST = "embedding-artifacts.json"
 _EMBEDDING_SCHEMA = "embedding-artifacts-v1"
+_PROVISIONING_MANIFEST = "provisioning-manifest.json"
 
 
 def _sha256(path: Path) -> str:
@@ -56,6 +60,16 @@ def _artifact_rows(root: Path, *, exclude: Iterable[Path] = ()) -> list[dict[str
         {"path": path.relative_to(root).as_posix(), "sha256": _sha256(path)}
         for path in _files(root, exclude=exclude)
     ]
+
+
+def _load_json(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"{label} is unavailable or invalid: {path}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"{label} is not a JSON object: {path}")
+    return value
 
 
 def _package_version(name: str) -> str:
@@ -111,6 +125,65 @@ def _validate_source_exclusion(source_root: Path, artifact_root: Path) -> None:
     raise ValueError("artifact_root must be outside source_root")
 
 
+class ProvisioningError(RuntimeError):
+    """Typed setup failure with safe scalar diagnostics."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str,
+        exception_type: str = "ProvisioningError",
+        failure_class: str = "unknown",
+        http_status: int | None = None,
+        repository: str | None = None,
+        file: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.exception_type = exception_type
+        self.failure_class = failure_class
+        self.http_status = http_status
+        self.repository = repository
+        self.file = file
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.stage,
+            "exception_type": self.exception_type,
+            "failure_class": self.failure_class,
+            "http_status": self.http_status,
+            "repository": self.repository,
+            "file": self.file,
+            "message": str(self),
+        }
+
+
+def _run_staged(target: Path, operation: Callable[[Path], dict[str, Any] | None]) -> dict[str, Any] | None:
+    """Run one artifact stage in a disposable directory, then promote atomically."""
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(f"{target.name}.partial-{uuid.uuid4().hex}")
+    backup = target.with_name(f"{target.name}.previous-{uuid.uuid4().hex}")
+    try:
+        partial.mkdir(parents=True, exist_ok=False)
+        result = operation(partial)
+        if not partial.is_dir() or not _files(partial):
+            raise RuntimeError("stage produced no validated artifacts")
+        if target.exists():
+            target.rename(backup)
+        partial.rename(target)
+        if backup.exists():
+            shutil.rmtree(backup)
+        return result
+    except Exception:
+        if partial.exists():
+            shutil.rmtree(partial, ignore_errors=True)
+        if backup.exists() and not target.exists():
+            backup.rename(target)
+        raise
+
+
 def _retry_docling_download(destination: Path, download: Callable[[], None]) -> None:
     """Retry once after deleting only an incomplete, unmanifested setup cache."""
 
@@ -130,41 +203,56 @@ def _retry_docling_download(destination: Path, download: Callable[[], None]) -> 
 
 
 def _download_docling(destination: Path) -> None:
+    executable = Path(sys.executable).with_name("docling-tools.exe")
+    command = [
+        str(executable if executable.is_file() else "docling-tools"),
+        "models",
+        "download",
+        "--output-dir",
+        str(destination),
+        "--quiet",
+        "layout",
+        "tableformer",
+    ]
     try:
-        from docling.utils.model_downloader import download_models
-    except ImportError as exc:
-        raise RuntimeError("Docling model downloader is unavailable in this interpreter") from exc
-
-    signature = inspect.signature(download_models)
-    values: dict[str, Any] = {
-        "output_dir": destination,
-        "artifacts_path": destination,
-        "cache_dir": destination,
-        "force": False,
-        # V1 never performs OCR and does not need RapidOCR assets. Formula
-        # enrichment is separately disabled unless later explicitly configured.
-        "with_rapidocr": False,
-        "with_code_formula": False,
-    }
-    accepts_kwargs = any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in signature.parameters.values()
-    )
-    kwargs = values if accepts_kwargs else {key: value for key, value in values.items() if key in signature.parameters}
-    def download() -> None:
-        result = download_models(**kwargs)
-        # Different supported Docling releases either write into output_dir or
-        # return an artifact directory.  Copy a returned directory only when
-        # the configured cache is otherwise empty.
-        if isinstance(result, (str, Path)):
-            returned = Path(result).expanduser().resolve(strict=False)
-            if returned.is_dir() and returned != destination and not _files(destination):
-                shutil.copytree(returned, destination, dirs_exist_ok=True)
-
-    try:
-        _retry_docling_download(destination, download)
-    except Exception as exc:
-        raise RuntimeError(f"Docling artifact provisioning failed: {exc}") from exc
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+            env=os.environ.copy(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProvisioningError(
+            "Docling model download timed out",
+            stage="docling",
+            exception_type=type(exc).__name__,
+            failure_class="timeout",
+            repository="docling-project/docling-layout-heron",
+        ) from exc
+    except OSError as exc:
+        raise ProvisioningError(
+            "Docling model downloader could not start",
+            stage="docling",
+            exception_type=type(exc).__name__,
+            failure_class="filesystem_or_executable",
+            repository="docling-project/docling-layout-heron",
+        ) from exc
+    if completed.returncode != 0:
+        output = f"{completed.stdout}\n{completed.stderr}"[-2000:]
+        status_match = re.search(r"HTTP(?:/\d(?:\.\d)?)?[^\d]*(\d{3})", output)
+        status = int(status_match.group(1)) if status_match else None
+        failure_class = "native_process_exit" if completed.returncode < 0 else "downloader_error"
+        raise ProvisioningError(
+            f"Docling model download failed (returncode={completed.returncode})",
+            stage="docling",
+            exception_type="SubprocessExit",
+            failure_class=failure_class,
+            http_status=status,
+            repository="docling-project/docling-layout-heron/tableformer",
+            file=None,
+        )
 
 
 def _model_path_from_embedder(embedder: Any) -> Path | None:
@@ -175,6 +263,18 @@ def _model_path_from_embedder(embedder: Any) -> Path | None:
             value = getattr(owner, name, None)
             if value is not None and Path(value).is_dir():
                 return Path(value).resolve(strict=False)
+    return None
+
+
+def _resolve_fastembed_model_dir(root: Path) -> Path | None:
+    """Resolve FastEmbed's downloaded snapshot to the directory it can open."""
+
+    if any(root.glob("*.onnx")):
+        return root
+    snapshots = sorted((path for path in root.glob("snapshots/*") if path.is_dir()), key=lambda p: p.as_posix())
+    for snapshot in reversed(snapshots):
+        if any(snapshot.glob("*.onnx")):
+            return snapshot
     return None
 
 
@@ -203,7 +303,10 @@ def _download_embedding(model_id: str, destination: Path) -> None:
     if source is None:
         candidates = [path for path in destination.parent.iterdir() if path.is_dir() and path != destination]
         candidates.sort(key=lambda path: path.stat().st_mtime_ns, reverse=True)
-        source = next((path for path in candidates if any(path.rglob("*.onnx"))), None)
+        source = next(
+            (resolved for path in candidates if (resolved := _resolve_fastembed_model_dir(path)) is not None),
+            None,
+        )
     if source is None or not source.is_dir():
         raise RuntimeError("FastEmbed did not expose a local model directory")
     if source != destination:
@@ -249,6 +352,10 @@ def _write_embedding_manifest(model_id: str, destination: Path) -> dict[str, Any
             embedding_batch_size=1,
         )
     )
+    # Force real ONNX inference while network access is still explicitly
+    # enabled for setup; the normal provider will reopen this exact directory
+    # with local_files_only=True.
+    tuple(provider.embed(("phase7 provisioning probe",), purpose="query"))
     spec = provider.spec.to_dict()
     manifest_path = destination / _EMBEDDING_MANIFEST
     manifest = {
@@ -266,44 +373,124 @@ def _write_embedding_manifest(model_id: str, destination: Path) -> dict[str, Any
     return manifest
 
 
+def _provision_docling_stage(destination: Path, source_root: Path, artifact_root: Path) -> dict[str, Any]:
+    _download_docling(destination)
+    manifest = _write_docling_manifest(destination)
+    from tradingagents.knowledge.config import KnowledgeConfig
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+
+    config = KnowledgeConfig(
+        source_root=source_root,
+        artifact_root=artifact_root,
+        docling_artifacts_path=destination,
+    )
+    options = DoclingDocumentParser(config).build_pdf_pipeline_options("provision")
+    if getattr(options, "do_ocr", None) is not False:
+        raise ProvisioningError(
+            "Docling pipeline did not prove do_ocr=False",
+            stage="docling",
+            failure_class="configuration",
+        )
+    return manifest
+
+
+def _provision_embedding_stage(model_id: str, destination: Path) -> dict[str, Any]:
+    _download_embedding(model_id, destination)
+    return _write_embedding_manifest(model_id, destination)
+
+
+def _verify_artifacts(
+    source_root: Path,
+    artifact_root: Path,
+    docling_path: Path,
+    embedding_path: Path,
+    model_id: str,
+) -> dict[str, Any]:
+    docling_manifest = _load_json(docling_path / _DOCLING_MANIFEST, "Docling artifact manifest")
+    embedding_manifest = _load_json(embedding_path / _EMBEDDING_MANIFEST, "embedding artifact manifest")
+    from tradingagents.knowledge.config import KnowledgeConfig
+    from tradingagents.knowledge.docling_parser import DoclingDocumentParser
+    from tradingagents.knowledge.embeddings import FastEmbedProvider
+
+    config = KnowledgeConfig(
+        source_root=source_root,
+        artifact_root=artifact_root,
+        docling_artifacts_path=docling_path,
+        embedding_model_id=model_id,
+        embedding_model_path=embedding_path,
+    )
+    options = DoclingDocumentParser(config).build_pdf_pipeline_options("verify")
+    embedder = FastEmbedProvider.from_config(config)
+    tuple(embedder.embed(("phase7 offline verification",), purpose="query"))
+    return {
+        "state": "VERIFIED",
+        "docling": {"version": docling_manifest.get("docling_version"), "do_ocr": getattr(options, "do_ocr", None)},
+        "embedding": {
+            "model_id": model_id,
+            "artifact_hash": embedding_manifest.get("artifact_hash"),
+            "dimensions": embedder.spec.dimensions,
+            "tokenizer_fingerprint": embedder.spec.tokenizer_fingerprint,
+        },
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Explicitly provision Phase 7 local Docling and FastEmbed artifacts.")
+    parser.add_argument("command", nargs="?", choices=("provision", "verify"))
+    parser.add_argument("stage", nargs="?", choices=("docling", "embedding", "all"))
     parser.add_argument("--source-root", required=True, help="approved read-only source root excluded from setup artifacts")
     parser.add_argument("--artifact-root", required=True, help="setup-only artifact parent outside the book source")
-    parser.add_argument("--docling-artifacts-path", required=True, help="destination for Docling local assets")
+    parser.add_argument("--docling-artifacts-path", help="destination for Docling local assets")
     parser.add_argument("--embedding-model-id", default="BAAI/bge-small-en-v1.5")
-    parser.add_argument("--embedding-model-path", required=True, help="destination for the local ONNX embedding model")
+    parser.add_argument("--embedding-model-path", help="destination for the local ONNX embedding model")
     parser.add_argument("--allow-network", action="store_true", help="required acknowledgement for this setup-only download")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not args.allow_network:
+    command = args.command or "provision"
+    stage = args.stage or "all"
+    if command == "provision" and not args.allow_network:
         print("PROVISION ERROR: --allow-network is required; normal knowledge commands never download", file=sys.stderr)
         return 2
     try:
         source_root = _require_directory(args.source_root, "source_root")
         artifact_root = _require_directory(args.artifact_root, "artifact_root")
-        docling_path = _require_directory(args.docling_artifacts_path, "docling_artifacts_path")
-        embedding_path = _require_directory(args.embedding_model_path, "embedding_model_path")
+        docling_path = _require_directory(
+            args.docling_artifacts_path or str(artifact_root / "docling"), "docling_artifacts_path"
+        )
+        embedding_path = _require_directory(
+            args.embedding_model_path or str(artifact_root / "embeddings" / args.embedding_model_id.replace("/", "--")),
+            "embedding_model_path",
+        )
         _validate_source_exclusion(source_root, artifact_root)
         _validate_destinations(artifact_root, docling_path, embedding_path)
         artifact_root.mkdir(parents=True, exist_ok=True)
-        _download_docling(docling_path)
-        docling = _write_docling_manifest(docling_path)
-        _download_embedding(args.embedding_model_id, embedding_path)
-        embedding = _write_embedding_manifest(args.embedding_model_id, embedding_path)
-        report = {
-            "state": "PROVISIONED",
-            "docling": {"version": docling["docling_version"], "artifact_count": len(docling["artifacts"])},
-            "embedding": {
-                "model_id": args.embedding_model_id,
-                "artifact_hash": embedding["artifact_hash"],
-                "tokenizer_fingerprint": embedding["tokenizer_fingerprint"],
-                "dimensions": embedding["dimensions"],
-            },
-        }
+        if command == "verify":
+            report = _verify_artifacts(source_root, artifact_root, docling_path, embedding_path, args.embedding_model_id)
+        else:
+            results: dict[str, Any] = {}
+            errors: dict[str, dict[str, Any]] = {}
+            if stage in {"docling", "all"}:
+                try:
+                    results["docling"] = _run_staged(
+                        docling_path, lambda path: _provision_docling_stage(path, source_root, artifact_root)
+                    )
+                except Exception as exc:
+                    errors["docling"] = exc.to_dict() if isinstance(exc, ProvisioningError) else {"message": str(exc), "exception_type": type(exc).__name__}
+            if stage in {"embedding", "all"}:
+                try:
+                    results["embedding"] = _run_staged(
+                        embedding_path, lambda path: _provision_embedding_stage(args.embedding_model_id, path)
+                    )
+                except Exception as exc:
+                    errors["embedding"] = exc.to_dict() if isinstance(exc, ProvisioningError) else {"message": str(exc), "exception_type": type(exc).__name__}
+            if errors:
+                print(json.dumps({"state": "FAILED", "stages": results, "errors": errors}, sort_keys=True), file=sys.stderr)
+                return 1
+            report = {"state": "PROVISIONED", "docling": results.get("docling"), "embedding": results.get("embedding")}
+            (artifact_root / _PROVISIONING_MANIFEST).write_text(json.dumps(report, sort_keys=True, indent=2), encoding="utf-8")
         print(json.dumps(report, sort_keys=True))
         return 0
     except Exception as exc:

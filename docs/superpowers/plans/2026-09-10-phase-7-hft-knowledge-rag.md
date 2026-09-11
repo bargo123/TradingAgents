@@ -1473,7 +1473,7 @@ never allowed during normal indexing, search, or the smoke itself.
 ~~~powershell
 $ProjectPython = "C:\\AITrading\\TradingAgents\\.venv\\Scripts\\python.exe"
 & $ProjectPython -m pip install -e "C:\\AITrading\\TradingAgents-phase7-worktree[knowledge]"
-& $ProjectPython scripts/provision_knowledge_models.py `
+& $ProjectPython scripts/provision_knowledge_models.py provision all `
     --source-root "C:\\Users\\Zaid barghouthi\\Downloads\\new books" `
     --artifact-root "$env:TEMP\\phase7-knowledge-artifacts" `
     --docling-artifacts-path "$env:TEMP\\phase7-knowledge-artifacts\\docling" `
@@ -1483,10 +1483,13 @@ $ProjectPython = "C:\\AITrading\\TradingAgents\\.venv\\Scripts\\python.exe"
 ~~~
 
 `provision_knowledge_models.py` is the only command allowed to download or
-populate model artifacts. It must record resolved versions, artifact hashes,
-tokenizer fingerprints, and dimensions, and fail clearly if provisioning
-cannot complete. Its required `--source-root` guard rejects every overlapping
-artifact root or destination, so it cannot touch `new books`.
+populate model artifacts. It supports independently retryable `provision
+docling`, `provision embedding`, `provision all`, and offline `verify` stages.
+Each stage uses a `<target>.partial-<run-id>` directory and publishes a
+manifest only after validation. It must record resolved versions, artifact
+hashes, tokenizer fingerprints, and dimensions, and fail clearly if
+provisioning cannot complete. Its required `--source-root` guard rejects every
+overlapping artifact root or destination, so it cannot touch `new books`.
 
 - [ ] **Step 6: Run one bounded real local end-to-end smoke (mandatory)**
 
