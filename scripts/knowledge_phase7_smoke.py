@@ -90,6 +90,32 @@ def _require_local_artifacts(docling_path: Path, embedding_path: Path) -> None:
         raise RuntimeError("local embedding artifact directory has no ONNX model")
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _validate_paths(source_root: Path, artifact_root: Path, report_path: Path) -> None:
+    if _is_within(artifact_root, source_root):
+        raise ValueError("smoke artifact_root must be outside source_root")
+    if _is_within(report_path, source_root):
+        raise ValueError("report_path must be outside source_root")
+
+
+def _select_resources(resources: tuple[Any, ...], *, limit: int) -> tuple[Any, ...]:
+    """Select only source-hashed PDF/EPUB records for the bounded real run."""
+
+    return tuple(
+        resource
+        for resource in resources
+        if getattr(getattr(resource, "state", None), "value", None) == "HASHED"
+        and resource.path.suffix.casefold() in {".pdf", ".epub"}
+    )[:limit]
+
+
 def _first_query(chunks: tuple[Any, ...]) -> str:
     for chunk in chunks:
         candidates = re.findall(r"[A-Za-z][A-Za-z0-9_-]{3,}", chunk.text)
@@ -138,12 +164,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SMOKE ERROR: source root does not exist: {source_root}", file=sys.stderr)
         return 2
     try:
+        report_path = (
+            Path(args.report_path).expanduser().resolve(strict=False)
+            if args.report_path
+            else artifact_root / "smoke-report.json"
+        )
+        _validate_paths(source_root, artifact_root, report_path)
         _require_local_artifacts(docling_path, embedding_path)
-        try:
-            artifact_root.relative_to(source_root)
-            raise RuntimeError("smoke artifact_root must be outside source_root")
-        except ValueError:
-            pass
         root = Path(__file__).resolve().parents[1]
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
@@ -154,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         from tradingagents.knowledge.embeddings import FastEmbedProvider
         from tradingagents.knowledge.ingestion import IngestionMode, KnowledgeIngestor
         from tradingagents.knowledge.lexical_index import LexicalIndexReader
-        from tradingagents.knowledge.models import IngestionState, KnowledgeQuery
+        from tradingagents.knowledge.models import KnowledgeQuery
         from tradingagents.knowledge.query import KnowledgeQueryService
         from tradingagents.knowledge.vector_index import VectorIndexReader
 
@@ -167,10 +194,7 @@ def main(argv: list[str] | None = None) -> int:
             embedding_batch_size=16,
         )
         all_resources = SourceScanner(config).discover()
-        selected = tuple(
-            resource for resource in all_resources
-            if resource.state is IngestionState.DISCOVERED and resource.path.suffix.casefold() in {".pdf", ".epub"}
-        )[: args.resource_limit]
+        selected = _select_resources(all_resources, limit=args.resource_limit)
         if not selected:
             raise RuntimeError("no supported PDF/EPUB resources found under the approved source root")
         before = tuple(_snapshot(resource.path) for resource in selected)
@@ -233,7 +257,6 @@ def main(argv: list[str] | None = None) -> int:
             "hybrid_query": {"text": query, "result_count": len(hits), "latency_ms": latency_ms, "provenance": [_hit_fields(hit) for hit in hits]},
             "network_attempt_count": 0,
         }
-        report_path = Path(args.report_path).expanduser().resolve(strict=False) if args.report_path else artifact_root / "smoke-report.json"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report, default=str, sort_keys=True, indent=2), encoding="utf-8")
         print(json.dumps(report, default=str, sort_keys=True))

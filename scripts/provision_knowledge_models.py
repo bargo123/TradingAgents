@@ -85,6 +85,19 @@ def _ensure_outside(first: Path, second: Path, first_name: str, second_name: str
     raise ValueError(f"{first_name} and {second_name} must not overlap")
 
 
+def _validate_destinations(artifact_root: Path, docling_path: Path, embedding_path: Path) -> None:
+    """Keep setup-only writes inside the one operator-supplied artifact root."""
+
+    for path, name in ((docling_path, "docling_artifacts_path"), (embedding_path, "embedding_model_path")):
+        try:
+            relative = path.relative_to(artifact_root)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be beneath artifact_root") from exc
+        if not relative.parts:
+            raise ValueError(f"{name} must be a child directory beneath artifact_root")
+    _ensure_outside(docling_path, embedding_path, "docling_artifacts_path", "embedding_model_path")
+
+
 def _download_docling(destination: Path) -> None:
     try:
         from docling.utils.model_downloader import download_models
@@ -98,6 +111,10 @@ def _download_docling(destination: Path) -> None:
         "artifacts_path": destination,
         "cache_dir": destination,
         "force": False,
+        # V1 never performs OCR and does not need RapidOCR assets. Formula
+        # enrichment is separately disabled unless later explicitly configured.
+        "with_rapidocr": False,
+        "with_code_formula": False,
     }
     accepts_kwargs = any(
         parameter.kind is inspect.Parameter.VAR_KEYWORD
@@ -237,8 +254,7 @@ def main(argv: list[str] | None = None) -> int:
         artifact_root = _require_directory(args.artifact_root, "artifact_root")
         docling_path = _require_directory(args.docling_artifacts_path, "docling_artifacts_path")
         embedding_path = _require_directory(args.embedding_model_path, "embedding_model_path")
-        _ensure_outside(docling_path, embedding_path, "docling_artifacts_path", "embedding_model_path")
-        _ensure_outside(docling_path, artifact_root / "embeddings", "docling_artifacts_path", "artifact_root/embeddings")
+        _validate_destinations(artifact_root, docling_path, embedding_path)
         artifact_root.mkdir(parents=True, exist_ok=True)
         _download_docling(docling_path)
         docling = _write_docling_manifest(docling_path)

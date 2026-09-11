@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 _SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
@@ -83,3 +86,40 @@ def test_smoke_reports_only_public_knowledge_hit_provenance_fields() -> None:
     assert fields["epub_spine_item"] == "chapter.xhtml"
     assert fields["anchor"] == "section"
     assert fields["index_version"] == "index-v1"
+
+
+def test_provision_requires_destinations_beneath_the_artifact_root(tmp_path: Path) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    artifact_root = tmp_path / "artifacts"
+
+    with pytest.raises(ValueError, match="beneath artifact_root"):
+        provision._validate_destinations(
+            artifact_root,
+            tmp_path / "outside-docling",
+            artifact_root / "embeddings" / "bge-small-en-v1.5",
+        )
+
+
+def test_smoke_selects_only_hashed_supported_resources() -> None:
+    smoke = _load_script("knowledge_phase7_smoke.py")
+    from tradingagents.knowledge.models import IngestionState
+
+    resources = (
+        SimpleNamespace(state=IngestionState.DISCOVERED, path=Path("unhashed.pdf")),
+        SimpleNamespace(state=IngestionState.HASHED, path=Path("book.pdf")),
+        SimpleNamespace(state=IngestionState.HASHED, path=Path("chapter.epub")),
+        SimpleNamespace(state=IngestionState.HASHED, path=Path("notes.txt")),
+    )
+
+    selected = smoke._select_resources(resources, limit=3)
+
+    assert [resource.path.name for resource in selected] == ["book.pdf", "chapter.epub"]
+
+
+def test_smoke_rejects_report_path_inside_source_root(tmp_path: Path) -> None:
+    smoke = _load_script("knowledge_phase7_smoke.py")
+    source = tmp_path / "source"
+    source.mkdir()
+
+    with pytest.raises(ValueError, match="report_path must be outside source_root"):
+        smoke._validate_paths(source, tmp_path / "artifacts", source / "smoke-report.json")
