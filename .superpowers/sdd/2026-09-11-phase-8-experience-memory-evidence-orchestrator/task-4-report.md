@@ -32,3 +32,16 @@ The extractor consumes only decision metadata and persisted `snapshot_json`; act
 
 - Missing numeric features are represented by `NaN` plus a false mask and remain available for Tier B when the minimum usable dimensions are present; downstream normalization/query tasks must honor the mask.
 - Feature extraction validates persisted point/digits and UTC timestamps, but importer/catalog wiring and richer provenance reconciliation belong to later tasks.
+
+## Reviewer-fix RED/GREEN evidence
+
+Added regression tests for malformed non-mapping `snapshot_json.features`/`quote`, unknown direction values, and non-finite required quote fields. The first run failed on all three gaps. After the fixes:
+
+```text
+pytest tests/test_experience_features.py tests/test_experience_trust.py -q
+9 passed
+pytest tests/test_experience_*.py -q
+44 passed
+```
+
+`features.py` now emits typed schema/direction diagnostics (and raises the typed extraction error for malformed nested structures); `trust.py` treats quote diagnostics as Tier C. Compilation and `git diff --check` remain clean.

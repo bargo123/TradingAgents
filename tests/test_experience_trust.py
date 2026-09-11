@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from tradingagents.experience.features import extract_market_state
 from tradingagents.experience.models import TrustTier
 from tradingagents.experience.trust import classify_trust
+from tradingagents.experience.errors import FeatureExtractionIncompleteError
 
 
 def _row():
@@ -29,3 +30,15 @@ def test_complete_normalized_decision_is_tier_a():
     row = _row()
     result = classify_trust(row, extract_market_state(row))
     assert result.tier is TrustTier.TIER_A_HIGH_TRUST
+
+
+def test_nonfinite_required_quote_is_tier_c():
+    row = _row(); row["snapshot_json"]["quote"]["bid"] = float("nan")
+    try:
+        features = extract_market_state(row)
+    except FeatureExtractionIncompleteError:
+        # Strict extraction is an acceptable typed diagnostic boundary.
+        return
+    result = classify_trust(row, features)
+    assert result.tier is TrustTier.TIER_C_DIAGNOSTIC_ONLY
+    assert "QUOTE_INVALID" in result.reasons

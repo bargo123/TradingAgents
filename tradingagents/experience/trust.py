@@ -38,13 +38,14 @@ def classify_trust(record: Mapping[str, Any] | Any, feature_result: MarketStateV
     if str(row.get("decision_reference_status", "")).upper() == "INVALID_TEMPORAL": reasons.append("TEMPORAL_INVALID")
     if sum(feature_result.mask) < MIN_FEATURES: reasons.append("MARKET_FEATURES_INSUFFICIENT")
     if any(d.code in {"PROVENANCE_INVALID", "SOURCE_CONFLICT"} for d in feature_result.diagnostics): reasons.append("PROVENANCE_INVALID")
+    if any(d.code == "QUOTE_INVALID" for d in feature_result.diagnostics): reasons.append("QUOTE_INVALID")
     provenance = row.get("provenance") or {}
     if isinstance(provenance, Mapping):
         expected = row.get("source_decision_fingerprint")
         actual = provenance.get("source_decision_fingerprint")
         if expected and actual and expected != actual: reasons.append("PROVENANCE_INVALID")
         if provenance.get("feature_fingerprint") and provenance["feature_fingerprint"] != feature_result.fingerprint: reasons.append("PROVENANCE_INVALID")
-    severe = {"EXECUTED", "NORMALIZATION_FAILED", "CONTEXT_INCOMPLETE", "ACTION_INVALID", "MARKET_FEATURES_INSUFFICIENT", "PROVENANCE_INVALID", "TEMPORAL_INVALID"}
+    severe = {"EXECUTED", "NORMALIZATION_FAILED", "CONTEXT_INCOMPLETE", "ACTION_INVALID", "MARKET_FEATURES_INSUFFICIENT", "PROVENANCE_INVALID", "TEMPORAL_INVALID", "QUOTE_INVALID"}
     if any(reason in severe for reason in reasons):
         return TrustClassification(TrustTier.TIER_C_DIAGNOSTIC_ONLY, tuple(dict.fromkeys(reasons)))
     # Partial but comparable state is limited, while a complete valid state is high trust.

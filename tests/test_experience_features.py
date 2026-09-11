@@ -16,7 +16,7 @@ def decision_row():
         "resolved_symbol": "EURUSD", "analysis_profile": "INTRADAY",
         "analysis_timeframe": "M15",
         "analysis_snapshot_timestamp": datetime(2026, 1, 1, 12, tzinfo=timezone.utc),
-        "snapshot_json": {"quote": {"spread_points": 10}, "features": features,
+        "snapshot_json": {"quote": {"bid": 1.1, "ask": 1.1001, "spread_points": 10}, "features": features,
                           "point": 0.00001, "digits": 5},
     }
 
@@ -35,5 +35,18 @@ def test_outcome_fields_cannot_change_market_vector(decision_row):
 
 def test_malformed_required_metadata_has_typed_diagnostic(decision_row):
     decision_row["snapshot_json"]["digits"] = "five"
+    with pytest.raises(FeatureExtractionIncompleteError):
+        extract_market_state(decision_row)
+
+
+@pytest.mark.parametrize("path", ["features", "quote"])
+def test_malformed_nested_snapshot_sections_have_typed_diagnostic(decision_row, path):
+    decision_row["snapshot_json"][path] = []
+    with pytest.raises(FeatureExtractionIncompleteError):
+        extract_market_state(decision_row)
+
+
+def test_unknown_direction_has_typed_diagnostic(decision_row):
+    decision_row["snapshot_json"]["features"]["M1"]["direction"] = "SIDEWAYS"
     with pytest.raises(FeatureExtractionIncompleteError):
         extract_market_state(decision_row)

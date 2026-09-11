@@ -85,7 +85,9 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
         except (TypeError, ValueError): raw = None
     if not isinstance(raw, Mapping): diags.append(ExtractionDiagnostic("SCHEMA_INVALID", "snapshot_json", "mapping required")); raw = {}
     quote = raw.get("quote")
-    if not isinstance(quote, Mapping): quote = {}
+    if not isinstance(quote, Mapping):
+        diags.append(ExtractionDiagnostic("SCHEMA_INVALID", "snapshot_json.quote", "mapping required"))
+        quote = {}
     metadata = raw.get("symbol_metadata", {})
     metadata = metadata if isinstance(metadata, Mapping) else {}
     point = raw.get("point", row.get("point", metadata.get("point"))); digits = raw.get("digits", row.get("digits", metadata.get("digits")))
@@ -99,14 +101,23 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
     def add(name: str, value: Any, path: str, *, direction: bool = False) -> None:
         if direction:
             if value is None or str(value).upper() == "INSUFFICIENT_DATA": values.append(float("nan")); mask.append(False); paths.append(path); reasons.append("INSUFFICIENT_DATA"); return
-            value = _DIRECTIONS.get(str(value).upper())
+            encoded = _DIRECTIONS.get(str(value).upper())
+            if encoded is None:
+                diags.append(ExtractionDiagnostic("DIRECTION_INVALID", path, "expected UP, FLAT, DOWN, or INSUFFICIENT_DATA"))
+                values.append(float("nan")); mask.append(False); paths.append(path); reasons.append("DIRECTION_INVALID"); return
+            value = encoded
         else: value = _finite(value)
         if value is None: values.append(float("nan")); mask.append(False); paths.append(path if path else None); reasons.append("MISSING" if value is None else "NON_FINITE")
         else: values.append(value); mask.append(True); paths.append(path); reasons.append(None)
+    for quote_key in ("bid", "ask", "spread_points"):
+        if _finite(quote.get(quote_key)) is None:
+            diags.append(ExtractionDiagnostic("QUOTE_INVALID", f"snapshot_json.quote.{quote_key}", "finite value required"))
     spread = row.get("analysis_snapshot_spread_points", quote.get("spread_points"))
     add("spread_points", spread, "analysis_snapshot_spread_points" if row.get("analysis_snapshot_spread_points") is not None else "snapshot_json.quote.spread_points")
     features = raw.get("features", {})
-    if not isinstance(features, Mapping): features = {}
+    if not isinstance(features, Mapping):
+        diags.append(ExtractionDiagnostic("SCHEMA_INVALID", "snapshot_json.features", "mapping required"))
+        features = {}
     for tf in ("M1", "M5", "M15", "H1"):
         section = features.get(tf, features.get(tf.lower(), {})); section = section if isinstance(section, Mapping) else {}
         for key in ("return_over_bars", "range_pct", "close_position", "average_true_range"):
@@ -116,12 +127,13 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
     import math as _math
     add("utc_hour_sin", _math.sin(2 * _math.pi * hour / 24), "analysis_snapshot_timestamp.utc_hour")
     add("utc_hour_cos", _math.cos(2 * _math.pi * hour / 24), "analysis_snapshot_timestamp.utc_hour")
+    _fail(diags)
     cohort = (str(symbol), str(profile), str(timeframe), FEATURE_SCHEMA_VERSION, FEATURE_EXTRACTOR_VERSION)
     payload = {"version": FEATURE_EXTRACTOR_VERSION, "names": FEATURE_NAMES_V1,
                "values": [v if math.isfinite(v) else None for v in values], "mask": mask,
                "paths": paths, "missing": reasons, "cohort": cohort}
     fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    return MarketStateVector(tuple(values), tuple(mask), FEATURE_NAMES_V1, cohort, fingerprint, tuple(paths), tuple(reasons), ())
+    return MarketStateVector(tuple(values), tuple(mask), FEATURE_NAMES_V1, cohort, fingerprint, tuple(paths), tuple(reasons), tuple(diags))
 
 
 __all__ = ["FEATURE_NAMES_V1", "FEATURE_SCHEMA_VERSION", "FEATURE_EXTRACTOR_VERSION", "ExtractionDiagnostic", "MarketStateVector", "extract_market_state"]
