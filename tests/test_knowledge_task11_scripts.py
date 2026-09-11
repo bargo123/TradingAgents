@@ -51,6 +51,26 @@ def test_provision_rejects_artifact_root_inside_the_mandatory_source_root(tmp_pa
         provision._validate_source_exclusion(source, source / "artifacts")
 
 
+def test_provision_retries_once_after_cleaning_an_unmanifested_docling_partial(tmp_path: Path) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    destination = tmp_path / "artifacts" / "docling"
+    attempts: list[int] = []
+
+    def download() -> None:
+        attempts.append(1)
+        destination.mkdir(parents=True, exist_ok=True)
+        if len(attempts) == 1:
+            (destination / "partial.incomplete").write_text("partial", encoding="utf-8")
+            raise OSError("transient downloader failure")
+        (destination / "complete.bin").write_bytes(b"complete")
+
+    provision._retry_docling_download(destination, download)
+
+    assert len(attempts) == 2
+    assert not (destination / "partial.incomplete").exists()
+    assert (destination / "complete.bin").read_bytes() == b"complete"
+
+
 def test_smoke_fails_before_parsing_when_local_artifacts_are_missing(tmp_path: Path) -> None:
     smoke = _load_script("knowledge_phase7_smoke.py")
     source = tmp_path / "source"

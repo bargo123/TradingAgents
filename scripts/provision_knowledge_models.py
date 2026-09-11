@@ -14,7 +14,7 @@ import inspect
 import json
 import shutil
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
@@ -111,13 +111,30 @@ def _validate_source_exclusion(source_root: Path, artifact_root: Path) -> None:
     raise ValueError("artifact_root must be outside source_root")
 
 
+def _retry_docling_download(destination: Path, download: Callable[[], None]) -> None:
+    """Retry once after deleting only an incomplete, unmanifested setup cache."""
+
+    for attempt in range(2):
+        destination.mkdir(parents=True, exist_ok=True)
+        try:
+            download()
+            if not _files(destination):
+                raise RuntimeError("Docling downloader completed without local artifacts")
+            return
+        except Exception:
+            manifest = destination / _DOCLING_MANIFEST
+            if attempt == 0 and not manifest.is_file():
+                shutil.rmtree(destination)
+                continue
+            raise
+
+
 def _download_docling(destination: Path) -> None:
     try:
         from docling.utils.model_downloader import download_models
     except ImportError as exc:
         raise RuntimeError("Docling model downloader is unavailable in this interpreter") from exc
 
-    destination.mkdir(parents=True, exist_ok=True)
     signature = inspect.signature(download_models)
     values: dict[str, Any] = {
         "output_dir": destination,
@@ -134,19 +151,20 @@ def _download_docling(destination: Path) -> None:
         for parameter in signature.parameters.values()
     )
     kwargs = values if accepts_kwargs else {key: value for key, value in values.items() if key in signature.parameters}
-    try:
+    def download() -> None:
         result = download_models(**kwargs)
+        # Different supported Docling releases either write into output_dir or
+        # return an artifact directory.  Copy a returned directory only when
+        # the configured cache is otherwise empty.
+        if isinstance(result, (str, Path)):
+            returned = Path(result).expanduser().resolve(strict=False)
+            if returned.is_dir() and returned != destination and not _files(destination):
+                shutil.copytree(returned, destination, dirs_exist_ok=True)
+
+    try:
+        _retry_docling_download(destination, download)
     except Exception as exc:
         raise RuntimeError(f"Docling artifact provisioning failed: {exc}") from exc
-    # Different supported Docling releases either write into output_dir or
-    # return an artifact directory.  Copy a returned directory only if it is
-    # outside the configured, operator-visible cache.
-    if isinstance(result, (str, Path)):
-        returned = Path(result).expanduser().resolve(strict=False)
-        if returned.is_dir() and returned != destination and not destination.exists():
-            shutil.copytree(returned, destination)
-    if not _files(destination):
-        raise RuntimeError("Docling downloader completed without local artifacts")
 
 
 def _model_path_from_embedder(embedder: Any) -> Path | None:
