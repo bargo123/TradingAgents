@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import MappingProxyType
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ class EvaluationStatus(str, Enum):
     PENDING = "PENDING"
     COMPLETE = "COMPLETE"
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+    INELIGIBLE = "INELIGIBLE"
 
 
 class ImportState(str, Enum):
@@ -40,7 +42,9 @@ def _json(value: Any) -> Any:
     if isinstance(value, datetime): return value.isoformat()
     if is_dataclass(value): return {f.name: _json(getattr(value, f.name)) for f in fields(value)}
     if isinstance(value, Mapping): return {str(_json(k)): _json(v) for k, v in value.items()}
-    if isinstance(value, (tuple, list, set, frozenset)): return [_json(v) for v in value]
+    if isinstance(value, (set, frozenset)):
+        return [_json(v) for v in sorted(value, key=lambda item: json.dumps(_json(item), sort_keys=True, default=str))]
+    if isinstance(value, (tuple, list)): return [_json(v) for v in value]
     return value
 
 
@@ -60,6 +64,26 @@ def _utc(value: datetime | None, name: str = "timestamp") -> datetime | None:
 def _tiers(value: Sequence[TrustTier | str] | None) -> tuple[TrustTier, ...]:
     if value is None: return (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED)
     return tuple(TrustTier(v) for v in value)
+
+
+def _freeze(value: Any) -> Any:
+    """Deep-copy contract payloads into immutable deterministic containers."""
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(k): _freeze(v) for k, v in sorted(value.items(), key=lambda item: str(item[0]))})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze(v) for v in value)
+    return value
+
+
+def _reject_reserved(value: Any) -> None:
+    if isinstance(value, Mapping):
+        if "training_eligible" in value or "training_eligibility_reason" in value:
+            raise ValueError("training_eligible is reserved for provenance")
+        for item in value.values(): _reject_reserved(item)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for item in value: _reject_reserved(item)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +121,11 @@ class ExperienceRecord(Serializable):
         object.__setattr__(self, "decision_completed_timestamp", _utc(self.decision_completed_timestamp, "decision_completed_timestamp"))
         object.__setattr__(self, "decision_reference_timestamp", _utc(self.decision_reference_timestamp, "decision_reference_timestamp"))
         object.__setattr__(self, "trust", TrustTier(self.trust))
-        object.__setattr__(self, "source_aliases", {str(k): SourceAliasState(v) for k, v in (self.source_aliases or {}).items()})
+        object.__setattr__(self, "source_aliases", _freeze({str(k): SourceAliasState(v) for k, v in (self.source_aliases or {}).items()}))
         for name in ("market_state", "decision_evidence", "outcome_evidence_by_basis_horizon", "provenance", "source_evaluation_fingerprints"):
-            object.__setattr__(self, name, dict(getattr(self, name) or {}))
+            value = getattr(self, name) or {}
+            if name != "provenance": _reject_reserved(value)
+            object.__setattr__(self, name, _freeze(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,7 +164,11 @@ class ExperienceHit(Serializable):
         if not str(self.experience_id).strip(): raise ValueError("experience_id must be non-empty")
         if self.trust_tier is not None: object.__setattr__(self, "trust_tier", TrustTier(self.trust_tier))
         for n in ("market_state", "timestamps", "outcome_availability", "provenance"):
-            object.__setattr__(self, n, dict(getattr(self, n) or {}))
+            value = getattr(self, n) or {}
+            if n != "provenance": _reject_reserved(value)
+            if n == "timestamps":
+                for timestamp in value.values(): _utc(timestamp, "timestamp")
+            object.__setattr__(self, n, _freeze(value))
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +179,7 @@ class ExperienceSearchResult(Serializable):
     candidate_count: int = 0
     excluded_counts: Mapping[str, int] = None
     def __post_init__(self) -> None:
-        object.__setattr__(self, "hits", tuple(self.hits)); object.__setattr__(self, "excluded_counts", dict(self.excluded_counts or {}))
+        object.__setattr__(self, "hits", tuple(self.hits)); object.__setattr__(self, "excluded_counts", _freeze(self.excluded_counts or {}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +202,7 @@ class OutcomeStatistics(Serializable):
     excluded_counts: Mapping[str, int] = None
     source_evaluation_fingerprints: Mapping[str, str] = None
     def __post_init__(self) -> None:
-        object.__setattr__(self, "excluded_counts", dict(self.excluded_counts or {})); object.__setattr__(self, "source_evaluation_fingerprints", dict(self.source_evaluation_fingerprints or {}))
+        object.__setattr__(self, "excluded_counts", _freeze(self.excluded_counts or {})); object.__setattr__(self, "source_evaluation_fingerprints", _freeze(self.source_evaluation_fingerprints or {}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +223,7 @@ class EvidenceRequest(Serializable):
     action_filter: str | None = None
     def __post_init__(self) -> None:
         if (self.evaluation_basis is None) != (self.horizon_seconds is None): raise ValueError("evaluation_basis and horizon_seconds must be paired")
-        object.__setattr__(self, "as_of", _utc(self.as_of, "as_of")); object.__setattr__(self, "trust_tiers", tuple(TrustTier(v) for v in self.trust_tiers))
+        object.__setattr__(self, "as_of", _utc(self.as_of, "as_of")); object.__setattr__(self, "trust_tiers", tuple(TrustTier(v) for v in self.trust_tiers)); object.__setattr__(self, "market_state", _freeze(self.market_state) if self.market_state is not None else None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,4 +237,4 @@ class EvidenceBundle(Serializable):
     errors: tuple[Any, ...] = ()
     provenance: Mapping[str, Any] = None
     def __post_init__(self) -> None:
-        object.__setattr__(self, "knowledge", tuple(self.knowledge)); object.__setattr__(self, "experience", tuple(self.experience)); object.__setattr__(self, "source_status", dict(self.source_status or {})); object.__setattr__(self, "provenance", dict(self.provenance or {}))
+        object.__setattr__(self, "knowledge", tuple(self.knowledge)); object.__setattr__(self, "experience", tuple(self.experience)); object.__setattr__(self, "source_status", _freeze(self.source_status or {})); object.__setattr__(self, "provenance", _freeze(self.provenance or {}))

@@ -38,3 +38,15 @@ query, outcome, orchestrator, or CLI behavior was implemented.
 ## Commit
 
 Implementation commit SHA: `5905b863343f2efaf5218a821e0ca57f81246bca`.
+
+## Review round 1 fixes
+
+Added `EvaluationStatus.INELIGIBLE`; deep-froze nested mappings and copied
+payloads; sorted set serialization deterministically; rejected reserved training
+eligibility keys outside provenance; and validated hit timestamp values as
+timezone-aware UTC.
+
+- RED: four new reviewer-contract tests failed as expected.
+- GREEN: focused suite passed: 13 tests.
+- Compileall and `git diff --check` passed.
+- Fix commit: recorded by the follow-up commit containing this report update.

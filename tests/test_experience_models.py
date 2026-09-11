@@ -13,6 +13,7 @@ from tradingagents.experience.models import (
     OutcomeStatistics,
     OutcomeStatsRequest,
     TrustTier,
+    EvaluationStatus,
 )
 
 
@@ -57,3 +58,24 @@ def test_training_eligibility_is_only_provenance() -> None:
 def test_request_and_statistics_contracts_accept_defaults() -> None:
     assert EvidenceRequest().as_of is None
     assert OutcomeStatistics().eligible_sample_denominator == 0
+
+
+def test_evaluation_status_includes_ineligible() -> None:
+    assert EvaluationStatus.INELIGIBLE.value == "INELIGIBLE"
+
+
+def test_nested_mappings_are_immutable_and_set_serialization_is_deterministic() -> None:
+    record = ExperienceRecord("x", "db", "d", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc), market_state={"values": {"b", "a"}})
+    with pytest.raises(TypeError):
+        record.market_state["new"] = 1
+    assert record.to_json() == ExperienceRecord("x", "db", "d", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc), market_state={"values": {"a", "b"}}).to_json()
+
+
+def test_training_eligible_is_rejected_outside_provenance() -> None:
+    with pytest.raises(ValueError, match="training_eligible"):
+        ExperienceRecord("x", "db", "d", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc), decision_evidence={"training_eligible": True})
+
+
+def test_hit_timestamps_require_utc() -> None:
+    with pytest.raises(ValueError, match="UTC"):
+        ExperienceHit("x", timestamps={"completed": datetime(2026, 1, 1)})
