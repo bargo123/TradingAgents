@@ -15,7 +15,12 @@ from .catalog import KnowledgeCatalog
 from .embeddings import EmbeddingSpecMismatch
 from .lexical_index import LexicalIndexError, LexicalIndexReader, LexicalIndexWriter
 from .models import ChunkRecord, EmbeddingSpec, IndexGeneration
-from .vector_index import VectorIndexError, VectorIndexReader, VectorIndexWriter
+from .vector_index import (
+    VectorIndexError,
+    VectorIndexReader,
+    VectorIndexWriter,
+    embedding_spec_row_values,
+)
 
 
 class IncompatibleIndexGeneration(RuntimeError):
@@ -98,7 +103,7 @@ class IndexGenerationManager:
                 generation_id, stage_vector, stage_lexical, chunks, populations,
                 vector_metadata=vector_metadata, lexical_metadata=lexical_metadata,
             )
-            self.validate_generation(staged)
+            self._validate_generation(staged, allow_staged_locations=True)
             final_vector.parent.mkdir(parents=True, exist_ok=True)
             final_lexical.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage_vector, final_vector)
@@ -114,6 +119,11 @@ class IndexGenerationManager:
             shutil.rmtree(stage_root, ignore_errors=True)
 
     def validate_generation(self, generation: IndexGeneration) -> None:
+        self._validate_generation(generation, allow_staged_locations=False)
+
+    def _validate_generation(
+        self, generation: IndexGeneration, *, allow_staged_locations: bool
+    ) -> None:
         if generation.embedding_spec != self.embedding_spec:
             raise EmbeddingSpecMismatch("generation embedding specification differs from the configured provider")
         if not generation.vector_ready or not generation.lexical_ready:
@@ -122,6 +132,7 @@ class IndexGenerationManager:
             raise IncompatibleIndexGeneration("generation must be validated before publication")
         if not generation.vector_location.is_dir() or not generation.lexical_location.is_file():
             raise IncompatibleIndexGeneration("generation projection locations are missing")
+        self._validate_location_identity(generation, allow_staged_locations=allow_staged_locations)
         vector_reader = VectorIndexReader(
             generation.vector_location, backend=self.vector_writer.backend
         )
@@ -140,25 +151,17 @@ class IndexGenerationManager:
         for key, expected in required.items():
             if vector.get(key) != expected or lexical_metadata.get(key) != expected:
                 raise IncompatibleIndexGeneration(f"projection metadata mismatch: {key}")
-        for key in ("document_population_hash", "chunk_population_hash"):
-            if not str(vector.get(key, "")).strip() or vector.get(key) != lexical_metadata.get(key):
+        population_identity = self._population_identity(generation)
+        for key, expected in population_identity.items():
+            if vector.get(key) != expected or lexical_metadata.get(key) != expected:
                 raise IncompatibleIndexGeneration(f"projection population mismatch: {key}")
         if lexical.row_count() != generation.chunk_count:
             raise IncompatibleIndexGeneration("lexical row count does not match generation metadata")
         vector_rows = vector_reader.rows()
         if len(vector_rows) != generation.chunk_count:
             raise IncompatibleIndexGeneration("vector row count does not match generation metadata")
-        for row in vector_rows[: min(3, len(vector_rows))]:
-            if (
-                row.get("projection_generation") != generation.generation_id
-                or not row.get("chunk_id")
-                or not row.get("document_id")
-                or not row.get("source_hash")
-                or not row.get("source_filename")
-                or not row.get("source_relative_path")
-                or row.get("embedding_spec_json") != generation.embedding_spec.to_json()
-            ):
-                raise IncompatibleIndexGeneration("vector sampled provenance does not match generation")
+        self._validate_vector_rows(vector_rows, generation)
+        self._validate_lexical_rows(lexical.provenance_rows(), vector_rows, generation)
         components = dict(generation.component_versions)
         if components.get("vector_generation_id") != generation.generation_id:
             raise IncompatibleIndexGeneration("vector generation identity differs from registry")
@@ -168,6 +171,109 @@ class IndexGenerationManager:
             raise IncompatibleIndexGeneration("vector population differs from registry")
         if components.get("lexical_population_hash") != generation.population_hash:
             raise IncompatibleIndexGeneration("lexical population differs from registry")
+
+    def _validate_location_identity(
+        self, generation: IndexGeneration, *, allow_staged_locations: bool
+    ) -> None:
+        vector_parts = generation.vector_location.parts
+        lexical_parts = generation.lexical_location.parts
+        if vector_parts[-3:] != ("vector", "lancedb", generation.generation_id):
+            raise IncompatibleIndexGeneration("vector location does not identify its generation")
+        if lexical_parts[-3:] != ("keyword", generation.generation_id, "bm25.sqlite3"):
+            raise IncompatibleIndexGeneration("lexical location does not identify its generation")
+        if allow_staged_locations:
+            return
+        expected_vector = self.artifact_root / "vector" / "lancedb" / generation.generation_id
+        expected_lexical = self.artifact_root / "keyword" / generation.generation_id / "bm25.sqlite3"
+        if (
+            generation.vector_location.resolve() != expected_vector.resolve()
+            or generation.lexical_location.resolve() != expected_lexical.resolve()
+        ):
+            raise IncompatibleIndexGeneration("projection locations do not match the active generation identity")
+
+    @staticmethod
+    def _population_identity(generation: IndexGeneration) -> dict[str, str]:
+        try:
+            parsed = json.loads(generation.population_identity or "")
+        except json.JSONDecodeError as exc:
+            raise IncompatibleIndexGeneration("generation population identity is invalid") from exc
+        if not isinstance(parsed, dict):
+            raise IncompatibleIndexGeneration("generation population identity is invalid")
+        canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
+        if generation.population_identity != canonical:
+            raise IncompatibleIndexGeneration("generation population identity is not canonical JSON")
+        expected = {
+            "population_hash": generation.population_hash,
+            "document_population_hash": parsed.get("document_population_hash"),
+            "chunk_population_hash": parsed.get("chunk_population_hash"),
+        }
+        if any(not isinstance(value, str) or not value.strip() for value in expected.values()):
+            raise IncompatibleIndexGeneration("generation population identity is incomplete")
+        return expected
+
+    @staticmethod
+    def _validate_vector_rows(
+        vector_rows: Sequence[Mapping[str, Any]], generation: IndexGeneration
+    ) -> None:
+        expected_spec = embedding_spec_row_values(generation.embedding_spec)
+        expected_spec_json = generation.embedding_spec.to_json()
+        identities: set[tuple[str, str, str]] = set()
+        for row in vector_rows:
+            identity = _row_identity(row)
+            if identity in identities:
+                raise IncompatibleIndexGeneration("vector rows contain duplicate chunk provenance")
+            identities.add(identity)
+            if (
+                row.get("projection_generation") != generation.generation_id
+                or not row.get("source_filename")
+                or not row.get("source_relative_path")
+                or row.get("embedding_spec_json") != expected_spec_json
+            ):
+                raise IncompatibleIndexGeneration("vector provenance does not match generation")
+            for field, expected in expected_spec.items():
+                if row.get(field) != expected:
+                    raise IncompatibleIndexGeneration(f"vector embedding specification mismatch: {field}")
+        actual = _population_hashes_from_rows(vector_rows)
+        if actual != IndexGenerationManager._population_identity(generation):
+            raise IncompatibleIndexGeneration("vector rows do not match generation population identity")
+
+    @staticmethod
+    def _validate_lexical_rows(
+        lexical_rows: Sequence[Mapping[str, Any]],
+        vector_rows: Sequence[Mapping[str, Any]],
+        generation: IndexGeneration,
+    ) -> None:
+        if len(lexical_rows) != generation.chunk_count:
+            raise IncompatibleIndexGeneration("lexical provenance row count does not match generation metadata")
+        expected_population = IndexGenerationManager._population_identity(generation)
+        vector_by_chunk = {str(row.get("chunk_id")): _row_identity(row) for row in vector_rows}
+        lexical_by_chunk: dict[str, tuple[str, str, str]] = {}
+        for lexical_row in lexical_rows:
+            provenance = lexical_row.get("provenance")
+            if not isinstance(provenance, Mapping):
+                raise IncompatibleIndexGeneration("lexical provenance is invalid")
+            identity = _row_identity(lexical_row)
+            chunk_id = identity[0]
+            if chunk_id in lexical_by_chunk or vector_by_chunk.get(chunk_id) != identity:
+                raise IncompatibleIndexGeneration("lexical provenance rows do not match vector rows")
+            if (
+                lexical_row.get("generation_id") != generation.generation_id
+                or lexical_row.get("content_type") != provenance.get("content_type")
+                or provenance.get("chunk_id") != chunk_id
+                or provenance.get("document_id") != identity[1]
+                or provenance.get("source_hash") != identity[2]
+                or provenance.get("projection_generation") != generation.generation_id
+                or provenance.get("projection_population_hash") != generation.population_hash
+                or not provenance.get("source_filename")
+                or not provenance.get("source_relative_path")
+            ):
+                raise IncompatibleIndexGeneration("lexical provenance does not match generation")
+            lexical_by_chunk[chunk_id] = identity
+        if set(lexical_by_chunk) != set(vector_by_chunk):
+            raise IncompatibleIndexGeneration("lexical and vector chunk populations differ")
+        actual = _population_hashes_from_rows(lexical_by_chunk.values())
+        if actual != expected_population:
+            raise IncompatibleIndexGeneration("lexical rows do not match generation population identity")
 
     def activate_generation(self, generation: IndexGeneration) -> None:
         self.validate_generation(generation)
@@ -298,6 +404,30 @@ def _population_hashes(chunks: Sequence[ChunkRecord]) -> dict[str, str]:
     population_hash = _hash_rows((("documents", document_hash), ("chunks", chunk_hash)))
     return {
         "population_hash": population_hash,
+        "document_population_hash": document_hash,
+        "chunk_population_hash": chunk_hash,
+    }
+
+
+def _row_identity(row: Mapping[str, Any] | Sequence[str]) -> tuple[str, str, str]:
+    if isinstance(row, Mapping):
+        values = (row.get("chunk_id"), row.get("document_id"), row.get("source_hash"))
+    else:
+        values = tuple(row)
+    if len(values) != 3 or any(not str(value).strip() for value in values):
+        raise IncompatibleIndexGeneration("indexed provenance requires chunk, document, and source identities")
+    return tuple(str(value) for value in values)  # type: ignore[return-value]
+
+
+def _population_hashes_from_rows(
+    rows: Sequence[Mapping[str, Any]] | Sequence[Sequence[str]],
+) -> dict[str, str]:
+    chunk_rows = sorted(_row_identity(row) for row in rows)
+    documents = sorted({(document_id, source_hash) for _, document_id, source_hash in chunk_rows})
+    document_hash = _hash_rows(documents)
+    chunk_hash = _hash_rows(chunk_rows)
+    return {
+        "population_hash": _hash_rows((("documents", document_hash), ("chunks", chunk_hash))),
         "document_population_hash": document_hash,
         "chunk_population_hash": chunk_hash,
     }

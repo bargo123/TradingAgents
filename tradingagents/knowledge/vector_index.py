@@ -23,6 +23,28 @@ class VectorIndexError(RuntimeError):
     """A dense projection cannot be built or read safely."""
 
 
+def embedding_spec_row_values(embedding_spec: EmbeddingSpec) -> dict[str, Any]:
+    """Return every embedding identity field in the stable vector-row schema."""
+
+    return {
+        "embedding_model_id": embedding_spec.model_id,
+        "embedding_model_version": embedding_spec.resolved_model_version,
+        "embedding_runtime": embedding_spec.runtime,
+        "embedding_artifact_hash": embedding_spec.artifact_hash,
+        "embedding_dimensions": embedding_spec.dimensions,
+        "embedding_normalization": embedding_spec.normalization_policy,
+        "embedding_tokenizer_fingerprint": embedding_spec.tokenizer_fingerprint,
+        "embedding_max_input_tokens": embedding_spec.model_max_input_tokens,
+        "embedding_special_token_budget": embedding_spec.special_token_budget,
+        "embedding_effective_content_token_limit": embedding_spec.effective_corpus_content_token_limit,
+        "embedding_corpus_instruction_policy": embedding_spec.corpus_instruction_policy,
+        "embedding_corpus_instruction_version": embedding_spec.corpus_instruction_version,
+        "embedding_query_instruction_policy": embedding_spec.query_instruction_policy,
+        "embedding_query_instruction_version": embedding_spec.query_instruction_version,
+        "embedding_truncation": embedding_spec.truncation,
+    }
+
+
 class VectorBackend(Protocol):
     """Small adapter seam so deterministic tests do not require LanceDB."""
 
@@ -163,25 +185,13 @@ class VectorIndexWriter:
                     "extra_json": json.dumps(chunk.extra, sort_keys=True),
                     "vector": list(normalized),
                     "embedding_spec_json": embedding_spec.to_json(),
-                    "embedding_model_id": embedding_spec.model_id,
-                    "embedding_model_version": embedding_spec.resolved_model_version,
-                    "embedding_artifact_hash": embedding_spec.artifact_hash,
-                    "embedding_dimensions": embedding_spec.dimensions,
-                    "embedding_max_input_tokens": embedding_spec.model_max_input_tokens,
-                    "embedding_effective_content_token_limit": embedding_spec.effective_corpus_content_token_limit,
-                    "embedding_tokenizer_fingerprint": embedding_spec.tokenizer_fingerprint,
-                    "embedding_normalization": embedding_spec.normalization_policy,
-                    "embedding_truncation": embedding_spec.truncation,
-                    "embedding_corpus_instruction_policy": embedding_spec.corpus_instruction_policy,
-                    "embedding_corpus_instruction_version": embedding_spec.corpus_instruction_version,
-                    "embedding_query_instruction_policy": embedding_spec.query_instruction_policy,
-                    "embedding_query_instruction_version": embedding_spec.query_instruction_version,
                     "lexical_index_version": lexical_index_version,
                     "index_version": index_version,
                     "projection_generation": generation_id,
                     "active": bool(chunk.active),
                 }
             )
+            row.update(embedding_spec_row_values(embedding_spec))
             rows.append(row)
         return tuple(rows)
 
@@ -224,4 +234,5 @@ __all__ = [
     "VectorIndexError",
     "VectorIndexReader",
     "VectorIndexWriter",
+    "embedding_spec_row_values",
 ]

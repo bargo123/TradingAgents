@@ -55,7 +55,7 @@ class LexicalIndexWriter:
                     if not chunk.chunk_id or chunk.chunk_id in seen:
                         raise LexicalIndexError("chunk IDs must be non-empty and unique")
                     seen.add(chunk.chunk_id)
-                    self._insert_chunk(connection, chunk, generation_id)
+                    self._insert_chunk(connection, chunk, generation_id, population_hash)
                 metadata = {
                     "schema_version": _SCHEMA_VERSION,
                     "generation_id": generation_id,
@@ -99,10 +99,16 @@ class LexicalIndexWriter:
         )
 
     @staticmethod
-    def _insert_chunk(connection: sqlite3.Connection, chunk: ChunkRecord, generation_id: str) -> None:
+    def _insert_chunk(
+        connection: sqlite3.Connection,
+        chunk: ChunkRecord,
+        generation_id: str,
+        population_hash: str,
+    ) -> None:
         provenance = chunk.to_dict()
         provenance["content_type"] = chunk.content_type.value
         provenance["projection_generation"] = generation_id
+        provenance["projection_population_hash"] = population_hash
         connection.execute(
             "INSERT INTO knowledge_fts(chunk_id, text) VALUES (?, ?)",
             (chunk.chunk_id, _normalize_text(chunk.text)),
@@ -174,6 +180,32 @@ class LexicalIndexReader:
                 return int(connection.execute("SELECT count(*) FROM knowledge_fts").fetchone()[0])
         except sqlite3.Error as exc:
             raise LexicalIndexError("lexical FTS5 table is unavailable") from exc
+
+    def provenance_rows(self) -> tuple[dict[str, Any], ...]:
+        """Return every lexical provenance row for generation-integrity checks."""
+
+        try:
+            with closing(sqlite3.connect(self.location)) as connection:
+                rows = connection.execute(
+                    "SELECT chunk_id, document_id, source_hash, generation_id, content_type, provenance_json "
+                    "FROM knowledge_chunk_provenance ORDER BY chunk_id"
+                ).fetchall()
+        except sqlite3.Error as exc:
+            raise LexicalIndexError("lexical provenance rows are unavailable") from exc
+        try:
+            return tuple(
+                {
+                    "chunk_id": row[0],
+                    "document_id": row[1],
+                    "source_hash": row[2],
+                    "generation_id": row[3],
+                    "content_type": row[4],
+                    "provenance": json.loads(row[5]),
+                }
+                for row in rows
+            )
+        except json.JSONDecodeError as exc:
+            raise LexicalIndexError("lexical provenance JSON is invalid") from exc
 
     def search(self, query: str, *, limit: int = 50) -> tuple[dict[str, Any], ...]:
         if not str(query).strip():

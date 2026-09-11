@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 from pathlib import Path
+import shutil
+import sqlite3
 
 import pytest
 
@@ -38,6 +41,18 @@ class FakeVectorBackend:
 class TruncatingVectorBackend(FakeVectorBackend):
     def write(self, location: Path, rows: tuple[dict[str, object], ...]) -> None:
         super().write(location, rows[:-1])
+
+
+class CorruptingLexicalWriter(LexicalIndexWriter):
+    """Real FTS5 writer that injects one invalid persisted provenance value."""
+
+    def __init__(self, corrupt) -> None:
+        self._corrupt = corrupt
+
+    def write(self, location, chunks, **kwargs):
+        metadata = super().write(location, chunks, **kwargs)
+        self._corrupt(Path(location))
+        return metadata
 
 
 def make_embedding_spec(**overrides: object) -> EmbeddingSpec:
@@ -214,6 +229,106 @@ def test_generation_persists_complete_embedding_spec_not_dimensions_only(tmp_pat
     assert generation.embedding_spec == spec
     assert generation.embedding_spec.artifact_hash == "sha256:local-model"
     assert generation.embedding_spec.query_instruction_policy == "bge-search-prefix-v1"
+
+
+@pytest.mark.parametrize(
+    ("column", "expected", "replacement"),
+    [
+        ("embedding_model_id", "fixture/bge", "other/model"),
+        ("embedding_model_version", "fixture-v1", "other-version"),
+        ("embedding_runtime", "onnx-cpu", "cuda"),
+        ("embedding_artifact_hash", "sha256:fixture-model", "sha256:other"),
+        ("embedding_dimensions", 3, 4),
+        ("embedding_normalization", "l2", "none"),
+        ("embedding_tokenizer_fingerprint", "sha256:fixture-tokenizer", "sha256:other-tokenizer"),
+        ("embedding_max_input_tokens", 512, 513),
+        ("embedding_special_token_budget", 2, 3),
+        ("embedding_effective_content_token_limit", 510, 509),
+        ("embedding_corpus_instruction_policy", "none-v1", "other-policy"),
+        ("embedding_corpus_instruction_version", "v1", "v2"),
+        ("embedding_query_instruction_policy", "bge-search-prefix-v1", "other-query-policy"),
+        ("embedding_query_instruction_version", "v1", "v2"),
+        ("embedding_truncation", False, True),
+    ],
+)
+def test_vector_rows_persist_and_validate_every_embedding_spec_field(
+    tmp_path, column, expected, replacement
+):
+    manager = make_generation_manager(tmp_path)
+    generation = manager.resolve_active_generation()
+    rows_path = generation.vector_location / "rows.json"
+    rows = json.loads(rows_path.read_text(encoding="utf-8"))
+
+    assert rows[0][column] == expected
+    assert rows[0]["embedding_spec_json"] == make_embedding_spec().to_json()
+
+    rows[0][column] = replacement
+    rows_path.write_text(json.dumps(rows, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        manager.resolve_active_generation()
+
+
+def test_build_rejects_invalid_lexical_provenance_row_generation_or_population(tmp_path):
+    def corrupt(location: Path) -> None:
+        with closing(sqlite3.connect(location)) as connection:
+            provenance_json = connection.execute(
+                "SELECT provenance_json FROM knowledge_chunk_provenance WHERE chunk_id = ?",
+                ("chunk-001",),
+            ).fetchone()[0]
+            payload = json.loads(provenance_json)
+            payload["projection_generation"] = "other-generation"
+            payload["projection_population_hash"] = "sha256:other-population"
+            connection.execute(
+                "UPDATE knowledge_chunk_provenance SET generation_id = ?, provenance_json = ? WHERE chunk_id = ?",
+                ("other-generation", json.dumps(payload, sort_keys=True), "chunk-001"),
+            )
+            connection.commit()
+
+    manager = make_generation_manager(tmp_path, seed=False)
+    manager.lexical_writer = CorruptingLexicalWriter(corrupt)
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        manager.build_generation(make_chunks(), make_vectors(), "gen-corrupt-lexical")
+
+
+def test_resolve_rejects_lexical_location_identity_mismatch(tmp_path):
+    manager = make_generation_manager(tmp_path)
+    generation = manager.active_generation()
+    assert generation is not None
+    copied_location = tmp_path / "keyword" / "copied" / "bm25.sqlite3"
+    copied_location.parent.mkdir(parents=True)
+    shutil.copy2(generation.lexical_location, copied_location)
+    with closing(sqlite3.connect(tmp_path / "catalog.sqlite3")) as connection:
+        connection.execute(
+            "UPDATE knowledge_index_generations SET lexical_location = ? WHERE generation_id = ?",
+            (str(copied_location), generation.generation_id),
+        )
+        connection.commit()
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        manager.resolve_active_generation()
+
+
+def test_resolve_rejects_persisted_lexical_provenance_population_mismatch(tmp_path):
+    manager = make_generation_manager(tmp_path)
+    generation = manager.active_generation()
+    assert generation is not None
+    with closing(sqlite3.connect(generation.lexical_location)) as connection:
+        provenance_json = connection.execute(
+            "SELECT provenance_json FROM knowledge_chunk_provenance WHERE chunk_id = ?",
+            ("chunk-001",),
+        ).fetchone()[0]
+        provenance = json.loads(provenance_json)
+        provenance["projection_population_hash"] = "sha256:wrong-population"
+        connection.execute(
+            "UPDATE knowledge_chunk_provenance SET provenance_json = ? WHERE chunk_id = ?",
+            (json.dumps(provenance, sort_keys=True), "chunk-001"),
+        )
+        connection.commit()
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        manager.resolve_active_generation()
 
 
 def test_build_rejects_mixed_chunk_embedding_specs_and_non_finite_or_wrong_vectors(tmp_path):
