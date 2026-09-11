@@ -113,6 +113,12 @@ and builds production PDF options with `do_ocr=False`. An optional `HF_TOKEN`
 may be inherited only by these explicit setup commands; it is never logged or
 accepted by normal indexing/search.
 
+The Docling stage invokes the installed `docling-tools` executable for only
+the `layout` and `tableformer` models required by the V1 PDF pipeline. OCR,
+formula, picture-description, and other optional models are not downloaded.
+Failures report stage, exception type, repository/model, file when known, HTTP
+status when observed, and a bounded failure class without exposing credentials.
+
 Search creates only the local query embedder and read-only active index
 readers. Before dense retrieval it compares the full query provider
 `EmbeddingSpec` with the active index: model/version/artifact, dimensions,

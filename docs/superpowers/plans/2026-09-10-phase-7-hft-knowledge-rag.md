@@ -1490,6 +1490,11 @@ manifest only after validation. It must record resolved versions, artifact
 hashes, tokenizer fingerprints, and dimensions, and fail clearly if
 provisioning cannot complete. Its required `--source-root` guard rejects every
 overlapping artifact root or destination, so it cannot touch `new books`.
+The Docling stage invokes the installed `docling-tools` executable for only
+`layout` and `tableformer`; OCR, formula, picture-description, and other
+optional models remain disabled. Failure diagnostics are scalar-only and
+bounded, including exception type, repository/model, file when known, HTTP
+status when observed, and failure class.
 
 - [ ] **Step 6: Run one bounded real local end-to-end smoke (mandatory)**
 
