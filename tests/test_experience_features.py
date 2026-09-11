@@ -50,3 +50,15 @@ def test_unknown_direction_has_typed_diagnostic(decision_row):
     decision_row["snapshot_json"]["features"]["M1"]["direction"] = "SIDEWAYS"
     with pytest.raises(FeatureExtractionIncompleteError):
         extract_market_state(decision_row)
+
+
+def test_nonfinite_numeric_feature_has_typed_diagnostic(decision_row):
+    decision_row["snapshot_json"]["features"]["M1"]["range_pct"] = float("inf")
+    with pytest.raises(FeatureExtractionIncompleteError):
+        extract_market_state(decision_row)
+
+
+def test_malformed_individual_timeframe_section_has_typed_diagnostic(decision_row):
+    decision_row["snapshot_json"]["features"]["M1"] = []
+    with pytest.raises(FeatureExtractionIncompleteError):
+        extract_market_state(decision_row)

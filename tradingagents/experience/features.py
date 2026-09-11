@@ -106,8 +106,13 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
                 diags.append(ExtractionDiagnostic("DIRECTION_INVALID", path, "expected UP, FLAT, DOWN, or INSUFFICIENT_DATA"))
                 values.append(float("nan")); mask.append(False); paths.append(path); reasons.append("DIRECTION_INVALID"); return
             value = encoded
-        else: value = _finite(value)
-        if value is None: values.append(float("nan")); mask.append(False); paths.append(path if path else None); reasons.append("MISSING" if value is None else "NON_FINITE")
+        else:
+            original = value
+            value = _finite(value)
+            if original is not None and value is None:
+                diags.append(ExtractionDiagnostic("VALUE_NON_FINITE", path, "finite numeric value required"))
+        if value is None:
+            values.append(float("nan")); mask.append(False); paths.append(path if path else None); reasons.append("MISSING")
         else: values.append(value); mask.append(True); paths.append(path); reasons.append(None)
     for quote_key in ("bid", "ask", "spread_points"):
         if _finite(quote.get(quote_key)) is None:
@@ -119,7 +124,10 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
         diags.append(ExtractionDiagnostic("SCHEMA_INVALID", "snapshot_json.features", "mapping required"))
         features = {}
     for tf in ("M1", "M5", "M15", "H1"):
-        section = features.get(tf, features.get(tf.lower(), {})); section = section if isinstance(section, Mapping) else {}
+        section_value = features.get(tf, features.get(tf.lower(), {}))
+        if section_value != {} and not isinstance(section_value, Mapping):
+            diags.append(ExtractionDiagnostic("SCHEMA_INVALID", f"snapshot_json.features.{tf}", "mapping required"))
+        section = section_value if isinstance(section_value, Mapping) else {}
         for key in ("return_over_bars", "range_pct", "close_position", "average_true_range"):
             add(f"{tf}.{key}", section.get(key), f"snapshot_json.features.{tf}.{key}")
         add(f"{tf}.direction_code", section.get("direction"), f"snapshot_json.features.{tf}.direction", direction=True)

@@ -45,3 +45,16 @@ pytest tests/test_experience_*.py -q
 ```
 
 `features.py` now emits typed schema/direction diagnostics (and raises the typed extraction error for malformed nested structures); `trust.py` treats quote diagnostics as Tier C. Compilation and `git diff --check` remain clean.
+
+## Reviewer-fix round 2
+
+Added RED tests for non-finite numeric feature values and malformed individual timeframe sections. Both failed before the fix. The extractor now emits typed diagnostics and fails closed for `NaN`/`Infinity` numeric inputs and non-mapping `M1`/`M5`/`M15`/`H1` sections.
+
+Final verification:
+
+```text
+pytest tests/test_experience_features.py tests/test_experience_trust.py -q: 11 passed
+pytest tests/test_experience_*.py -q: 46 passed
+compileall: clean
+git diff --check: clean
+```
