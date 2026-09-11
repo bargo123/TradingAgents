@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -272,3 +273,16 @@ def test_failed_all_stage_does_not_publish_success_manifest(tmp_path: Path, monk
         "provision", "all", "--source-root", str(source), "--artifact-root", str(artifact_root), "--allow-network"
     ]) != 0
     assert not (artifact_root / "provisioning-manifest.json").exists()
+
+
+def test_offline_smoke_guard_allows_internal_windows_socketpair_but_blocks_network() -> None:
+    smoke = _load_script("knowledge_phase7_smoke.py")
+
+    with smoke._OfflineNetworkGuard() as guard:
+        left, right = socket.socketpair()
+        left.close()
+        right.close()
+        with pytest.raises(smoke.NetworkAttempt):
+            socket.create_connection(("127.0.0.1", 11434), timeout=0.01)
+
+    assert guard.attempts == ["('127.0.0.1', 11434)"]

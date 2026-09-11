@@ -55,7 +55,14 @@ class LexicalIndexWriter:
                     if not chunk.chunk_id or chunk.chunk_id in seen:
                         raise LexicalIndexError("chunk IDs must be non-empty and unique")
                     seen.add(chunk.chunk_id)
-                    self._insert_chunk(connection, chunk, generation_id, population_hash)
+                    self._insert_chunk(
+                        connection,
+                        chunk,
+                        generation_id,
+                        population_hash,
+                        lexical_index_version,
+                        index_version,
+                    )
                 metadata = {
                     "schema_version": _SCHEMA_VERSION,
                     "generation_id": generation_id,
@@ -104,9 +111,17 @@ class LexicalIndexWriter:
         chunk: ChunkRecord,
         generation_id: str,
         population_hash: str,
+        lexical_index_version: str,
+        index_version: str,
     ) -> None:
         provenance = chunk.to_dict()
         provenance["content_type"] = chunk.content_type.value
+        # Lexical rows are published only as part of a matched, validated
+        # vector/lexical generation; expose that readiness to query filters.
+        provenance["vector_ready"] = True
+        provenance["lexical_ready"] = True
+        provenance["lexical_index_version"] = lexical_index_version
+        provenance["index_version"] = index_version
         provenance["projection_generation"] = generation_id
         provenance["projection_population_hash"] = population_hash
         connection.execute(

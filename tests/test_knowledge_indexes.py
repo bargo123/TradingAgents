@@ -177,6 +177,38 @@ def test_failed_vector_build_does_not_swap_active_generation(tmp_path):
     assert (tmp_path / "vector" / "lancedb" / old.generation_id).exists()
 
 
+def test_projection_rows_mark_both_readiness_flags_after_validated_build(tmp_path):
+    chunks = make_chunks()
+    spec = make_embedding_spec()
+    rows = VectorIndexWriter(backend=FakeVectorBackend())._rows(
+        chunks,
+        make_vectors(),
+        generation_id="gen-rows",
+        embedding_spec=spec,
+        lexical_index_version="fts5-fixture-v1",
+        index_version="index-fixture-v1",
+    )
+    assert all(row["vector_ready"] is True and row["lexical_ready"] is True for row in rows)
+
+    location = tmp_path / "bm25.sqlite3"
+    LexicalIndexWriter().write(
+        location,
+        chunks,
+        generation_id="gen-rows",
+        embedding_spec=spec,
+        lexical_index_version="fts5-fixture-v1",
+        lexical_tokenizer_settings={},
+        index_version="index-fixture-v1",
+        population_hash="population",
+        document_population_hash="documents",
+        chunk_population_hash="chunks",
+    )
+    provenance = LexicalIndexReader(location).provenance_rows()
+    assert all(row["provenance"]["vector_ready"] is True for row in provenance)
+    assert all(row["provenance"]["lexical_ready"] is True for row in provenance)
+    assert all(row["provenance"]["index_version"] == "index-fixture-v1" for row in provenance)
+
+
 def test_failed_lexical_build_does_not_swap_active_generation(tmp_path, monkeypatch):
     manager = make_generation_manager(tmp_path)
     old = manager.active_generation()

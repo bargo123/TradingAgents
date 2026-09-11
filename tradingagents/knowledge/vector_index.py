@@ -166,6 +166,12 @@ class VectorIndexWriter:
             if not all(math.isfinite(value) for value in normalized):
                 raise VectorIndexError("vector values must be finite")
             row = chunk.to_dict()
+            # A row only reaches a published generation after both dense and
+            # lexical projections validate. Marking it ready here ensures
+            # query-side candidate filtering reflects that publication
+            # contract instead of the pre-index chunk state.
+            row["vector_ready"] = True
+            row["lexical_ready"] = True
             # Dynamic provenance maps are retained as canonical JSON.  Keeping
             # the physical LanceDB schema scalar/stable avoids a document's
             # optional table/equation fields changing Arrow's inferred type.

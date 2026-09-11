@@ -25,6 +25,8 @@ class NetworkAttempt(RuntimeError):
 class _OfflineNetworkGuard:
     def __init__(self) -> None:
         self.attempts: list[str] = []
+        self._allow_socketpair = False
+        self._original_socketpair = socket.socketpair
         self._original_connect = socket.socket.connect
         self._original_create_connection = socket.create_connection
 
@@ -32,13 +34,37 @@ class _OfflineNetworkGuard:
         self.attempts.append(str(address))
         raise NetworkAttempt(f"offline smoke blocked network attempt: {address}")
 
+    def _socketpair(self, *args: Any, **kwargs: Any) -> Any:
+        self._allow_socketpair = True
+        try:
+            return self._original_socketpair(*args, **kwargs)
+        finally:
+            self._allow_socketpair = False
+
     def __enter__(self) -> _OfflineNetworkGuard:
-        socket.socket.connect = self._blocked  # type: ignore[method-assign]
+        def blocked_socket(sock: socket.socket, address: Any, *args: Any, **kwargs: Any) -> None:
+            if (
+                self._allow_socketpair
+                and isinstance(address, tuple)
+                and len(address) >= 2
+                and address[0] in {"127.0.0.1", "::1"}
+            ):
+                # Windows' asyncio ProactorEventLoop implements socketpair()
+                # via a temporary loopback listener. This is an in-process
+                # transport, not external network access, and must remain
+                # usable by LanceDB.
+                self._original_connect(sock, address, *args, **kwargs)
+                return
+            self._blocked(address, *args, **kwargs)
+
+        socket.socket.connect = blocked_socket  # type: ignore[method-assign]
+        socket.socketpair = self._socketpair  # type: ignore[assignment]
         socket.create_connection = self._blocked  # type: ignore[assignment]
         return self
 
     def __exit__(self, *exc: object) -> None:
         socket.socket.connect = self._original_connect  # type: ignore[method-assign]
+        socket.socketpair = self._original_socketpair  # type: ignore[assignment]
         socket.create_connection = self._original_create_connection  # type: ignore[assignment]
 
 
