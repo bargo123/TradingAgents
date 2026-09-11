@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "langchain-core>=0.3.81",
+    "numpy>=1.26",
     "backtrader>=1.9.78.123",
     "langchain-anthropic>=0.3.15",
     "langchain-experimental>=0.3.4",
