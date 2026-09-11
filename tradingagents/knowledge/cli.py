@@ -250,6 +250,15 @@ def _ingestion_config(args: argparse.Namespace) -> KnowledgeConfig:
         values["source_root"] = _path(args.source_root)
     if args.docling_artifacts_path is not None:
         values["docling_artifacts_path"] = _path(args.docling_artifacts_path)
+    model_path = getattr(args, "embedding_model_path", None) or os.getenv(
+        "KNOWLEDGE_EMBEDDING_MODEL_PATH"
+    )
+    if model_path is None:
+        candidate = values["artifact_root"] / "models" / "embedding"
+        if candidate.is_dir():
+            model_path = str(candidate)
+    if model_path is not None:
+        values["embedding_model_path"] = _path(model_path)
     return KnowledgeConfig(**values)
 
 
@@ -300,6 +309,11 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--source-root", metavar="PATH", help="read-only document source directory")
         _add_artifact_argument(command)
         command.add_argument("--docling-artifacts-path", metavar="PATH", help="prefetched local Docling assets")
+        command.add_argument(
+            "--embedding-model-path",
+            metavar="PATH",
+            help="prefetched local FastEmbed/ONNX model (or KNOWLEDGE_EMBEDDING_MODEL_PATH)",
+        )
         _add_json_argument(command)
     status = commands.add_parser("status", help="show catalog status without parsing or indexing")
     _add_artifact_argument(status)

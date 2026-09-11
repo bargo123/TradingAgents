@@ -1269,8 +1269,8 @@ Use `argparse` and preserve machine-readable JSON output. The command
 contracts are:
 
 ~~~text
-knowledge index [--source-root PATH] [--artifact-root PATH] [--docling-artifacts-path PATH] [--json]
-knowledge rebuild [--source-root PATH] [--artifact-root PATH] [--docling-artifacts-path PATH] [--json]
+knowledge index [--source-root PATH] [--artifact-root PATH] [--docling-artifacts-path PATH] [--embedding-model-path PATH] [--json]
+knowledge rebuild [--source-root PATH] [--artifact-root PATH] [--docling-artifacts-path PATH] [--embedding-model-path PATH] [--json]
 knowledge status [--artifact-root PATH] [--json]
 knowledge list [--artifact-root PATH] [--state STATE] [--json]
 knowledge search TEXT [--artifact-root PATH] [--top-k N] [--content-type TYPE] [--document-id ID] [--include-stale] [--json]

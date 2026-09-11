@@ -216,6 +216,28 @@ def test_index_refuses_an_artifact_root_inside_source_root(tmp_path, capsys):
     assert "outside source_root" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("source", ["explicit", "environment"])
+def test_ingestion_config_forwards_a_disjoint_local_embedding_model_path(tmp_path, monkeypatch, source):
+    from tradingagents.knowledge.cli import _ingestion_config, build_parser
+
+    source_root = tmp_path / "source"
+    artifact_root = tmp_path / "artifacts"
+    model_path = tmp_path / "provisioned" / "bge-small-en-v1.5"
+    source_root.mkdir()
+    argv = ["index", "--source-root", str(source_root), "--artifact-root", str(artifact_root)]
+    if source == "explicit":
+        argv.extend(["--embedding-model-path", str(model_path)])
+    else:
+        monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL_PATH", str(model_path))
+
+    config = _ingestion_config(build_parser().parse_args(argv))
+
+    assert config.embedding_model_path == model_path.resolve(strict=False)
+    assert config.source_root == source_root.resolve(strict=False)
+    with pytest.raises(ValueError):
+        config.embedding_model_path.relative_to(config.source_root)
+
+
 def test_stock_console_entrypoint_is_unchanged():
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
     assert project["project"]["scripts"]["tradingagents"] == "cli.main:app"

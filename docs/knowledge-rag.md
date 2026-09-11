@@ -45,8 +45,8 @@ Use only explicit commands; neither status, search, nor another TradingAgents
 command starts ingestion:
 
 ```powershell
-knowledge index --source-root "D:\books" --artifact-root data_cache/knowledge
-knowledge rebuild --source-root "D:\books" --artifact-root data_cache/knowledge
+knowledge index --source-root "D:\books" --artifact-root data_cache/knowledge --embedding-model-path "D:\models\bge-small-en-v1.5"
+knowledge rebuild --source-root "D:\books" --artifact-root data_cache/knowledge --embedding-model-path "D:\models\bge-small-en-v1.5"
 knowledge status --artifact-root data_cache/knowledge --json
 knowledge list --state NEEDS_OCR --artifact-root data_cache/knowledge
 knowledge document <document-id> --artifact-root data_cache/knowledge --json
