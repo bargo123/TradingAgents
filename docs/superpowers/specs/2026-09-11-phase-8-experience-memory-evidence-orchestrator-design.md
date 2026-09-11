@@ -290,7 +290,7 @@ SourceSchemaReader -> row fingerprints -> ExperienceImporter
        v
 ExperienceQueryService -> compatibility gates -> exact SimilarityIndex
        |                                      |
-       +--> ExperienceHit[]                  +--> StatisticsCalculator
+       +--> ExperienceSearchResult           +--> StatisticsCalculator
 
 Phase 7 KnowledgeQueryService --------------------+
                                                     v
@@ -502,12 +502,22 @@ with a different source fingerprint, the importer records
 SOURCE_DECISION_CONFLICT and retains the prior immutable projection; it never
 silently overwrites it.
 
+`source_aliases` records every configured source database/row alias that has
+presented the same source_decision_id and source_decision_fingerprint. An
+ExperienceRecord is active iff at least one CURRENT, nonremoved source alias
+still points to its accepted decision fingerprint. Removing one duplicate
+alias therefore leaves the logical experience active. Removing the last
+current alias makes it historical/tombstoned. A failed or unavailable source
+scan is not evidence of removal and must not change alias currentness; alias
+status transitions and scan provenance remain auditable.
+
 The logical record contains:
 
 ~~~
 ExperienceRecord
   experience_id
   source_database_id
+  source_aliases
   source_decision_id
   source_run_id
   symbol
@@ -566,6 +576,9 @@ prior unavailable reason.
 The catalog therefore separates:
 
 - experience_records: logical identity and latest observed source fingerprints;
+- experience_source_aliases: one row per configured source database alias,
+  with CURRENT/REMOVED state, accepted decision fingerprint, and scan
+  provenance;
 - experience_outcome_snapshots: append-only source-evaluation projections,
   keyed by experience, basis, horizon, and evaluation fingerprint;
 - experience_feature_projections: versioned feature values/masks;
@@ -601,14 +614,16 @@ The default similarity query must match:
 
 - exact resolved_symbol (requested symbol is retained for provenance);
 - exact analysis_profile;
-- compatible analysis_timeframe;
+- exact analysis_timeframe;
 - feature_schema_version; and
 - a valid source market-state contract.
 
 point and digits are validated symbol metadata and retained with the feature
-row. They are not silently inferred and are not distance dimensions. An
-optional caller filter may require an exact timeframe/profile policy, but the
-implementation must not compare incompatible feature definitions.
+row. They are not silently inferred and are not distance dimensions. V1 does
+not define fuzzy or cross-timeframe compatibility: resolved_symbol,
+analysis_profile, analysis_timeframe, feature_schema_version, and
+feature_extractor_version must all match exactly. A future compatibility table
+would require an explicit versioned design change.
 
 ### 10.2 Numeric fields
 
@@ -714,6 +729,13 @@ NORMALIZATION_FAILED, CONTEXT_INCOMPLETE, TEMPORAL_INVALID,
 MARKET_FEATURES_INSUFFICIENT, SOURCE_CONFLICT, or PROVENANCE_INVALID). A new
 trust-policy version is required for any rule change.
 
+Tier C is diagnostic/history evidence only. It is excluded from default
+numeric market-state similarity and from default outcome statistics. Tier C
+remains queryable through structured status/trust/reason/provenance filters
+and the optional bounded diagnostic FTS5 projection. V1 defines no opt-in Tier
+C numeric nearest-neighbor mode; adding one later would require a separate
+versioned policy and explicit caller intent.
+
 ## 12. Outcome eligibility and temporal semantics
 
 ### 12.1 Explicit basis and horizon
@@ -723,16 +745,20 @@ horizon_seconds. Valid values are the Phase 5 values, including
 ANALYSIS_SNAPSHOT versus DECISION_REFERENCE and 5m/15m/30m/60m. No
 aggregation crosses either dimension.
 
-For a requested row, statistics eligibility requires:
+For a requested row, descriptive-statistics eligibility requires:
 
 1. the caller-selected trust tier is allowed by the statistics policy;
 2. the source evaluation row exists with the exact requested basis/horizon;
 3. evaluation_status == COMPLETE;
-4. source_context_eligible == 1; and
-5. all fields required by the requested statistic are finite/present.
+4. source_context_eligible == 1;
+5. all fields required by the requested statistic are finite/present; and
+6. when as_of is supplied, the evaluation evidence and snapshot version were
+   available by that historical cutoff (Section 12.4).
 
-PENDING, DATA_UNAVAILABLE, INELIGIBLE, missing rows, and training_eligible IS
-NULL are explicit exclusions. Phase 8 never assigns training eligibility.
+PENDING, DATA_UNAVAILABLE, INELIGIBLE, and missing rows are explicit
+exclusions. training_eligible and training_eligibility_reason are imported
+only as source provenance; they do not gate Phase 8 descriptive statistics.
+Phase 8 never sets or infers training eligibility.
 
 The default StatisticsPolicyV1 allows Tier A only. A caller may explicitly
 request Tier B, but results retain separate per-tier counts and a limitation
@@ -759,16 +785,52 @@ performance evidence.
 ### 12.3 Leakage-safe as_of
 
 ExperienceQuery.as_of is optional. When present, a candidate is eligible only
-if:
+when its completed decision was available strictly before the cutoff. Define:
+
+~~~
+experience_available_at = decision_completed_timestamp
+~~~
+
+For a normally completed decision, all of the following are required:
 
 ~~~
 candidate.analysis_snapshot_timestamp < as_of
+candidate.experience_available_at < as_of
 ~~~
 
-The comparison is strict and UTC-normalized. A candidate at exactly as_of is
-excluded. Phase 8 does not obtain as_of from MT5; a future caller provides it.
-Outcome rows are never used to decide whether a candidate passes the temporal
+The comparisons are strict and UTC-normalized. A candidate at exactly as_of
+is excluded. A decision that began before as_of but completed at or after it
+is not exposed, including its action and trust record. Legacy rows without a
+trustworthy completion timestamp are excluded from historical similarity with
+the explicit reason AVAILABILITY_TIMESTAMP_UNKNOWN rather than guessed.
+Phase 8 does not obtain as_of from MT5; a future caller provides it. Outcome
+rows are never used to decide whether a candidate passes the temporal
 market-state filter.
+
+### 12.4 Historical evaluation availability
+
+When an outcome-statistics request supplies as_of, an evaluation snapshot is
+eligible only if its observation/evidence occurred no later than as_of and the
+evaluation state/version was known by as_of. The importer preserves
+observation_timestamp, evaluated_at, created_at,
+recovered_from_unavailable_at, previous_unavailable_reason, and evaluation
+fingerprints so the calculator can select the latest snapshot that was
+actually available by the cutoff.
+
+For deterministic selection, `evaluation_available_at` is
+`recovered_from_unavailable_at` for a recovered snapshot, otherwise
+`evaluated_at` when present, otherwise `created_at`; the selected timestamp
+must be trustworthy UTC and no later than as_of. The calculator requires
+`observation_timestamp <= as_of`, filters snapshots by that availability time,
+then selects the latest one (ties break by evaluation fingerprint). This
+preserves the prior DATA_UNAVAILABLE snapshot for an earlier cutoff while
+allowing the recovered COMPLETE snapshot after its recovery time.
+
+For example, if an evaluation is DATA_UNAVAILABLE at 13:00 and recovered to
+COMPLETE at 15:00, a query with as_of=14:00 must not see the 15:00 COMPLETE
+state; a query with as_of=16:00 may use it when all other eligibility gates
+pass. A recovery timestamp after as_of cannot retroactively make historical
+statistics complete.
 
 ## 13. Similarity algorithm
 
@@ -787,7 +849,6 @@ ExperienceQuery(
     trust_tiers: tuple[str, ...] = (
         "TIER_A_HIGH_TRUST",
         "TIER_B_LIMITED",
-        "TIER_C_DIAGNOSTIC_ONLY",
     ),
     action_filter: str | None = None,
 )
@@ -799,25 +860,24 @@ supplied, filters candidates after identity/time/trust gates. It does not
 enter the distance or score. The default similarity score is therefore
 invariant under changing a candidate's BUY/SELL/HOLD action.
 
-The service returns:
+The service returns a read-only result envelope:
 
 ~~~
-ExperienceHit(
-    experience_id,
-    source_decision_id,
-    similarity_score,
-    distance,
-    comparable_feature_count,
-    trust_tier,
-    market_state,
-    action,
-    timestamps,
-    outcome_availability,
-    provenance,
-    feature_schema_version,
-    similarity_profile_version,
+ExperienceSearchResult(
+    hits: tuple[ExperienceHit, ...],
+    query_normalization_fingerprint,
+    active_generation_id,
+    candidate_count,
+    excluded_counts,
 )
 ~~~
+
+Each ExperienceHit retains the existing fields (experience_id,
+source_decision_id, similarity_score, distance, comparable_feature_count,
+trust_tier, market_state, action, timestamps, outcome_availability,
+provenance, feature_schema_version, and similarity_profile_version).
+The query-level result records the deterministic normalization fingerprint
+used for this search; orchestrator provenance carries it alongside the hits.
 
 Scores are experience-similarity scores only. They are not comparable with
 Phase 7 semantic or lexical scores.
@@ -827,7 +887,7 @@ Phase 7 semantic or lexical scores.
 Before distance calculation, apply:
 
 1. exact symbol match when either query or configuration specifies a symbol;
-2. profile/timeframe compatibility;
+2. exact analysis_profile and exact analysis_timeframe compatibility;
 3. matching feature schema and extractor version;
 4. valid as_of test; and
 5. minimum overlap.
@@ -849,12 +909,23 @@ SimilarityProfileV1 stores, for every numeric feature:
 - weight; and
 - the population fingerprint from which the statistics were computed.
 
-For an overlapping feature:
+For an overlapping feature, the scale is selected deterministically:
 
 ~~~
-scale = max(IQR, 1e-12)
+if IQR > configured_epsilon:
+    scale = IQR
+elif MAD-derived scale is available and > configured_epsilon:
+    scale = MAD-derived scale
+else:
+    scale = versioned_per_feature_fallback_scale
 z = clip((value - median) / scale, -8.0, 8.0)
 ~~~
+
+The configured epsilon, MAD conversion, per-feature fallback scales, and
+fallback-selection policy are persisted in the profile metadata. A zero IQR
+must never silently use 1e-12 as the effective scale, because that would
+amplify insignificant differences. Any fallback-policy change requires a new
+similarity-profile version.
 
 V1 weights are explicit and versioned:
 
@@ -870,7 +941,22 @@ similarity-profile version and generation.
 
 Normalization statistics are computed only from valid pre-decision feature
 rows, never from action, outcome, evaluation, or future fields. Tier C rows do
-not define the default profile population.
+not define the default profile population. A normal query without as_of uses
+the active persisted SimilarityProfile generation. A historical query with
+as_of resolves an AS-OF-safe normalization view using only experiences whose
+availability timestamps are strictly before as_of (the same temporal boundary
+used for candidate eligibility). V1 computes this exact population at query
+time when needed; no future row may influence its medians, IQRs, fallback
+scales, normalized values, distances, or ranking.
+
+Every search result persists/returns a deterministic
+query_normalization_fingerprint containing at least:
+
+- feature_schema_version;
+- similarity_profile_version;
+- normalization_cutoff/as_of and the eligible population fingerprint;
+- median/IQR/fallback-policy fingerprint; and
+- the ordered feature/missing-mask policy fingerprint.
 
 ### 13.4 Exact CPU index and ordering
 
@@ -975,8 +1061,10 @@ databases. For each source decision:
 
 Unchanged decision and evaluation fingerprints produce UNCHANGED events.
 Duplicate database copies with the same decision ID and fingerprint produce a
-single logical experience plus a source alias event. Different decision IDs
-remain different experiences even when their bytes look similar.
+single logical experience plus a source alias event. Alias currentness is
+computed across all configured source databases, not from whichever source was
+scanned most recently. Different decision IDs remain different experiences
+even when their bytes look similar.
 
 ### 16.2 Changes and recovery
 
@@ -986,11 +1074,14 @@ Recoverable evaluation changes are allowed and retain
 previous_unavailable_reason, recovery time, source timestamps, and both
 fingerprints.
 
-If a source row disappears, the importer records SOURCE_MISSING and keeps the
-last known record/provenance as an inactive historical tombstone. It is
-excluded from default current similarity/statistics queries, but remains
-auditable. It is never deleted merely because a source database was copied or
-temporarily unavailable.
+After a successful scan proves that a source row is absent, the importer marks
+only that source alias REMOVED and records SOURCE_MISSING. The logical record
+remains active while another CURRENT alias points to the same accepted
+fingerprint; it becomes an inactive historical tombstone only when the last
+current alias is removed. Tombstones are excluded from default current
+similarity/statistics queries but remain auditable. An unavailable/failed scan
+does not mark any alias removed, and no record is deleted merely because a
+source database was copied or temporarily unavailable.
 
 experience rebuild explicitly rebuilds feature matrices, normalization
 statistics, diagnostic projections, and the active generation from retained
@@ -1068,7 +1159,8 @@ field.
 - With both, query both independently and preserve each source's scores and
   provenance.
 - With an explicit basis/horizon, calculate statistics only over the returned
-  experience IDs after retrieval.
+  experience IDs after retrieval, passing through as_of when supplied so
+  evaluation availability is historically bounded as well.
 - If one source fails, return PARTIAL with successful evidence plus a typed,
   source-specific error. If both fail, return FAILED; never fabricate a
   fallback.
@@ -1088,7 +1180,8 @@ Every experience hit and statistic retains:
 - exact basis/horizon and source evaluation fingerprint/status when used;
 - analysis/reference/completion timestamps and their temporal basis;
 - feature schema/extractor/similarity/trust/statistics versions; and
-- the active generation/population fingerprint.
+- the active generation/population fingerprint and, for historical queries,
+  the query_normalization_fingerprint used for scaling/ranking.
 
 Every knowledge hit retains Phase 7 document/chunk/source hash, page/section,
 content type, parser/chunker/embedding/index versions. The orchestrator never
@@ -1230,7 +1323,15 @@ The implementation test matrix must cover:
 - minimum comparable-feature threshold;
 - exact similarity ordering and stable equal-distance ties;
 - symbol/profile/timeframe compatibility;
-- strict as_of future-experience exclusion;
+- exact (not fuzzy) symbol/profile/timeframe/schema/extractor compatibility;
+- strict as_of candidate and completed-decision availability exclusion,
+  including analysis-before-cutoff/completion-after-cutoff;
+- historical evaluation availability: evaluation completion/recovery after
+  as_of is excluded while the prior state is visible, and becomes eligible
+  only after the recovery cutoff;
+- historical normalization future-leakage test: add extreme experiences after
+  as_of and prove IDs, order, scores, and query normalization fingerprint are
+  unchanged;
 - outcome-leakage test: change net_points, MFE, MAE, result/status, and prove
   similarity IDs/order/scores are identical;
 - action-leakage test: change BUY/SELL/HOLD and prove default similarity is
@@ -1241,7 +1342,15 @@ The implementation test matrix must cover:
 - HOLD statistics kept separate from normal win rate and opportunity-cost
   semantics;
 - recovered evaluation provenance and previous-unavailable reason;
-- source deletion/missing tombstone handling;
+- source-alias currentness: remove one duplicate alias (experience stays
+  active), remove the last alias (tombstone), failed scan (no removal), and
+  conflicting fingerprint (quarantine without replacement);
+- Tier C excluded from default numeric similarity while remaining available
+  through diagnostic/status retrieval;
+- zero-IQR normalization uses the configured MAD/per-feature fallback and
+  never an implicit 1e-12 scale;
+- a COMPLETE evaluation with source_context_eligible=1 and
+  training_eligible=NULL contributes to descriptive statistics;
 - knowledge-only, experience-only, and combined orchestrator queries;
 - partial-source failure and typed error isolation;
 - complete provenance on every hit/statistic;
@@ -1273,10 +1382,20 @@ Measure:
 - per-query comparable-feature counts; and
 - p50/p95 CPU retrieval latency and bounded memory.
 
-A changed outcome or action in a fixture must not alter default market
-similarity. A future candidate at or after as_of must never be returned. The
-benchmark must report exclusions and denominators, not merely that a query
-returned something.
+The benchmark has six zero-violation leakage gates:
+
+1. changing net/MFE/MAE/outcome leaves default similarity unchanged;
+2. changing BUY/SELL/HOLD leaves default similarity unchanged;
+3. a candidate unavailable at or after as_of is excluded;
+4. analysis before as_of but completion at/after as_of is excluded;
+5. adding extreme future rows leaves historical normalization, IDs, order, and
+   scores unchanged; and
+6. evaluation/recovery that became available after as_of cannot affect
+   historical statistics.
+
+A future candidate at or after as_of must never be returned. The benchmark must
+report exclusions and denominators, not merely that a query returned
+something.
 
 ## 25. Acceptance criteria
 
@@ -1307,7 +1426,22 @@ Acceptance also requires:
 - recoverable evaluations retain their audit history;
 - source removals are tombstoned rather than silently deleted;
 - incompatible generations fail closed;
-- action, outcome, and future-data leakage tests pass;
+- action, outcome, candidate/completion, normalization, and evaluation
+  future-data leakage tests pass with zero violations;
+- the bounded real local acceptance smoke imports an already-produced Phase
+  5/6 SQLite database in read-only mode and demonstrates real decisions,
+  evaluations, feature extraction, Tier A/B/C distribution, normalization,
+  exact similarity, explicit basis/horizon statistics where available, and a
+  combined Phase 7 Evidence Orchestrator query. It must not run a new
+  30-40-minute Qwen analysis;
+- the real smoke records the source database path, decision/evaluation/import
+  counts, Tier A/B/C counts, quarantine and duplicate/alias counts, feature
+  population and active generation IDs, normalization population and
+  fingerprint, similarity examples with comparable-feature counts,
+  basis/horizon selected, eligible/excluded statistic counts, Phase 7 result
+  count, EvidenceBundle status, query latency, and network-attempt count; and
+- before/after hashes, sizes, and timestamps/metadata (including WAL when
+  present) prove that the source SQLite database was unchanged;
 - no Phase 7 table/catalog is reused;
 - no MT5, TradingAgents, execution, LLM, training, or Phase 9 path is
   reachable from the package; and
@@ -1335,10 +1469,24 @@ The specification was reviewed against the requested boundaries:
 
 - no unfinished sections or unspecified owner of source/projection writes;
 - source decisions/evaluations remain read-only and basis/horizon separated;
-- as_of is strict and similarity uses no outcomes, actions, or future fields;
+- training_eligible is provenance only and no longer gates descriptive stats;
+- as_of is strict for both analysis and completed-decision availability, and
+  evaluation snapshots are selected only when historically available;
+- historical normalization is recomputed from the pre-as_of population, so
+  future rows cannot affect medians, IQRs, fallback scales, distances, or
+  ranking;
+- similarity uses no outcomes, actions, or future fields;
 - HOLD is not counted as a normal win and uses existing opportunity-cost
   semantics;
-- Tier A/B/C trust is separate from per-outcome eligibility;
+- Tier A/B/C trust is separate from per-outcome eligibility, and Tier C is not
+  in default numeric similarity;
+- source-alias currentness is derived across all configured aliases, with
+  failed scans distinguished from confirmed removals;
+- timeframe compatibility is exact in v1;
+- zero-IQR scaling uses a persisted MAD/per-feature fallback policy rather than
+  an arbitrary 1e-12 scale;
+- the bounded real Phase 5/6 acceptance smoke is mandatory in addition to
+  fixture-only CI;
 - no raw chain-of-thought, prompts, or unrestricted reports are stored;
 - Phase 7 Knowledge RAG remains in a physically separate artifact root and is
   queried only through its public read-only contract;
