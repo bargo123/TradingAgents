@@ -29,3 +29,17 @@ does not construct Phase 7 components.
 - `tests/test_experience_cli.py`
 - `pyproject.toml` (added only `experience = "tradingagents.experience.cli:main"`)
 
+## Reviewer follow-up
+
+Added the missing read-only Phase 7 query path for
+`evidence --question --knowledge-artifact-root PATH`. The service is built
+lazily from the active generation using `KnowledgeCatalog`,
+`FastEmbedProvider`, `VectorIndexReader`, `LexicalIndexReader`, and
+`KnowledgeQueryService`; no parser, scanner, ingestor, or index writer is
+constructed. Added a regression test proving the supplied root is used and
+the question reaches the Phase 7 service.
+
+- Follow-up RED: the new test failed because `_build_knowledge_service` was
+  absent.
+- Follow-up GREEN: focused test passed.
+- Final Phase 8 regression: 88 passed.

@@ -140,6 +140,46 @@ def _similar_service(args: argparse.Namespace) -> ExperienceQueryService:
     return ExperienceQueryService(catalog)
 
 
+def _build_knowledge_service(artifact_root: Path) -> Any:
+    """Construct only Phase 7's existing read/query boundary.
+
+    Imports are deliberately lazy: metadata, numeric similarity, and
+    market-state-only evidence never load Phase 7 embedding/index modules.
+    """
+    from tradingagents.knowledge.catalog import KnowledgeCatalog
+    from tradingagents.knowledge.config import KnowledgeConfig
+    from tradingagents.knowledge.embeddings import FastEmbedProvider
+    from tradingagents.knowledge.lexical_index import LexicalIndexReader
+    from tradingagents.knowledge.query import KnowledgeQueryService
+    from tradingagents.knowledge.vector_index import VectorIndexReader
+
+    catalog = KnowledgeCatalog(artifact_root / "catalog.sqlite3")
+    generation = catalog.active_generation()
+    if generation is None:
+        raise ValueError("no active Phase 7 knowledge generation")
+    spec = generation.embedding_spec
+    model_path = artifact_root / "models" / "embedding"
+    config = KnowledgeConfig(
+        source_root=Path.cwd(), artifact_root=artifact_root,
+        embedding_model_id=spec.model_id, embedding_model_path=model_path if model_path.is_dir() else None,
+        embedding_dimensions=spec.dimensions, embedding_runtime=spec.runtime,
+        embedding_normalization=spec.normalization_policy,
+        embedding_model_version=spec.resolved_model_version,
+        embedding_artifact_hash=spec.artifact_hash,
+        embedding_tokenizer_fingerprint=spec.tokenizer_fingerprint,
+        embedding_max_input_tokens=spec.model_max_input_tokens,
+        embedding_special_token_budget=spec.special_token_budget,
+        embedding_effective_content_token_limit=spec.effective_corpus_content_token_limit,
+        embedding_truncation=spec.truncation,
+        embedding_corpus_instruction_policy=spec.corpus_instruction_policy,
+        embedding_corpus_instruction_version=spec.corpus_instruction_version,
+        embedding_query_instruction_policy=spec.query_instruction_policy,
+        embedding_query_instruction_version=spec.query_instruction_version,
+    )
+    embedder = FastEmbedProvider.from_config(config)
+    return KnowledgeQueryService(VectorIndexReader(generation.vector_location), LexicalIndexReader(generation.lexical_location), catalog, embedder)
+
+
 def _query(args: argparse.Namespace, state: dict[str, Any]) -> Any:
     tiers = _trust(args.trust_tiers)
     return ExperienceQuery(market_state=state, top_k=args.top_k, symbol=args.symbol,
@@ -185,7 +225,8 @@ def _run(args: argparse.Namespace) -> Any:
     if command == "evidence":
         state = json.loads(Path(args.market_state_json).read_text(encoding="utf-8")) if args.market_state_json else None
         service = _similar_service(args) if state is not None else ExperienceQueryService(())
-        bundle = EvidenceOrchestrator(None, service, OutcomeStatsCalculator(catalog) if catalog else OutcomeStatsCalculator(())).query(EvidenceRequest(research_question=args.question, market_state=state, experience_top_k=args.experience_top_k, knowledge_top_k=args.knowledge_top_k, symbol=args.symbol, analysis_profile=args.analysis_profile, analysis_timeframe=args.analysis_timeframe, evaluation_basis=args.basis, horizon_seconds=args.horizon_seconds, as_of=_as_of(args.as_of), trust_tiers=_trust(args.trust_tiers)))
+        knowledge = _build_knowledge_service(_root(args.knowledge_artifact_root)) if args.question and args.knowledge_artifact_root else None
+        bundle = EvidenceOrchestrator(knowledge, service, OutcomeStatsCalculator(catalog) if catalog else OutcomeStatsCalculator(())).query(EvidenceRequest(research_question=args.question, market_state=state, experience_top_k=args.experience_top_k, knowledge_top_k=args.knowledge_top_k, symbol=args.symbol, analysis_profile=args.analysis_profile, analysis_timeframe=args.analysis_timeframe, evaluation_basis=args.basis, horizon_seconds=args.horizon_seconds, as_of=_as_of(args.as_of), trust_tiers=_trust(args.trust_tiers)))
         return bundle
     raise ValueError(f"unsupported command: {command}")
 

@@ -63,3 +63,21 @@ def test_cli_help_has_no_trading_or_model_options():
     assert "--mt5" not in text
     assert "--model" not in text
     assert "--order" not in text
+
+
+def test_evidence_question_uses_phase7_read_only_service_when_root_supplied(monkeypatch, tmp_path, capsys):
+    from tradingagents.experience import cli
+
+    calls = []
+
+    class KnowledgeStub:
+        def search(self, request):
+            calls.append(request.text)
+            return ()
+
+    monkeypatch.setattr(cli, "_build_knowledge_service", lambda root: (calls.append(root), KnowledgeStub())[1])
+    assert cli.main([
+        "evidence", "--question", "order flow", "--knowledge-artifact-root", str(tmp_path), "--json"
+    ]) == 0
+    assert calls == [tmp_path.resolve(), "order flow"]
+    assert json.loads(capsys.readouterr().out)["status"] == "EMPTY"
