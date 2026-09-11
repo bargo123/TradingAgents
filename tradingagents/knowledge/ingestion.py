@@ -8,15 +8,16 @@ staged below ``artifact_root``.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import shutil
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
-import json
-import os
 from pathlib import Path
-import shutil
-from typing import Iterator, Mapping, Sequence
 from uuid import uuid4
 
 from .catalog import CatalogAlias, KnowledgeCatalog
@@ -94,10 +95,11 @@ class KnowledgeIngestor:
     def run(self, mode: IngestionMode | str = IngestionMode.INCREMENTAL) -> IngestionRunSummary:
         mode = IngestionMode(mode)
         with self._artifact_lock():
+            self._recover_interrupted_runs_locked()
             resources = self.scanner.discover()
             run_id = uuid4().hex
             self.catalog.start_run(run_id, source_count=len(resources))
-            counts = {state: 0 for state in IngestionState}
+            counts = dict.fromkeys(IngestionState, 0)
             pending: dict[str, _PendingDocument] = {}
             pending_aliases: list[tuple[object, str, CatalogAlias | None]] = []
             seen_hashes: set[str] = set()
@@ -153,17 +155,22 @@ class KnowledgeIngestor:
                         pending[resource.source_hash] = staged
                         changed = True
 
-                removed = self._reconcile_removed(run_id, observed_ids, counts)
-                changed = changed or removed
+                removed_resource_ids = self._reconcile_removed(run_id, observed_ids, counts)
+                changed = changed or bool(removed_resource_ids)
                 if not changed:
                     return self._finish(run_id, counts, source_count=len(resources))
 
-                self._publish(run_id, pending, pending_aliases, counts)
-                return self._finish(run_id, counts, source_count=len(resources))
+                return self._publish(
+                    run_id, pending, pending_aliases, removed_resource_ids, counts,
+                    source_count=len(resources),
+                )
             except InterruptedError:
                 # A crash leaves RUNNING as the durable signal.  Recovery
                 # cleans only this run's staging and cannot disturb a prior
                 # matched, active generation.
+                for summary in reversed(self.catalog.list_runs()):
+                    if summary.run_id == run_id and summary.state != "RUNNING":
+                        return summary
                 return IngestionRunSummary(
                     run_id=run_id,
                     state="RUNNING",
@@ -173,21 +180,19 @@ class KnowledgeIngestor:
                 )
 
     def recover_interrupted_runs(self) -> tuple[str, ...]:
+        with self._artifact_lock():
+            return self._recover_interrupted_runs_locked()
+
+    def _recover_interrupted_runs_locked(self) -> tuple[str, ...]:
         recovered: list[str] = []
         for run_id in self.catalog.running_run_ids():
-            self.catalog.discard_staged_run(run_id)
-            shutil.rmtree(self.config.artifact_root / ".ingestion-staging" / run_id, ignore_errors=True)
-            # Generation IDs are derived from the run ID, never from a source
-            # path, so recovery can remove only its own unpublished pair.
-            generation_id = f"gen_{run_id}"
-            shutil.rmtree(self.config.artifact_root / "vector" / "lancedb" / generation_id, ignore_errors=True)
-            shutil.rmtree(self.config.artifact_root / "keyword" / generation_id, ignore_errors=True)
+            self._discard_unpublished_run(run_id)
             self.catalog.mark_run_interrupted(run_id)
             recovered.append(run_id)
         return tuple(recovered)
 
     def _stage_resource(self, run_id, resource, previous, counts) -> _PendingDocument | None:
-        staging = self.config.artifact_root / ".ingestion-staging" / run_id / resource.resource_id
+        staging = self._resource_staging_path(run_id, resource.resource_id)
         staging.mkdir(parents=True, exist_ok=True)
         try:
             # The scanner hash is not trusted after discovery: parser reads
@@ -200,26 +205,32 @@ class KnowledgeIngestor:
             if after_hash != resource.source_hash or document.source_hash != resource.source_hash:
                 raise SourceChangedError("source changed while parsing")
         except SourceChangedError as error:
+            self._cleanup_resource_staging(run_id, resource.resource_id)
             self._failure(run_id, resource, previous, IngestionState.SOURCE_CHANGED, "SOURCE", error, counts)
             return None
         except Exception as error:
+            self._cleanup_resource_staging(run_id, resource.resource_id)
             self._failure(run_id, resource, previous, IngestionState.PARSE_FAILED, "PARSE", error, counts)
             return None
         try:
             decision = self.scanned_detector.classify(document)
             if decision.state is IngestionState.NEEDS_OCR:
+                self._cleanup_resource_staging(run_id, resource.resource_id)
                 self._failure(run_id, resource, previous, IngestionState.NEEDS_OCR, "SCAN", None, counts)
                 return None
             chunks = tuple(self.chunker.chunk(document))
         except ChunkTooLargeForEmbedding as error:
+            self._cleanup_resource_staging(run_id, resource.resource_id)
             self._failure(run_id, resource, previous, IngestionState.INDEX_FAILED, "CHUNK", error, counts)
             return None
         except Exception as error:
+            self._cleanup_resource_staging(run_id, resource.resource_id)
             self._failure(run_id, resource, previous, IngestionState.INDEX_FAILED, "CHUNK", error, counts)
             return None
         try:
             vectors = self._vectors_for(document.document_id, chunks)
         except Exception as error:
+            self._cleanup_resource_staging(run_id, resource.resource_id)
             self._failure(run_id, resource, previous, IngestionState.EMBED_FAILED, "EMBED", error, counts)
             return None
         self.catalog.register_document(
@@ -229,7 +240,7 @@ class KnowledgeIngestor:
         )
         return _PendingDocument(resource, document, chunks, vectors, previous)
 
-    def _publish(self, run_id, pending, pending_aliases, counts) -> None:
+    def _publish(self, run_id, pending, pending_aliases, removed_resource_ids, counts, *, source_count) -> IngestionRunSummary:
         current_ids = set(self.catalog.current_document_ids())
         pending_by_id = {item.document.document_id: item for item in pending.values()}
         replacement_resources = list(pending.values()) + [
@@ -237,17 +248,22 @@ class KnowledgeIngestor:
             for resource, document_id, previous in pending_aliases
         ]
         for item in replacement_resources:
-            if item.previous_alias and item.previous_alias.relation is AliasRelation.CURRENT:
-                if self.catalog.current_alias_count(item.previous_alias.document_id) == 1:
-                    current_ids.discard(item.previous_alias.document_id)
+            if (
+                item.previous_alias
+                and item.previous_alias.relation is AliasRelation.CURRENT
+                and self.catalog.current_alias_count(item.previous_alias.document_id) == 1
+            ):
+                current_ids.discard(item.previous_alias.document_id)
+        for resource_id in removed_resource_ids:
+            previous = self.catalog.get_alias(resource_id)
+            if (
+                previous
+                and previous.relation is AliasRelation.CURRENT
+                and self.catalog.current_alias_count(previous.document_id) == 1
+            ):
+                current_ids.discard(previous.document_id)
         current_ids.update(pending_by_id)
         current_ids.update(document_id for _, document_id, _ in pending_aliases)
-        if not current_ids:
-            # No active aliases remain.  The catalog currentness predicate
-            # hides the previous generation; no empty backend generation is
-            # manufactured merely to satisfy a removal event.
-            return
-
         chunks: list[ChunkRecord] = []
         vectors: list[tuple[float, ...]] = []
         for document_id in sorted(current_ids):
@@ -259,11 +275,36 @@ class KnowledgeIngestor:
                 old_chunks = self.catalog.chunks_for_document(document_id)
                 chunks.extend(old_chunks)
                 vectors.extend(self._vectors_for(document_id, old_chunks))
+        publication_counts = dict(counts)
+        publication_counts[IngestionState.INDEXED] += len(pending)
+        summary = self._summary(
+            run_id, publication_counts, source_count=source_count,
+            document_count=len(current_ids), chunk_count=len(chunks),
+        )
+        alias_updates = tuple(
+            [(item.resource.resource_id, item.document.document_id, item.document.source_hash, IngestionState.INDEXED)
+             for item in pending.values()]
+            + [(resource.resource_id, document_id, self._document_for_id(document_id).source_hash, IngestionState.DUPLICATE)
+               for resource, document_id, _ in pending_aliases]
+        )
+        events = tuple(
+            [(item.resource.resource_id, item.document.document_id, item.document.source_hash, IngestionState.INDEXED, "INDEX")
+             for item in pending.values()]
+            + [(resource_id, None, None, IngestionState.REMOVED, "REMOVAL") for resource_id in removed_resource_ids]
+        )
         try:
-            generation = self.generation_manager.build_generation(chunks, vectors, f"gen_{run_id}")
-            # IndexGenerationManager validates both projections before this
-            # call; only then does it publish the catalog/pointer pair.
-            self.generation_manager.activate_generation(generation)
+            generation = None
+            if current_ids:
+                generation = self.generation_manager.build_generation(chunks, vectors, f"gen_{run_id}")
+            self.catalog.publish_generation(
+                generation,
+                chunks_by_document={item.document.document_id: item.chunks for item in pending.values()},
+                aliases=alias_updates,
+                removed_resource_ids=tuple(removed_resource_ids),
+                ready_document_ids=tuple(sorted(current_ids)),
+                summary=summary,
+                events=events,
+            )
         except InterruptedError:
             raise
         except Exception as error:
@@ -271,17 +312,12 @@ class KnowledgeIngestor:
                 self._failure(run_id, item.resource, item.previous_alias, IngestionState.INDEX_FAILED, "INDEX", error, counts)
             for resource, _, previous in pending_aliases:
                 self._failure(run_id, resource, previous, IngestionState.INDEX_FAILED, "INDEX", error, counts)
-            return
-
-        for item in pending.values():
-            self.catalog.store_chunks(item.document.document_id, item.chunks, run_id=run_id)
-            self.catalog.commit_alias(item.resource.resource_id, item.document.document_id, item.document.source_hash)
-            self.catalog.record_projection_ready(item.document.document_id, generation.generation_id, True, True)
-            self._event(run_id, item.resource, item.document.document_id, IngestionState.INDEXED, "INDEX", counts)
-        for resource, document_id, _ in pending_aliases:
-            document = self._document_for_id(document_id)
-            self.catalog.commit_alias(resource.resource_id, document_id, document.source_hash)
-            self.catalog.set_resource_state(resource.resource_id, IngestionState.DUPLICATE, source_hash=document.source_hash)
+            self._discard_unpublished_run(run_id)
+            return self._finish(run_id, counts, source_count=source_count)
+        counts.clear()
+        counts.update(publication_counts)
+        shutil.rmtree(self.config.artifact_root / ".ingestion-staging" / run_id, ignore_errors=True)
+        return summary
 
     def _document_for_id(self, document_id: str):
         document = self.catalog.get_document(document_id)
@@ -289,22 +325,13 @@ class KnowledgeIngestor:
             raise ValueError(f"unknown duplicate document: {document_id}")
         return document
 
-    def _reconcile_removed(self, run_id: str, observed_ids: set[str], counts: dict[IngestionState, int]) -> bool:
-        removed = False
+    def _reconcile_removed(self, run_id: str, observed_ids: set[str], counts: dict[IngestionState, int]) -> tuple[str, ...]:
+        removed: list[str] = []
         for resource in self.catalog.list_resources():
             if resource.resource_id not in observed_ids and resource.state is not IngestionState.REMOVED:
-                self.catalog.mark_removed(resource.resource_id)
-                self.catalog.record_event(
-                    resource_id=resource.resource_id,
-                    document_id=None,
-                    attempted_hash=resource.source_hash,
-                    state=IngestionState.REMOVED,
-                    stage="REMOVAL",
-                    run_id=run_id,
-                )
                 counts[IngestionState.REMOVED] += 1
-                removed = True
-        return removed
+                removed.append(resource.resource_id)
+        return tuple(removed)
 
     def _failure(self, run_id, resource, previous, state, stage, error, counts) -> None:
         if previous and previous.document_id:
@@ -327,6 +354,28 @@ class KnowledgeIngestor:
             run_id=run_id,
         )
         counts[state] += 1
+
+    def _cleanup_resource_staging(self, run_id: str, resource_id: str) -> None:
+        shutil.rmtree(self._resource_staging_path(run_id, resource_id), ignore_errors=True)
+
+    def _resource_staging_path(self, run_id: str, resource_id: str) -> Path:
+        resource_digest = hashlib.sha256(resource_id.encode("utf-8")).hexdigest()[:16]
+        return self.config.artifact_root / ".ingestion-staging" / run_id / f"res_{resource_digest}"
+
+    def _discard_unpublished_run(self, run_id: str) -> None:
+        """Discard only unpublished run-owned state; never remove an active pair."""
+
+        active = self.catalog.active_generation()
+        generation_id = f"gen_{run_id}"
+        shutil.rmtree(self.config.artifact_root / ".ingestion-staging" / run_id, ignore_errors=True)
+        if active is not None and active.generation_id == generation_id:
+            # A legacy writer may have crashed after activation.  The catalog
+            # is already authoritative for that pair, so recovery must retain
+            # its files and rows rather than creating an active dangling ID.
+            return
+        self.catalog.discard_staged_run(run_id)
+        shutil.rmtree(self.config.artifact_root / "vector" / "lancedb" / generation_id, ignore_errors=True)
+        shutil.rmtree(self.config.artifact_root / "keyword" / generation_id, ignore_errors=True)
 
     def _event(self, run_id, resource, document_id, state, stage, counts) -> None:
         self.catalog.record_event(
@@ -382,6 +431,23 @@ class KnowledgeIngestor:
         *,
         source_count: int,
     ) -> IngestionRunSummary:
+        summary = self._summary(
+            run_id, counts, source_count=source_count,
+            document_count=len(self.catalog.current_document_ids()),
+            chunk_count=sum(len(self.catalog.chunks_for_document(doc)) for doc in self.catalog.current_document_ids()),
+        )
+        self.catalog.record_run(summary)
+        return summary
+
+    @staticmethod
+    def _summary(
+        run_id: str,
+        counts: Mapping[IngestionState, int],
+        *,
+        source_count: int,
+        document_count: int,
+        chunk_count: int,
+    ) -> IngestionRunSummary:
         failures = sum(
             counts.get(state, 0)
             for state in (IngestionState.PARSE_FAILED, IngestionState.NEEDS_OCR, IngestionState.EMBED_FAILED, IngestionState.INDEX_FAILED, IngestionState.SOURCE_CHANGED)
@@ -395,26 +461,53 @@ class KnowledgeIngestor:
             started_at=datetime.now(UTC).isoformat(),
             completed_at=datetime.now(UTC).isoformat(),
             source_count=source_count,
-            document_count=len(self.catalog.current_document_ids()),
-            chunk_count=sum(len(self.catalog.chunks_for_document(doc)) for doc in self.catalog.current_document_ids()),
+            document_count=document_count,
+            chunk_count=chunk_count,
         )
-        self.catalog.record_run(summary)
         return summary
 
     @contextmanager
     def _artifact_lock(self) -> Iterator[None]:
         path = self.config.artifact_root / "locks" / "index.lock"
         path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(str(path), os.O_CREAT | os.O_RDWR)
         try:
-            descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as error:
-            raise IngestionLockedError(f"knowledge ingestion already owns artifact root: {self.config.artifact_root}") from error
+            if os.path.getsize(path) == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover - Windows is the supported deployment target.
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            os.close(descriptor)
+            raise IngestionLockedError(
+                f"knowledge ingestion already owns artifact root: {self.config.artifact_root}"
+            ) from error
         try:
-            os.write(descriptor, str(os.getpid()).encode("ascii"))
+            owner = json.dumps({"pid": os.getpid()}, sort_keys=True).encode("ascii")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            os.ftruncate(descriptor, 0)
+            os.write(descriptor, owner)
+            os.fsync(descriptor)
             yield
         finally:
-            os.close(descriptor)
-            Path(path).unlink(missing_ok=True)
+            try:
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                else:  # pragma: no cover - Windows is the supported deployment target.
+                    import fcntl
+
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
 
 __all__ = ["IngestionLockedError", "IngestionMode", "KnowledgeIngestor"]

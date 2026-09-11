@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+import multiprocessing
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -66,11 +68,15 @@ class FakeParser:
     def __init__(self) -> None:
         self.parse_calls: list[str] = []
         self.fail_for: set[str] = set()
+        self.mutate_for: set[str] = set()
 
     def parse(self, resource, staging_dir):
         self.parse_calls.append(resource.relative_path)
         if resource.relative_path in self.fail_for:
             raise RuntimeError("fixture parser failure")
+        if resource.relative_path in self.mutate_for:
+            (staging_dir / "partial-parser-output.txt").write_text("partial", encoding="utf-8")
+            resource.path.write_bytes(b"changed data")
         return ParsedDocument(
             document_id=document_id_for(resource.source_hash),
             source_hash=resource.source_hash,
@@ -102,6 +108,7 @@ class InterruptingManager:
     def __init__(self, inner, *, interrupt_after: str | None = None) -> None:
         self.inner = inner
         self.interrupt_after = interrupt_after
+        self.fail_after_build = False
         self.catalog = inner.catalog
         self.embedding_spec = inner.embedding_spec
 
@@ -109,6 +116,8 @@ class InterruptingManager:
         result = self.inner.build_generation(*args, **kwargs)
         if self.interrupt_after == "lexical":
             raise InterruptedError("fixture interruption after lexical projection")
+        if self.fail_after_build:
+            raise RuntimeError("fixture index publication failure")
         return result
 
     def activate_generation(self, generation):
@@ -126,6 +135,18 @@ class Harness:
     embedder: FakeEmbedder
     ingestor: object
     shared_document_id: str
+
+
+def _hold_ingestion_lock(source_root, artifact_root, ready, release):
+    """Run in a separate process so the advisory lock has a live owner."""
+
+    from tradingagents.knowledge.ingestion import KnowledgeIngestor
+
+    config = KnowledgeConfig(source_root=source_root, artifact_root=artifact_root)
+    ingestor = KnowledgeIngestor(config, parser=FakeParser(), embedder=FakeEmbedder())
+    with ingestor._artifact_lock():
+        ready.set()
+        release.wait(10)
 
 
 def ingestion_harness(tmp_path, *, duplicate=False, interrupt_after=None):
@@ -245,3 +266,121 @@ def test_ingestion_derives_chunk_policy_from_provider_spec_and_tokenizer(tmp_pat
 
     assert captured["policy"] == ChunkPolicy.for_embedding(harness.embedder.spec)
     assert captured["tokenizer"] is harness.embedder.tokenizer
+
+
+def test_recovery_preserves_pair_published_before_interruption(tmp_path, monkeypatch):
+    """A crash after catalog publication cannot make recovery delete the active pair."""
+
+    from tradingagents.knowledge.ingestion import IngestionMode
+
+    harness = ingestion_harness(tmp_path)
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    (harness.source / "third.pdf").write_bytes(b"third bytes")
+    original_publish = harness.catalog.publish_generation
+
+    def interrupt_after_publish(*args, **kwargs):
+        original_publish(*args, **kwargs)
+        raise InterruptedError("fixture crash immediately after publication")
+
+    monkeypatch.setattr(harness.catalog, "publish_generation", interrupt_after_publish)
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    active = harness.catalog.active_generation()
+
+    assert active is not None
+    assert active.vector_location.is_dir()
+    assert active.lexical_location.is_file()
+    harness.ingestor.recover_interrupted_runs()
+    assert harness.catalog.active_generation().generation_id == active.generation_id
+    assert active.vector_location.is_dir()
+    assert active.lexical_location.is_file()
+    assert harness.catalog.list_runs()[-1].state == "SUCCEEDED"
+
+
+def test_publication_refreshes_readiness_for_every_current_document(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionMode
+
+    harness = ingestion_harness(tmp_path, duplicate=True)
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    (harness.source / "second.pdf").write_bytes(b"second bytes")
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    assert all(harness.catalog.document_is_retrieval_ready(document_id) for document_id in harness.catalog.current_document_ids())
+
+    (harness.source / "third-copy.pdf").write_bytes(b"book bytes")
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    assert all(harness.catalog.document_is_retrieval_ready(document_id) for document_id in harness.catalog.current_document_ids())
+
+    (harness.source / "book.pdf").unlink()
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    assert all(harness.catalog.document_is_retrieval_ready(document_id) for document_id in harness.catalog.current_document_ids())
+
+
+def test_source_mutation_discards_resource_staging_artifacts(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionMode
+
+    harness = ingestion_harness(tmp_path)
+    harness.parser.mutate_for.add("second.pdf")
+
+    result = harness.ingestor.run(IngestionMode.INCREMENTAL)
+
+    assert result.counts[IngestionState.SOURCE_CHANGED] == 1
+    assert not (harness.catalog.path.parent / ".ingestion-staging" / result.run_id).exists()
+
+
+def test_index_failure_discards_unpublished_catalog_rows_and_artifacts(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionMode
+
+    harness = ingestion_harness(tmp_path)
+    harness.ingestor.generation_manager.fail_after_build = True
+
+    result = harness.ingestor.run(IngestionMode.INCREMENTAL)
+
+    assert result.counts[IngestionState.INDEX_FAILED] >= 1
+    assert not (harness.catalog.path.parent / ".ingestion-staging" / result.run_id).exists()
+    assert not (harness.catalog.path.parent / "vector" / "lancedb" / f"gen_{result.run_id}").exists()
+    assert not (harness.catalog.path.parent / "keyword" / f"gen_{result.run_id}").exists()
+    with sqlite3.connect(harness.catalog.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM knowledge_documents WHERE ingestion_run_id = ?", (result.run_id,)
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM knowledge_chunks WHERE ingestion_run_id = ?", (result.run_id,)
+        ).fetchone()[0] == 0
+
+
+def test_recovery_uses_crash_safe_lock_for_stale_runs_and_excludes_live_writer(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionLockedError, KnowledgeIngestor
+
+    harness = ingestion_harness(tmp_path)
+    stale_run_id = "stale-running-run"
+    harness.catalog.start_run(stale_run_id)
+    stale_lock = harness.catalog.path.parent / "locks" / "index.lock"
+    stale_lock.parent.mkdir(parents=True, exist_ok=True)
+    stale_lock.write_text("dead process", encoding="ascii")
+
+    recovered = KnowledgeIngestor(
+        harness.ingestor.config,
+        scanner=SourceScanner(harness.ingestor.config),
+        catalog=harness.catalog,
+        parser=FakeParser(),
+        embedder=FakeEmbedder(),
+        generation_manager=harness.ingestor.generation_manager,
+    )
+    assert stale_run_id not in recovered.catalog.running_run_ids()
+    assert recovered.catalog.list_runs()[-1].state is IngestionState.INTERRUPTED
+
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    holder = context.Process(
+        target=_hold_ingestion_lock,
+        args=(harness.source, harness.catalog.path.parent, ready, release),
+    )
+    holder.start()
+    assert ready.wait(10)
+    try:
+        with pytest.raises(IngestionLockedError):
+            recovered.recover_interrupted_runs()
+    finally:
+        release.set()
+        holder.join(10)
+    assert holder.exitcode == 0

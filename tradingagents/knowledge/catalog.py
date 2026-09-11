@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-import json
 from pathlib import Path
-import sqlite3
-from typing import Any, Iterator, Mapping
+from typing import Any
 
 from .diagnostics import QuarantineRecord, bounded_error_metadata
 from .models import (
@@ -20,7 +21,6 @@ from .models import (
     IngestionState,
     ParsedDocument,
 )
-
 
 _BUSY_TIMEOUT_MS = 5_000
 
@@ -431,6 +431,25 @@ class KnowledgeCatalog:
         """Remove unaliased document/chunk rows created by an interrupted run."""
 
         with self._write() as connection:
+            staged_document_ids = tuple(
+                str(row["document_id"])
+                for row in connection.execute(
+                    """SELECT document_id FROM knowledge_documents
+                       WHERE ingestion_run_id = ?
+                       AND NOT EXISTS (
+                           SELECT 1 FROM knowledge_aliases
+                           WHERE knowledge_aliases.document_id = knowledge_documents.document_id
+                       )""",
+                    (run_id,),
+                ).fetchall()
+            )
+            if staged_document_ids:
+                placeholders = ",".join("?" for _ in staged_document_ids)
+                connection.execute(
+                    f"""UPDATE knowledge_ingestion_events SET document_id = NULL
+                       WHERE document_id IN ({placeholders})""",
+                    staged_document_ids,
+                )
             connection.execute("DELETE FROM knowledge_chunks WHERE ingestion_run_id = ?", (run_id,))
             connection.execute(
                 """DELETE FROM knowledge_documents WHERE ingestion_run_id = ?
@@ -624,6 +643,131 @@ class KnowledgeCatalog:
                 ),
             )
 
+    def publish_generation(
+        self,
+        generation: IndexGeneration | None,
+        *,
+        chunks_by_document: Mapping[str, tuple[ChunkRecord, ...]],
+        aliases: tuple[tuple[str, str, str, IngestionState], ...],
+        removed_resource_ids: tuple[str, ...],
+        ready_document_ids: tuple[str, ...],
+        summary: IngestionRunSummary,
+        events: tuple[tuple[str | None, str | None, str | None, IngestionState, str], ...] = (),
+    ) -> None:
+        """Atomically make a matched projection and its catalog view visible.
+
+        Projection files are built and validated before this call.  SQLite is
+        then the single publication boundary for the active generation,
+        aliases/currentness, chunk rows/readiness, terminal run marker, and
+        the corresponding compact events.  A reader can therefore observe
+        either the old committed view or the complete new view, never an
+        activated generation with stale document readiness.
+        """
+
+        if generation is not None:
+            self._validate_generation(generation)
+        if not ready_document_ids and generation is not None:
+            raise ValueError("an active generation requires its ready document population")
+        with self._write() as connection:
+            if generation is not None:
+                self._set_active_generation_in_transaction(connection, generation)
+
+            affected_documents: set[str] = set(ready_document_ids)
+            for document_id, chunks in chunks_by_document.items():
+                if connection.execute(
+                    "SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)
+                ).fetchone() is None:
+                    raise ValueError(f"unknown document_id: {document_id}")
+                connection.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
+                connection.executemany(
+                    """INSERT INTO knowledge_chunks
+                       (chunk_id, document_id, source_hash, provenance_json, ingestion_run_id)
+                       VALUES (?, ?, ?, ?, NULL)""",
+                    [
+                        (chunk.chunk_id, document_id, chunk.source_hash, _json(chunk.to_dict()))
+                        for chunk in chunks
+                    ],
+                )
+                connection.execute(
+                    "UPDATE knowledge_documents SET ingestion_run_id = NULL WHERE document_id = ?",
+                    (document_id,),
+                )
+
+            for resource_id, document_id, source_hash, resource_state in aliases:
+                self._ensure_resource(connection, resource_id)
+                old = connection.execute(
+                    "SELECT document_id FROM knowledge_aliases WHERE resource_id = ?", (resource_id,)
+                ).fetchone()
+                if connection.execute(
+                    "SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)
+                ).fetchone() is None:
+                    raise ValueError(f"unknown document_id: {document_id}")
+                timestamp = _now()
+                connection.execute(
+                    """INSERT INTO knowledge_aliases
+                       (resource_id, document_id, source_hash, relation_status, attempted_hash, changed_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(resource_id) DO UPDATE SET
+                         document_id=excluded.document_id, source_hash=excluded.source_hash,
+                         relation_status=excluded.relation_status, attempted_hash=excluded.attempted_hash,
+                         changed_at=excluded.changed_at""",
+                    (resource_id, document_id, source_hash, AliasRelation.CURRENT.value, source_hash, timestamp),
+                )
+                connection.execute(
+                    """UPDATE knowledge_resources SET source_hash = ?, attempted_hash = ?, state = ?,
+                       updated_at = ? WHERE resource_id = ?""",
+                    (source_hash, source_hash, resource_state.value, timestamp, resource_id),
+                )
+                affected_documents.add(document_id)
+                if old is not None:
+                    affected_documents.add(old["document_id"])
+
+            for resource_id in removed_resource_ids:
+                old = connection.execute(
+                    "SELECT document_id FROM knowledge_aliases WHERE resource_id = ?", (resource_id,)
+                ).fetchone()
+                if old is None:
+                    continue
+                connection.execute(
+                    """UPDATE knowledge_aliases SET relation_status = ?, attempted_hash = source_hash,
+                       changed_at = ? WHERE resource_id = ?""",
+                    (AliasRelation.REMOVED.value, _now(), resource_id),
+                )
+                connection.execute(
+                    "UPDATE knowledge_resources SET state = ?, updated_at = ? WHERE resource_id = ?",
+                    (IngestionState.REMOVED.value, _now(), resource_id),
+                )
+                affected_documents.add(old["document_id"])
+
+            if generation is not None:
+                placeholders = ",".join("?" for _ in ready_document_ids)
+                connection.execute(
+                    f"""UPDATE knowledge_documents SET state = ?, active = 1, vector_ready = 1,
+                       lexical_ready = 1, projection_generation = ?, projection_population_hash = ?,
+                       ingestion_run_id = NULL, updated_at = ?
+                       WHERE document_id IN ({placeholders})""",
+                    (
+                        IngestionState.INDEXED.value, generation.generation_id, generation.population_hash,
+                        _now(), *ready_document_ids,
+                    ),
+                )
+                connection.execute(
+                    f"""UPDATE knowledge_chunks SET active = 1, vector_ready = 1, lexical_ready = 1,
+                       projection_generation = ?, projection_population_hash = ?, ingestion_run_id = NULL
+                       WHERE document_id IN ({placeholders})""",
+                    (generation.generation_id, generation.population_hash, *ready_document_ids),
+                )
+
+            self._refresh_document_currentness(connection, *affected_documents)
+            for resource_id, document_id, attempted_hash, state, stage in events:
+                if resource_id is not None:
+                    self._ensure_resource(connection, resource_id)
+                self._record_event_in_transaction(
+                    connection, resource_id=resource_id, document_id=document_id,
+                    attempted_hash=attempted_hash, state=state, stage=stage, run_id=summary.run_id,
+                )
+            self._record_run_in_transaction(connection, summary)
+
     @staticmethod
     def _validate_generation(generation: IndexGeneration) -> None:
         if not generation.vector_ready or not generation.lexical_ready:
@@ -648,43 +792,50 @@ class KnowledgeCatalog:
         ):
             raise ValueError("active generation requires matching vector and lexical population hashes")
 
+    def _set_active_generation_in_transaction(
+        self, connection: sqlite3.Connection, generation: IndexGeneration
+    ) -> None:
+        """Write the generation registry while an enclosing transaction is active."""
+
+        payload = generation.to_dict()
+        connection.execute("UPDATE knowledge_index_generations SET is_active = 0 WHERE is_active = 1")
+        connection.execute(
+            """INSERT INTO knowledge_index_generations
+               (generation_id, vector_location, lexical_location, embedding_spec_json,
+                lexical_index_version, lexical_tokenizer_settings_json, index_version,
+                population_hash, population_identity, document_count, chunk_count,
+                vector_ready, lexical_ready, status, created_at, activated_at,
+                component_versions_json, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+               ON CONFLICT(generation_id) DO UPDATE SET
+                 vector_location=excluded.vector_location, lexical_location=excluded.lexical_location,
+                 embedding_spec_json=excluded.embedding_spec_json,
+                 lexical_index_version=excluded.lexical_index_version,
+                 lexical_tokenizer_settings_json=excluded.lexical_tokenizer_settings_json,
+                 index_version=excluded.index_version, population_hash=excluded.population_hash,
+                 population_identity=excluded.population_identity,
+                 document_count=excluded.document_count, chunk_count=excluded.chunk_count,
+                 vector_ready=excluded.vector_ready, lexical_ready=excluded.lexical_ready,
+                 status=excluded.status, created_at=excluded.created_at,
+                 activated_at=excluded.activated_at,
+                 component_versions_json=excluded.component_versions_json, is_active=1""",
+            (
+                generation.generation_id, str(generation.vector_location), str(generation.lexical_location),
+                _json(payload["embedding_spec"]), generation.lexical_index_version,
+                _json(payload["lexical_tokenizer_settings"]), generation.index_version,
+                generation.population_hash, generation.population_identity, generation.document_count,
+                generation.chunk_count, int(generation.vector_ready), int(generation.lexical_ready),
+                generation.status, payload["created_at"], generation.activated_at or _now(),
+                _json(payload["component_versions"]),
+            ),
+        )
+
     def set_active_generation(self, generation: IndexGeneration) -> None:
         """Persist and atomically activate one complete matched generation."""
 
         self._validate_generation(generation)
-        payload = generation.to_dict()
         with self._write() as connection:
-            connection.execute("UPDATE knowledge_index_generations SET is_active = 0 WHERE is_active = 1")
-            connection.execute(
-                """INSERT INTO knowledge_index_generations
-                   (generation_id, vector_location, lexical_location, embedding_spec_json,
-                    lexical_index_version, lexical_tokenizer_settings_json, index_version,
-                    population_hash, population_identity, document_count, chunk_count,
-                    vector_ready, lexical_ready, status, created_at, activated_at,
-                    component_versions_json, is_active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-                   ON CONFLICT(generation_id) DO UPDATE SET
-                     vector_location=excluded.vector_location, lexical_location=excluded.lexical_location,
-                     embedding_spec_json=excluded.embedding_spec_json,
-                     lexical_index_version=excluded.lexical_index_version,
-                     lexical_tokenizer_settings_json=excluded.lexical_tokenizer_settings_json,
-                     index_version=excluded.index_version, population_hash=excluded.population_hash,
-                     population_identity=excluded.population_identity,
-                     document_count=excluded.document_count, chunk_count=excluded.chunk_count,
-                     vector_ready=excluded.vector_ready, lexical_ready=excluded.lexical_ready,
-                     status=excluded.status, created_at=excluded.created_at,
-                     activated_at=excluded.activated_at,
-                     component_versions_json=excluded.component_versions_json, is_active=1""",
-                (
-                    generation.generation_id, str(generation.vector_location), str(generation.lexical_location),
-                    _json(payload["embedding_spec"]), generation.lexical_index_version,
-                    _json(payload["lexical_tokenizer_settings"]), generation.index_version,
-                    generation.population_hash, generation.population_identity, generation.document_count,
-                    generation.chunk_count, int(generation.vector_ready), int(generation.lexical_ready),
-                    generation.status, payload["created_at"], generation.activated_at or _now(),
-                    _json(payload["component_versions"]),
-                ),
-            )
+            self._set_active_generation_in_transaction(connection, generation)
             # A projection can be staged before its matched generation is
             # activated.  Publication supplies the authoritative population
             # identity to every already-ready document/chunk in that pair.
@@ -724,25 +875,29 @@ class KnowledgeCatalog:
             for row in rows
         )
 
+    @staticmethod
+    def _record_run_in_transaction(connection: sqlite3.Connection, summary: IngestionRunSummary) -> None:
+        connection.execute(
+            """INSERT INTO knowledge_ingestion_runs
+               (run_id, state, counts_json, started_at, completed_at, source_count,
+                document_count, chunk_count, diagnostics_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(run_id) DO UPDATE SET state=excluded.state,
+                 counts_json=excluded.counts_json, started_at=excluded.started_at,
+                 completed_at=excluded.completed_at, source_count=excluded.source_count,
+                 document_count=excluded.document_count, chunk_count=excluded.chunk_count,
+                 diagnostics_json=excluded.diagnostics_json""",
+            (
+                summary.run_id, str(summary.state.value if isinstance(summary.state, IngestionState) else summary.state),
+                _json(summary.to_dict()["counts"]), summary.started_at, summary.completed_at,
+                summary.source_count, summary.document_count, summary.chunk_count,
+                _json(summary.to_dict()["diagnostics"]),
+            ),
+        )
+
     def record_run(self, summary: IngestionRunSummary) -> None:
         with self._write() as connection:
-            connection.execute(
-                """INSERT INTO knowledge_ingestion_runs
-                   (run_id, state, counts_json, started_at, completed_at, source_count,
-                    document_count, chunk_count, diagnostics_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(run_id) DO UPDATE SET state=excluded.state,
-                     counts_json=excluded.counts_json, started_at=excluded.started_at,
-                     completed_at=excluded.completed_at, source_count=excluded.source_count,
-                     document_count=excluded.document_count, chunk_count=excluded.chunk_count,
-                     diagnostics_json=excluded.diagnostics_json""",
-                (
-                    summary.run_id, str(summary.state.value if isinstance(summary.state, IngestionState) else summary.state),
-                    _json(summary.to_dict()["counts"]), summary.started_at, summary.completed_at,
-                    summary.source_count, summary.document_count, summary.chunk_count,
-                    _json(summary.to_dict()["diagnostics"]),
-                ),
-            )
+            self._record_run_in_transaction(connection, summary)
 
     def start_run(self, run_id: str, *, source_count: int = 0) -> None:
         """Persist a RUNNING marker before any artifact can be staged."""
