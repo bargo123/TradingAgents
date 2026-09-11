@@ -37,5 +37,4 @@ query, outcome, orchestrator, or CLI behavior was implemented.
 
 ## Commit
 
-Commit SHA: see the final `git rev-parse HEAD` (the report is included in the
-same commit).
+Implementation commit SHA: `5905b863343f2efaf5218a821e0ca57f81246bca`.
