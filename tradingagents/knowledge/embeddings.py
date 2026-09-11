@@ -379,7 +379,10 @@ def _resolved_special_token_budget(tokenizer: Any) -> int:
 def _resolve_dimensions(embedder: Any, fallback: int) -> int:
     for owner in (getattr(embedder, "model", None), embedder):
         for name in ("embedding_size", "dimensions", "dimension"):
-            value = getattr(owner, name, None)
+            try:
+                value = getattr(owner, name, None)
+            except (NotImplementedError, AttributeError, TypeError, ValueError):
+                continue
             if isinstance(value, int) and value > 0:
                 return value
     return int(fallback)

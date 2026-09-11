@@ -210,3 +210,28 @@ def test_embedding_provision_resolves_fastembed_snapshot_layout(tmp_path: Path) 
     (snapshot / "model_optimized.onnx").write_bytes(b"onnx")
 
     assert provision._resolve_fastembed_model_dir(root) == snapshot
+
+
+def test_setup_environment_disables_hf_xet_transfer_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    provision = _load_script("provision_knowledge_models.py")
+    monkeypatch.delenv("HF_HUB_DISABLE_XET", raising=False)
+    monkeypatch.delenv("HF_HUB_ENABLE_HF_TRANSFER", raising=False)
+
+    environment = provision._setup_environment()
+
+    assert environment["HF_HUB_DISABLE_XET"] == "1"
+    assert environment["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
+
+
+def test_fastembed_dimension_probe_falls_back_when_model_property_is_unimplemented() -> None:
+    from tradingagents.knowledge.embeddings import _resolve_dimensions
+
+    class Model:
+        @property
+        def embedding_size(self) -> int:
+            raise NotImplementedError
+
+    class Embedder:
+        model = Model()
+
+    assert _resolve_dimensions(Embedder(), 384) == 384

@@ -29,6 +29,15 @@ _EMBEDDING_SCHEMA = "embedding-artifacts-v1"
 _PROVISIONING_MANIFEST = "provisioning-manifest.json"
 
 
+def _setup_environment() -> dict[str, str]:
+    """Return setup-only environment defaults that avoid fragile Xet transfers."""
+
+    environment = os.environ.copy()
+    environment.setdefault("HF_HUB_DISABLE_XET", "1")
+    environment.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "0")
+    return environment
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -221,7 +230,7 @@ def _download_docling(destination: Path) -> None:
             capture_output=True,
             text=True,
             timeout=1800,
-            env=os.environ.copy(),
+            env=_setup_environment(),
         )
     except subprocess.TimeoutExpired as exc:
         raise ProvisioningError(
@@ -288,6 +297,8 @@ def _download_embedding(model_id: str, destination: Path) -> None:
     # The constructor is intentionally used only here.  It can resolve the
     # FastEmbed registry/network artifact; normal runtime always provides both
     # ``specific_model_path`` and ``local_files_only=True``.
+    previous_environment = os.environ.copy()
+    os.environ.update(_setup_environment())
     try:
         downloaded = TextEmbedding(
             model_name=model_id,
@@ -298,6 +309,9 @@ def _download_embedding(model_id: str, destination: Path) -> None:
         tuple(downloaded.embed(["phase seven local artifact verification"], batch_size=1))
     except Exception as exc:
         raise RuntimeError(f"FastEmbed artifact provisioning failed: {exc}") from exc
+    finally:
+        os.environ.clear()
+        os.environ.update(previous_environment)
 
     source = _model_path_from_embedder(downloaded)
     if source is None:
