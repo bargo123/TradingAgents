@@ -1,0 +1,12 @@
+[
+  {"query": "order flow imbalance short horizon prediction", "documents": ["doc-ofi"], "terms": ["order flow imbalance"]},
+  {"query": "market making inventory risk", "content_type": "EQUATION", "documents": ["doc-mm"]},
+  {"query": "queue imbalance price movement", "documents": ["doc-queue"]},
+  {"query": "FX order flow exchange rate microstructure", "documents": ["doc-fx"]},
+  {"query": "adverse selection in high-frequency market making", "documents": ["doc-mm"]},
+  {"query": "Hawkes process high frequency order arrivals", "documents": ["doc-hawkes"]},
+  {"query": "VPIN", "terms": ["VPIN"]},
+  {"query": "DeepLOB", "terms": ["DeepLOB"]},
+  {"query": "Avellaneda-Stoikov", "terms": ["Avellaneda-Stoikov"]},
+  {"query": "Kyle lambda", "terms": ["Kyle lambda"]}
+]

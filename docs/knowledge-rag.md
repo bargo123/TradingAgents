@@ -110,7 +110,32 @@ catalog path yet and must not be implied by a no-op option.
 ## Boundary after Phase 7
 
 Phase 7 ends at offline ingestion, catalog diagnostics, and read-only local
-retrieval. Retrieval quality benchmarks, source-integrity/privacy validation,
-and package-isolation evidence belong to Phase 8. This command does not
-authorize model downloads, network access, LLM calls, broker access, MT5
-actions, strategy promotion, or order submission.
+retrieval. It does not authorize model downloads, network access, LLM calls,
+broker access, MT5 actions, strategy promotion, or order submission.
+
+## Deterministic quality and integrity evidence
+
+`tests/fixtures/knowledge/benchmark_cases.json` is a small, local HFT/FX
+retrieval fixture. `tests/test_knowledge_quality.py` runs it through a tiny
+read-only fake that returns the public `KnowledgeHit` contract. It reports
+Recall@1/5/10, MRR, exact-keyword hit rate, content-type filter precision,
+provenance correctness, duplicate-result rate, and repeated-query ordering.
+The fixture is an operational retrieval gate only: it makes no claim about
+strategy quality, trading performance, or profitability.
+
+The same gate snapshots every source file's relative path, bytes, mode, size,
+and nanosecond modification timestamp before and after a real local ingestion
+run using tiny parser/embedder/index fakes. A change to a source document or
+its metadata fails the check. It also rejects query-result fields named
+`action` or containing `trade`.
+
+`tests/test_knowledge_isolation.py` AST-scans the knowledge package without
+importing optional runtimes. It rejects forex, graph, agent, experience,
+memory, stock, and forex-CLI dependencies plus direct network clients; it also
+checks that the standalone `knowledge` entry point leaves the stock command
+unchanged. These quality tests never need Docling, FastEmbed, ONNX, LanceDB,
+Ollama, MT5, CUDA, or network access:
+
+```powershell
+python -m pytest tests/test_knowledge_quality.py tests/test_knowledge_isolation.py -q
+```
