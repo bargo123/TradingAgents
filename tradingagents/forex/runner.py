@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import inspect
+import json
 import math
 import time
 import uuid
@@ -387,6 +388,16 @@ class ForexShadowRunner:
         *,
         code: str = "ORCHESTRATOR_FAILURE",
     ) -> EvidenceContext:
+        snapshot_payload = json.dumps(
+            snapshot_to_dict(snapshot, include_candles=False),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        rendered_context = (
+            f"EVIDENCE_FALLBACK snapshot={snapshot_payload} "
+            f"code={str(code).replace(chr(10), ' ')[:80]}"
+        )
+        rendered_context_hash = hashlib.sha256(rendered_context.encode("utf-8")).hexdigest()
         return EvidenceContext(
             as_of=snapshot.timestamp,
             integration_status=EvidenceIntegrationStatus.FALLBACK,
@@ -396,6 +407,9 @@ class ForexShadowRunner:
                     "message": str(detail).replace("\r", " ").replace("\n", " ")[:500],
                 }
             },
+            rendered_context=rendered_context,
+            rendered_context_hash=rendered_context_hash,
+            rendered_character_count=len(rendered_context),
         )
 
     @staticmethod

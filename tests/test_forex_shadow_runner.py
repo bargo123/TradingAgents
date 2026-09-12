@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1077,6 +1077,15 @@ def test_fallback_audit_never_claims_used(tmp_path):
 
     assert audit_store.records[0].evidence_use_status == "UNAVAILABLE"
     assert audit_store.records[0].evidence_refs_used == ()
+
+
+def test_fallback_context_identity_is_snapshot_specific():
+    first_snapshot = _snapshot()
+    second_snapshot = replace(first_snapshot, bid=first_snapshot.bid + 0.001)
+    first = ForexShadowRunner._fallback_evidence_context(first_snapshot, "timeout")
+    second = ForexShadowRunner._fallback_evidence_context(second_snapshot, "timeout")
+    assert first.rendered_context_hash
+    assert first.rendered_context_hash != second.rendered_context_hash
 
 
 def test_validator_failure_preserves_persisted_decision(tmp_path, monkeypatch):
