@@ -404,9 +404,43 @@ class ForexShadowRunner:
         from tradingagents.forex.evidence_context import EvidenceQueryPolicy
 
         policy = EvidenceQueryPolicy(
-            evidence_timeout_seconds=float(config.get("evidence_timeout_seconds", 10.0)),
+            evidence_timeout_seconds=float(
+                config.get(
+                    "forex_evidence_timeout_seconds",
+                    config.get("evidence_timeout_seconds", 10.0),
+                )
+            ),
+            evaluation_basis=config.get(
+                "forex_evidence_evaluation_basis", "ANALYSIS_SNAPSHOT"
+            ),
+            statistics_horizon_seconds=config.get(
+                "forex_evidence_statistics_horizon_seconds"
+            ),
+            knowledge_top_k=int(config.get("forex_evidence_knowledge_top_k", 10)),
+            experience_top_k=int(config.get("forex_evidence_experience_top_k", 50)),
         )
-        roots = config.get("forex_evidence_artifact_roots", config.get("evidence_artifact_roots", {}))
+        roots = config.get(
+            "forex_evidence_artifact_roots",
+            config.get("evidence_artifact_roots", {}),
+        )
+        if not roots:
+            roots = {
+                key: config[key]
+                for key in (
+                    "forex_evidence_knowledge_artifact_root",
+                    "forex_evidence_knowledge_embedding_model_path",
+                    "forex_evidence_experience_artifact_root",
+                )
+                if config.get(key) is not None
+            }
+            roots = {
+                "knowledge": roots.get("forex_evidence_knowledge_artifact_root"),
+                "knowledge_embedding_model_path": roots.get(
+                    "forex_evidence_knowledge_embedding_model_path"
+                ),
+                "experience": roots.get("forex_evidence_experience_artifact_root"),
+            }
+            roots = {key: value for key, value in roots.items() if value is not None}
         return EvidenceIntegrationService(
             policy=policy,
             orchestrator_factory=config.get("evidence_orchestrator_factory"),

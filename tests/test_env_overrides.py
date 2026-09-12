@@ -155,3 +155,12 @@ def test_forex_evidence_environment_values_are_strictly_coerced(monkeypatch):
         importlib.reload(default_config_module)
     monkeypatch.delenv("TRADINGAGENTS_FOREX_EVIDENCE_STATISTICS_HORIZON_SECONDS", raising=False)
     importlib.reload(default_config_module)
+
+
+@pytest.mark.parametrize("raw", ["nan", "inf", "-inf", "-0.1"])
+def test_forex_evidence_timeout_rejects_non_finite_or_negative(monkeypatch, raw):
+    monkeypatch.setenv("TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS", raw)
+    with pytest.raises(ValueError, match="TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS"):
+        importlib.reload(default_config_module)
+    monkeypatch.delenv("TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS", raising=False)
+    importlib.reload(default_config_module)

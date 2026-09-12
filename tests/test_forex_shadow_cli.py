@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from cli.forex_shadow import build_parser, main
+from tradingagents.forex.runner import ForexShadowRunner
 from tradingagents.forex.watch_store import LeaseOwner, WatcherStore
 
 
@@ -117,6 +118,35 @@ def test_cli_passes_evidence_flag_without_constructing_stock_graph(monkeypatch, 
     monkeypatch.setattr("cli.forex_shadow.ForexShadowRunner", FakeRunner)
     assert main(["--evidence-enabled", "--db-path", str(tmp_path / "shadow.db")]) == 0
     assert captured["config"] == {"forex_evidence_enabled": True}
+
+
+def test_runner_maps_forex_evidence_config_to_service(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeService:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("tradingagents.forex.runner.EvidenceIntegrationService", FakeService)
+    runner = ForexShadowRunner(
+        config={
+            "forex_evidence_timeout_seconds": 3.5,
+            "forex_evidence_knowledge_artifact_root": tmp_path / "knowledge",
+            "forex_evidence_knowledge_embedding_model_path": tmp_path / "model",
+            "forex_evidence_experience_artifact_root": tmp_path / "experience",
+        }
+    )
+
+    runner._default_evidence_service_factory()
+
+    assert captured["policy"].evidence_timeout_seconds == 3.5
+    assert {
+        key: str(value) for key, value in captured["artifact_roots"].items()
+    } == {
+        "knowledge": str(tmp_path / "knowledge"),
+        "knowledge_embedding_model_path": str(tmp_path / "model"),
+        "experience": str(tmp_path / "experience"),
+    }
 
 
 def test_cli_rejects_stock_analysts_before_constructing_runner(capsys, monkeypatch):

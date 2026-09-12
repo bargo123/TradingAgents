@@ -1,3 +1,4 @@
+import math
 import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
@@ -84,7 +85,12 @@ def _coerce_forex_evidence(value: str, key: str):
     if key in _NULLABLE_INT_KEYS:
         stripped = value.strip()
         return int(stripped) if stripped else None
-    return _coerce(value, DEFAULT_CONFIG_TYPES[key])
+    coerced = _coerce(value, DEFAULT_CONFIG_TYPES[key])
+    if key == "forex_evidence_timeout_seconds" and (
+        not math.isfinite(coerced) or coerced < 0
+    ):
+        raise ValueError("must be finite and non-negative")
+    return coerced
 
 
 DEFAULT_CONFIG_TYPES = {
