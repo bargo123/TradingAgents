@@ -344,12 +344,12 @@ def strip_transient_evidence_metadata(raw_result: Mapping[str, Any]) -> Mapping[
 
 
 def _reference_values(raw_result: Mapping[str, Any], key: str) -> tuple[list[Any], bool]:
-    value = raw_result.get(key, ())
-    if value is None:
+    if key not in raw_result:
         return [], True
+    value = raw_result[key]
     if isinstance(value, (list, tuple)):
         return list(value), True
-    return [value], False
+    return [], False
 
 
 def _reference_id(item: Any) -> str | None:
@@ -413,14 +413,14 @@ def validate_evidence_references(
         else:
             invalid = True
             continue
-        ref = _reference_id(ref_value)
-        if ref is None or ref not in available:
-            invalid = True
-            continue
         try:
             reason = EvidenceReferenceRejectionReason(reason_value)
         except (TypeError, ValueError) as exc:
             raise ValueError("evidence reference rejection reason is not allowed") from exc
+        ref = _reference_id(ref_value)
+        if ref is None or ref not in available:
+            invalid = True
+            continue
         key = (ref, reason)
         if key not in seen_rejected:
             valid_rejected.append(EvidenceReferenceRejection(ref=ref, reason=reason))
@@ -443,7 +443,7 @@ def validate_evidence_references(
     elif model_status is EvidenceUseStatus.USED:
         status = EvidenceUseStatus.USED
     elif model_status is EvidenceUseStatus.NONE_RELEVANT:
-        status = EvidenceUseStatus.NONE_RELEVANT
+        status = EvidenceUseStatus.USED if valid_used else EvidenceUseStatus.NONE_RELEVANT
     else:
         status = EvidenceUseStatus.USED if valid_used else EvidenceUseStatus.NONE_RELEVANT
 

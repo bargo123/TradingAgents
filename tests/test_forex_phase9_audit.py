@@ -239,3 +239,45 @@ def test_runtime_status_override_never_fabricates_refs():
     )
     assert result.evidence_use_status is EvidenceUseStatus.UNAVAILABLE
     assert result.evidence_refs_used == ()
+
+
+def test_scalar_reference_containers_are_rejected_without_retaining_refs():
+    raw = {
+        "action": "BUY",
+        "evidence_use_status": "USED",
+        "evidence_refs_used": "K1",
+        "evidence_refs_rejected": {"ref": "E2", "reason": "LOW_RELEVANCE"},
+    }
+    result = validate_evidence_references(
+        _context_with_items(), raw, runtime_integration_status=EvidenceIntegrationStatus.INJECTED
+    )
+
+    assert raw["action"] == "BUY"
+    assert result.evidence_refs_used == ()
+    assert result.evidence_refs_rejected == ()
+    assert result.evidence_audit_status == "INVALID_REFERENCE"
+
+
+def test_injected_none_relevant_with_valid_citations_is_coerced_to_used():
+    result = validate_evidence_references(
+        _context_with_items(),
+        {"evidence_use_status": "NONE_RELEVANT", "evidence_refs_used": ["K1"]},
+        runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
+    )
+
+    assert result.evidence_use_status is EvidenceUseStatus.USED
+    assert result.evidence_refs_used == ("K1",)
+    assert result.evidence_audit_status == "VALID"
+
+
+def test_unknown_rejection_reason_is_closed_before_unknown_ref_filtering():
+    with pytest.raises(ValueError, match="reason"):
+        validate_evidence_references(
+            _context_with_items(),
+            {
+                "evidence_refs_rejected": [
+                    {"ref": "K999", "reason": "MADE_UP"},
+                ]
+            },
+            runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
+        )
