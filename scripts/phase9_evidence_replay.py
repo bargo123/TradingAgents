@@ -164,8 +164,8 @@ def run_replay(
         raise failure
     payload = result.to_dict()
     payload["source_unchanged"] = True
-    payload["external_network_attempts"] = guard.external_network_attempts
-    payload["loopback_connection_attempts"] = guard.loopback_connection_attempts
+    payload["external_network_attempts"] = guard.external_network_attempts + int(payload.get("external_network_attempts", 0) or 0)
+    payload["loopback_connection_attempts"] = guard.loopback_connection_attempts + int(payload.get("loopback_connection_attempts", 0) or 0)
     if report_path is not None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

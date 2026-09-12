@@ -505,10 +505,20 @@ def _child_query(send_conn: Any, factory_descriptor: Mapping[str, str], envelope
         orchestrator = _make_orchestrator(factory, config)
         _validate_child_orchestrator(orchestrator, config)
         bundle = orchestrator.query(request)
-        send_conn.send(("ok", bundle.to_dict() if hasattr(bundle, "to_dict") else bundle))
+        guard = getattr(orchestrator, "_phase9_network_guard", None)
+        telemetry = {
+            "loopback_connection_attempts": int(getattr(guard, "loopback_connection_attempts", 0) or 0),
+            "external_network_attempts": int(getattr(guard, "external_network_attempts", 0) or 0),
+        }
+        send_conn.send(("ok", bundle.to_dict() if hasattr(bundle, "to_dict") else bundle, telemetry))
     except BaseException as exc:  # process boundary transports a bounded typed failure
         kind = "timeout" if isinstance(exc, EvidenceTimeout) else "error"
-        send_conn.send((kind, type(exc).__name__, str(exc).replace("\r", " ").replace("\n", " ")[:500]))
+        guard = getattr(orchestrator, "_phase9_network_guard", None)
+        telemetry = {
+            "loopback_connection_attempts": int(getattr(guard, "loopback_connection_attempts", 0) or 0),
+            "external_network_attempts": int(getattr(guard, "external_network_attempts", 0) or 0),
+        }
+        send_conn.send((kind, type(exc).__name__, str(exc).replace("\r", " ").replace("\n", " ")[:500], telemetry))
     finally:
         if orchestrator is not None:
             _close_orchestrator(orchestrator)
@@ -667,6 +677,12 @@ class EvidenceIntegrationService:
         self.retrieval_count = 0
         self._query_issued = False
         self.last_request: Any = None
+        self.child_loopback_connection_attempts = 0
+        self.child_external_network_attempts = 0
+        self.last_child_network_telemetry: dict[str, int] = {
+            "loopback_connection_attempts": 0,
+            "external_network_attempts": 0,
+        }
 
     @property
     def enabled(self) -> bool:
@@ -735,6 +751,18 @@ class EvidenceIntegrationService:
             if not recv_conn.poll():
                 raise RuntimeError("evidence worker returned no result")
             result = recv_conn.recv()
+            telemetry_value = (
+                result[2]
+                if result[0] == "ok" and len(result) > 2
+                else (result[3] if result[0] != "ok" and len(result) > 3 else {})
+            )
+            telemetry = telemetry_value if isinstance(telemetry_value, Mapping) else {}
+            self.child_loopback_connection_attempts += int(telemetry.get("loopback_connection_attempts", 0) or 0)
+            self.child_external_network_attempts += int(telemetry.get("external_network_attempts", 0) or 0)
+            self.last_child_network_telemetry = {
+                "loopback_connection_attempts": int(telemetry.get("loopback_connection_attempts", 0) or 0),
+                "external_network_attempts": int(telemetry.get("external_network_attempts", 0) or 0),
+            }
             if result[0] == "timeout":
                 raise EvidenceTimeout(result[2])
             if result[0] == "error":
@@ -780,6 +808,13 @@ class EvidenceIntegrationService:
                 knowledge_query=query,
                 phase7_generation_id=generations[0],
                 phase8_generation_id=generations[1],
+            )
+            context = replace(
+                context,
+                diagnostics={
+                    **dict(context.diagnostics),
+                    "network": dict(self.last_child_network_telemetry),
+                },
             )
             has_text = bool(
                 context.knowledge_items or context.experience_items or context.statistics_items

@@ -73,6 +73,8 @@ class Phase8ArtifactPreflight:
     active_record_count: int
     historical_record_count: int
     evaluation_snapshot_count: int
+    numeric_similarity_count: int = 0
+    numeric_statistics_eligible_count: int = 0
 
     @property
     def active_generation_id(self) -> str:
@@ -91,6 +93,8 @@ class Phase8ArtifactPreflight:
             "active_record_count": self.active_record_count,
             "historical_record_count": self.historical_record_count,
             "evaluation_snapshot_count": self.evaluation_snapshot_count,
+            "numeric_similarity_count": self.numeric_similarity_count,
+            "numeric_statistics_eligible_count": self.numeric_statistics_eligible_count,
         }
 
 
@@ -145,6 +149,24 @@ def resolve_verified_phase8_root(candidate: Path) -> Phase8ArtifactPreflight:
                 observed = getattr(record, key, None)
                 if observed != expected:
                     raise Phase8PreflightError(f"Phase 8 record {key} is incompatible: {observed!r}")
+        # Exercise the existing numeric interfaces with the canonical A/B
+        # defaults. Tier C records are deliberately removed before either
+        # service is constructed, so a diagnostic-only population is valid.
+        from tradingagents.experience.models import ExperienceQuery, OutcomeStatsRequest
+        from tradingagents.experience.outcomes import OutcomeStatsCalculator
+        from tradingagents.experience.query import ExperienceQueryService
+
+        numeric_records = tuple(record for record in all_records if _tier_value(record) in {TrustTier.TIER_A_HIGH_TRUST.value, TrustTier.TIER_B_LIMITED.value})
+        feature_vectors = {str(key): value for key, value in getattr(catalog, "feature_vectors", {}).items() if any(str(record.experience_id) == str(key) for record in numeric_records)}
+        service = ExperienceQueryService(numeric_records, feature_vectors=feature_vectors, profiles=getattr(catalog, "profiles", {}), generation_id=str(generation["generation_id"]))
+        query_state = next(iter(feature_vectors.values()), {})
+        query = ExperienceQuery(market_state=query_state, trust_tiers=(TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED))
+        search_result = service.search(query)
+        if any(_tier_value(numeric_records_by_id[hit.experience_id]) == TrustTier.TIER_C_DIAGNOSTIC_ONLY.value for hit in search_result.hits if (numeric_records_by_id := {str(record.experience_id): record for record in numeric_records})):
+            raise Phase8PreflightError("Tier C record entered numeric similarity results")
+        statistics = OutcomeStatsCalculator(numeric_records).calculate(OutcomeStatsRequest(experience_ids=tuple(str(record.experience_id) for record in numeric_records), trust_tiers=(TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED), evaluation_basis="ANALYSIS_SNAPSHOT", horizon_seconds=0))
+        if any(key == TrustTier.TIER_C_DIAGNOSTIC_ONLY.value and value for key, value in dict(getattr(statistics, "exclusions_by_tier", {})).items()):
+            raise Phase8PreflightError("Tier C record entered numeric statistics")
         # This is intentionally an explicit immutable tuple: callers cannot
         # accidentally add Tier C to ExperienceQuery/OutcomeStatsRequest.
         numeric_tiers = (TrustTier.TIER_A_HIGH_TRUST.value, TrustTier.TIER_B_LIMITED.value)
@@ -160,6 +182,8 @@ def resolve_verified_phase8_root(candidate: Path) -> Phase8ArtifactPreflight:
             active_record_count=len(records),
             historical_record_count=len(historical),
             evaluation_snapshot_count=snapshots,
+            numeric_similarity_count=len(search_result.hits),
+            numeric_statistics_eligible_count=int(getattr(statistics, "eligible_count", 0) or 0),
         )
     except Phase8PreflightError:
         raise
@@ -240,7 +264,7 @@ def _host_is_loopback(value: Any) -> bool:
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
-        return host.startswith(("\\\\.\\pipe\\", "/"))
+        return host.startswith("\\\\.\\pipe\\")
 
 
 class OfflineNetworkGuard:
@@ -252,6 +276,7 @@ class OfflineNetworkGuard:
         self.attempts: list[str] = []
         self._connect = socket.socket.connect
         self._connect_ex = socket.socket.connect_ex
+        self._sendto = socket.socket.sendto
         self._create_connection = socket.create_connection
         self._urlopen = urllib.request.urlopen
         self._inside_create = False
@@ -299,6 +324,12 @@ class OfflineNetworkGuard:
             return self._connect_ex(sock, address, *args, **kwargs)
 
         socket.socket.connect_ex = connect_ex  # type: ignore[method-assign]
+
+        def sendto(sock: socket.socket, data: Any, address: Any, *args: Any, **kwargs: Any) -> int:
+            self._check(address)
+            return self._sendto(sock, data, address, *args, **kwargs)
+
+        socket.socket.sendto = sendto  # type: ignore[method-assign]
         socket.create_connection = create  # type: ignore[assignment]
         urllib.request.urlopen = urlopen  # type: ignore[assignment]
         return self
@@ -306,6 +337,7 @@ class OfflineNetworkGuard:
     def __exit__(self, *_exc: Any) -> None:
         socket.socket.connect = self._connect  # type: ignore[method-assign]
         socket.socket.connect_ex = self._connect_ex  # type: ignore[method-assign]
+        socket.socket.sendto = self._sendto  # type: ignore[method-assign]
         socket.create_connection = self._create_connection  # type: ignore[assignment]
         urllib.request.urlopen = self._urlopen  # type: ignore[assignment]
 
@@ -361,27 +393,53 @@ def _validate_smoke_result(result: Any) -> None:
     integration = str(_value(result, "integration_status", _value(evidence_telemetry, "evidence_integration_status", "")))
     bundle = str(_value(result, "bundle_status", ""))
     action = _value(result, "evidence_action") or _value(result, "normalized_action")
+    baseline_action = _value(result, "baseline_action")
     context_hash = _value(result, "evidence_context_hash")
     citation = str(_value(result, "citation_status", _value(result, "evidence_audit_status", "")))
     normalization = str(_value(result, "normalization_status", _value(evidence_telemetry, "normalization_status", "")))
+    baseline_normalization = str(_value(result, "baseline_normalization_status", ""))
+    context_integrity = str(_value(result, "context_integrity_status", ""))
+    reference_status = str(_value(result, "reference_validation_status", citation))
+    hash_valid = _value(result, "context_hash_valid", False)
+    available = _value(result, "available_references", ())
     refs_used = _value(result, "used_references", _value(result, "evidence_refs_used", ()))
     refs_rejected = _value(result, "rejected_references", _value(result, "evidence_refs_rejected", ()))
+    source_status = _value(result, "source_status")
+    phase7_generation = _value(result, "pinned_phase7_generation_id")
+    phase8_generation = _value(result, "pinned_phase8_generation_id")
     if comparison != "VALID":
         raise SmokeAcceptanceError(f"replay comparison is not valid: {comparison or 'missing'}")
     if integration in {"", "FALLBACK", "DISABLED", "EvidenceIntegrationStatus.FALLBACK", "EvidenceIntegrationStatus.DISABLED"}:
         raise SmokeAcceptanceError("evidence integration was unavailable or fell back")
-    if bundle in {"", "EMPTY", "FAILED", "EvidenceBundleStatus.EMPTY", "EvidenceBundleStatus.FAILED"}:
-        raise SmokeAcceptanceError("evidence bundle is empty or failed")
+    if bundle not in {"COMPLETE", "EvidenceBundleStatus.COMPLETE"}:
+        raise SmokeAcceptanceError("evidence bundle is not complete")
+    if not isinstance(source_status, Mapping) or not source_status:
+        raise SmokeAcceptanceError("evidence source provenance is missing")
+    if not isinstance(phase7_generation, str) or not phase7_generation.strip() or not isinstance(phase8_generation, str) or not phase8_generation.strip():
+        raise SmokeAcceptanceError("evidence generation provenance is missing")
     if not isinstance(action, str) or action.upper() not in {"BUY", "SELL", "HOLD"}:
         raise SmokeAcceptanceError("final action was not normalized")
-    if not isinstance(context_hash, str) or len(context_hash) != 64:
+    if not isinstance(baseline_action, str) or baseline_action.upper() not in {"BUY", "SELL", "HOLD"}:
+        raise SmokeAcceptanceError("baseline action was not normalized")
+    if not isinstance(context_hash, str) or len(context_hash) != 64 or not bool(hash_valid):
         raise SmokeAcceptanceError("evidence context hash is missing")
-    if citation not in {"VALID", "EvidenceAuditStatus.VALID", "USED"}:
+    if context_integrity not in {"COMPLETE", "VALID"}:
+        raise SmokeAcceptanceError("context integrity validation did not pass")
+    if reference_status not in {"VALID", "NONE_RELEVANT", "EvidenceAuditStatus.VALID", "EvidenceAuditStatus.NONE_RELEVANT"} or citation not in {"VALID", "NONE_RELEVANT", "EvidenceAuditStatus.VALID", "EvidenceAuditStatus.NONE_RELEVANT", "USED"}:
         raise SmokeAcceptanceError("citation validation did not pass")
-    if normalization not in {"NORMALIZED", ""}:
+    if normalization != "NORMALIZED" or baseline_normalization != "NORMALIZED":
         raise SmokeAcceptanceError("final action normalization failed")
+    if not isinstance(available, (tuple, list)):
+        raise SmokeAcceptanceError("available evidence references were not typed")
     if not isinstance(refs_used, (tuple, list)) or not isinstance(refs_rejected, (tuple, list)):
         raise SmokeAcceptanceError("final evidence references were not validated")
+    available_set = {str(ref) for ref in available}
+    if any(str(ref) not in available_set for ref in refs_used):
+        raise SmokeAcceptanceError("used evidence reference is unavailable")
+    for rejection in refs_rejected:
+        ref = rejection.get("ref") if isinstance(rejection, Mapping) else getattr(rejection, "ref", None)
+        if str(ref) not in available_set:
+            raise SmokeAcceptanceError("rejected evidence reference is unavailable")
     if (_value(result, "knowledge_count", 0) or _value(result, "experience_count", 0) or _value(result, "statistics_count", 0)) and not (refs_used or refs_rejected):
         raise SmokeAcceptanceError("evidence items have no final reference validation")
 
@@ -413,28 +471,57 @@ def _audit_path(report_path: Path | None, source: Path) -> Path:
     return root / "evidence_runtime" / "evidence_audit.sqlite3"
 
 
-def _append_audit(path: Path | EvidenceAuditStore, *, decision_id: str, source_run_id: str, snapshot: Any, result: Any) -> None:
-    empty_hash = hashlib.sha256(b"").hexdigest()
+def _append_audit(path: Path | EvidenceAuditStore, *, decision_id: str, source_run_id: str, snapshot: Any, result: Any) -> str:
+    rendered_context = _value(result, "rendered_context", "")
+    if not isinstance(rendered_context, str):
+        rendered_context = ""
+    context_hash = _value(result, "evidence_context_hash")
+    computed_hash = hashlib.sha256(rendered_context.encode("utf-8")).hexdigest()
+    if context_hash is None:
+        context_hash = computed_hash
+    if not isinstance(context_hash, str) or context_hash != computed_hash:
+        raise SmokeAcceptanceError("audit context hash does not match rendered context")
+    available = _value(result, "available_references", ())
+    used = _value(result, "used_references", _value(result, "evidence_refs_used", ()))
+    rejected = _value(result, "rejected_references", _value(result, "evidence_refs_rejected", ()))
+    telemetry = _value(result, "evidence_telemetry", {})
+    provider = _value(result, "provider")
+    models = _value(result, "models", {})
+    model = models.get("quick") if isinstance(models, Mapping) else None
     audit = EvidenceUsageAudit(
         decision_id=decision_id,
         source_run_id=source_run_id,
-        integration_status=str(_value(result, "integration_status", "INJECTED")),
-        bundle_status=str(_value(result, "bundle_status", "COMPLETE")),
+        integration_status=str(_value(result, "integration_status", _value(telemetry, "evidence_integration_status", ""))),
+        bundle_status=str(_value(result, "bundle_status", "")),
         as_of=snapshot.timestamp,
         knowledge_generation_id=_value(result, "pinned_phase7_generation_id"),
         experience_generation_id=_value(result, "pinned_phase8_generation_id"),
         knowledge_query_fingerprint=_value(result, "knowledge_query_fingerprint"),
-        rendered_context="",
-        rendered_context_hash=empty_hash,
-        evidence_use_status="USED" if _value(result, "evidence_action") else "UNAVAILABLE",
-        evidence_audit_status="VALID",
+        rendered_context=rendered_context,
+        rendered_context_hash=context_hash,
+        available_knowledge_ids=tuple(str(item) for item in (available or ()) if str(item).startswith("K")),
+        available_experience_ids=tuple(str(item) for item in (available or ()) if str(item).startswith("E")),
+        available_statistics_ids=tuple(str(item) for item in (available or ()) if str(item).startswith("S")),
+        evidence_use_status=str(_value(result, "evidence_use_status", "UNAVAILABLE")),
+        evidence_refs_used=tuple(str(item) for item in (used or ())),
+        evidence_refs_rejected=tuple(rejected or ()),
+        evidence_audit_status=str(_value(result, "reference_validation_status", _value(result, "citation_status", "NOT_RECORDED"))),
+        source_status=_privacy(_value(result, "source_status")) if isinstance(_value(result, "source_status"), Mapping) else None,
+        diagnostics=_privacy(_value(result, "evidence_telemetry")) if isinstance(_value(result, "evidence_telemetry"), Mapping) else None,
         retrieval_count=1,
         selected_counts={"knowledge": int(_value(result, "knowledge_count", 0) or 0), "experience": int(_value(result, "experience_count", 0) or 0), "statistics": int(_value(result, "statistics_count", 0) or 0)},
-        provider="ollama",
-        model="qwen",
+        provider=None if provider is None else str(provider),
+        model=None if model is None else str(model),
     )
     store = path if hasattr(path, "append") else EvidenceAuditStore(path)
+    before = None
+    if hasattr(store, "list_for_source_run"):
+        before = len(store.list_for_source_run(source_run_id))
     store.append(audit)
+    after = None
+    if hasattr(store, "list_for_source_run"):
+        after = len(store.list_for_source_run(source_run_id))
+    return "APPENDED" if before is None or after > before else "ALREADY_PRESENT"
 
 
 def _uses_saved_snapshot() -> bool:
@@ -546,6 +633,8 @@ def run_smoke(
     if not unchanged:
         errors.append("source or Phase 7/8 artifact bytes changed during smoke")
     fake_ab: Any = None
+    audit_status = "NOT_ATTEMPTED"
+    audit_report_path = str(_audit_path(None if report_path is None else Path(report_path).expanduser().resolve(), source))
     if replay_result is not None:
         try:
             fake_ab = _run_fake_ab(fake_runner or _DeterministicFakeRunner(), snapshot=snapshot, snapshot_bytes=snapshot_bytes, config=config)
@@ -554,6 +643,12 @@ def run_smoke(
     else:
         errors.append("SmokeAcceptanceError: real replay returned no comparison")
     result_payload = replay_result.to_dict() if hasattr(replay_result, "to_dict") else replay_result
+    child_loopback = int(_value(replay_result, "loopback_connection_attempts", 0) or 0)
+    child_external = int(_value(replay_result, "external_network_attempts", 0) or 0)
+    guard.loopback_connection_attempts += child_loopback
+    guard.external_network_attempts += child_external
+    if child_external:
+        errors.append("NetworkAttempt")
     if replay_result is not None:
         try:
             _validate_smoke_result(replay_result)
@@ -561,11 +656,17 @@ def run_smoke(
             errors.append(f"{type(exc).__name__}: {exc}")
         audit_target = _audit_path(None if report_path is None else Path(report_path).expanduser().resolve(), source)
         _assert_report_outside(audit_target, ((source, "source"), (Path(str(source) + "-wal"), "source WAL"), (knowledge_root, "Phase 7"), (experience_root, "Phase 8"), (model_path, "embedding model")))
+        if audit_store is not None:
+            configured_audit_path = getattr(audit_store, "path", None)
+            if configured_audit_path is not None:
+                audit_report_path = str(Path(configured_audit_path).expanduser().resolve())
+                _assert_report_outside(Path(configured_audit_path), ((source, "source"), (Path(str(source) + "-wal"), "source WAL"), (knowledge_root, "Phase 7"), (experience_root, "Phase 8"), (model_path, "embedding model")))
         try:
-            _append_audit(audit_target if audit_store is None else audit_store, decision_id=str(row["decision_id"]), source_run_id=str(row.get("source_run_id") or row["decision_id"]), snapshot=snapshot, result=replay_result)
+            audit_status = _append_audit(audit_target if audit_store is None else audit_store, decision_id=str(row["decision_id"]), source_run_id=str(row.get("source_run_id") or row["decision_id"]), snapshot=snapshot, result=replay_result)
         except Exception as exc:
+            audit_status = "FAILED"
             errors.append(f"audit append failed: {type(exc).__name__}")
-    report = build_report(real_smoke="PASS" if not errors else "FAILED", source_fingerprint={"before": before["source"], "after": after["source"]}, artifact_fingerprints={"phase7": {"before": before["phase7"], "after": after["phase7"]}, "phase8": {"before": before["phase8"], "after": after["phase8"]}}, source_unchanged=unchanged, phase8_preflight=phase8.to_dict(), replay=result_payload, fake_ab=fake_ab, loopback_connection_attempts=guard.loopback_connection_attempts, external_network_attempts=guard.external_network_attempts, retrieval_count=1 if replay_result is not None else 0, latency_seconds=time.monotonic() - started, provider="ollama", models={"quick": "qwen", "deep": "qwen"}, warnings=[], errors=errors, saved_snapshot_replay=_uses_saved_snapshot())
+    report = build_report(real_smoke="PASS" if not errors else "FAILED", source_fingerprint={"before": before["source"], "after": after["source"]}, artifact_fingerprints={"phase7": {"before": before["phase7"], "after": after["phase7"]}, "phase8": {"before": before["phase8"], "after": after["phase8"]}}, source_unchanged=unchanged, phase8_preflight=phase8.to_dict(), replay=result_payload, fake_ab=fake_ab, audit_status=audit_status, audit_path=audit_report_path, loopback_connection_attempts=guard.loopback_connection_attempts, external_network_attempts=guard.external_network_attempts, retrieval_count=1 if replay_result is not None else 0, latency_seconds=time.monotonic() - started, provider="ollama", models={"quick": "qwen", "deep": "qwen"}, warnings=[], errors=errors, saved_snapshot_replay=_uses_saved_snapshot())
     if report_path is not None:
         destination = Path(report_path).expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)

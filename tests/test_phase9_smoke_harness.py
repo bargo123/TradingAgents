@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from scripts.phase9_evidence_smoke import (
     resolve_verified_phase8_root,
     run_smoke,
 )
+from tradingagents.forex.evidence_replay import EvidenceReplayReport
 
 
 def _catalog(root: Path, *, tier_c_only: bool = False, published: bool = True) -> Path:
@@ -101,6 +103,8 @@ def test_phase8_preflight_accepts_tier_c_only_generation(tmp_path: Path):
     result = resolve_verified_phase8_root(_catalog(tmp_path / "p8", tier_c_only=True))
     assert result.tier_counts["TIER_C_DIAGNOSTIC_ONLY"] == 1
     assert result.numeric_trust_tiers == ("TIER_A_HIGH_TRUST", "TIER_B_LIMITED")
+    assert result.numeric_similarity_count == 0
+    assert result.numeric_statistics_eligible_count == 0
 
 
 def test_smoke_rejects_external_artifact_mutation_target(tmp_path: Path):
@@ -139,7 +143,33 @@ def test_smoke_report_forbids_prompt_completion_reasoning():
 def test_smoke_pass_requires_valid_non_fallback_replay_and_references():
     with pytest.raises(SmokeAcceptanceError):
         _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": "x", "citation_status": "VALID", "normalization_status": "NORMALIZED", "integration_status": "FALLBACK"})
-    _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "citation_status": "VALID", "normalization_status": "NORMALIZED", "integration_status": "INJECTED", "evidence_audit_status": "VALID"})
+    _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "baseline_action": "HOLD", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "normalization_status": "NORMALIZED", "baseline_normalization_status": "NORMALIZED", "integration_status": "INJECTED", "evidence_audit_status": "VALID", "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8"})
+    with pytest.raises(SmokeAcceptanceError, match="normalization"):
+        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "baseline_action": "HOLD", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "integration_status": "INJECTED", "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8"})
+
+
+def test_smoke_pass_rejects_partial_bundle():
+    with pytest.raises(SmokeAcceptanceError, match="bundle"):
+        _validate_smoke_result(
+            {
+                "comparison_status": "VALID",
+                "bundle_status": "PARTIAL",
+                "evidence_action": "BUY",
+                "baseline_action": "HOLD",
+                "evidence_context_hash": hashlib.sha256(b"x").hexdigest(),
+                "context_hash_valid": True,
+                "context_integrity_status": "COMPLETE",
+                "citation_status": "VALID",
+                "reference_validation_status": "VALID",
+                "normalization_status": "NORMALIZED",
+                "baseline_normalization_status": "NORMALIZED",
+                "integration_status": "INJECTED",
+                "available_references": (),
+                "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"},
+                "pinned_phase7_generation_id": "p7",
+                "pinned_phase8_generation_id": "p8",
+            }
+        )
 
 
 def test_fake_ab_executes_two_sequential_analyses_and_measures_them():
@@ -166,7 +196,11 @@ def test_loopback_guard_patches_connect_ex_and_rejects_unc():
             socket.socket().connect_ex(("203.0.113.1", 9))
         with pytest.raises(NetworkAttempt):
             socket.socket().connect((r"\\server\share", 9))
-    assert guard.external_network_attempts == 2
+        with pytest.raises(NetworkAttempt):
+            urllib.request.urlopen("file:///secret")
+        with pytest.raises(NetworkAttempt):
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"x", ("203.0.113.1", 9))
+    assert guard.external_network_attempts == 4
 
 
 def test_phase8_preflight_rejects_missing_generation_metadata(tmp_path: Path):
@@ -184,12 +218,42 @@ def test_report_redacts_sensitive_values_without_default_string_conversion():
     assert "object at" not in json.dumps(payload).lower()
 
 
+def test_spawned_child_boundary_returns_network_telemetry(monkeypatch):
+    import tradingagents.forex.evidence_runtime as runtime
+
+    class Conn:
+        values = []
+
+        def send(self, value):
+            self.values.append(value)
+
+        def close(self):
+            return None
+
+    class Guard:
+        loopback_connection_attempts = 3
+        external_network_attempts = 1
+
+    class Orchestrator:
+        _phase9_network_guard = Guard()
+
+        def query(self, _request):
+            return {"status": "COMPLETE"}
+
+    monkeypatch.setattr(runtime, "_resolve_factory", lambda _descriptor: lambda _config: Orchestrator())
+    monkeypatch.setattr(runtime, "_validate_child_orchestrator", lambda *_args: None)
+    monkeypatch.setattr(runtime, "_close_orchestrator", lambda *_args: None)
+    connection = Conn()
+    runtime._child_query(connection, {}, {"request": {}, "artifact_roots": {}})
+    assert connection.values[-1][-1] == {"loopback_connection_attempts": 3, "external_network_attempts": 1}
+
+
 def test_smoke_appends_one_metadata_only_audit_outside_source(tmp_path: Path):
     class Snapshot:
         timestamp = datetime(2026, 9, 12, tzinfo=timezone.utc)
 
     audit_path = tmp_path / "evidence_runtime" / "evidence_audit.sqlite3"
-    result = {"integration_status": "INJECTED", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"context").hexdigest()}
+    result = {"integration_status": "INJECTED", "bundle_status": "COMPLETE", "evidence_action": "BUY", "rendered_context": "context", "evidence_context_hash": hashlib.sha256(b"context").hexdigest()}
     _append_audit(audit_path, decision_id="d1", source_run_id="r1", snapshot=Snapshot(), result=result)
     with sqlite3.connect(audit_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM evidence_usage_audit").fetchone()[0] == 1
@@ -199,4 +263,9 @@ def test_smoke_appends_one_metadata_only_audit_outside_source(tmp_path: Path):
 
 def test_smoke_rejects_unreferenced_evidence_items():
     with pytest.raises(SmokeAcceptanceError, match="reference"):
-        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "citation_status": "VALID", "integration_status": "INJECTED", "knowledge_count": 1})
+        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "baseline_action": "HOLD", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "normalization_status": "NORMALIZED", "baseline_normalization_status": "NORMALIZED", "integration_status": "INJECTED", "knowledge_count": 1, "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8"})
+
+
+def test_replay_report_exposes_typed_context_normalization_and_reference_status():
+    names = set(EvidenceReplayReport.__dataclass_fields__)
+    assert {"integration_status", "normalization_status", "normalization_error", "context_integrity_status", "reference_validation_status", "available_references", "rendered_character_count", "source_status"} <= names

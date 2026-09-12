@@ -28,6 +28,14 @@ from tradingagents.dataflows.mt5.models import (
     Mt5SymbolInfo,
 )
 
+from .evidence_context import (
+    EvidenceAuditStatus,
+    EvidenceIntegrationStatus,
+    EvidenceReferenceValidation,
+    EvidenceUseStatus,
+    validate_evidence_references,
+)
+
 
 class SnapshotReplayError(ValueError):
     """A persisted source row cannot safely be used as replay input."""
@@ -307,6 +315,21 @@ class EvidenceReplayReport:
     errors: tuple[str, ...]
     comparison_status: str = "VALID"
     source_integrity: Mapping[str, Any] = None
+    integration_status: str = "DISABLED"
+    normalization_status: str = "UNKNOWN"
+    normalization_error: str | None = None
+    context_integrity_status: str = "UNKNOWN"
+    reference_validation_status: str = "NOT_RECORDED"
+    evidence_use_status: str = "UNAVAILABLE"
+    available_references: tuple[str, ...] = ()
+    rendered_character_count: int = 0
+    context_hash_valid: bool = False
+    source_status: Mapping[str, Any] = None
+    baseline_normalization_status: str = "UNKNOWN"
+    baseline_normalization_error: str | None = None
+    rendered_context: str = ""
+    loopback_connection_attempts: int = 0
+    external_network_attempts: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return _json_value(self)
@@ -335,10 +358,13 @@ class EvidenceReplayReport:
 
 
 def _json_value(value: Any) -> Any:
+    forbidden = ("prompt", "completion", "reasoning", "credential", "api_key", "password", "token")
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, Path):
+        return str(value)
     if is_dataclass(value):
         return {
             field.name: _json_value(getattr(value, field.name))
@@ -346,7 +372,7 @@ def _json_value(value: Any) -> Any:
             if not any(
                 token in field.name.lower()
                 for token in ("prompt", "completion", "reasoning", "credential", "api_key")
-            )
+            ) and field.name != "rendered_context"
         }
     if isinstance(value, Mapping):
         return {
@@ -359,7 +385,11 @@ def _json_value(value: Any) -> Any:
         }
     if isinstance(value, (tuple, list, set, frozenset)):
         return [_json_value(item) for item in value]
-    return value
+    if isinstance(value, str):
+        return "[REDACTED_SENSITIVE_TEXT]" if any(token in value.lower() for token in forbidden) else value
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return "[REDACTED_UNSERIALIZABLE]"
 
 
 def _fingerprint(path: str | Path) -> dict[str, Any]:
@@ -530,34 +560,54 @@ def _context_value(context: Any, name: str, default: Any = None) -> Any:
 def _context_metrics(result: Any) -> dict[str, Any]:
     context = _result_value(result, "evidence_context")
     if context is None:
-        return {"context": None, "hash": None, "bundle": "EMPTY", "knowledge": 0, "experience": 0, "statistics": 0, "statistics_status": None, "used": (), "rejected": (), "citation": None}
+        normalization = str(_result_value(result, "normalization_status", "UNKNOWN"))
+        return {"context": None, "hash": None, "hash_valid": False, "rendered": "", "rendered_characters": 0, "bundle": "EMPTY", "integration": "DISABLED", "knowledge": 0, "experience": 0, "statistics": 0, "statistics_status": None, "normalization": normalization, "normalization_error": _result_value(result, "normalization_error"), "context_integrity": str(_result_value(result, "context_integrity", {}).get("status", "UNKNOWN")) if isinstance(_result_value(result, "context_integrity", {}), Mapping) else "UNKNOWN", "available": (), "used": (), "rejected": (), "use_status": "DISABLED", "citation": "NOT_RECORDED", "source_status": {}, "loopback": 0, "external": 0}
     diagnostics = _context_value(context, "diagnostics", {})
     source_status = diagnostics.get("source_status", {}) if isinstance(diagnostics, Mapping) else {}
-    used = _result_value(result, "evidence_refs_used", ())
-    rejected = _result_value(result, "evidence_refs_rejected", ())
     raw_result = _result_value(result, "raw_portfolio_manager_result", {})
-    if not used and isinstance(raw_result, Mapping):
-        used = raw_result.get("evidence_refs_used", ())
-    if not rejected and isinstance(raw_result, Mapping):
-        rejected = raw_result.get("evidence_refs_rejected", ())
-    if not isinstance(used, (tuple, list)):
-        used = ()
-    if not isinstance(rejected, (tuple, list)):
-        rejected = ()
+    available = tuple(
+        str(getattr(item, "display_id", ""))
+        for items in (_context_value(context, "knowledge_items", ()), _context_value(context, "experience_items", ()), _context_value(context, "statistics_items", ()))
+        for item in items
+        if getattr(item, "display_id", None)
+    )
+    runtime_status = EvidenceIntegrationStatus(_context_value(context, "integration_status", EvidenceIntegrationStatus.FALLBACK))
+    try:
+        validation = validate_evidence_references(context, raw_result if isinstance(raw_result, Mapping) else {}, runtime_integration_status=runtime_status)
+    except Exception:
+        validation = EvidenceReferenceValidation(
+            evidence_use_status=EvidenceUseStatus.UNAVAILABLE,
+            evidence_audit_status=EvidenceAuditStatus.INVALID_REFERENCE,
+        )
+    rendered = str(_context_value(context, "rendered_context", ""))
+    rendered_hash = _context_value(context, "rendered_context_hash")
+    integrity = _result_value(result, "context_integrity", {})
+    network = diagnostics.get("network", {}) if isinstance(diagnostics, Mapping) else {}
     return {
         "context": context,
-        "hash": _context_value(context, "rendered_context_hash"),
+        "hash": rendered_hash,
+        "hash_valid": isinstance(rendered_hash, str) and rendered_hash == hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
+        "rendered": rendered,
+        "rendered_characters": int(_context_value(context, "rendered_character_count", len(rendered)) or 0),
         "bundle": str(_context_value(context, "bundle_status", "EMPTY")),
+        "integration": str(runtime_status),
         "knowledge": int(_context_value(context, "selected_knowledge_count", 0) or 0),
         "experience": int(_context_value(context, "selected_experience_count", 0) or 0),
         "statistics": int(_context_value(context, "selected_statistics_count", 0) or 0),
         "knowledge_status": source_status.get("knowledge"),
         "experience_status": source_status.get("experience"),
         "statistics_status": _context_value(context, "statistics_status"),
-        "used": tuple(str(value) for value in used),
-        "rejected": tuple(rejected),
-        "citation": _result_value(result, "citation_status")
-        or (raw_result.get("evidence_audit_status") if isinstance(raw_result, Mapping) else None),
+        "normalization": str(_result_value(result, "normalization_status", "UNKNOWN")),
+        "normalization_error": _result_value(result, "normalization_error"),
+        "context_integrity": str(integrity.get("status", "UNKNOWN")) if isinstance(integrity, Mapping) else "UNKNOWN",
+        "available": available,
+        "used": tuple(validation.evidence_refs_used),
+        "rejected": tuple(validation.evidence_refs_rejected),
+        "use_status": str(validation.evidence_use_status),
+        "citation": str(validation.evidence_audit_status),
+        "source_status": source_status,
+        "loopback": int(network.get("loopback_connection_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
+        "external": int(network.get("external_network_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
     }
 
 
@@ -689,6 +739,7 @@ class SavedSnapshotReplay:
         if _source_has_transient(config.source_database_path):
             raise SnapshotReplayError("source row gained transient Phase 9 evidence metadata")
 
+        baseline_metrics = _context_metrics(baseline)
         evidence_metrics = _context_metrics(evidence)
         telemetry_a = _telemetry(baseline)
         telemetry_b = _telemetry(evidence)
@@ -728,6 +779,21 @@ class SavedSnapshotReplay:
             errors=("generation changed during replay",) if generation_changed else (),
             comparison_status=status,
             source_integrity={"before": source_before, "after": source_after},
+            integration_status=evidence_metrics["integration"],
+            normalization_status=evidence_metrics["normalization"],
+            normalization_error=evidence_metrics["normalization_error"],
+            context_integrity_status=evidence_metrics["context_integrity"],
+            reference_validation_status=evidence_metrics["citation"],
+            evidence_use_status=evidence_metrics["use_status"],
+            available_references=evidence_metrics["available"],
+            rendered_character_count=evidence_metrics["rendered_characters"],
+            context_hash_valid=evidence_metrics["hash_valid"],
+            source_status=evidence_metrics["source_status"],
+            baseline_normalization_status=baseline_metrics["normalization"],
+            baseline_normalization_error=baseline_metrics["normalization_error"],
+            rendered_context=evidence_metrics["rendered"],
+            loopback_connection_attempts=evidence_metrics["loopback"],
+            external_network_attempts=evidence_metrics["external"],
         )
 
 
