@@ -301,6 +301,36 @@ def _untyped_dependency_factory(config):
     )
 
 
+@approved_readonly_factory
+def _nested_writer_dependency_factory(config):
+    knowledge, experience = _readonly_catalogs(config)
+    service = _TypedKnowledgeService(
+        knowledge,
+        (KnowledgeHit(chunk_id="nested", document_id="doc", text="nested evidence"),),
+    )
+    service.dependencies = {"providers": [type("NestedWriter", (), {})()]}
+    return EvidenceOrchestrator(
+        service,
+        _TypedExperienceService(experience),
+        _TypedStatsCalculator(experience),
+    )
+
+
+@approved_readonly_factory
+def _nested_untyped_dependency_factory(config):
+    knowledge, experience = _readonly_catalogs(config)
+    service = _TypedKnowledgeService(
+        knowledge,
+        (KnowledgeHit(chunk_id="nested", document_id="doc", text="nested evidence"),),
+    )
+    service.dependencies = {"readers": [{"reader": object()}]}
+    return EvidenceOrchestrator(
+        service,
+        _TypedExperienceService(experience),
+        _TypedStatsCalculator(experience),
+    )
+
+
 class _ImmediateProcess:
     def __init__(self, *, target, args):
         self.target, self.args, self._alive = target, args, False
@@ -420,6 +450,20 @@ def test_child_guard_rejects_untyped_reader_dependency(tmp_path: Path):
     service = EvidenceIntegrationService(
         policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
         orchestrator_factory=_untyped_dependency_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=_artifact_roots(tmp_path),
+    )
+    context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
+    assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
+
+
+@pytest.mark.parametrize("factory", [_nested_writer_dependency_factory, _nested_untyped_dependency_factory])
+def test_child_guard_recurses_nested_dependency_containers(tmp_path: Path, factory):
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        orchestrator_factory=factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
         artifact_roots=_artifact_roots(tmp_path),

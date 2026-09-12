@@ -11,18 +11,24 @@ from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from tradingagents.experience.models import EvidenceBundle, EvidenceRequest, ExperienceRecord
+from tradingagents.experience.models import (
+    EvidenceBundle,
+    EvidenceRequest,
+    ExperienceRecord,
+    ExperienceSearchResult,
+)
 from tradingagents.experience.normalization import NormalizationCohortV1, build_profile
 from tradingagents.experience.orchestrator import EvidenceOrchestrator
 from tradingagents.experience.outcomes import OutcomeStatsCalculator
 from tradingagents.experience.query import ExperienceQueryService
 from tradingagents.knowledge.embeddings import EmbeddingProvider
 from tradingagents.knowledge.lexical_index import LexicalIndexReader
-from tradingagents.knowledge.models import EmbeddingSpec, IndexGeneration
+from tradingagents.knowledge.models import EmbeddingSpec, IndexGeneration, KnowledgeHit
 from tradingagents.knowledge.query import KnowledgeQueryService
 from tradingagents.knowledge.reranking import Reranker
 from tradingagents.knowledge.vector_index import VectorIndexReader
@@ -511,16 +517,38 @@ def _validate_child_orchestrator(
             value = getattr(owner, name, None)
             if value is not None:
                 pending.append(value)
-        # Approved services are small, but recurse through their instance
-        # attributes as well so a nested provider/writer cannot hide behind
-        # an otherwise innocuous edge name.
-        for value in getattr(owner, "__dict__", {}).values():
-            if callable(value) or isinstance(
-                value,
-                (str, bytes, bytearray, int, float, complex, Path, Mapping, tuple, list, set, frozenset),
+        # Recurse through instance attributes and container payloads. A
+        # writer hidden in ``{"dependencies": [writer]}`` must be rejected,
+        # while scalar metadata and immutable value objects remain benign.
+        def enqueue(value: Any) -> None:
+            if value is None or callable(value) or isinstance(
+                value, (str, bytes, bytearray, int, float, complex, bool, Path, datetime, Enum)
             ):
-                continue
+                return
+            if isinstance(value, Mapping):
+                for key, item in value.items():
+                    enqueue(key)
+                    enqueue(item)
+                return
+            if isinstance(value, (tuple, list, set, frozenset)):
+                for item in value:
+                    enqueue(item)
+                return
+            if hasattr(value, "__dataclass_fields__") and not isinstance(value, type):
+                if not isinstance(
+                    value,
+                    (EvidenceBundle, ExperienceRecord, ExperienceSearchResult, IndexGeneration, EmbeddingSpec, KnowledgeHit),
+                ) and not getattr(value, "__evidence_runtime_readonly__", False):
+                    raise TypeError(
+                        f"evidence child dependency is not approved: {type(value).__module__}.{type(value).__name__}"
+                    )
+                for name in value.__dataclass_fields__:
+                    enqueue(getattr(value, name))
+                return
             pending.append(value)
+
+        for value in getattr(owner, "__dict__", {}).values():
+            enqueue(value)
 
     if config is not None:
         roots = config.roots()
