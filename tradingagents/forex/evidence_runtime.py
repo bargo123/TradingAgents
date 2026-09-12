@@ -708,7 +708,11 @@ class EvidenceIntegrationService:
         )
         updates: dict[str, Any] = {
             "integration_status": EvidenceIntegrationStatus.FALLBACK,
-            "diagnostics": {**dict(context.diagnostics), "integration": _bounded_diagnostic(code, detail)},
+            "diagnostics": {
+                **dict(context.diagnostics),
+                "integration": _bounded_diagnostic(code, detail),
+                "network": dict(self.last_child_network_telemetry),
+            },
         }
         if redact_context:
             updates.update(

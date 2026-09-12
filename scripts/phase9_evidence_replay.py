@@ -158,14 +158,14 @@ def run_replay(
     after = {"source": _source_fingerprint(source), "phase7": _fingerprint(knowledge_root), "phase8": _fingerprint(experience_root)}
     if before != after:
         raise SnapshotReplayError("source or Phase 7/8 artifacts changed during replay")
-    if guard.external_network_attempts:
-        raise SnapshotReplayError("external network attempt blocked during replay") from failure
-    if failure is not None:
-        raise failure
-    payload = result.to_dict()
+    payload = result.to_dict() if result is not None else {}
     payload["source_unchanged"] = True
     payload["external_network_attempts"] = guard.external_network_attempts + int(payload.get("external_network_attempts", 0) or 0)
     payload["loopback_connection_attempts"] = guard.loopback_connection_attempts + int(payload.get("loopback_connection_attempts", 0) or 0)
+    if payload["external_network_attempts"]:
+        raise SnapshotReplayError("external network attempt blocked during replay") from failure
+    if failure is not None:
+        raise failure
     if report_path is not None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")

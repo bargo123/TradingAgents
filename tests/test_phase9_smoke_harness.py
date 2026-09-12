@@ -77,7 +77,7 @@ def _catalog(root: Path, *, tier_c_only: bool = False, published: bool = True) -
                 ("e1", "d1", "s1", "f1", None, "EURUSD", None, "INTRADAY", "M15", "2026-09-12T00:00:00+00:00", None, None, "{}", "{}", "{}", "TIER_C_DIAGNOSTIC_ONLY", 0, "{}"),
             )
             connection.execute("INSERT INTO experience_source_aliases VALUES (?,?,?,?,?)", ("s1", "d1", "f1", "e1", "CURRENT"))
-            connection.execute("INSERT INTO experience_feature_projections VALUES (?,?,?)", ("e1", "experience-features.v1", json.dumps({"cohort": ["EURUSD", "INTRADAY", "M15", "experience-features.v1", "phase8-feature-extractor.v1"], "values": [0], "mask": [1]})))
+            connection.execute("INSERT INTO experience_feature_projections VALUES (?,?,?)", ("e1", "experience-features.v1", json.dumps({"version": "phase8-feature-extractor.v1", "cohort": ["EURUSD", "INTRADAY", "M15", "experience-features.v1", "phase8-feature-extractor.v1"], "values": [0], "mask": [1]})))
         connection.commit()
     return root
 
@@ -105,6 +105,40 @@ def test_phase8_preflight_accepts_tier_c_only_generation(tmp_path: Path):
     assert result.numeric_trust_tiers == ("TIER_A_HIGH_TRUST", "TIER_B_LIMITED")
     assert result.numeric_similarity_count == 0
     assert result.numeric_statistics_eligible_count == 0
+
+
+def test_phase8_numeric_preflight_uses_full_catalog_interfaces(monkeypatch, tmp_path: Path):
+    import tradingagents.experience.outcomes as outcomes_module
+    import tradingagents.experience.query as query_module
+
+    observed: list[tuple[str, object]] = []
+    original_query = query_module.ExperienceQueryService
+    original_stats = outcomes_module.OutcomeStatsCalculator
+
+    class QuerySpy(original_query):
+        def __init__(self, records, *args, **kwargs):
+            observed.append(("query", records))
+            super().__init__(records, *args, **kwargs)
+
+    class StatsSpy(original_stats):
+        def __init__(self, records, *args, **kwargs):
+            observed.append(("stats", records))
+            super().__init__(records, *args, **kwargs)
+
+    monkeypatch.setattr(query_module, "ExperienceQueryService", QuerySpy)
+    monkeypatch.setattr(outcomes_module, "OutcomeStatsCalculator", StatsSpy)
+    resolve_verified_phase8_root(_catalog(tmp_path / "p8"))
+    assert [kind for kind, _ in observed] == ["query", "stats"]
+    assert all(hasattr(records, "active_records") and hasattr(records, "historical_records") for _, records in observed)
+
+
+def test_phase8_preflight_rejects_projection_without_persisted_versions(tmp_path: Path):
+    root = _catalog(tmp_path / "p8", tier_c_only=True)
+    with sqlite3.connect(root / "catalog.sqlite3") as connection:
+        connection.execute("UPDATE experience_feature_projections SET projection_json=?", (json.dumps({"cohort": ["EURUSD", "INTRADAY", "M15", "experience-features.v1", "phase8-feature-extractor.v1"], "values": [0], "mask": [1]}),))
+        connection.commit()
+    with pytest.raises(Phase8PreflightError, match="projection"):
+        resolve_verified_phase8_root(root)
 
 
 def test_smoke_rejects_external_artifact_mutation_target(tmp_path: Path):
@@ -143,9 +177,9 @@ def test_smoke_report_forbids_prompt_completion_reasoning():
 def test_smoke_pass_requires_valid_non_fallback_replay_and_references():
     with pytest.raises(SmokeAcceptanceError):
         _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": "x", "citation_status": "VALID", "normalization_status": "NORMALIZED", "integration_status": "FALLBACK"})
-    _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "baseline_action": "HOLD", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "normalization_status": "NORMALIZED", "baseline_normalization_status": "NORMALIZED", "integration_status": "INJECTED", "evidence_audit_status": "VALID", "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8"})
+    _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "baseline_action": "HOLD", "rendered_context": "x", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "normalization_status": "NORMALIZED", "baseline_normalization_status": "NORMALIZED", "integration_status": "INJECTED", "evidence_audit_status": "VALID", "evidence_use_status": "NONE_RELEVANT", "available_references": (), "used_references": (), "rejected_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8", "errors": ()})
     with pytest.raises(SmokeAcceptanceError, match="normalization"):
-        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "baseline_action": "HOLD", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "integration_status": "INJECTED", "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8"})
+        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "baseline_action": "HOLD", "rendered_context": "x", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "integration_status": "INJECTED", "evidence_use_status": "NONE_RELEVANT", "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8", "errors": ()})
 
 
 def test_smoke_pass_rejects_partial_bundle():
@@ -156,6 +190,7 @@ def test_smoke_pass_rejects_partial_bundle():
                 "bundle_status": "PARTIAL",
                 "evidence_action": "BUY",
                 "baseline_action": "HOLD",
+                "rendered_context": "x",
                 "evidence_context_hash": hashlib.sha256(b"x").hexdigest(),
                 "context_hash_valid": True,
                 "context_integrity_status": "COMPLETE",
@@ -168,6 +203,7 @@ def test_smoke_pass_rejects_partial_bundle():
                 "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"},
                 "pinned_phase7_generation_id": "p7",
                 "pinned_phase8_generation_id": "p8",
+                "errors": (),
             }
         )
 
@@ -201,6 +237,19 @@ def test_loopback_guard_patches_connect_ex_and_rejects_unc():
         with pytest.raises(NetworkAttempt):
             socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"x", ("203.0.113.1", 9))
     assert guard.external_network_attempts == 4
+
+
+def test_loopback_guard_blocks_dns_and_request_object_and_allows_documented_pipe():
+    import socket
+
+    with OfflineNetworkGuard() as guard:
+        with pytest.raises(NetworkAttempt):
+            socket.getaddrinfo("198.51.100.4", 443)
+        with pytest.raises(NetworkAttempt):
+            urllib.request.urlopen(urllib.request.Request("https://198.51.100.4/"))
+        with pytest.raises((OSError, TypeError)):
+            socket.socket().connect(r"\\.\pipe\phase9-evidence")
+    assert guard.external_network_attempts == 2
 
 
 def test_phase8_preflight_rejects_missing_generation_metadata(tmp_path: Path):
@@ -263,7 +312,56 @@ def test_smoke_appends_one_metadata_only_audit_outside_source(tmp_path: Path):
 
 def test_smoke_rejects_unreferenced_evidence_items():
     with pytest.raises(SmokeAcceptanceError, match="reference"):
-        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "baseline_action": "HOLD", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "normalization_status": "NORMALIZED", "baseline_normalization_status": "NORMALIZED", "integration_status": "INJECTED", "knowledge_count": 1, "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8"})
+        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "baseline_action": "HOLD", "evidence_action": "BUY", "rendered_context": "x", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "normalization_status": "NORMALIZED", "baseline_normalization_status": "NORMALIZED", "integration_status": "INJECTED", "evidence_use_status": "NONE_RELEVANT", "knowledge_count": 1, "available_references": (), "source_status": {"knowledge": "COMPLETE", "experience": "COMPLETE", "statistics": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8", "errors": ()})
+
+
+def test_smoke_rejects_errors_inconsistent_use_and_forged_context_hash():
+    base = {"comparison_status": "VALID", "bundle_status": "COMPLETE", "baseline_action": "HOLD", "evidence_action": "BUY", "rendered_context": "x", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "context_hash_valid": True, "context_integrity_status": "COMPLETE", "citation_status": "VALID", "reference_validation_status": "VALID", "normalization_status": "NORMALIZED", "baseline_normalization_status": "NORMALIZED", "integration_status": "INJECTED", "evidence_use_status": "NONE_RELEVANT", "available_references": (), "used_references": (), "rejected_references": (), "source_status": {"knowledge": "COMPLETE"}, "pinned_phase7_generation_id": "p7", "pinned_phase8_generation_id": "p8", "errors": ()}
+    for update, message in (({"errors": ("bad",)}, "errors"), ({"evidence_use_status": "USED"}, "use"), ({"rendered_context": "tampered"}, "hash"), ({"available_references": None}, "references")):
+        with pytest.raises(SmokeAcceptanceError, match=message):
+            _validate_smoke_result({**base, **update})
+
+
+def test_standalone_replay_fails_on_child_external_counter(monkeypatch, tmp_path: Path):
+    import scripts.phase9_evidence_replay as replay_module
+    import scripts.phase9_evidence_smoke as smoke_module
+
+    source = tmp_path / "source.db"
+    p7 = tmp_path / "p7"
+    p8 = tmp_path / "p8"
+    model = tmp_path / "model"
+    source.write_bytes(b"source")
+    p7.mkdir()
+    p8.mkdir()
+    model.write_bytes(b"model")
+    for name in ("KNOWLEDGE_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.setenv(name, "1")
+    row = {"decision_id": "d1", "snapshot_json": b"snapshot", "source_run_id": "r1"}
+    snapshot = type("Snapshot", (), {"timestamp": datetime(2026, 9, 12, tzinfo=timezone.utc)})()
+    monkeypatch.setattr(replay_module, "ReadonlySourceReader", lambda _path: type("Reader", (), {"read_snapshot": lambda self: type("Store", (), {"decisions": (row,)})()})())
+    monkeypatch.setattr(replay_module.SavedSnapshotCodec, "from_source_row", staticmethod(lambda _row: snapshot))
+    preflight = type("P8", (), {"generation_id": "p8"})()
+    monkeypatch.setattr(smoke_module, "resolve_verified_phase8_root", lambda _root: preflight)
+    monkeypatch.setattr(smoke_module, "_resolve_verified_phase7_generation", lambda _root: type("P7", (), {"generation_id": "p7"})())
+    monkeypatch.setattr(smoke_module, "_fingerprint", lambda _path: {"sha256": "same"})
+    monkeypatch.setattr(smoke_module, "_source_fingerprint", lambda _path: {"db": {"sha256": "same"}})
+
+    class Replay:
+        def run(self, *_args, **_kwargs):
+            return type("Result", (), {"to_dict": lambda self: {"comparison_status": "VALID", "external_network_attempts": 2}})()
+
+    with pytest.raises(replay_module.SnapshotReplayError, match="external network"):
+        replay_module.run_replay(source, "d1", experience_artifact_root=p8, knowledge_artifact_root=p7, knowledge_embedding_model_path=model, offline=True, replay=Replay())
+
+
+def test_child_network_telemetry_survives_fallback():
+    from tradingagents.forex.evidence_context import EvidenceQueryPolicy
+    from tradingagents.forex.evidence_runtime import EvidenceIntegrationService
+
+    service = EvidenceIntegrationService(policy=EvidenceQueryPolicy(), orchestrator_factory=None, generation_provider=lambda: ("p7", "p8"), provider_endpoint="http://127.0.0.1:11434")
+    service.last_child_network_telemetry = {"loopback_connection_attempts": 2, "external_network_attempts": 1}
+    context = service._fallback(datetime(2026, 9, 12, tzinfo=timezone.utc), code="ORCHESTRATOR_FAILURE")
+    assert context.diagnostics["network"] == {"loopback_connection_attempts": 2, "external_network_attempts": 1}
 
 
 def test_replay_report_exposes_typed_context_normalization_and_reference_status():
