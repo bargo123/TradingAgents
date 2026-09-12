@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import json
@@ -21,6 +22,7 @@ from tradingagents.experience.models import (
     EvidenceRequest,
     ExperienceRecord,
     ExperienceSearchResult,
+    TrustTier,
 )
 from tradingagents.experience.normalization import (
     NormalizationCohortV1,
@@ -348,6 +350,51 @@ def _bounded_diagnostic(code: str, detail: Any = "") -> dict[str, str]:
     return {"code": str(code)[:100], "message": message}
 
 
+def _trust_tier(value: Any) -> TrustTier | None:
+    """Read a Phase 8 trust tier without accepting arbitrary tier values."""
+
+    raw = value.get("trust_tier", value.get("trust")) if isinstance(value, Mapping) else getattr(value, "trust_tier", getattr(value, "trust", None))
+    if raw is None:
+        return None
+    try:
+        return TrustTier(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _without_tier_c(bundle: EvidenceBundle) -> EvidenceBundle:
+    """Remove Tier C records before Phase 9 assigns any display identifiers.
+
+    Tier C is useful for operational diagnostics, but it is not an evidence
+    item and must never reach similarity or statistics rendering.  If a
+    bundle contains Tier C hits, statistics are discarded as a fail-closed
+    measure because the aggregate cannot be attributed to only eligible hits.
+    """
+
+    tier_c = []
+    eligible = []
+    for hit in bundle.experience:
+        if _trust_tier(hit) is TrustTier.TIER_C_DIAGNOSTIC_ONLY:
+            identifier = getattr(hit, "experience_id", None)
+            if identifier is None and isinstance(hit, Mapping):
+                identifier = hit.get("experience_id")
+            tier_c.append(str(identifier or "unknown"))
+        else:
+            eligible.append(hit)
+    if not tier_c:
+        return bundle
+    warning = {
+        "code": "TIER_C_DIAGNOSTIC_ONLY",
+        "message": "excluded Tier C experience identifiers: " + ",".join(tier_c)[:450],
+    }
+    return replace(
+        bundle,
+        experience=tuple(eligible),
+        statistics=None,
+        warnings=tuple(bundle.warnings) + (warning,),
+    )
+
+
 def _generations(provider: Any) -> tuple[str | None, str | None]:
     value = provider() if callable(provider) else provider
     if isinstance(value, Mapping):
@@ -482,6 +529,8 @@ def _validate_child_orchestrator(
         "writer", "maintenance", "migration", "importer", "initialize",
         "create_schema", "download", "provision", "trainer", "training",
         "fine_tune", "finetune", "model_provider", "downloader", "model_download",
+        "docling", "from_pretrained", "download_model", "order_send", "buy",
+        "sell", "close_position", "modify_position", "mt5", "riskgovernor",
     )
     pending = [orchestrator]
     seen: set[int] = set()
@@ -607,13 +656,23 @@ class EvidenceIntegrationService:
         }
         self.active_evidence_workers = 0
         self.retrieval_count = 0
+        self._query_issued = False
         self.last_request: Any = None
 
     @property
     def enabled(self) -> bool:
         return self.policy is not None
 
-    def _fallback(self, as_of: datetime, *, query: Any = None, generations: tuple[Any, Any] = (None, None), code: str = "EVIDENCE_FALLBACK", detail: Any = "") -> EvidenceContext:
+    def _fallback(
+        self,
+        as_of: datetime,
+        *,
+        query: Any = None,
+        generations: tuple[Any, Any] = (None, None),
+        code: str = "EVIDENCE_FALLBACK",
+        detail: Any = "",
+        redact_context: bool = False,
+    ) -> EvidenceContext:
         context = Phase9EvidenceContextBuilder().build(
             EvidenceBundle(status="EMPTY"),
             policy=self.policy or EvidenceQueryPolicy(),
@@ -622,13 +681,28 @@ class EvidenceIntegrationService:
             phase7_generation_id=generations[0],
             phase8_generation_id=generations[1],
         )
+        updates: dict[str, Any] = {
+            "integration_status": EvidenceIntegrationStatus.FALLBACK,
+            "diagnostics": {**dict(context.diagnostics), "integration": _bounded_diagnostic(code, detail)},
+        }
+        if redact_context:
+            updates.update(
+                rendered_context="",
+                rendered_context_hash=hashlib.sha256(b"").hexdigest(),
+                rendered_character_count=0,
+                selected_knowledge_count=0,
+                selected_experience_count=0,
+                selected_statistics_count=0,
+            )
         return replace(
             context,
-            integration_status=EvidenceIntegrationStatus.FALLBACK,
-            diagnostics={**dict(context.diagnostics), "integration": _bounded_diagnostic(code, detail)},
+            **updates,
         )
 
     def _query(self, request: Any) -> EvidenceBundle:
+        if self._query_issued:
+            raise RuntimeError("evidence boundary permits one orchestrator query")
+        self._query_issued = True
         process_factory = self.process_factory or multiprocessing.get_context("spawn").Process
         recv_conn, send_conn = multiprocessing.Pipe(duplex=False)
         envelope = {
@@ -667,6 +741,12 @@ class EvidenceIntegrationService:
         as_of = snapshot.timestamp
         if not self.enabled:
             return EvidenceContext(as_of=as_of, integration_status=EvidenceIntegrationStatus.DISABLED)
+        if self._query_issued:
+            return self._fallback(
+                as_of,
+                code="EVIDENCE_SINGLE_RETRIEVAL_ONLY",
+                detail="additional agent retrieval was suppressed",
+            )
         query = None
         generations = (None, None)
         self.retrieval_count += 1
@@ -680,7 +760,7 @@ class EvidenceIntegrationService:
             )
             self.last_request = request
             generations = _generations(self.generation_provider)
-            bundle = self._query(request)
+            bundle = _without_tier_c(self._query(request))
             post_generations = _generations(self.generation_provider)
             if post_generations != (None, None):
                 generations = post_generations
@@ -695,7 +775,13 @@ class EvidenceIntegrationService:
             has_text = bool(context.knowledge_items or context.experience_items)
             endpoint = self.provider_endpoint() if callable(self.provider_endpoint) else self.provider_endpoint
             if has_text and not _is_loopback(endpoint):
-                return self._fallback(as_of, query=query, generations=generations, code="EVIDENCE_LOCAL_ENDPOINT_REQUIRED")
+                return self._fallback(
+                    as_of,
+                    query=query,
+                    generations=generations,
+                    code="EVIDENCE_LOCAL_ENDPOINT_REQUIRED",
+                    redact_context=True,
+                )
             if EvidenceBundleStatus(str(bundle.status)) != EvidenceBundleStatus.COMPLETE or not has_text:
                 return replace(context, integration_status=EvidenceIntegrationStatus.FALLBACK)
             return context
