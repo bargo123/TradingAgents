@@ -58,7 +58,9 @@ overwritten.
 `git diff --name-only a878fb39c8df22e4dfbe8f049a5e52861233bfaa..HEAD` was
 inspected. Changes are limited to Phase 8 package files, Phase 8 tests and
 fixture, the Phase 8 smoke script, the `experience` CLI metadata, explicitly
-scoped plan/task documentation, and existing task reports. No files under
+scoped plan/task documentation, existing task reports, and the cleanup-only
+deletion of duplicate tracked root reports `task-6-report.md` and
+`task-8-report.md`. No files under
 `tradingagents/forex`, MT5/provider, execution, watcher, TradingAgents or
 LangGraph graph behavior, Qwen/Ollama prompts, training, or Phase 7 ingestion
 were changed. The worktree was clean before this report was created.
