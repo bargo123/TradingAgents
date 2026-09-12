@@ -1,4 +1,5 @@
 """Small, deterministic provenance helpers for Phase 8 evidence."""
+
 from __future__ import annotations
 
 import hashlib
@@ -45,4 +46,8 @@ def provenance_fingerprint(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-__all__ = ["build_evaluation_provenance", "validate_evaluation_provenance", "provenance_fingerprint"]
+__all__ = [
+    "build_evaluation_provenance",
+    "validate_evaluation_provenance",
+    "provenance_fingerprint",
+]

@@ -8,7 +8,6 @@ from tradingagents.experience.models import (
 )
 from tradingagents.experience.orchestrator import EvidenceOrchestrator
 
-
 UTC = timezone.utc
 
 
@@ -44,7 +43,9 @@ class Stats:
 
     def calculate(self, request):
         self.last_request = request
-        return OutcomeStatistics(evaluation_basis=request.evaluation_basis, horizon_seconds=request.horizon_seconds)
+        return OutcomeStatistics(
+            evaluation_basis=request.evaluation_basis, horizon_seconds=request.horizon_seconds
+        )
 
 
 def test_as_of_is_forwarded_unchanged():
@@ -52,7 +53,12 @@ def test_as_of_is_forwarded_unchanged():
     experience = Experience([ExperienceHit("exp-1")])
     stats = Stats()
     EvidenceOrchestrator(Knowledge(), experience, stats).query(
-        EvidenceRequest(market_state={"x": 1}, evaluation_basis="ANALYSIS_SNAPSHOT", horizon_seconds=300, as_of=cutoff)
+        EvidenceRequest(
+            market_state={"x": 1},
+            evaluation_basis="ANALYSIS_SNAPSHOT",
+            horizon_seconds=300,
+            as_of=cutoff,
+        )
     )
     assert experience.last_query.as_of == cutoff
     assert stats.last_request.as_of == cutoff
@@ -84,7 +90,9 @@ def test_statistics_use_only_returned_experience_ids():
     stats = Stats()
     experience = Experience([ExperienceHit("returned")])
     EvidenceOrchestrator(Knowledge(), experience, stats).query(
-        EvidenceRequest(market_state={"x": 1}, evaluation_basis="ANALYSIS_SNAPSHOT", horizon_seconds=300)
+        EvidenceRequest(
+            market_state={"x": 1}, evaluation_basis="ANALYSIS_SNAPSHOT", horizon_seconds=300
+        )
     )
     assert stats.last_request.experience_ids == ("returned",)
 

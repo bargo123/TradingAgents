@@ -1,20 +1,24 @@
 """Read-only composition of Phase 7 knowledge and Phase 8 experience evidence."""
+
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
 from tradingagents.knowledge.models import KnowledgeQuery
 
-from .errors import ExperienceError, ExperienceMemoryUnavailableError, Phase7KnowledgeUnavailableError
+from .errors import (
+    ExperienceError,
+    ExperienceMemoryUnavailableError,
+    Phase7KnowledgeUnavailableError,
+)
 from .models import (
     EvidenceBundle,
     EvidenceRequest,
     EvidenceSourceError,
     ExperienceQuery,
     ExperienceSearchResult,
-    OutcomeStatsRequest,
     OrchestrationProvenance,
+    OutcomeStatsRequest,
     TrustTier,
 )
 
@@ -33,7 +37,9 @@ def _error(source: str, exc: BaseException) -> EvidenceSourceError:
 class EvidenceOrchestrator:
     """Compose independent read-only services without ranking or interpretation."""
 
-    def __init__(self, knowledge_service: Any, experience_service: Any, statistics_calculator: Any) -> None:
+    def __init__(
+        self, knowledge_service: Any, experience_service: Any, statistics_calculator: Any
+    ) -> None:
         self.knowledge_service = knowledge_service
         self.experience_service = experience_service
         self.statistics_calculator = statistics_calculator
@@ -89,13 +95,19 @@ class EvidenceOrchestrator:
                     trust_tiers=tiers,
                     action_filter=request.action_filter,
                 )
-                experience = self._experience_result(self.experience_service.search(experience_query))
+                experience = self._experience_result(
+                    self.experience_service.search(experience_query)
+                )
                 source_status["experience"] = "COMPLETE"
             except Exception as exc:  # service boundary: return typed source status
                 source_status["experience"] = "FAILED"
                 errors.append(_error("experience", exc))
 
-        if request.evaluation_basis is not None and experience.hits and "experience" not in {e.source for e in errors}:
+        if (
+            request.evaluation_basis is not None
+            and experience.hits
+            and "experience" not in {e.source for e in errors}
+        ):
             try:
                 tiers = request.trust_tiers or (TrustTier.TIER_A_HIGH_TRUST,)
                 stats_request = OutcomeStatsRequest(

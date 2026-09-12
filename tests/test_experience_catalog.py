@@ -21,7 +21,9 @@ def test_duplicate_aliases_share_one_logical_record(catalog: ExperienceCatalog) 
     assert catalog.current_alias_count(first.experience_id) == 2
 
 
-def test_alias_identity_preserves_multiple_decisions_from_one_source(catalog: ExperienceCatalog) -> None:
+def test_alias_identity_preserves_multiple_decisions_from_one_source(
+    catalog: ExperienceCatalog,
+) -> None:
     first = catalog.upsert_source_alias("db-a", decision_id="d1", fingerprint="fp1")
     second = catalog.upsert_source_alias("db-a", decision_id="d2", fingerprint="fp2")
     assert first.experience_id != second.experience_id
@@ -58,20 +60,32 @@ def test_recovery_snapshot_is_append_only_only_when_observed(catalog: Experience
 
 
 def test_catalog_has_phase8_tables_and_diagnostics_are_bounded(catalog: ExperienceCatalog) -> None:
-    catalog.record_failed_scan("db-a", "SOURCE_DATABASE_UNAVAILABLE", detail="secret report\nshould not be indexed")
+    catalog.record_failed_scan(
+        "db-a", "SOURCE_DATABASE_UNAVAILABLE", detail="secret report\nshould not be indexed"
+    )
     with sqlite3.connect(catalog.database_path) as db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        assert {"experience_sources", "experience_records", "experience_source_aliases",
-                "experience_decision_evidence", "experience_market_provenance",
-                "experience_outcome_snapshots", "experience_feature_projections",
-                "experience_generations", "experience_import_events", "experience_quarantine",
-                "experience_diagnostic_fts"}.issubset(tables)
+        assert {
+            "experience_sources",
+            "experience_records",
+            "experience_source_aliases",
+            "experience_decision_evidence",
+            "experience_market_provenance",
+            "experience_outcome_snapshots",
+            "experience_feature_projections",
+            "experience_generations",
+            "experience_import_events",
+            "experience_quarantine",
+            "experience_diagnostic_fts",
+        }.issubset(tables)
         indexed = db.execute("SELECT label FROM experience_diagnostic_fts").fetchone()[0]
         assert "secret report" not in indexed
         assert "SOURCE_DATABASE_UNAVAILABLE" in indexed
 
 
 def test_publish_generation_is_atomic_and_readable(catalog: ExperienceCatalog) -> None:
-    generation = catalog.publish_generation("gen-1", population_fingerprint="pop-1", metadata={"rows": 1})
+    generation = catalog.publish_generation(
+        "gen-1", population_fingerprint="pop-1", metadata={"rows": 1}
+    )
     assert generation["generation_id"] == "gen-1"
     assert catalog.active_generation()["population_fingerprint"] == "pop-1"

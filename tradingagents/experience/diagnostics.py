@@ -1,4 +1,5 @@
 """Bounded, sanitized diagnostic labels; no report prose is retained."""
+
 from __future__ import annotations
 
 import re

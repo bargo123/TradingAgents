@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import suppress
 from unittest.mock import patch
-from tradingagents.experience.errors import ExperienceImportLockedError
 
-from tradingagents.experience.catalog import ExperienceCatalog
-from tradingagents.experience.importer import ExperienceImporter
 from tests.fixtures.experience_source_db import create_source_db
+from tradingagents.experience.catalog import ExperienceCatalog
+from tradingagents.experience.errors import ExperienceImportLockedError
+from tradingagents.experience.importer import ExperienceImporter
 
 
 def test_first_import_is_idempotent(tmp_path):
@@ -55,7 +56,9 @@ def test_source_snapshot_writes_are_atomic(tmp_path):
     source = create_source_db(tmp_path / "source.sqlite3")
     catalog = ExperienceCatalog(tmp_path / "artifact")
     importer = ExperienceImporter(catalog)
-    with patch.object(catalog, "append_evaluation_snapshot", side_effect=RuntimeError("write failed")):
+    with patch.object(
+        catalog, "append_evaluation_snapshot", side_effect=RuntimeError("write failed")
+    ):
         report = importer.import_sources((source,))
     assert catalog.active_records() == ()
     assert (report.indexed_count, report.alias_count, report.evaluation_snapshot_count) == (0, 0, 0)
@@ -67,9 +70,8 @@ def test_lock_collision_does_not_create_staging(tmp_path):
     importer = ExperienceImporter(catalog)
     importer.lock_path.parent.mkdir(parents=True, exist_ok=True)
     importer.lock_path.touch()
-    with patch.object(importer, "_lock", side_effect=ExperienceImportLockedError("busy")):
-        try:
-            importer.import_sources((source,))
-        except ExperienceImportLockedError:
-            pass
+    with patch.object(importer, "_lock", side_effect=ExperienceImportLockedError("busy")), suppress(
+        ExperienceImportLockedError
+    ):
+        importer.import_sources((source,))
     assert not (catalog.artifact_root / ".staging").exists()

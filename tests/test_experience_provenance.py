@@ -44,6 +44,8 @@ def test_catalog_rejects_mismatched_provenance_fingerprint(tmp_path) -> None:
     catalog = ExperienceCatalog(tmp_path / "experience")
     with pytest.raises(ProvenanceViolationError):
         catalog.append_evaluation_snapshot(
-            "exp1", {"evaluation_status": "COMPLETE"}, "eval-fp",
+            "exp1",
+            {"evaluation_status": "COMPLETE"},
+            "eval-fp",
             provenance={"evaluation_fingerprint": "different-fp"},
         )

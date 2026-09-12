@@ -1,9 +1,10 @@
-from datetime import datetime, timezone
 from dataclasses import FrozenInstanceError
+from datetime import datetime, timezone
 
 import pytest
 
 from tradingagents.experience.models import (
+    EvaluationStatus,
     EvidenceBundle,
     EvidenceRequest,
     ExperienceHit,
@@ -13,7 +14,6 @@ from tradingagents.experience.models import (
     OutcomeStatistics,
     OutcomeStatsRequest,
     TrustTier,
-    EvaluationStatus,
 )
 
 
@@ -36,7 +36,9 @@ def test_evidence_bundle_has_no_recommendation_field() -> None:
 
 
 def test_contracts_are_frozen_and_json_serializable() -> None:
-    record = ExperienceRecord("exp-1", "db-1", "dec-1", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc))
+    record = ExperienceRecord(
+        "exp-1", "db-1", "dec-1", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc)
+    )
     assert '"experience_id":"exp-1"' in record.to_json()
     with pytest.raises(FrozenInstanceError):
         record.experience_id = "other"
@@ -50,7 +52,14 @@ def test_utc_timestamps_are_required() -> None:
 
 
 def test_training_eligibility_is_only_provenance() -> None:
-    record = ExperienceRecord("exp-1", "db-1", "dec-1", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc), provenance={"training_eligible": True})
+    record = ExperienceRecord(
+        "exp-1",
+        "db-1",
+        "dec-1",
+        "EURUSD",
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        provenance={"training_eligible": True},
+    )
     assert record.provenance["training_eligible"] is True
     assert "training_eligible" not in ExperienceRecord.__dataclass_fields__
 
@@ -65,15 +74,39 @@ def test_evaluation_status_includes_ineligible() -> None:
 
 
 def test_nested_mappings_are_immutable_and_set_serialization_is_deterministic() -> None:
-    record = ExperienceRecord("x", "db", "d", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc), market_state={"values": {"b", "a"}})
+    record = ExperienceRecord(
+        "x",
+        "db",
+        "d",
+        "EURUSD",
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        market_state={"values": {"b", "a"}},
+    )
     with pytest.raises(TypeError):
         record.market_state["new"] = 1
-    assert record.to_json() == ExperienceRecord("x", "db", "d", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc), market_state={"values": {"a", "b"}}).to_json()
+    assert (
+        record.to_json()
+        == ExperienceRecord(
+            "x",
+            "db",
+            "d",
+            "EURUSD",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            market_state={"values": {"a", "b"}},
+        ).to_json()
+    )
 
 
 def test_training_eligible_is_rejected_outside_provenance() -> None:
     with pytest.raises(ValueError, match="training_eligible"):
-        ExperienceRecord("x", "db", "d", "EURUSD", datetime(2026, 1, 1, tzinfo=timezone.utc), decision_evidence={"training_eligible": True})
+        ExperienceRecord(
+            "x",
+            "db",
+            "d",
+            "EURUSD",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            decision_evidence={"training_eligible": True},
+        )
 
 
 def test_hit_timestamps_require_utc() -> None:

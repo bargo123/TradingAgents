@@ -1,4 +1,5 @@
 """Deterministic, cohort-local robust normalization for numeric experience features."""
+
 from __future__ import annotations
 
 import hashlib
@@ -94,20 +95,34 @@ class SimilarityProfileV1:
                 return [convert(v) for v in value]
             return value
 
-        return {"medians": convert(self.medians), "iqr": convert(self.iqr), "mad_scales": convert(self.mad_scales),
-                "scales": convert(self.scales), "fallback_scales": convert(self.fallback_scales), "epsilon": self.epsilon,
-                "weights": convert(self.weights), "clipping": convert(self.clipping), "feature_order": convert(self.feature_order),
-                "mask_policy": self.mask_policy, "trust_tiers": convert(self.trust_tiers), "cohort": convert(self.cohort),
-                "similarity_profile_version": self.similarity_profile_version, "fallback_policy_version": self.fallback_policy_version,
-                "normalization_cutoff": convert(self.normalization_cutoff), "population_fingerprint": self.population_fingerprint,
-                "population_count": self.population_count}
+        return {
+            "medians": convert(self.medians),
+            "iqr": convert(self.iqr),
+            "mad_scales": convert(self.mad_scales),
+            "scales": convert(self.scales),
+            "fallback_scales": convert(self.fallback_scales),
+            "epsilon": self.epsilon,
+            "weights": convert(self.weights),
+            "clipping": convert(self.clipping),
+            "feature_order": convert(self.feature_order),
+            "mask_policy": self.mask_policy,
+            "trust_tiers": convert(self.trust_tiers),
+            "cohort": convert(self.cohort),
+            "similarity_profile_version": self.similarity_profile_version,
+            "fallback_policy_version": self.fallback_policy_version,
+            "normalization_cutoff": convert(self.normalization_cutoff),
+            "population_fingerprint": self.population_fingerprint,
+            "population_count": self.population_count,
+        }
 
     def to_fingerprint(self) -> str:
         return _digest(self.to_dict())
 
 
 def _digest(value: Any) -> str:
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 def _utc(value: Any) -> datetime | None:
@@ -115,16 +130,17 @@ def _utc(value: Any) -> datetime | None:
         return None
     if isinstance(value, str):
         value = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() != timezone.utc.utcoffset(value)
+    ):
         return None
     return value
 
 
 def _value(row: Any, name: str, default: Any = None) -> Any:
-    if isinstance(row, Mapping):
-        value = row.get(name, default)
-    else:
-        value = getattr(row, name, default)
+    value = row.get(name, default) if isinstance(row, Mapping) else getattr(row, name, default)
     if value is default and name in {"values", "mask", "feature_names", "cohort"}:
         vector = row.get("vector") if isinstance(row, Mapping) else getattr(row, "vector", None)
         if vector is not None:
@@ -137,16 +153,32 @@ def _cohort(row: Any) -> NormalizationCohortV1 | None:
     if value is None:
         return None
     try:
-        return value if isinstance(value, NormalizationCohortV1) else NormalizationCohortV1(*tuple(value))
+        return (
+            value
+            if isinstance(value, NormalizationCohortV1)
+            else NormalizationCohortV1(*tuple(value))
+        )
     except (TypeError, ValueError):
         return None
 
 
-def _eligible(row: Any, cohort: NormalizationCohortV1, tiers: tuple[TrustTier, ...], as_of: datetime | None) -> bool:
-    if _cohort(row) != cohort or TrustTier(_value(row, "trust_tier", _value(row, "trust", TrustTier.TIER_C_DIAGNOSTIC_ONLY))) not in tiers:
+def _eligible(
+    row: Any, cohort: NormalizationCohortV1, tiers: tuple[TrustTier, ...], as_of: datetime | None
+) -> bool:
+    if (
+        _cohort(row) != cohort
+        or TrustTier(
+            _value(row, "trust_tier", _value(row, "trust", TrustTier.TIER_C_DIAGNOSTIC_ONLY))
+        )
+        not in tiers
+    ):
         return False
     provenance = _value(row, "provenance", {}) or {}
-    provenance_ok = _value(row, "provenance_valid", provenance.get("valid", True) if isinstance(provenance, Mapping) else True)
+    provenance_ok = _value(
+        row,
+        "provenance_valid",
+        provenance.get("valid", True) if isinstance(provenance, Mapping) else True,
+    )
     conflict = _value(row, "conflict", _value(row, "source_conflict", False))
     if not _value(row, "accepted", True) or conflict or not provenance_ok:
         return False
@@ -154,7 +186,9 @@ def _eligible(row: Any, cohort: NormalizationCohortV1, tiers: tuple[TrustTier, .
         return False
     aliases = _value(row, "source_aliases", {}) or {}
     if as_of is None:
-        return any(str(v) == "CURRENT" or getattr(v, "value", None) == "CURRENT" for v in aliases.values())
+        return any(
+            str(v) == "CURRENT" or getattr(v, "value", None) == "CURRENT" for v in aliases.values()
+        )
     analysis = _utc(_value(row, "analysis_snapshot_timestamp", _value(row, "snapshot_timestamp")))
     completed = _utc(_value(row, "decision_completed_timestamp"))
     return analysis is not None and completed is not None and analysis < as_of and completed < as_of
@@ -168,33 +202,67 @@ def _vectors(rows: Sequence[Any], names: tuple[str, ...]) -> tuple[list[list[flo
         mask = _value(row, "mask", None)
         if isinstance(values, Mapping):
             row_values = [values.get(name, math.nan) for name in names]
-            row_mask = [bool(mask.get(name, v is not None)) if isinstance(mask, Mapping) else v is not None for name, v in zip(names, row_values)]
+            row_mask = [
+                bool(mask.get(name, v is not None)) if isinstance(mask, Mapping) else v is not None
+                for name, v in zip(names, row_values, strict=False)
+            ]
         else:
             row_values = list(values)
             row_mask = list(mask) if mask is not None else [True] * len(row_values)
             if len(row_values) != len(names):
                 continue
-        vectors.append([float(v) if m and math.isfinite(float(v)) else math.nan for v, m in zip(row_values, row_mask)])
+        vectors.append(
+            [
+                float(v) if m and math.isfinite(float(v)) else math.nan
+                for v, m in zip(row_values, row_mask, strict=False)
+            ]
+        )
         selected.append(row)
     return vectors, selected
 
 
-def build_profile(rows: Sequence[Any], cohort: NormalizationCohortV1, trust_tiers: Sequence[TrustTier | str] | None = None, as_of: datetime | None = None, *, epsilon: float = DEFAULT_EPSILON) -> SimilarityProfileV1:
-    cohort = cohort if isinstance(cohort, NormalizationCohortV1) else NormalizationCohortV1(*tuple(cohort))
-    tiers = tuple(TrustTier(v) for v in (trust_tiers or (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED)))
+def build_profile(
+    rows: Sequence[Any],
+    cohort: NormalizationCohortV1,
+    trust_tiers: Sequence[TrustTier | str] | None = None,
+    as_of: datetime | None = None,
+    *,
+    epsilon: float = DEFAULT_EPSILON,
+) -> SimilarityProfileV1:
+    cohort = (
+        cohort
+        if isinstance(cohort, NormalizationCohortV1)
+        else NormalizationCohortV1(*tuple(cohort))
+    )
+    tiers = tuple(
+        TrustTier(v)
+        for v in (trust_tiers or (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED))
+    )
     if TrustTier.TIER_C_DIAGNOSTIC_ONLY in tiers:
         raise ValueError("Tier C is diagnostic-only and cannot define numeric normalization")
     cutoff = _utc(as_of)
     eligible = [r for r in rows if _eligible(r, cohort, tiers, cutoff)]
-    names = tuple(_value(eligible[0], "feature_names", FEATURE_NAMES_V1)) if eligible else FEATURE_NAMES_V1
+    names = (
+        tuple(_value(eligible[0], "feature_names", FEATURE_NAMES_V1))
+        if eligible
+        else FEATURE_NAMES_V1
+    )
     vectors, selected = _vectors(eligible, names)
-    medians: dict[str, float] = {}; iqrs: dict[str, float] = {}; mads: dict[str, float] = {}; fallbacks: dict[str, float] = {}; scales: dict[str, float] = {}
+    medians: dict[str, float] = {}
+    iqrs: dict[str, float] = {}
+    mads: dict[str, float] = {}
+    fallbacks: dict[str, float] = {}
+    scales: dict[str, float] = {}
     for i, name in enumerate(names):
         vals = sorted(v[i] for v in vectors if math.isfinite(v[i]))
         median = float(__import__("numpy").median(vals)) if vals else 0.0
-        q25, q75 = (__import__("numpy").percentile(vals, [25, 75]) if vals else (0.0, 0.0))
+        q25, q75 = __import__("numpy").percentile(vals, [25, 75]) if vals else (0.0, 0.0)
         iqr = float(q75 - q25)
-        mad = float(1.4826 * __import__("numpy").median([abs(v - median) for v in vals])) if vals else 0.0
+        mad = (
+            float(1.4826 * __import__("numpy").median([abs(v - median) for v in vals]))
+            if vals
+            else 0.0
+        )
         fallback = 1.0
         medians[name], iqrs[name], fallbacks[name] = median, iqr, fallback
         # ``mad_scales`` records the persisted non-IQR scale selected by the
@@ -203,21 +271,77 @@ def build_profile(rows: Sequence[Any], cohort: NormalizationCohortV1, trust_tier
         mad_effective = mad if mad > epsilon else fallback
         mads[name] = mad_effective
         scales[name] = iqr if iqr > epsilon else mad_effective
-    weights = {name: (2.0 if name == "spread_points" else 0.5 if name.startswith("utc_hour_") else 1.0) for name in names}
+    weights = {
+        name: (2.0 if name == "spread_points" else 0.5 if name.startswith("utc_hour_") else 1.0)
+        for name in names
+    }
     population = []
     for row in selected:
-        population.append({"id": _value(row, "experience_id", _value(row, "row_id", None)), "fingerprint": _value(row, "feature_fingerprint", "valid"), "values": _value(row, "values", {}), "mask": _value(row, "mask", None)})
-    population_fingerprint = _digest({"cohort": cohort, "tiers": tiers, "as_of": cutoff, "rows": sorted(population, key=lambda x: json.dumps(x, sort_keys=True, default=str))})
-    return SimilarityProfileV1(medians, iqrs, mads, scales, fallbacks, epsilon, weights, DEFAULT_CLIPPING, names, "exclude-missing.v1", tiers, cohort, normalization_cutoff=cutoff, population_fingerprint=population_fingerprint, population_count=len(selected))
+        population.append(
+            {
+                "id": _value(row, "experience_id", _value(row, "row_id", None)),
+                "fingerprint": _value(row, "feature_fingerprint", "valid"),
+                "values": _value(row, "values", {}),
+                "mask": _value(row, "mask", None),
+            }
+        )
+    population_fingerprint = _digest(
+        {
+            "cohort": cohort,
+            "tiers": tiers,
+            "as_of": cutoff,
+            "rows": sorted(population, key=lambda x: json.dumps(x, sort_keys=True, default=str)),
+        }
+    )
+    return SimilarityProfileV1(
+        medians,
+        iqrs,
+        mads,
+        scales,
+        fallbacks,
+        epsilon,
+        weights,
+        DEFAULT_CLIPPING,
+        names,
+        "exclude-missing.v1",
+        tiers,
+        cohort,
+        normalization_cutoff=cutoff,
+        population_fingerprint=population_fingerprint,
+        population_count=len(selected),
+    )
 
 
-def query_normalization_fingerprint(profile: SimilarityProfileV1, cohort: NormalizationCohortV1, trust_tiers: Sequence[TrustTier | str] | None = None, as_of: datetime | None = None) -> str:
+def query_normalization_fingerprint(
+    profile: SimilarityProfileV1,
+    cohort: NormalizationCohortV1,
+    trust_tiers: Sequence[TrustTier | str] | None = None,
+    as_of: datetime | None = None,
+) -> str:
     tiers = tuple(TrustTier(v) for v in (trust_tiers or profile.trust_tiers))
-    payload = {"cohort": cohort, "trust_tiers": tiers, "normalization_cutoff": _utc(as_of), "population_fingerprint": profile.population_fingerprint,
-               "similarity_profile_version": profile.similarity_profile_version, "feature_order": profile.feature_order, "mask_policy": profile.mask_policy,
-               "epsilon": profile.epsilon, "fallback_policy_version": profile.fallback_policy_version, "medians": profile.medians, "iqr": profile.iqr,
-               "scales": profile.scales, "weights": profile.weights, "clipping": profile.clipping}
+    payload = {
+        "cohort": cohort,
+        "trust_tiers": tiers,
+        "normalization_cutoff": _utc(as_of),
+        "population_fingerprint": profile.population_fingerprint,
+        "similarity_profile_version": profile.similarity_profile_version,
+        "feature_order": profile.feature_order,
+        "mask_policy": profile.mask_policy,
+        "epsilon": profile.epsilon,
+        "fallback_policy_version": profile.fallback_policy_version,
+        "medians": profile.medians,
+        "iqr": profile.iqr,
+        "scales": profile.scales,
+        "weights": profile.weights,
+        "clipping": profile.clipping,
+    }
     return _digest(payload)
 
 
-__all__ = ["FeatureRow", "NormalizationCohortV1", "SimilarityProfileV1", "build_profile", "query_normalization_fingerprint"]
+__all__ = [
+    "FeatureRow",
+    "NormalizationCohortV1",
+    "SimilarityProfileV1",
+    "build_profile",
+    "query_normalization_fingerprint",
+]

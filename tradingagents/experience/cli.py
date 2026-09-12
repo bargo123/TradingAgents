@@ -1,15 +1,16 @@
 """Explicit, deterministic command line boundary for Phase 8 Experience Memory."""
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import fields, is_dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from .catalog import ExperienceCatalog
 from .importer import ExperienceImporter, ExperienceRebuilder
@@ -76,12 +77,20 @@ def _filters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--symbol")
     parser.add_argument("--profile", "--analysis-profile", dest="analysis_profile")
     parser.add_argument("--timeframe", "--analysis-timeframe", dest="analysis_timeframe")
-    parser.add_argument("--trust-tier", "--trust", dest="trust_tiers", action="append", choices=[t.value for t in TrustTier])
+    parser.add_argument(
+        "--trust-tier",
+        "--trust",
+        dest="trust_tiers",
+        action="append",
+        choices=[t.value for t in TrustTier],
+    )
     parser.add_argument("--as-of")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="experience", description="Local Phase 8 Experience Memory commands.")
+    parser = argparse.ArgumentParser(
+        prog="experience", description="Local Phase 8 Experience Memory commands."
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     imp = commands.add_parser("import", help="import read-only source decisions")
     imp.add_argument("--source-db", action="append", required=True)
@@ -113,7 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
     stats.add_argument("--horizon-seconds", type=_positive, required=True)
     stats.add_argument("--experience-id", action="append", required=True)
     stats.add_argument("--artifact-root")
-    stats.add_argument("--trust-tier", dest="trust_tiers", action="append", choices=[t.value for t in TrustTier])
+    stats.add_argument(
+        "--trust-tier", dest="trust_tiers", action="append", choices=[t.value for t in TrustTier]
+    )
     stats.add_argument("--as-of")
     stats.add_argument("--json", action="store_true")
     quarantine = commands.add_parser("quarantine", help="show bounded diagnostics")
@@ -160,9 +171,12 @@ def _build_knowledge_service(artifact_root: Path) -> Any:
     spec = generation.embedding_spec
     model_path = artifact_root / "models" / "embedding"
     config = KnowledgeConfig(
-        source_root=Path.cwd(), artifact_root=artifact_root,
-        embedding_model_id=spec.model_id, embedding_model_path=model_path if model_path.is_dir() else None,
-        embedding_dimensions=spec.dimensions, embedding_runtime=spec.runtime,
+        source_root=Path.cwd(),
+        artifact_root=artifact_root,
+        embedding_model_id=spec.model_id,
+        embedding_model_path=model_path if model_path.is_dir() else None,
+        embedding_dimensions=spec.dimensions,
+        embedding_runtime=spec.runtime,
         embedding_normalization=spec.normalization_policy,
         embedding_model_version=spec.resolved_model_version,
         embedding_artifact_hash=spec.artifact_hash,
@@ -177,14 +191,25 @@ def _build_knowledge_service(artifact_root: Path) -> Any:
         embedding_query_instruction_version=spec.query_instruction_version,
     )
     embedder = FastEmbedProvider.from_config(config)
-    return KnowledgeQueryService(VectorIndexReader(generation.vector_location), LexicalIndexReader(generation.lexical_location), catalog, embedder)
+    return KnowledgeQueryService(
+        VectorIndexReader(generation.vector_location),
+        LexicalIndexReader(generation.lexical_location),
+        catalog,
+        embedder,
+    )
 
 
 def _query(args: argparse.Namespace, state: dict[str, Any]) -> Any:
     tiers = _trust(args.trust_tiers, (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED))
-    return ExperienceQuery(market_state=state, top_k=args.top_k, symbol=args.symbol,
-                           analysis_profile=args.analysis_profile, analysis_timeframe=args.analysis_timeframe,
-                           trust_tiers=tiers, as_of=_as_of(args.as_of))
+    return ExperienceQuery(
+        market_state=state,
+        top_k=args.top_k,
+        symbol=args.symbol,
+        analysis_profile=args.analysis_profile,
+        analysis_timeframe=args.analysis_timeframe,
+        trust_tiers=tiers,
+        as_of=_as_of(args.as_of),
+    )
 
 
 def _run(args: argparse.Namespace) -> Any:
@@ -193,11 +218,21 @@ def _run(args: argparse.Namespace) -> Any:
     if command == "status":
         catalog = _existing_catalog(root)
         if catalog is None:
-            return {"active_generation": None, "artifact_root_initialized": False,
-                    "experience_counts": {"active": 0, "historical": 0}, "quarantine_count": 0}
-        return {"active_generation": catalog.active_generation(), "artifact_root_initialized": True,
-                "experience_counts": {"active": len(catalog.active_records()), "historical": len(catalog.historical_records())},
-                "quarantine_count": catalog.quarantine_count()}
+            return {
+                "active_generation": None,
+                "artifact_root_initialized": False,
+                "experience_counts": {"active": 0, "historical": 0},
+                "quarantine_count": 0,
+            }
+        return {
+            "active_generation": catalog.active_generation(),
+            "artifact_root_initialized": True,
+            "experience_counts": {
+                "active": len(catalog.active_records()),
+                "historical": len(catalog.historical_records()),
+            },
+            "quarantine_count": catalog.quarantine_count(),
+        }
     if command == "import":
         report = ExperienceImporter(ExperienceCatalog(root)).import_sources(args.source_db)
         return report
@@ -205,28 +240,80 @@ def _run(args: argparse.Namespace) -> Any:
         return ExperienceRebuilder(ExperienceCatalog(root)).rebuild()
     catalog = _existing_catalog(root)
     if command == "quarantine":
-        if catalog is None: return []
+        if catalog is None:
+            return []
         with catalog._connect() as db:
-            return [dict(row) for row in db.execute("SELECT source_database_id,decision_id,fingerprint,reason,observed_at FROM experience_quarantine ORDER BY quarantine_id")]
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT source_database_id,decision_id,fingerprint,reason,observed_at FROM experience_quarantine ORDER BY quarantine_id"
+                )
+            ]
     if command == "list":
-        if catalog is None: return []
-        records = catalog.historical_records() if args.state == "historical" else catalog.active_records() if args.state == "active" else catalog.active_records() + catalog.historical_records()
+        if catalog is None:
+            return []
+        records = (
+            catalog.historical_records()
+            if args.state == "historical"
+            else catalog.active_records()
+            if args.state == "active"
+            else catalog.active_records() + catalog.historical_records()
+        )
         return [r for r in records if not args.trust_tier or str(r.trust) == args.trust_tier]
     if command == "show":
-        if catalog is None: return None
+        if catalog is None:
+            return None
         records = catalog.active_records() + catalog.historical_records()
         return next((r for r in records if r.experience_id == args.experience_id), None)
     if command == "similar":
         state = json.loads(Path(args.market_state_json).read_text(encoding="utf-8"))
         return _similar_service(args).search(_query(args, state))
     if command == "stats":
-        if catalog is None: return {"eligible_count": 0, "excluded_counts": {"EXPERIENCE_MEMORY_UNAVAILABLE": len(args.experience_id)}}
-        return OutcomeStatsCalculator(catalog).calculate(OutcomeStatsRequest(tuple(args.experience_id), args.basis, args.horizon_seconds, trust_tiers=_trust(args.trust_tiers, (TrustTier.TIER_A_HIGH_TRUST,)), as_of=_as_of(args.as_of)))
+        if catalog is None:
+            return {
+                "eligible_count": 0,
+                "excluded_counts": {"EXPERIENCE_MEMORY_UNAVAILABLE": len(args.experience_id)},
+            }
+        return OutcomeStatsCalculator(catalog).calculate(
+            OutcomeStatsRequest(
+                tuple(args.experience_id),
+                args.basis,
+                args.horizon_seconds,
+                trust_tiers=_trust(args.trust_tiers, (TrustTier.TIER_A_HIGH_TRUST,)),
+                as_of=_as_of(args.as_of),
+            )
+        )
     if command == "evidence":
-        state = json.loads(Path(args.market_state_json).read_text(encoding="utf-8")) if args.market_state_json else None
+        state = (
+            json.loads(Path(args.market_state_json).read_text(encoding="utf-8"))
+            if args.market_state_json
+            else None
+        )
         service = _similar_service(args) if state is not None else ExperienceQueryService(())
-        knowledge = _build_knowledge_service(_root(args.knowledge_artifact_root)) if args.question and args.knowledge_artifact_root else None
-        bundle = EvidenceOrchestrator(knowledge, service, OutcomeStatsCalculator(catalog) if catalog else OutcomeStatsCalculator(())).query(EvidenceRequest(research_question=args.question, market_state=state, experience_top_k=args.experience_top_k, knowledge_top_k=args.knowledge_top_k, symbol=args.symbol, analysis_profile=args.analysis_profile, analysis_timeframe=args.analysis_timeframe, evaluation_basis=args.basis, horizon_seconds=args.horizon_seconds, as_of=_as_of(args.as_of), trust_tiers=_trust(args.trust_tiers)))
+        knowledge = (
+            _build_knowledge_service(_root(args.knowledge_artifact_root))
+            if args.question and args.knowledge_artifact_root
+            else None
+        )
+        bundle = EvidenceOrchestrator(
+            knowledge,
+            service,
+            OutcomeStatsCalculator(catalog) if catalog else OutcomeStatsCalculator(()),
+        ).query(
+            EvidenceRequest(
+                research_question=args.question,
+                market_state=state,
+                experience_top_k=args.experience_top_k,
+                knowledge_top_k=args.knowledge_top_k,
+                symbol=args.symbol,
+                analysis_profile=args.analysis_profile,
+                analysis_timeframe=args.analysis_timeframe,
+                evaluation_basis=args.basis,
+                horizon_seconds=args.horizon_seconds,
+                as_of=_as_of(args.as_of),
+                trust_tiers=_trust(args.trust_tiers),
+            )
+        )
         return bundle
     raise ValueError(f"unsupported command: {command}")
 
@@ -237,7 +324,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit(_run(args))
         return 0
     except Exception as exc:
-        print(json.dumps({"error": {"type": type(exc).__name__, "message": str(exc)[:500]}}, sort_keys=True, separators=(",", ":")), file=sys.stderr)
+        print(
+            json.dumps(
+                {"error": {"type": type(exc).__name__, "message": str(exc)[:500]}},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+        )
         return 2 if isinstance(exc, (ValueError, argparse.ArgumentError)) else 1
 
 

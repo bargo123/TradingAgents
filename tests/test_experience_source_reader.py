@@ -5,7 +5,10 @@ from pathlib import Path
 import pytest
 
 from tests.fixtures.experience_source_db import create_source_db
-from tradingagents.experience.errors import SourceSchemaIncompatibleError, SourceSnapshotChangedError
+from tradingagents.experience.errors import (
+    SourceSchemaIncompatibleError,
+    SourceSnapshotChangedError,
+)
 from tradingagents.experience.source_reader import ReadonlySourceReader
 
 
@@ -53,7 +56,9 @@ def test_snapshot_change_is_typed(monkeypatch, source_db: Path) -> None:
 def test_evaluation_schema_requires_resolved_symbol(source_db: Path) -> None:
     with sqlite3.connect(source_db) as connection:
         connection.execute("ALTER TABLE shadow_decision_evaluations RENAME TO old_evaluations")
-        connection.execute("CREATE TABLE shadow_decision_evaluations (decision_id TEXT, evaluation_basis TEXT, horizon_seconds INTEGER, evaluation_status TEXT)")
+        connection.execute(
+            "CREATE TABLE shadow_decision_evaluations (decision_id TEXT, evaluation_basis TEXT, horizon_seconds INTEGER, evaluation_status TEXT)"
+        )
     with pytest.raises(SourceSchemaIncompatibleError, match="resolved_symbol"):
         ReadonlySourceReader(source_db).read_snapshot()
 

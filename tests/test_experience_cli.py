@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+
 def _fail_if_constructed(*args, **kwargs):
     raise AssertionError("forbidden Phase 7 writer/parser/embedder was constructed")
 
@@ -11,17 +12,37 @@ def test_parser_exposes_all_experience_commands():
 
     parser = build_parser()
     help_text = parser.format_help()
-    for command in ("import", "rebuild", "status", "list", "show", "similar", "stats", "quarantine", "evidence"):
+    for command in (
+        "import",
+        "rebuild",
+        "status",
+        "list",
+        "show",
+        "similar",
+        "stats",
+        "quarantine",
+        "evidence",
+    ):
         assert command in help_text
 
 
-def test_status_emits_stable_json_without_constructing_phase7_components(monkeypatch, tmp_path, capsys):
+def test_status_emits_stable_json_without_constructing_phase7_components(
+    monkeypatch, tmp_path, capsys
+):
     from tradingagents.experience import cli
 
-    monkeypatch.setattr("tradingagents.knowledge.docling_parser.DoclingDocumentParser", _fail_if_constructed)
-    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider", _fail_if_constructed)
-    monkeypatch.setattr("tradingagents.knowledge.vector_index.VectorIndexWriter", _fail_if_constructed)
-    monkeypatch.setattr("tradingagents.knowledge.lexical_index.LexicalIndexWriter", _fail_if_constructed)
+    monkeypatch.setattr(
+        "tradingagents.knowledge.docling_parser.DoclingDocumentParser", _fail_if_constructed
+    )
+    monkeypatch.setattr(
+        "tradingagents.knowledge.embeddings.FastEmbedProvider", _fail_if_constructed
+    )
+    monkeypatch.setattr(
+        "tradingagents.knowledge.vector_index.VectorIndexWriter", _fail_if_constructed
+    )
+    monkeypatch.setattr(
+        "tradingagents.knowledge.lexical_index.LexicalIndexWriter", _fail_if_constructed
+    )
 
     assert cli.main(["status", "--artifact-root", str(tmp_path), "--json"]) == 0
     output = capsys.readouterr().out
@@ -39,13 +60,33 @@ def test_similar_market_state_does_not_construct_embedder(monkeypatch, tmp_path,
 
     state = tmp_path / "state.json"
     state.write_text(json.dumps({"values": [1.0], "mask": [True]}), encoding="utf-8")
-    monkeypatch.setattr("tradingagents.knowledge.embeddings.FastEmbedProvider", _fail_if_constructed)
-    monkeypatch.setattr("tradingagents.knowledge.docling_parser.DoclingDocumentParser", _fail_if_constructed)
-    monkeypatch.setattr("tradingagents.knowledge.vector_index.VectorIndexWriter", _fail_if_constructed)
-    monkeypatch.setattr("tradingagents.knowledge.lexical_index.LexicalIndexWriter", _fail_if_constructed)
+    monkeypatch.setattr(
+        "tradingagents.knowledge.embeddings.FastEmbedProvider", _fail_if_constructed
+    )
+    monkeypatch.setattr(
+        "tradingagents.knowledge.docling_parser.DoclingDocumentParser", _fail_if_constructed
+    )
+    monkeypatch.setattr(
+        "tradingagents.knowledge.vector_index.VectorIndexWriter", _fail_if_constructed
+    )
+    monkeypatch.setattr(
+        "tradingagents.knowledge.lexical_index.LexicalIndexWriter", _fail_if_constructed
+    )
     monkeypatch.setattr(cli, "_similar_service", lambda args: _EmptyService())
 
-    assert cli.main(["similar", "--market-state-json", str(state), "--artifact-root", str(tmp_path), "--json"]) == 0
+    assert (
+        cli.main(
+            [
+                "similar",
+                "--market-state-json",
+                str(state),
+                "--artifact-root",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
     assert json.loads(capsys.readouterr().out)["hits"] == []
 
 
@@ -65,7 +106,9 @@ def test_cli_help_has_no_trading_or_model_options():
     assert "--order" not in text
 
 
-def test_evidence_question_uses_phase7_read_only_service_when_root_supplied(monkeypatch, tmp_path, capsys):
+def test_evidence_question_uses_phase7_read_only_service_when_root_supplied(
+    monkeypatch, tmp_path, capsys
+):
     from tradingagents.experience import cli
 
     calls = []
@@ -75,10 +118,22 @@ def test_evidence_question_uses_phase7_read_only_service_when_root_supplied(monk
             calls.append(request.text)
             return ()
 
-    monkeypatch.setattr(cli, "_build_knowledge_service", lambda root: (calls.append(root), KnowledgeStub())[1])
-    assert cli.main([
-        "evidence", "--question", "order flow", "--knowledge-artifact-root", str(tmp_path), "--json"
-    ]) == 0
+    monkeypatch.setattr(
+        cli, "_build_knowledge_service", lambda root: (calls.append(root), KnowledgeStub())[1]
+    )
+    assert (
+        cli.main(
+            [
+                "evidence",
+                "--question",
+                "order flow",
+                "--knowledge-artifact-root",
+                str(tmp_path),
+                "--json",
+            ]
+        )
+        == 0
+    )
     assert calls == [tmp_path.resolve(), "order flow"]
     assert json.loads(capsys.readouterr().out)["status"] == "EMPTY"
 
@@ -107,9 +162,18 @@ def test_stats_omitted_trust_uses_tier_a(monkeypatch, tmp_path):
             return {}
 
     monkeypatch.setattr(cli, "OutcomeStatsCalculator", Calculator)
-    args = cli.build_parser().parse_args([
-        "stats", "--basis", "ANALYSIS_SNAPSHOT", "--horizon-seconds", "300",
-        "--experience-id", "exp-1", "--artifact-root", str(tmp_path),
-    ])
+    args = cli.build_parser().parse_args(
+        [
+            "stats",
+            "--basis",
+            "ANALYSIS_SNAPSHOT",
+            "--horizon-seconds",
+            "300",
+            "--experience-id",
+            "exp-1",
+            "--artifact-root",
+            str(tmp_path),
+        ]
+    )
     cli._run(args)
     assert captured["request"].trust_tiers == (cli.TrustTier.TIER_A_HIGH_TRUST,)

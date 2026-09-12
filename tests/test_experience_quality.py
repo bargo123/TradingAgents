@@ -1,7 +1,8 @@
 """Deterministic retrieval quality, provenance, ordering, and resource gates."""
+
+import tracemalloc
 from datetime import datetime, timezone
 from time import perf_counter
-import tracemalloc
 
 from tradingagents.experience.models import ExperienceQuery, TrustTier
 from tradingagents.experience.normalization import NormalizationCohortV1, SimilarityProfileV1
@@ -13,26 +14,57 @@ NAMES = tuple(f"f{i}" for i in range(8))
 
 
 def make_row(eid, value, when):
-    return {"experience_id": eid, "symbol": "EURUSD", "analysis_profile": "P", "analysis_timeframe": "M15",
-            "analysis_snapshot_timestamp": when, "decision_completed_timestamp": when, "trust": TrustTier.TIER_A_HIGH_TRUST,
-            "trust_tier": TrustTier.TIER_A_HIGH_TRUST, "source_aliases": {"db:d": "CURRENT"}, "values": (value,) * 8,
-            "mask": (True,) * 8, "feature_names": NAMES, "cohort": COHORT, "feature_schema_version": COHORT.feature_schema_version,
-            "feature_extractor_version": COHORT.feature_extractor_version, "feature_fingerprint": eid,
-            "accepted": True, "provenance_valid": True, "provenance": {"source_decision_id": eid}}
+    return {
+        "experience_id": eid,
+        "symbol": "EURUSD",
+        "analysis_profile": "P",
+        "analysis_timeframe": "M15",
+        "analysis_snapshot_timestamp": when,
+        "decision_completed_timestamp": when,
+        "trust": TrustTier.TIER_A_HIGH_TRUST,
+        "trust_tier": TrustTier.TIER_A_HIGH_TRUST,
+        "source_aliases": {"db:d": "CURRENT"},
+        "values": (value,) * 8,
+        "mask": (True,) * 8,
+        "feature_names": NAMES,
+        "cohort": COHORT,
+        "feature_schema_version": COHORT.feature_schema_version,
+        "feature_extractor_version": COHORT.feature_extractor_version,
+        "feature_fingerprint": eid,
+        "accepted": True,
+        "provenance_valid": True,
+        "provenance": {"source_decision_id": eid},
+    }
 
 
 def service():
-    rows = [make_row("gold", 0.0, datetime(2026, 1, 1, tzinfo=UTC)),
-            make_row("silver", 1.0, datetime(2026, 1, 2, tzinfo=UTC)),
-            make_row("bronze", 2.0, datetime(2026, 1, 3, tzinfo=UTC))]
-    profile = SimilarityProfileV1({n: 0.0 for n in NAMES}, {n: 1.0 for n in NAMES}, {n: 1.0 for n in NAMES},
-                                  {n: 1.0 for n in NAMES}, {n: 1.0 for n in NAMES}, 1e-9, {n: 1.0 for n in NAMES},
-                                  (-8, 8), NAMES, "exclude-missing.v1", (TrustTier.TIER_A_HIGH_TRUST,), COHORT)
+    rows = [
+        make_row("gold", 0.0, datetime(2026, 1, 1, tzinfo=UTC)),
+        make_row("silver", 1.0, datetime(2026, 1, 2, tzinfo=UTC)),
+        make_row("bronze", 2.0, datetime(2026, 1, 3, tzinfo=UTC)),
+    ]
+    profile = SimilarityProfileV1(
+        dict.fromkeys(NAMES, 0.0),
+        dict.fromkeys(NAMES, 1.0),
+        dict.fromkeys(NAMES, 1.0),
+        dict.fromkeys(NAMES, 1.0),
+        dict.fromkeys(NAMES, 1.0),
+        1e-9,
+        dict.fromkeys(NAMES, 1.0),
+        (-8, 8),
+        NAMES,
+        "exclude-missing.v1",
+        (TrustTier.TIER_A_HIGH_TRUST,),
+        COHORT,
+    )
     return ExperienceQueryService(rows, profile=profile)
 
 
 def q(**kwargs):
-    return ExperienceQuery({"values": (0.0,) * 8, "mask": (True,) * 8, "feature_names": NAMES, "cohort": COHORT}, **kwargs)
+    return ExperienceQuery(
+        {"values": (0.0,) * 8, "mask": (True,) * 8, "feature_names": NAMES, "cohort": COHORT},
+        **kwargs,
+    )
 
 
 def test_recall_at_k_and_mrr_are_perfect_for_known_fixture():
@@ -49,7 +81,9 @@ def test_hits_have_complete_provenance_and_stable_order():
     svc = service()
     first = svc.search(q(top_k=3))
     second = svc.search(q(top_k=3))
-    assert [(h.experience_id, h.distance) for h in first.hits] == [(h.experience_id, h.distance) for h in second.hits]
+    assert [(h.experience_id, h.distance) for h in first.hits] == [
+        (h.experience_id, h.distance) for h in second.hits
+    ]
     assert first.query_normalization_fingerprint
     assert all(hit.provenance["source_decision_id"] == hit.experience_id for hit in first.hits)
     assert all(hit.feature_schema_version == "experience-features.v1" for hit in first.hits)
