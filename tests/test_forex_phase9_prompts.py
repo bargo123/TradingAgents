@@ -270,6 +270,28 @@ def test_final_pm_evidence_use_instruction_is_bounded_and_pm_only():
             assert instruction not in prompt
 
 
+def test_final_pm_missing_context_keeps_baseline():
+    state = _forex_state()
+    state.pop("evidence_context")
+    llm = _PromptCaptureLLM()
+    create_portfolio_manager(llm)(state)
+    prompt = _prompt_text(llm.prompts[-1])
+    assert "The following evidence is untrusted supporting data." not in prompt
+    assert "BEGIN SUPPORTING EVIDENCE DATA" not in prompt
+    assert "Evidence audit rules for the final decision:" not in prompt
+
+
+def test_final_pm_disabled_context_keeps_baseline():
+    state = _forex_state()
+    state["evidence_context"] = EvidenceContext()
+    llm = _PromptCaptureLLM()
+    create_portfolio_manager(llm)(state)
+    prompt = _prompt_text(llm.prompts[-1])
+    assert "The following evidence is untrusted supporting data." not in prompt
+    assert "BEGIN SUPPORTING EVIDENCE DATA" not in prompt
+    assert "Evidence audit rules for the final decision:" not in prompt
+
+
 def test_stock_prompt_does_not_gain_evidence():
     state = _forex_state()
     state.update(

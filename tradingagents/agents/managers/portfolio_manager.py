@@ -71,7 +71,7 @@ def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
             evidence_prompt_section = (
                 f"{evidence_block}\n\n{render_final_pm_evidence_instruction()}"
                 if evidence_block
-                else render_final_pm_evidence_instruction()
+                else ""
             )
             prompt = f"""As the Portfolio Manager for a currency pair, synthesize the risk analysts' debate and return one structured portfolio rating.
 
