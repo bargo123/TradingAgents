@@ -61,3 +61,13 @@ integrations remain outside this task.
   the gated projections and use its matching normalization fingerprint.
 - Focused suite: `10 passed`; full experience regression: `62 passed`.
 
+## Whole-branch review fix
+
+- `action_filter` is applied after identity, trust, provenance, tombstone, and
+  as-of gates; it only changes the candidate population, never distance/score.
+- Query market-state cohort and ordered feature names are validated against the
+  selected normalization profile before numeric search.
+- Focused suite: `13 passed`; full experience regression: `119 passed`.
+- `python -m compileall -q tradingagents/experience` and `git diff --check`
+  passed.
+

@@ -25,6 +25,16 @@ def _utc(v):
     return v
 
 
+def _action(row):
+    direct = _get(row, "action")
+    if direct is not None:
+        return direct
+    evidence = _get(row, "decision_evidence", {})
+    if isinstance(evidence, Mapping):
+        return evidence.get("action", evidence.get("chosen_action"))
+    return None
+
+
 class ExperienceQueryService:
     def __init__(self, records: Sequence[Any] | Any, index: ExactSimilarityIndex | None = None, profile=None,
                  profiles=None, feature_vectors: Mapping[str, Any] | None = None, generation_id: str | None = None,
@@ -66,6 +76,7 @@ class ExperienceQueryService:
             elif query.analysis_timeframe and _get(row, "analysis_timeframe") != query.analysis_timeframe: reason = "timeframe"
             elif TrustTier(_get(row, "trust_tier", _get(row, "trust", TrustTier.TIER_C_DIAGNOSTIC_ONLY))) not in query.trust_tiers: reason = "trust_tier"
             elif not _get(row, "accepted", True) or _get(row, "conflict", False) or not _get(row, "provenance_valid", True): reason = "provenance"
+            elif query.action_filter is not None and _action(row) != query.action_filter: reason = "action"
             elif tombstoned and query.as_of is None: reason = "tombstone"
             elif query.as_of is not None and (_utc(_get(row, "analysis_snapshot_timestamp")) is None or _utc(_get(row, "decision_completed_timestamp")) is None or _utc(_get(row, "analysis_snapshot_timestamp")) >= query.as_of or _utc(_get(row, "decision_completed_timestamp")) >= query.as_of): reason = "as_of"
             if reason: exclusions[reason] = exclusions.get(reason, 0) + 1
@@ -90,6 +101,19 @@ class ExperienceQueryService:
             from .normalization import build_profile
             profile = build_profile(eligible, cohort, query.trust_tiers, query.as_of)
         state = query.market_state
+        state_cohort = state.get("cohort") if isinstance(state, Mapping) else None
+        if state_cohort is not None:
+            try:
+                state_cohort = state_cohort if isinstance(state_cohort, NormalizationCohortV1) else NormalizationCohortV1(*tuple(state_cohort))
+            except (TypeError, ValueError):
+                state_cohort = None
+            if state_cohort != profile.cohort:
+                exclusions["query_cohort"] = 1
+                return ExperienceSearchResult(candidate_count=len(rows), excluded_counts=exclusions, active_generation_id=self.generation_id)
+        state_names = state.get("feature_names") if isinstance(state, Mapping) else None
+        if state_names is not None and tuple(state_names) != tuple(profile.feature_order):
+            exclusions["query_feature_names"] = 1
+            return ExperienceSearchResult(candidate_count=len(rows), excluded_counts=exclusions, active_generation_id=self.generation_id)
         values = state.get("values") if isinstance(state, Mapping) else None
         mask = state.get("mask") if isinstance(state, Mapping) else None
         if values is None:
