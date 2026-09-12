@@ -15,6 +15,7 @@
 - The approved implementation baseline is main at 70bf6796ab74df99eb47e9e67083b6e2d1678c79. The approved design is present in commit 38cdd8b5b34dcfd1a08ec2bbe2c7795cc3b7ee54. The current main revision contains those approved documentation commits; no history rewrite or reset is permitted.
 - Work is restricted to the forex-shadow path. The stock tradingagents CLI, stock graph shape, stock prompts, stock provider routing, and stock checkpoint semantics retain their current behavior.
 - MT5 remains read-only. No order_send, buy, sell, close-position, modify-position, order mutation, RiskGovernor, execution mode, or live mode is introduced.
+- The Phase 5/6 shadow-decision database and `ShadowTradeDecision` schema remain byte-for-byte/schema-for-schema unchanged. Phase 9 evidence-reference fields are transient in memory and are persisted only by `EvidenceAuditStore` under `data_cache/evidence_runtime/`.
 - A normal enabled run uses one cached ForexMarketSnapshot and one EvidenceOrchestrator.query call. Agents, the citation validator, and the audit writer never retrieve independently.
 - as_of is the UTC analysis snapshot timestamp. Decision completion time is never passed to Experience retrieval, normalization, statistics, or query construction.
 - Evidence_enabled=False is a true baseline: it constructs no Phase 7/8 services, embedder, catalog, parser, reader, writer, or audit store and makes zero evidence calls.
@@ -35,6 +36,7 @@
 - Propagator.create_initial_state in tradingagents/graph/propagation.py owns shared initial state. AgentState in tradingagents/agents/utils/agent_states.py is a LangGraph MessagesState TypedDict.
 - Forex prompt branches are in market_analyst.py, news_analyst.py, bull_researcher.py, bear_researcher.py, research_manager.py, trader.py, aggressive_debator.py, conservative_debator.py, neutral_debator.py, and portfolio_manager.py.
 - EvidenceOrchestrator.query, EvidenceRequest, EvidenceBundle, KnowledgeQueryService, ExperienceQueryService, and OutcomeStatsCalculator are existing public Phase 7/8 seams. KnowledgeCatalog and ExperienceCatalog constructors initialize schemas, so the runtime integration must use read-only catalog adapters rather than instantiate those writer-owning constructors.
+- The existing Phase 7/8 query stack exposes no monotonic-deadline parameter: KnowledgeQueryService.search, ExperienceQueryService.search, OutcomeStatsCalculator.calculate, and EvidenceOrchestrator.query are synchronous calls. Phase 9 therefore selects a separately killable process boundary for the bounded evidence call; an unkillable thread timeout is not permitted.
 - Existing checkpoint identity is built by TradingAgentsGraph._run_signature and tradingagents.graph.checkpointer.thread_id. Existing caller contracts use ISO date strings, and ForexShadowRunner currently forwards parsed_date.isoformat() to Propagator.create_initial_state.
 - Existing real smoke conventions are in scripts/knowledge_phase7_smoke.py and scripts/experience_phase8_smoke.py. The Phase 9 smoke will follow their bounded report and offline-guard style without changing either script.
 
@@ -52,7 +54,7 @@
 | scripts/phase9_evidence_replay.py | Local command-line wrapper for the saved-snapshot A/B harness; it never opens MT5. |
 | scripts/phase9_evidence_smoke.py | Mandatory bounded local acceptance smoke with source/artifact fingerprints and loopback-only network guard. |
 | tests/test_forex_phase9_contracts.py | Contract, enum, deep-freeze, JSON-serialization, and field-validation tests. |
-| tests/test_forex_phase9_context_builder.py | Canonical ordering, K/E/S IDs, budgets, hashes, provenance, and builder isolation tests. |
+| tests/test_forex_phase9_context_builder.py | Upstream-result ordering preservation, K/E/S IDs, budgets, hashes, provenance, and builder isolation tests. |
 | tests/test_forex_phase9_query_policy.py | Snapshot-to-request mapping, query fingerprinting, statistics defaults, and Tier C policy tests. |
 | tests/test_forex_phase9_integration.py | Lazy construction, one-query behavior, read-only catalog adapters, timeout, and fallback tests. |
 | tests/test_forex_phase9_prompt_state.py | Shared state hash propagation, metadata-only trace, prompt order, and injection-boundary tests. |
@@ -68,8 +70,7 @@
 |---|---|
 | tradingagents/agents/utils/agent_states.py | Add one optional evidence_context field to AgentState; do not add per-agent evidence copies. |
 | tradingagents/graph/propagation.py | Accept and place the one immutable evidence_context in the initial state while preserving ISO string trade_date behavior. |
-| tradingagents/forex/runner.py | Retrieve once after the snapshot, pass the context to forex graph state, preserve baseline mode, validate final references, and append the Phase 9 audit. |
-| tradingagents/forex/shadow.py | Add backward-compatible optional final evidence metadata columns and migration/serialization support while retaining executed=False. |
+| tradingagents/forex/runner.py | Split non-persisting analysis from the existing run persistence, retrieve once after the snapshot, pass the context to forex graph state, preserve baseline mode, validate final references, and append the Phase 9 audit. |
 | tradingagents/forex/context_integrity.py | Report evidence hash/presence/size metadata and include it in the audit trace without retaining report text. |
 | tradingagents/forex/telemetry.py | Record metadata-only context-hash observations at existing node boundaries. |
 | tradingagents/agents/utils/agent_utils.py | Export the shared forex evidence-rendering seam without changing stock context output. |
@@ -113,7 +114,7 @@
 
   CanonicalKnowledgeQuery with text, fingerprint, policy_version.
 
-  EvidenceSnapshotAdapter with to_market_state(snapshot, *, resolved_symbol, analysis_profile, analysis_timeframe) -> Mapping[str, Any] and build_request(snapshot, *, resolved_symbol, analysis_profile, analysis_timeframe, as_of) -> tuple[EvidenceRequest, CanonicalKnowledgeQuery].
+  EvidenceSnapshotAdapter with to_market_state(snapshot, *, resolved_symbol, analysis_profile, analysis_timeframe) -> Mapping[str, Any]. Query construction is owned only by EvidenceQueryPolicy.
 
   EvidenceQueryPolicy with query_policy_version, budget_policy_version, knowledge_top_k=10, experience_top_k=50, max_knowledge_items=4, max_experience_items=4, max_statistics_items=2, max_rendered_characters=6000, trust_tiers=(TIER_A_HIGH_TRUST, TIER_B_LIMITED), evaluation_basis=ANALYSIS_SNAPSHOT, statistics_horizon_seconds=None, and evidence_timeout_seconds=10.0. Validate positive limits, a non-negative timeout, approved trust tiers, and the rule that a non-null statistics horizon is paired with evaluation_basis.
 
@@ -134,16 +135,16 @@
 
 ## Task 2 — Build the deterministic context, IDs, budgets, and hash
 
-- [ ] RED: Extend tests/test_forex_phase9_context_builder.py with test_builder_orders_each_source_by_score_then_authoritative_id, test_builder_caps_sources_before_total_budget, test_builder_assigns_stable_k_e_s_ids, test_builder_drops_whole_items_when_character_budget_is_exceeded, test_context_hash_covers_exact_rendered_payload, test_context_hash_changes_for_cutoff_or_policy, test_provenance_ids_are_complete, test_builder_preserves_statistics_as_separate_items, and test_builder_never_calls_an_llm. Use fake EvidenceBundle objects containing adversarial strings and structured provenance. Run:
+- [ ] RED: Create tests/test_forex_phase9_context_builder.py with test_builder_preserves_phase8_experience_order, test_builder_preserves_phase7_knowledge_order, test_builder_does_not_resort_by_raw_score, test_builder_caps_sources_before_total_budget, test_builder_assigns_stable_k_e_s_ids, test_builder_drops_whole_items_when_character_budget_is_exceeded, test_context_hash_covers_exact_rendered_payload, test_context_hash_changes_for_cutoff_or_policy, test_provenance_ids_are_complete, test_builder_preserves_statistics_as_separate_items, and test_builder_never_calls_an_llm. Use fake EvidenceBundle objects containing adversarial strings and structured provenance. Run:
 
     python -m pytest -q tests/test_forex_phase9_context_builder.py
 
   The expected failure is ImportError because Phase9EvidenceContextBuilder is not present.
 - [ ] GREEN: Implement in tradingagents/forex/evidence_context.py:
 
-  Phase9EvidenceContextBuilder.build(bundle, *, policy, as_of, knowledge_query=None, phase7_generation_id=None, phase8_generation_id=None) -> EvidenceContext.
+  `Phase9EvidenceContextBuilder.build(self, bundle: EvidenceBundle, *, policy: EvidenceQueryPolicy, as_of: datetime, knowledge_query: CanonicalKnowledgeQuery | None = None, phase7_generation_id: str | None = None, phase8_generation_id: str | None = None) -> EvidenceContext`.
 
-  Preserve the source result order only as the first input; then sort each source deterministically by descending numeric score, source-specific authoritative identifier, and canonical serialized provenance. Apply the per-source caps of 4, 4, and 2 before assigning display IDs. Assign K1..., E1..., and S1... only after sorting. Store each authoritative database/document/chunk/experience identifier in provenance; display IDs never replace it.
+  Treat the returned order from Phase 7 KnowledgeQueryService and Phase 8 ExperienceQueryService as authoritative. Do not apply a second ranking, score sort, diversity pass, or tie-break in Phase 9. Take the first 4 Knowledge items and first 4 Experience items in their returned order; take the first 2 Statistics items in the returned order. Assign K1..., E1..., and S1... only after those caps. Scores remain source-local and incomparable. The deterministic hash relies on the published upstream generation/query ordering; canonical serialization must not change that order. Store each authoritative database/document/chunk/experience identifier in provenance; display IDs never replace it.
 
   Serialize a compact canonical payload with sorted keys and fixed separators. Include source kind, display ID, authoritative ID, bounded text, content type, score, and complete provenance. Append complete serialized items in K/E/S order until the 6000-character budget would be exceeded; drop the whole item when it does not fit and increment the corresponding dropped count. Do not cut text, IDs, JSON tokens, equations, or metadata fields. Compute rendered_context_hash as SHA-256 of the exact UTF-8 bytes of rendered_context. Do not count warning prose outside rendered_context.
 
@@ -182,7 +183,7 @@
 
 ## Task 4 — Implement lazy one-call integration with read-only adapters and timeout fallback
 
-- [ ] RED: Create tests/test_forex_phase9_integration.py with test_disabled_service_constructs_no_dependencies, test_enabled_service_calls_orchestrator_once, test_enabled_request_uses_snapshot_as_of, test_partial_bundle_maps_to_fallback, test_orchestrator_exception_maps_to_fallback, test_timeout_returns_evidence_timeout, test_timeout_does_not_write_or_start_maintenance, test_readonly_knowledge_catalog_uses_mode_ro, test_readonly_experience_catalog_uses_mode_ro, and test_query_embedding_spec_mismatch_fails_closed. Run:
+- [ ] RED: Create tests/test_forex_phase9_integration.py with test_disabled_service_constructs_no_dependencies, test_enabled_service_calls_orchestrator_once, test_enabled_request_uses_snapshot_as_of, test_partial_bundle_maps_to_fallback, test_orchestrator_exception_maps_to_fallback, test_timeout_returns_evidence_timeout, test_timeout_terminates_all_evidence_workers, test_timeout_does_not_write_or_start_maintenance, test_readonly_knowledge_catalog_uses_mode_ro, test_readonly_experience_catalog_uses_mode_ro, test_readonly_experience_adapter_matches_phase8_reader_semantics, test_readonly_knowledge_adapter_matches_published_generation_semantics, and test_query_embedding_spec_mismatch_fails_closed. Run:
 
     python -m pytest -q tests/test_forex_phase9_integration.py
 
@@ -193,11 +194,15 @@
 
   ReadonlyExperienceCatalog(root) opening root/catalog.sqlite3 through mode=ro. Hydrate ExperienceRecord values from experience_records and aliases, feature projection rows from experience_feature_projections, and outcome snapshots from experience_outcome_snapshots. Implement active_records(), historical_records(), evaluation_snapshots(experience_id), and active_generation() with no CREATE, INSERT, UPDATE, DELETE, or schema migration. Build normalization profiles in memory from the persisted projection rows with the existing build_profile function.
 
-  EvidenceIntegrationService(policy, orchestrator_factory, generation_provider, provider_endpoint, clock) with retrieve(snapshot, *, resolved_symbol, analysis_profile, analysis_timeframe) -> EvidenceContext. The factory is the only place that constructs the read-only catalog adapters, VectorIndexReader, LexicalIndexReader, FastEmbedProvider, ExperienceQueryService, OutcomeStatsCalculator, and existing EvidenceOrchestrator. Do not instantiate any of these objects when evidence is disabled.
+  Add temporary fixture parity tests that populate the database through the existing Phase 8 writer, then compare the read-only adapter with the existing Phase 8 reader/query semantics for active records, historical/as_of visibility, aliases/tombstones, feature projections, evaluation snapshots, generation identity, and trust-tier filtering inputs. Likewise compare the Phase 7 adapter's active generation and document-readiness results with KnowledgeQueryService's published-generation contract. The adapters only expose storage and identity; they must not duplicate ranking, trust, leakage, or similarity policy.
+
+  EvidenceIntegrationService(policy, orchestrator_factory, generation_provider, provider_endpoint, clock) with `EvidenceIntegrationService.retrieve(self, snapshot: ForexMarketSnapshot, *, resolved_symbol: str, analysis_profile: str, analysis_timeframe: str) -> EvidenceContext`. The factory is the only place that constructs the read-only catalog adapters, VectorIndexReader, LexicalIndexReader, FastEmbedProvider, ExperienceQueryService, OutcomeStatsCalculator, and existing EvidenceOrchestrator. Do not instantiate any of these objects when evidence is disabled.
 
   On enabled retrieval, freeze snapshot.timestamp as as_of, call the policy once, invoke exactly one orchestrator.query(request), capture Phase 7 and Phase 8 generation IDs before and after the call, and pass the result to Phase9EvidenceContextBuilder. If an exception occurs, build an empty context with integration_status=FALLBACK and a bounded typed diagnostic. If one source is unavailable, retain the other source and use FALLBACK.
 
-  Enforce evidence_timeout_seconds=10.0 with one concurrent.futures.ThreadPoolExecutor worker and future.result(timeout=...). On timeout call future.cancel(), shut down without waiting, and return EVIDENCE_TIMEOUT. The worker is restricted to read-only query functions; it never owns a writer or maintenance component. The timeout path must not start a second query, retry loop, or background repair.
+  The existing query stack has no cooperative deadline seam, so use a separately killable `multiprocessing` process with the Windows `spawn` context. The parent sends a serializable snapshot/request envelope and read-only artifact roots through a one-shot pipe; the child constructs only the read-only adapters and one EvidenceOrchestrator, performs exactly one query, and returns a serialized EvidenceBundle or typed error. The parent joins for `evidence_timeout_seconds=10.0`; on expiry it calls `terminate()`, joins again, confirms `is_alive()` is false, closes the pipe, and returns EVIDENCE_TIMEOUT. No thread, executor, cancellation flag, retry, or background worker is used. The child owns no writer or maintenance component, and no process survives the fallback path. Inject a process factory for deterministic tests so they can assert active evidence workers are zero, the orchestrator query count does not increase, and no later context or audit mutation occurs after timeout.
+
+  Define `EvidenceTimeout` as the typed child/parent timeout error and map it to the bounded EVIDENCE_TIMEOUT diagnostic. The parent must not expose a partially returned child context after terminating the child.
 
   If the context contains Knowledge or Experience text and the effective provider URL is not localhost, 127.0.0.1, or ::1, return FALLBACK with EVIDENCE_LOCAL_ENDPOINT_REQUIRED before graph construction. No hosted request receives published evidence text.
 
@@ -221,7 +226,9 @@
 
   AuditWriteError as the typed persistence exception.
 
-  EvidenceAuditStore(path) with initialize(), append(audit), get(decision_id), and list_for_source_run(source_run_id). Store under data_cache/evidence_runtime/evidence_audit.sqlite3. Create the directory only inside this Phase 9 root. Use a primary key of decision_id plus context hash, INSERT-only semantics, and a unique constraint so retrying the same audit is idempotent without updating an existing row.
+  EvidenceAuditStore(path) with initialize(), `EvidenceAuditStore.append(self, audit: EvidenceUsageAudit) -> None`, get(decision_id), and list_for_source_run(source_run_id). Store under data_cache/evidence_runtime/evidence_audit.sqlite3. Create the directory only inside this Phase 9 root. Use a primary key of decision_id plus context hash, INSERT-only semantics, and a unique constraint so retrying the same audit is idempotent without updating an existing row.
+
+  This is the only Phase 9 persistence destination for evidence metadata. Do not add, migrate, or serialize any Phase 9 fields through ShadowTradeDecision or the Phase 5/6 SQLite database; the source database remains decision data only.
 
   Validate that rendered_context_hash equals SHA-256 of rendered_context UTF-8 bytes, that every retained ID exists in the exact context ID set, and that all diagnostics are newline-sanitized and capped at 500 characters. Reject keys or values named prompt, completion, reasoning, chain_of_thought, api_key, password, token, or credential recursively. Never open the Phase 5/6 source database, Phase 7 catalog, or Phase 8 catalog for writing.
 - [ ] VERIFY: Run python -m pytest -q tests/test_forex_phase9_audit.py. Inspect the temporary SQLite schema and verify the bounded context is exactly recoverable while forbidden prompt/reasoning/credential fields are rejected.
@@ -232,7 +239,7 @@
 
 ## Task 6 — Propagate one immutable context and metadata-only trace
 
-- [ ] RED: Extend tests/test_forex_phase9_prompt_state.py with test_initial_forex_state_contains_one_context, test_stock_initial_state_has_no_context, test_every_forex_node_observes_same_context_hash, test_trace_contains_hash_counts_and_no_text, and test_context_integrity_reports_missing_hash_observation. Extend tests/test_forex_graph_mode.py with test_forex_initial_state_accepts_evidence_context. Run:
+- [ ] RED: Create tests/test_forex_phase9_prompt_state.py with test_initial_forex_state_contains_one_context, test_stock_initial_state_has_no_context, test_every_forex_node_observes_same_context_hash, test_trace_contains_hash_counts_and_no_text, and test_context_integrity_reports_missing_hash_observation. Extend tests/test_forex_graph_mode.py with test_forex_initial_state_accepts_evidence_context. Run:
 
     python -m pytest -q tests/test_forex_phase9_prompt_state.py tests/test_forex_graph_mode.py
 
@@ -248,7 +255,7 @@
 
 ## Task 7 — Add the shared forex prompt evidence boundary
 
-- [ ] RED: Create adversarial fixture strings in tests/test_forex_phase9_prompt_state.py and create tests/test_forex_phase9_prompts.py with test_prompt_order_is_current_then_node_context_then_evidence, test_prompt_contains_untrusted_data_warning_and_delimiters, test_adversarial_text_stays_inside_evidence_boundary, test_current_facts_precede_evidence, test_phase7_and_phase8_scores_stay_separate, and test_stock_prompt_does_not_gain_evidence. Run:
+- [ ] RED: Extend tests/test_forex_phase9_prompt_state.py with adversarial fixture strings and create tests/test_forex_phase9_prompts.py with test_prompt_order_is_current_then_node_context_then_evidence, test_prompt_contains_untrusted_data_warning_and_delimiters, test_adversarial_text_stays_inside_evidence_boundary, test_current_facts_precede_evidence, test_phase7_and_phase8_scores_stay_separate, and test_stock_prompt_does_not_gain_evidence. Run:
 
     python -m pytest -q tests/test_forex_phase9_prompts.py tests/test_forex_phase9_prompt_state.py
 
@@ -272,11 +279,11 @@
 
 ## Task 8 — Add strict final-decision evidence references and validation
 
-- [ ] RED: Extend tests/test_forex_phase9_audit.py with test_valid_final_references_are_retained, test_unknown_references_are_rejected_without_action_change, test_rejection_reason_vocabulary_is_closed, test_none_relevant_without_references_is_valid, test_internal_nodes_do_not_require_references, and test_shadow_decision_migrates_optional_evidence_fields. Run:
+- [ ] RED: Extend tests/test_forex_phase9_audit.py with test_valid_final_references_are_retained, test_unknown_references_are_rejected_without_action_change, test_rejection_reason_vocabulary_is_closed, test_none_relevant_without_references_is_valid, and test_internal_nodes_do_not_require_references. Extend tests/test_forex_shadow_contract.py with test_phase5_shadow_schema_has_no_phase9_columns and test_shadow_contract_does_not_persist_transient_evidence_fields. Run:
 
     python -m pytest -q tests/test_forex_phase9_audit.py tests/test_forex_shadow_contract.py
 
-  The expected failure is AttributeError because ForexPortfolioDecision and ShadowTradeDecision do not expose the Phase 9 fields or validator.
+  The expected failure is ImportError because validate_evidence_references is not present yet; the existing ShadowTradeDecision schema remains unchanged.
 - [ ] GREEN: Modify tradingagents/agents/schemas.py so ForexPortfolioDecision alone contains:
 
   evidence_use_status: Literal["USED", "NONE_RELEVANT", "UNAVAILABLE", "DISABLED"] defaulting to NONE_RELEVANT;
@@ -285,35 +292,31 @@
 
   evidence_refs_rejected: list[EvidenceReferenceRejection] defaulting to an empty list, where EvidenceReferenceRejection has ref and one of the five closed rejection reasons. PortfolioDecision and all stock schemas remain unchanged.
 
-  Implement validate_evidence_references(context: EvidenceContext, raw_result: Mapping[str, Any]) -> EvidenceReferenceValidation in tradingagents/forex/evidence_context.py. Validate every used and rejected reference against the exact context-local ID sets. Preserve valid references in deterministic order. Remove malformed or unknown IDs, append a bounded rejection with reason DIAGNOSTIC_ONLY for invalid diagnostic references, set evidence_audit_status=INVALID_REFERENCE, and retain the original normalized BUY/SELL/HOLD action. A model may return NONE_RELEVANT with no references; evidence presence never forces a citation.
+  Implement validate_evidence_references(context: EvidenceContext, raw_result: Mapping[str, Any]) -> EvidenceReferenceValidation and `strip_transient_evidence_metadata(raw_result: Mapping[str, Any]) -> Mapping[str, Any]` in tradingagents/forex/evidence_context.py. Validate every used and rejected reference against the exact context-local ID sets. Preserve valid references in deterministic order. Remove malformed or unknown IDs, append a bounded rejection with reason DIAGNOSTIC_ONLY for invalid diagnostic references, set evidence_audit_status=INVALID_REFERENCE, and retain the original normalized BUY/SELL/HOLD action. A model may return NONE_RELEVANT with no references; evidence presence never forces a citation. The validation result and the unstripped raw result are transient and are handed to EvidenceUsageAudit; `strip_transient_evidence_metadata` recursively removes every Phase 9 evidence key from a copy before any value enters ShadowTradeDecision or the Phase 5/6 database.
 
-  Modify tradingagents/forex/shadow.py with optional evidence_use_status, evidence_refs_used, evidence_refs_rejected, evidence_audit_status, and evidence_context_hash fields defaulted for old callers. Add additive SQLite migrations and JSON serialization. Keep the executed invariant and all Phase 5/6 columns unchanged. The exact bounded context remains in EvidenceAuditStore; decision columns are convenience metadata only.
-- [ ] VERIFY: Run python -m pytest -q tests/test_forex_phase9_audit.py tests/test_forex_shadow_contract.py tests/test_forex_shadow_runner.py. Unknown K999, E404, and S88 references cannot change an otherwise normalized action, and older rows load with evidence fields absent/defaulted.
-- [ ] COMMIT: Stage tradingagents/agents/schemas.py, tradingagents/forex/evidence_context.py, tradingagents/forex/shadow.py, tests/test_forex_phase9_audit.py, and tests/test_forex_shadow_contract.py. Commit with:
+  Do not modify tradingagents/forex/shadow.py. ShadowTradeDecision construction, JSON serialization, executed=False, and every Phase 5/6 column remain exactly as they are; no Phase 5/6 schema migration is permitted. Add the schema-inspection assertion that the Phase 5/6 decision table contains no Phase 9 evidence columns.
+- [ ] VERIFY: Run python -m pytest -q tests/test_forex_phase9_audit.py tests/test_forex_shadow_contract.py tests/test_forex_shadow_runner.py. Unknown K999, E404, and S88 references cannot change an otherwise normalized action; schema inspection proves no Phase 9 columns were added; serialized source rows contain no transient Phase 9 evidence fields.
+- [ ] COMMIT: Stage tradingagents/agents/schemas.py, tradingagents/forex/evidence_context.py, tests/test_forex_phase9_audit.py, and tests/test_forex_shadow_contract.py. Commit with:
 
-    git add tradingagents/agents/schemas.py tradingagents/forex/evidence_context.py tradingagents/forex/shadow.py tests/test_forex_phase9_audit.py tests/test_forex_shadow_contract.py
+    git add tradingagents/agents/schemas.py tradingagents/forex/evidence_context.py tests/test_forex_phase9_audit.py tests/test_forex_shadow_contract.py
     git commit -m "feat: validate phase9 final evidence references"
 
 ## Task 9 — Integrate retrieval and audit in ForexShadowRunner while preserving baseline
 
-- [ ] RED: Extend tests/test_forex_shadow_runner.py with test_enabled_runner_retrieves_once_after_snapshot, test_enabled_runner_passes_snapshot_as_of, test_enabled_runner_injects_one_context_hash, test_disabled_runner_constructs_no_evidence_service, test_enabled_fallback_persists_fallback_status, test_audit_failure_preserves_shadow_decision, and test_baseline_runs_without_phase7_or_phase8_artifacts. Add fake EvidenceIntegrationService and fake EvidenceAuditStore seams. Run:
+- [ ] RED: Extend tests/test_forex_shadow_runner.py with test_enabled_runner_retrieves_once_after_snapshot, test_enabled_runner_passes_snapshot_as_of, test_enabled_runner_injects_one_context_hash, test_disabled_runner_constructs_no_evidence_service, test_analyze_does_not_write_shadow_store, test_enabled_fallback_audit_records_fallback_status, test_shadow_row_excludes_transient_evidence_fields, test_audit_failure_preserves_shadow_decision, and test_baseline_runs_without_phase7_or_phase8_artifacts. Add fake EvidenceIntegrationService and fake EvidenceAuditStore seams. Run:
 
     python -m pytest -q tests/test_forex_shadow_runner.py tests/test_forex_phase9_integration.py
 
   The expected failure is an assertion that the runner makes zero evidence calls and does not place evidence_context in the initial state.
 - [ ] GREEN: Modify tradingagents/forex/runner.py:
 
-  Add injectable evidence_service_factory and evidence_audit_store_factory constructor seams with no change to existing positional arguments. Resolve the merged runtime config before provider/graph creation.
+  Add injectable evidence_service_factory and evidence_audit_store_factory constructor seams with no change to existing positional arguments. Define a frozen `ForexAnalysisResult` containing the parsed date, requested/resolved symbols, one `ForexMarketSnapshot`, snapshot JSON, final graph state, raw structured Portfolio Manager result, normalized action/status/error, context-integrity metadata, optional EvidenceContext, decision-reference quote metadata, state trace, and analysis telemetry.
 
-  Fetch and serialize the one ForexMarketSnapshot exactly as before. Capture snapshot.timestamp as_of. If forex_evidence_enabled is false, use no integration object and pass evidence_context=None. If true, construct EvidenceIntegrationService only after the snapshot exists, call retrieve exactly once, and pass the returned immutable context to Propagator.create_initial_state.
+  Add the non-persisting method `ForexShadowRunner.analyze(symbol: str = "EURUSD", count: int = 100, analysis_date: date | str | None = None, terminal_path: str | None = None, analysts: Sequence[str] | None = None, *, callbacks: Sequence[Any] | None = None, analysis_profile: str = "INTRADAY", source_run_id: str | None = None) -> ForexAnalysisResult`. It validates inputs, initializes the injected provider, resolves the broker symbol, fetches and serializes exactly one ForexMarketSnapshot, optionally retrieves evidence once after the snapshot, invokes the graph, normalizes the structured Portfolio Manager result, obtains the existing read-only fresh reference quote, and returns the complete in-memory result. It never constructs or writes ShadowDecisionStore and never persists a Phase 5/6 decision. A replay provider can implement the existing read-only provider seam and return a saved snapshot without connecting to MT5.
 
-  Pass forex_evidence_enabled and forex_evidence_context_hash into the graph config for checkpoint identity. Do not pass completion time into EvidenceRequest.
+  Keep `run`'s existing public signature, including `db_path`. It selects/rebinds the existing ShadowDecisionStore as today, calls `analyze` once, strips transient Phase 9 fields from the raw Portfolio Manager mapping, and constructs/persists the existing ShadowTradeDecision with the existing fields and executed=False behavior unchanged. The source row must contain no evidence_use_status, evidence_refs_used, evidence_refs_rejected, evidence_audit_status, evidence_context_hash, or other Phase 9 metadata, including inside its raw JSON/text fields. After that unchanged persistence succeeds, validate the in-memory evidence references against the exact context and append EvidenceUsageAudit for enabled or fallback runs. A validation result changes only the separate audit payload; it never changes action normalization or the source decision row. If audit append raises AuditWriteError, return the already-persisted decision with metrics.audit_status=AUDIT_WRITE_FAILED and retain executed=False. Never retry by creating a second evidence query.
 
-  Keep capture_state_trace around the graph invocation. After graph completion, run the existing strict structured Portfolio Manager normalization, then validate final evidence references against the exact context. A validation failure changes only evidence_audit_status and rejected-reference metadata; it never guesses or changes action normalization.
-
-  Persist ShadowTradeDecision first. Then append EvidenceUsageAudit for enabled or fallback runs, including the exact bounded context, hash, one-query count, timings, node hash observations, and missing nodes. If audit append raises AuditWriteError, return the already-persisted decision with metrics.audit_status=AUDIT_WRITE_FAILED and retain executed=False. Never retry by creating a second evidence query.
-
-  Keep all snapshot, fresh-reference quote, positions/orders, model, provider, normalization, and Phase 5 temporal behavior unchanged.
+  Pass forex_evidence_enabled and forex_evidence_context_hash into the graph config for checkpoint identity. Do not pass completion time into EvidenceRequest. Keep all snapshot, fresh-reference quote, positions/orders, model, provider, normalization, and Phase 5 temporal behavior unchanged.
 - [ ] VERIFY: Run python -m pytest -q tests/test_forex_shadow_runner.py tests/test_forex_shadow_integration.py tests/test_forex_phase9_integration.py. Enabled mode has one snapshot and one evidence query; disabled mode has none; fallback and audit-write failure remain visible; the persisted decision is always non-executing.
 - [ ] COMMIT: Stage tradingagents/forex/runner.py, tests/test_forex_shadow_runner.py, and tests/test_forex_phase9_integration.py. Commit with:
 
@@ -338,7 +341,7 @@
 
 ## Task 11 — Build the saved-snapshot A/B replay harness
 
-- [ ] RED: Create tests/test_forex_phase9_replay.py with test_saved_snapshot_codec_validates_row, test_replay_uses_identical_snapshot_fingerprint, test_replay_runs_baseline_then_evidence_sequentially, test_replay_is_not_a_normal_opportunity, test_replay_pins_phase7_and_phase8_generations, test_knowledge_generation_change_invalidates_replay, test_experience_generation_change_invalidates_replay, and test_replay_report_excludes_prompts_and_reasoning. Run:
+- [ ] RED: Create tests/test_forex_phase9_replay.py with test_saved_snapshot_codec_validates_row, test_replay_uses_identical_snapshot_fingerprint, test_replay_runs_baseline_then_evidence_sequentially, test_replay_does_not_change_source_schema_or_rows, test_replay_is_not_a_normal_opportunity, test_replay_pins_phase7_and_phase8_generations, test_knowledge_generation_change_invalidates_replay, test_experience_generation_change_invalidates_replay, and test_replay_report_excludes_prompts_and_reasoning. Run:
 
     python -m pytest -q tests/test_forex_phase9_replay.py
 
@@ -347,12 +350,14 @@
 
   SavedSnapshotCodec.from_source_row(row: Mapping[str, Any]) -> ForexMarketSnapshot. Validate snapshot_json, quote, symbol metadata, candle timestamps, and UTC snapshot timestamp. Reconstruct Mt5Bar, Mt5SymbolInfo, Mt5AccountInfo, Mt5Position, and ForexMarketSnapshot from the persisted snapshot_json; reject incomplete rows with SnapshotReplayError. This codec is the only path from the Phase 5/6 read-only source DB to replay input.
 
-  EvidenceReplayConfig with source decision ID, profile, analysts, model/provider settings, and pinned Phase 7/8 roots. SavedSnapshotReplay.run(snapshot: ForexMarketSnapshot, *, snapshot_bytes: bytes, config: EvidenceReplayConfig) -> EvidenceReplayReport runs two sequential injected runner calls: A with forex_evidence_enabled=False and B with forex_evidence_enabled=True. Both calls use the same snapshot bytes/fingerprint, profile, analysts, provider/model settings, normalization path, and original snapshot timestamp. The replay provider implements only the existing read-only MT5 adapter methods and never connects to MT5.
+  EvidenceReplayConfig with source decision ID, profile, analysts, model/provider settings, pinned Phase 7/8 roots, and the read-only source database path. SavedSnapshotReplay.run(snapshot: ForexMarketSnapshot, *, snapshot_bytes: bytes, config: EvidenceReplayConfig) -> EvidenceReplayReport runs two sequential injected `ForexShadowRunner.analyze(...)` calls: A with forex_evidence_enabled=False and B with forex_evidence_enabled=True. It never calls `ForexShadowRunner.run` and never supplies a writable store. Both calls use the same snapshot bytes/fingerprint, profile, analysts, provider/model settings, normalization path, and original snapshot timestamp. The replay provider implements only the existing read-only MT5 adapter methods and never connects to MT5.
+
+  Before A, fingerprint the source Phase 5/6 SQLite bytes, table names, column definitions, and decision-row count. After B, repeat all fingerprints and assert byte equality, identical table/column sets, identical row count, and no transient Phase 9 evidence fields in any source row. Replay results are analysis-only and are never inserted into the source database. If a Phase 9 replay audit is requested, append only to data_cache/evidence_runtime/ and mark it as replay metadata rather than a new opportunity.
 
   Capture Phase 7 and Phase 8 generation IDs at replay start. B must receive those exact IDs through the read-only runtime. If either ID differs before or after B, set comparison_status=INVALID_GENERATION_CHANGED and do not report did_action_change as valid. Do not rerun against a new generation.
 
   EvidenceReplayReport must contain snapshot_fingerprint, as_of, provider, models, model_settings, profile, analysts, baseline_action, evidence_action, did_action_change, evidence_context_hash, bundle_status, Knowledge/Experience/statistics counts and status, used/rejected references, citation status, baseline/evidence/retrieval/builder latency, baseline/evidence telemetry, pinned generations, warnings/errors, and comparison_status. It must contain no prompt, completion, or reasoning fields.
-- [ ] VERIFY: Run python -m pytest -q tests/test_forex_phase9_replay.py tests/test_checkpoint_lifecycle.py. Both legs share a byte-identical snapshot and run sequentially; generation drift invalidates the report.
+- [ ] VERIFY: Run python -m pytest -q tests/test_forex_phase9_replay.py tests/test_checkpoint_lifecycle.py. Both legs share a byte-identical snapshot and run sequentially; generation drift invalidates the report; source database bytes, tables, columns, and decision-row count are identical before and after replay.
 - [ ] COMMIT: Stage tradingagents/forex/evidence_replay.py and tests/test_forex_phase9_replay.py. Commit with:
 
     git add tradingagents/forex/evidence_replay.py tests/test_forex_phase9_replay.py
@@ -390,14 +395,14 @@
 
 ## Task 13 — Prove isolation, privacy, and Tier C boundaries
 
-- [ ] RED: Create tests/test_forex_phase9_isolation.py with test_disabled_mode_works_without_phase7_or_phase8_paths, test_runtime_does_not_call_experience_import_or_rebuild, test_runtime_does_not_construct_docling_or_downloader, test_tier_c_is_diagnostic_only, test_hosted_provider_with_text_falls_back_without_leakage, test_no_mt5_mutation_api_is_called, test_phase7_phase8_files_are_unchanged, test_audit_forbids_prompt_completion_reasoning_credentials, and test_no_agent_can_call_evidence_service. Run:
+- [ ] RED: Create tests/test_forex_phase9_isolation.py with test_disabled_mode_works_without_phase7_or_phase8_paths, test_runtime_does_not_call_experience_import_or_rebuild, test_runtime_does_not_construct_docling_or_downloader, test_tier_c_is_diagnostic_only, test_hosted_provider_with_text_falls_back_without_leakage, test_no_mt5_mutation_api_is_called, test_phase5_shadow_schema_is_unchanged, test_phase7_phase8_files_are_unchanged, test_audit_forbids_prompt_completion_reasoning_credentials, and test_no_agent_can_call_evidence_service. Run:
 
     python -m pytest -q tests/test_forex_phase9_isolation.py
 
-  The expected failure is ImportError because the isolation seams and loopback guard do not exist.
+  The expected failure is AttributeError because the isolation seams and loopback guard are not present on the Task 4 runtime yet.
 - [ ] GREEN: Add explicit fakes and guards in tradingagents/forex/evidence_runtime.py and tests/test_forex_phase9_isolation.py. The fakes fail if ExperienceImporter, ExperienceRebuilder, KnowledgeIngestor, DoclingDocumentParser, model download methods, MT5 mutation names, or a second EvidenceOrchestrator query is called. Snapshot source, Phase 7 catalog, and Phase 8 catalog fingerprints are captured before and after.
 
-  Ensure evidence text with a hosted provider becomes an explicit FALLBACK diagnostic before any LLM invocation. Ensure the audit schema rejects forbidden content keys recursively. Keep Tier C items in diagnostics only and never assign E display IDs to them.
+  Ensure evidence text with a hosted provider becomes an explicit FALLBACK diagnostic before any LLM invocation. Ensure the audit schema rejects forbidden content keys recursively. Keep Tier C items in diagnostics only and never assign E display IDs to them. Fingerprint a Phase 5/6 source database schema and bytes before and after an evidence-enabled analysis/replay fixture; assert that no Phase 9 columns, migrations, or source-row writes appear. Evidence metadata belongs only in EvidenceAuditStore under data_cache/evidence_runtime/.
 - [ ] VERIFY: Run python -m pytest -q tests/test_forex_phase9_isolation.py tests/test_forex_shadow_cli.py tests/test_forex_prompts.py tests/test_mt5_cli.py. The guards prove no MT5 mutation, no Phase 7/8 writes, no cloud evidence leakage, and no stock behavior changes.
 - [ ] COMMIT: Stage tradingagents/forex/evidence_runtime.py and tests/test_forex_phase9_isolation.py. Commit with:
 
@@ -406,7 +411,7 @@
 
 ## Task 14 — Add the bounded local acceptance smoke and replay command
 
-- [ ] RED: Create tests/test_phase9_smoke_harness.py with test_smoke_requires_offline_flag, test_smoke_rejects_missing_source_or_artifact, test_smoke_rejects_external_artifact_mutation_target, test_smoke_reports_source_fingerprints_and_network_counts, test_smoke_uses_saved_snapshot_without_mt5, test_smoke_loopback_guard_rejects_external_connection, and test_smoke_report_forbids_prompt_completion_reasoning. Run:
+- [ ] RED: Create tests/test_phase9_smoke_harness.py with test_smoke_requires_offline_flag, test_smoke_rejects_missing_source_or_artifact, test_phase8_preflight_validates_generation_policy_schema_and_queries, test_smoke_rejects_external_artifact_mutation_target, test_smoke_reports_source_fingerprints_and_network_counts, test_smoke_uses_saved_snapshot_without_mt5, test_smoke_loopback_guard_rejects_external_connection, and test_smoke_report_forbids_prompt_completion_reasoning. Run:
 
     python -m pytest -q tests/test_phase9_smoke_harness.py
 
@@ -416,20 +421,21 @@
   Create scripts/phase9_evidence_smoke.py with argparse options --source-db, --experience-artifact-root, --knowledge-artifact-root, --knowledge-embedding-model-path, --profile, --analysts, --offline, and --report-path. It must:
 
   1. Require --offline, KNOWLEDGE_OFFLINE=1, HF_HUB_OFFLINE=1, and TRANSFORMERS_OFFLINE=1.
-  2. Verify the source DB, Phase 7 catalog, local embedding model, and Phase 8 artifact root exist and record SHA-256/size/mtime fingerprints before work.
-  3. Open Phase 5/6 and Phase 7/8 artifacts through read-only adapters; never instantiate a writer-owning catalog.
+  2. Verify the source DB, Phase 7 catalog, and local embedding model exist. Resolve `--experience-artifact-root` through `resolve_verified_phase8_root(candidate: Path) -> Phase8ArtifactPreflight` before any query. The preflight opens `catalog.sqlite3` read-only, confirms a published/active generation, trust tiers exactly `TIER_A_HIGH_TRUST` and `TIER_B_LIMITED`, non-empty feature schema and extractor versions, and successful calls through the existing Phase 8 read/query interfaces (`active_generation`, `active_records`, `historical_records`, and `evaluation_snapshots`) without creating or repairing anything. If no candidate passes, print exactly `PHASE 9 REAL SMOKE PREREQUISITE FAILED` and exit non-zero; never create, import, rebuild, repair, or weaken Phase 8 artifacts.
+  3. Record SHA-256/size/mtime fingerprints for the source DB, Phase 7 catalog, and the verified Phase 8 root before work. Open Phase 5/6 and Phase 7/8 artifacts through read-only adapters; never instantiate a writer-owning catalog.
   4. Select one saved real ForexMarketSnapshot row, freeze its timestamp, perform one EvidenceOrchestrator query, build one context, run one real local Ollama/Qwen evidence-enabled forex replay, validate the final action references, and append one Phase 9 audit.
   5. Run the deterministic fake-model A/B harness in the same process without a second real Qwen baseline run.
   6. Record source/artifact fingerprints after work, loopback_connection_attempts, external_network_attempts, retrieval_count, context hash/size/counts, generation IDs, bundle/source statuses, action/normalization/citation status, provider/model settings, latency and existing LLM/tool telemetry, and warnings/errors. Never record prompts, completions, or reasoning.
 
   Install a loopback-only socket and URL guard around the real run. The guard records loopback_connection_attempts for 127.0.0.1, ::1, localhost, and the documented local IPC path. Every other address increments external_network_attempts and raises NetworkAttempt before the request is sent. The final report must expose both counters and the command must exit non-zero when external_network_attempts is non-zero.
 
-  Use this exact PowerShell smoke command from the repository root (the Phase 8 root follows the repository’s ExperienceConfig default and must already contain the accepted artifacts):
+  Resolve the Phase 8 root before the smoke. The operator-resolved variable below is intentionally supplied at run time; it is not a repository default and must not be replaced with an unverified hard-coded path:
 
-    $env:KNOWLEDGE_OFFLINE="1"; $env:HF_HUB_OFFLINE="1"; $env:TRANSFORMERS_OFFLINE="1"; python scripts/phase9_evidence_smoke.py --source-db C:\AITrading\TradingAgents\data_cache\phase6-final-authoritative-20260910.db --experience-artifact-root C:\AITrading\TradingAgents\data_cache\experience --knowledge-artifact-root C:\Users\Zaid barghouthi\AppData\Local\Temp\p7sf3 --knowledge-embedding-model-path C:\Users\Zaid barghouthi\AppData\Local\Temp\phase7-final-artifacts\embeddings\BAAI--bge-small-en-v1.5 --profile INTRADAY --analysts market,news --offline --report-path C:\AITrading\TradingAgents\data_cache\evidence_runtime\phase9-real-smoke-report.json
+    $phase8Root = "<verified accepted Phase 8 artifact root>"
+    $env:KNOWLEDGE_OFFLINE="1"; $env:HF_HUB_OFFLINE="1"; $env:TRANSFORMERS_OFFLINE="1"; python scripts/phase9_evidence_smoke.py --source-db C:\AITrading\TradingAgents\data_cache\phase6-final-authoritative-20260910.db --experience-artifact-root $phase8Root --knowledge-artifact-root C:\Users\Zaid barghouthi\AppData\Local\Temp\p7sf3 --knowledge-embedding-model-path C:\Users\Zaid barghouthi\AppData\Local\Temp\phase7-final-artifacts\embeddings\BAAI--bge-small-en-v1.5 --profile INTRADAY --analysts market,news --offline --report-path C:\AITrading\TradingAgents\data_cache\evidence_runtime\phase9-real-smoke-report.json
 
-  If the accepted Phase 8 artifact root is absent or does not contain a validated generation, fail visibly with a typed error; never import, rebuild, or create Phase 7/8 artifacts as part of this smoke.
-- [ ] VERIFY: Run python -m pytest -q tests/test_phase9_smoke_harness.py tests/test_forex_phase9_replay.py tests/test_forex_phase9_isolation.py. A local fake smoke passes with zero external attempts and no source/artifact writes. The real command is run only after implementation review and local prerequisites are confirmed; its output is evidence, not fabricated by the script.
+  The smoke must fingerprint the verified root before and after work and fail if any Phase 8 bytes change. A previously accepted root may be used only after this preflight succeeds. The source DB and Phase 7 catalog receive the same before/after immutability check.
+- [ ] VERIFY: Run python -m pytest -q tests/test_phase9_smoke_harness.py tests/test_forex_phase9_replay.py tests/test_forex_phase9_isolation.py. A local fake smoke passes with zero external attempts and no source/artifact writes; the Phase 8 preflight rejects an absent, unpublished, trust-policy-incompatible, or query-incompatible root. The real command is run only after the operator-resolved root passes preflight; its output is evidence, not fabricated by the script.
 - [ ] COMMIT: Stage scripts/phase9_evidence_replay.py, scripts/phase9_evidence_smoke.py, and tests/test_phase9_smoke_harness.py. Commit with:
 
     git add scripts/phase9_evidence_replay.py scripts/phase9_evidence_smoke.py tests/test_phase9_smoke_harness.py
@@ -458,16 +464,16 @@
 
     git diff --check
 
-  Run the mandatory smoke command from Task 14 if local Ollama/Qwen and accepted Phase 7/8 artifacts are available. Do not substitute a hosted endpoint or synthetic real report. If local dependencies are unavailable, report the typed prerequisite failure and keep implementation evidence separate from smoke evidence.
+  Run the mandatory real smoke command from Task 14 as an absolute completion gate. If Ollama/Qwen, the source DB, the completed Phase 7 artifacts, the local embedding model, or a verified accepted Phase 8 root is unavailable, report `PHASE 9 REAL SMOKE PREREQUISITE FAILED` and mark Phase 9 NOT COMPLETE. If the real smoke exits non-zero or any required assertion fails, mark Phase 9 NOT COMPLETE. Fixtures, full pytest, Ruff, compileall, and diff checks never substitute for this real evidence-enabled run. Do not substitute a hosted endpoint or synthetic real report.
 
-  Capture the smoke report with node metadata only, including one query, context hash, K/E/S counts, local endpoint, generation IDs, external_network_attempts=0, and no prompts/completions/reasoning. Verify the Phase 5/6 source, Phase 7 catalog, and Phase 8 catalog fingerprints are unchanged.
+  Capture the smoke report with node metadata only, including `real_smoke=PASS`, one query (`retrieval_count=1`), context hash, K/E/S counts, confirmed local Ollama/Qwen provider, generation IDs, `external_network_attempts=0`, final normalized action, citation-validation result, and no prompts/completions/reasoning. Verify the Phase 5/6 source DB, Phase 7 catalog, and Phase 8 artifact fingerprints are unchanged. If any field cannot be demonstrated, report `PHASE 9 NOT COMPLETE`.
 
   Review the complete implementation scope with:
 
     git diff 70bf6796ab74df99eb47e9e67083b6e2d1678c79...HEAD -- tradingagents cli scripts tests pyproject.toml
 
   Confirm explicitly that the diff contains no order or execution API, no Phase 7/8 writer call, no trust-policy weakening, no per-agent retrieval, no model-generated query, no cloud evidence payload, no fine-tuning/training, no Phase 10 code, no stock evidence switch, and no credential or reasoning leakage.
-- [ ] VERIFY: The full pytest suite, Ruff, compileall, and git diff --check are green. The working tree contains only the focused implementation commits and the final verification record; no generated smoke report is committed.
+- [ ] VERIFY: The full pytest suite, Ruff, compileall, and git diff --check are green, and the mandatory real smoke has `real_smoke=PASS` with every required evidence and immutability field present. Only then may the completion review proceed. The working tree contains only the focused implementation commits and the final verification record; no generated smoke report is committed.
 - [ ] COMMIT: Stage only verification documentation if a verification record is requested by the reviewer. Do not stage databases, model artifacts, prompts, completions, reasoning, credentials, or smoke outputs. Commit with:
 
     git commit -m "chore: verify phase9 evidence integration"
@@ -478,7 +484,7 @@
 |---|---|
 | Runner-owned one-time retrieval and one snapshot | Tasks 3, 4, and 9 |
 | Immutable EvidenceContext complete field contract | Tasks 1 and 2 |
-| Deterministic K/E/S IDs and 4/4/6000 budget | Task 2 |
+| Deterministic K/E/S IDs and 4/4/2/6000 budget | Task 2 |
 | Frozen snapshot as_of and no completion-time cutoff | Tasks 3, 4, 9, and 11 |
 | Forex-safe deterministic Knowledge query | Task 3 |
 | Separate Phase 8 Experience and optional statistics | Tasks 3 and 4 |
@@ -490,24 +496,33 @@
 | Final evidence-use status and reference validation | Task 8 |
 | Append-only exact bounded audit | Task 5 and Task 9 |
 | Audit write failure remains non-executing | Tasks 5 and 9 |
+| Phase 5/6 database schema and source rows remain unchanged | Tasks 5, 8, 9, 11, 13, and 14 |
+| Replay writes zero Phase 5/6 decisions | Task 11 |
+| Timeout leaves zero live evidence workers | Task 4 |
+| Phase 7/8 result ordering is preserved | Task 2 |
+| Read-only adapter semantic parity | Task 4 |
 | Checkpoint/run identity isolation | Task 10 |
 | Saved-snapshot A/B replay and generation pinning | Task 11 |
 | Forex-only configuration and stock CLI isolation | Task 12 |
 | No implicit maintenance and local privacy boundary | Tasks 4 and 13 |
 | Loopback-only real acceptance network policy | Tasks 13 and 14 |
-| Mandatory local Qwen acceptance smoke | Task 14 |
+| Mandatory local Qwen acceptance smoke | Tasks 14 and 15; prerequisite or smoke failure means NOT COMPLETE |
 | Phase 10 handoff and no training/execution | Global Constraints and Task 15 |
 
 ## Type and naming contract
 
 The following names are fixed across every task:
 
-- EvidenceQueryPolicy, EvidenceSnapshotAdapter, CanonicalKnowledgeQuery, CanonicalEvidenceItem, EvidenceContext, EvidenceReferenceValidation, and Phase9EvidenceContextBuilder are in tradingagents/forex/evidence_context.py.
-- EvidenceIntegrationService, ReadonlyKnowledgeCatalog, and ReadonlyExperienceCatalog are in tradingagents/forex/evidence_runtime.py.
+- EvidenceQueryPolicy, EvidenceSnapshotAdapter, CanonicalKnowledgeQuery, CanonicalEvidenceItem, EvidenceContext, EvidenceReferenceValidation, and Phase9EvidenceContextBuilder are in tradingagents/forex/evidence_context.py. EvidenceSnapshotAdapter exposes only `to_market_state(snapshot: ForexMarketSnapshot, *, resolved_symbol: str, analysis_profile: str, analysis_timeframe: str) -> Mapping[str, Any]`; EvidenceQueryPolicy alone exposes `build_knowledge_query(snapshot: ForexMarketSnapshot, *, resolved_symbol: str, analysis_profile: str, analysis_timeframe: str) -> CanonicalKnowledgeQuery` and `build_request(snapshot: ForexMarketSnapshot, *, resolved_symbol: str, analysis_profile: str, analysis_timeframe: str, as_of: datetime) -> tuple[EvidenceRequest, CanonicalKnowledgeQuery]`.
+- `strip_transient_evidence_metadata(raw_result: Mapping[str, Any]) -> Mapping[str, Any]` is the only helper allowed to prepare the raw Portfolio Manager mapping for unchanged ShadowTradeDecision persistence; evidence-reference metadata remains available only in the in-memory result and Phase 9 audit.
+- EvidenceIntegrationService, ReadonlyKnowledgeCatalog, and ReadonlyExperienceCatalog are in tradingagents/forex/evidence_runtime.py. `EvidenceIntegrationService.retrieve(self, snapshot: ForexMarketSnapshot, *, resolved_symbol: str, analysis_profile: str, analysis_timeframe: str) -> EvidenceContext` is the sole integration entry point.
+- EvidenceTimeout is the typed bounded-query timeout raised by the killable process boundary in evidence_runtime.py.
 - EvidenceUsageAudit, EvidenceAuditStore, and AuditWriteError are in tradingagents/forex/evidence_audit.py.
-- EvidenceReplayConfig, SavedSnapshotCodec, SavedSnapshotReplay, EvidenceReplayReport, and SnapshotReplayError are in tradingagents/forex/evidence_replay.py.
+- EvidenceReplayConfig, SavedSnapshotCodec, SavedSnapshotReplay, EvidenceReplayReport, and SnapshotReplayError are in tradingagents/forex/evidence_replay.py. `SavedSnapshotReplay.run(snapshot: ForexMarketSnapshot, *, snapshot_bytes: bytes, config: EvidenceReplayConfig) -> EvidenceReplayReport` calls the non-persisting runner analysis seam only.
 - render_supporting_evidence is in tradingagents/forex/evidence_prompt.py.
-- The only evidence service method called by ForexShadowRunner is EvidenceIntegrationService.retrieve.
+- `resolve_verified_phase8_root(candidate: Path) -> Phase8ArtifactPreflight` is in scripts/phase9_evidence_smoke.py and is mandatory before the real smoke command.
+- `ForexShadowRunner.analyze(symbol: str = "EURUSD", count: int = 100, analysis_date: date | str | None = None, terminal_path: str | None = None, analysts: Sequence[str] | None = None, *, callbacks: Sequence[Any] | None = None, analysis_profile: str = "INTRADAY", source_run_id: str | None = None) -> ForexAnalysisResult` is non-persisting; `run` retains its current public signature and is the only method that writes ShadowTradeDecision.
+- The only evidence service method called by ForexShadowRunner is `EvidenceIntegrationService.retrieve`.
 - The only evidence query method called by the integration service is the existing EvidenceOrchestrator.query.
 - EvidenceContext is the only evidence object placed in AgentState; no node receives a private copy.
 
@@ -518,7 +533,11 @@ The following names are fixed across every task:
 - Type consistency: all shared contracts and module locations are defined once in the Type and naming contract and reused unchanged.
 - Baseline mode: zero evidence construction/calls and no artifact requirement are covered by Tasks 4, 9, 12, and 13.
 - Privacy: read-only adapters, local-endpoint guard, forbidden-field audit validation, and loopback smoke guard are covered by Tasks 4, 5, 13, and 14.
-- No Phase 7/8 mutation: runtime adapters use mode=ro and all mutation constructors are guarded in tests.
+- No Phase 5/6 schema change: ShadowTradeDecision and its SQLite database are not modified; replay fingerprints bytes, tables, columns, and row counts before and after analysis.
+- No Phase 7/8 mutation: runtime adapters use mode=ro, parity tests compare existing reader semantics, and all mutation constructors are guarded in tests.
+- Timeout safety: the existing no-deadline query stack uses a killable spawned process; timeout tests confirm no worker remains and no later mutation occurs.
+- Ordering safety: Phase 7 and Phase 8 returned ranking order is preserved; Phase 9 applies only source caps and canonical serialization.
+- Real smoke gate: Task 15 marks Phase 9 NOT COMPLETE when the verified Phase 8 root or real local Qwen smoke is unavailable or fails.
 - No stock integration: stock prompt branches, stock graph signatures, stock CLI entry point, and stock tests are explicitly protected.
 - No strategy, execution, training, fine-tuning, RAG-to-decision beyond approved forex evidence injection, or Phase 10 work is included.
 - No Phase 9 implementation starts from this plan until explicit execution authorization is received.
