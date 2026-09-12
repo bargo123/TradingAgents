@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -60,12 +60,20 @@ class EvidenceSourceKind(_ValueEnum):
 
 
 def _freeze(value: Any) -> Any:
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value.astimezone(timezone.utc)
+    if is_dataclass(value) and not isinstance(value, type):
+        return MappingProxyType({field.name: _freeze(getattr(value, field.name)) for field in fields(value)})
     if isinstance(value, Mapping):
         return MappingProxyType({str(k): _freeze(v) for k, v in sorted(value.items(), key=lambda x: str(x[0]))})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(v) for v in value)
     if isinstance(value, (set, frozenset)):
         return frozenset(_freeze(v) for v in value)
+    if isinstance(value, Collection) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(_freeze(v) for v in value)
     return value
 
 
@@ -192,7 +200,7 @@ class EvidenceContext:
     knowledge_items: tuple[CanonicalEvidenceItem, ...] = ()
     experience_items: tuple[CanonicalEvidenceItem, ...] = ()
     statistics_items: tuple[CanonicalEvidenceItem, ...] = ()
-    statistics_status: str = "EMPTY"
+    statistics_status: str = "NOT_REQUESTED"
     diagnostics: Mapping[str, Any] = None
     source_errors: Mapping[str, Any] = None
     rendered_context: str = ""

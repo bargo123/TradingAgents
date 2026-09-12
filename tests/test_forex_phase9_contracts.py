@@ -1,4 +1,5 @@
 import json
+from collections import deque
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 
@@ -62,11 +63,26 @@ def test_closed_status_and_rejection_enums():
 
 
 def test_nested_mappings_are_immutable():
-    context = EvidenceContext(diagnostics={"nested": {"x": [1]}})
+    context = EvidenceContext(diagnostics={"nested": {"x": [1], "queue": deque([2, 3])}})
     with pytest.raises(TypeError):
         context.diagnostics["new"] = 1
     with pytest.raises(TypeError):
         context.diagnostics["nested"]["x"][0] = 2
+    with pytest.raises(TypeError):
+        context.diagnostics["nested"]["queue"][0] = 4
+
+
+def test_nested_timestamps_are_rejected_or_normalized_to_utc():
+    with pytest.raises(ValueError):
+        EvidenceContext(diagnostics={"nested": {"when": datetime(2026, 1, 1)}})
+    offset = datetime(2026, 1, 1, 2, tzinfo=timezone(timedelta(hours=2)))
+    context = EvidenceContext(diagnostics={"nested": {"when": offset}})
+    assert context.diagnostics["nested"]["when"].tzinfo is timezone.utc
+    assert context.diagnostics["nested"]["when"].hour == 0
+
+
+def test_statistics_status_defaults_to_not_requested():
+    assert EvidenceContext().statistics_status == "NOT_REQUESTED"
 
 
 def test_contracts_are_json_serializable():
