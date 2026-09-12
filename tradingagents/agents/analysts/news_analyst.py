@@ -41,6 +41,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_macro_indicators,
     get_news,
     get_prediction_markets,
+    render_supporting_evidence,
 )
 from tradingagents.forex.news import get_forex_global_news
 from tradingagents.forex.profile import build_forex_profile_context
@@ -54,6 +55,7 @@ def create_news_analyst(llm, market_data_mode: str = "stock"):
         instrument_context = get_instrument_context_from_state(state)
 
         if market_data_mode == "forex_mt5" or asset_type == "forex":
+            evidence_block = render_supporting_evidence(state)
             tools = [get_forex_global_news]
             system_message = (
                 "You are a forex news researcher for an intraday currency-pair decision. "
@@ -63,6 +65,7 @@ def create_news_analyst(llm, market_data_mode: str = "stock"):
                 "Never infer that no CPI, NFP, central-bank, geopolitical, or other event "
                 "occurred. Instrument-specific issuer information is unavailable; do not infer it.\n"
                 + build_forex_profile_context(state.get("forex_analysis_profile"))
+                + (f"\n\n{evidence_block}" if evidence_block else "")
                 + get_language_instruction()
             )
         else:

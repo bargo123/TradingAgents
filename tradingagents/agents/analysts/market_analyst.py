@@ -40,6 +40,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_stock_data,
     get_verified_market_snapshot,
+    render_supporting_evidence,
 )
 
 
@@ -50,6 +51,7 @@ def create_market_analyst(llm, market_data_mode: str = "stock", mt5_tools=None):
         asset_type = state.get("asset_type", "stock")
 
         if market_data_mode == "forex_mt5" or asset_type == "forex":
+            evidence_block = render_supporting_evidence(state)
             if mt5_tools is None or not callable(getattr(mt5_tools, "as_tools", None)):
                 raise ValueError("forex market analyst requires an MT5 adapter")
             available_tools = list(mt5_tools.as_tools())
@@ -68,6 +70,7 @@ def create_market_analyst(llm, market_data_mode: str = "stock", mt5_tools=None):
                 "action, bid/ask/spread, volatility, and the cached MT5 snapshot. "
                 "Issuer-level fundamentals and corporate events are unavailable; "
                 "do not infer them."
+                + (f"\n\n{evidence_block}" if evidence_block else "")
                 + get_language_instruction()
             )
         else:

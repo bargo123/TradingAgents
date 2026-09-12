@@ -10,6 +10,7 @@ from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    render_supporting_evidence,
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
@@ -45,6 +46,8 @@ def create_trader(llm):
             report_section = ""
 
         if state.get("asset_type") == "forex":
+            evidence_block = render_supporting_evidence(state)
+            forex_suffix = NO_EXTERNAL_TOOLS + get_language_instruction()
             messages = [
                 {
                     "role": "system",
@@ -58,8 +61,7 @@ def create_trader(llm):
                         "Any entry or stop levels are observational only; no order is sent. "
                         "Issuer-level fundamentals are unavailable for forex; do not infer them. "
                         + grounding
-                        + NO_EXTERNAL_TOOLS
-                        + get_language_instruction()
+                        + ("" if evidence_block else forex_suffix)
                     ),
                 },
                 {
@@ -73,6 +75,13 @@ def create_trader(llm):
                     ),
                 },
             ]
+            if evidence_block:
+                messages.append(
+                    {
+                        "role": "system",
+                        "content": f"{evidence_block}\n\n{forex_suffix}",
+                    }
+                )
         else:
             messages = [
                 {

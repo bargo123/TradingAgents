@@ -42,6 +42,8 @@ __all__ = [
     "build_instrument_context",
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
+    "render_supporting_evidence",
+    "render_final_pm_evidence_instruction",
     "get_language_instruction",
     "create_msg_delete",
 ]
@@ -65,6 +67,22 @@ def get_language_instruction() -> str:
     if lang.strip().lower() == "english":
         return ""
     return f" Write your entire response in {lang}."
+
+
+def render_supporting_evidence(state: Mapping[str, Any]) -> str:
+    """Expose the forex evidence renderer without creating an import cycle."""
+    from tradingagents.forex.evidence_prompt import render_supporting_evidence as _render
+
+    return _render(state)
+
+
+def render_final_pm_evidence_instruction() -> str:
+    """Expose the bounded forex PM instruction without importing forex eagerly."""
+    from tradingagents.forex.evidence_prompt import (
+        render_final_pm_evidence_instruction as _render,
+    )
+
+    return _render()
 
 
 def opponent_argument_or_opening(text: str, opponent: str) -> str:

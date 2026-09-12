@@ -6,6 +6,7 @@ from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    render_supporting_evidence,
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
@@ -26,6 +27,8 @@ def create_research_manager(llm):
 
         is_forex = state.get("asset_type") == "forex"
         if is_forex:
+            evidence_block = render_supporting_evidence(state)
+            evidence_before_suffix = f"{evidence_block}\n\n" if evidence_block else ""
             prompt = f"""As the Research Manager for an intraday forex shadow analysis, critically evaluate the bull/bear debate and deliver a clear, actionable plan for the trader. This is a minutes-to-hours currency-pair decision, not a long-term equity investment. Shadow analysis only; no order is sent.
 
 {build_forex_profile_context(state.get("forex_analysis_profile"))}
@@ -48,6 +51,7 @@ Commit to a directional stance only when observed price action, spread, volatili
 **Debate History:**
 {history}
 
+{evidence_before_suffix}
 {NO_EXTERNAL_TOOLS}""" + get_language_instruction()
         else:
             prompt = f"""As the Research Manager and debate facilitator, your role is to critically evaluate this round of debate and deliver a clear, actionable investment plan for the trader.

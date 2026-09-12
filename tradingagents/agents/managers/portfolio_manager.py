@@ -22,6 +22,8 @@ from tradingagents.agents.schemas import (
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    render_final_pm_evidence_instruction,
+    render_supporting_evidence,
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
@@ -65,6 +67,12 @@ def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
 
         if is_forex:
             profile_context = build_forex_profile_context(state.get("forex_analysis_profile", forex_profile))
+            evidence_block = render_supporting_evidence(state)
+            evidence_prompt_section = (
+                f"{evidence_block}\n\n{render_final_pm_evidence_instruction()}"
+                if evidence_block
+                else render_final_pm_evidence_instruction()
+            )
             prompt = f"""As the Portfolio Manager for a currency pair, synthesize the risk analysts' debate and return one structured portfolio rating.
 
 {instrument_context}
@@ -97,6 +105,7 @@ def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
 
 Ground the rating in observed currency-pair price action, spread, volatility, and broad macro context from the analysts. Commit to a directional call only when evidence clearly supports one; choose Hold when the case is balanced, materially conflicting, ambiguous, or insufficient. Entry and risk levels are hypothetical observations only; no order is sent. Return the exact analysis profile and a bounded valid_for_seconds value. Use minutes-to-hours horizons only; never use months, years, long-term equity language, issuer valuation, dividends, or company fundamentals. Do not infer issuer-level business data.
 
+{evidence_prompt_section}
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
         else:
             prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.

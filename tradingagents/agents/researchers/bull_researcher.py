@@ -2,6 +2,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
     opponent_argument_or_opening,
+    render_supporting_evidence,
 )
 
 
@@ -48,6 +49,7 @@ Use this information to deliver a compelling bull argument, refute the bear's co
 """ + get_language_instruction()
 
         if asset_type == "forex":
+            evidence_block = render_supporting_evidence(state)
             prompt = f"""You are the Bull Analyst for the {target_label} currency pair. Build an evidence-based case from observed price action, spread, volatility, and broad macro news. Do not invent issuer-level fundamentals or corporate facts: those fundamentals are unavailable for forex.
 
 This is an INTRADAY decision with a minutes-to-hours horizon. Do not discuss
@@ -61,7 +63,7 @@ Global news report: {news_report}
 Conversation history: {history}
 Last bear argument: {current_response}
 
-Address the bear argument directly, distinguish observations from assumptions, and state when evidence is insufficient for a directional view.""" + get_language_instruction()
+Address the bear argument directly, distinguish observations from assumptions, and state when evidence is insufficient for a directional view.""" + (f"\n\n{evidence_block}" if evidence_block else "") + get_language_instruction()
 
         response = llm.invoke(prompt)
 
