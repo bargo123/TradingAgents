@@ -4,73 +4,136 @@ Date: 2026-09-12
 Worktree: `C:\AITrading\TradingAgents-phase8-implementation`
 Branch: `codex/phase-8-experience-memory`
 Approved design baseline: `a878fb39c8df22e4dfbe8f049a5e52861233bfaa`
+Baseline before acceptance closure: `e5246624516cc5eaceec5906526ee53c014a80fe`
+Closure code commit: `da8d5b4762added679f13657d80c2a9e86639112`
 
 ## Decision
 
 **PHASE 8 NOT COMPLETE**
 
-The focused Phase 8 suite passes, but the repository-wide suite cannot collect
-because this checkout's environment is missing existing repository
-dependencies. Ruff is unavailable. The mandatory real smoke was not run: no
-published Phase 7 `catalog.sqlite3`/artifact root and no existing local Phase 7
-embedding model were found. No smoke was fabricated and no smoke was run a
-second time.
+All functional and real read-only smoke gates pass. The required repository
+Ruff scope remains non-zero because the existing Phase 8 package and tests
+contain 195 pre-existing style findings (mostly compact-layout `E701`/`I001`
+findings). The two files changed during this closure are Ruff-clean. No mass
+formatting of the already-reviewed Phase 8 implementation was performed.
+
+## Environment restoration
+
+- Python: `C:\Users\Zaid barghouthi\AppData\Local\Programs\Python\Python312\python.exe`
+- Python version: `3.12.10`
+- pip version: `25.0.1`
+- Supported install: `python -m pip install -e ".[dev,knowledge]"`
+- Declared sources: `pyproject.toml` project plus `dev` and `knowledge`
+  extras (no ad-hoc dependency installs).
+- Previously missing imports now resolve: `requests`, `langchain_core`,
+  `langchain_anthropic`, `langgraph`, `typer`, `questionary`, `yfinance`,
+  `httpx`, `fastembed`, `lancedb`, and `onnxruntime`.
+- `python -m ruff --version`: `ruff 0.16.7`
 
 ## Verification evidence
 
-| Gate | Command/evidence | Result |
+| Gate | Exact command/evidence | Result |
 |---|---|---|
-| Focused Phase 8 tests | `pytest` over the 20 files matching `tests/test_experience_*.py` (PowerShell enumerated explicit paths) | **PASS — 120 passed in 4.47s** |
-| Repository tests | `pytest -q` | **BLOCKED — exit 1; 63 collection errors in 2.99s** |
-| Missing dependency evidence | Collection reported missing `requests`, `langchain_core`, `langchain_anthropic`, `langgraph`, `typer`, `questionary`, `yfinance`, and `httpx` (among the pre-existing non-Phase-8 tests) | **BLOCKED** |
-| Ruff | `ruff check tradingagents/experience tests/test_experience_*.py scripts/experience_phase8_smoke.py` | **BLOCKED — `ruff` command not recognized** |
+| Focused Phase 8 | PowerShell-enumerated `tests/test_experience_*.py` paths | **PASS — 123 passed in 4.93s** |
+| Isolation/forbidden-boundary | `python -m pytest tests/test_experience_leakage.py -q` | **PASS — 8 passed in 0.62s** |
+| Full repository | `python -m pytest -q` | **PASS — 1220 passed, 6 skipped, 71 subtests in 152.26s** |
+| Ruff required scope | `python -m ruff check tradingagents/experience scripts/experience_phase8_smoke.py <enumerated experience tests> --output-format concise` | **FAIL — exit 1, 195 existing findings** |
+| Ruff closure files | `python -m ruff check scripts/experience_phase8_smoke.py tests/test_experience_task12_scripts.py` | **PASS — all checks passed** |
 | Compile | `python -m compileall tradingagents/experience scripts/experience_phase8_smoke.py` | **PASS — exit 0** |
 | Branch diff whitespace | `git diff --check a878fb39c8df22e4dfbe8f049a5e52861233bfaa` | **PASS — exit 0** |
 
-The first literal PowerShell invocation of `pytest tests/test_experience_*.py
--q` did not expand the wildcard and collected no tests; the required focused
-suite was then run with all 20 matching file paths explicitly and produced the
-120-test result above.
+The full suite skips only the repository’s opt-in Bedrock/DeepSeek/MT5/live
+integration tests; no Phase 8 test failed or failed collection.
 
-## Real smoke preflight
+## Phase 7 read-only preflight
 
-The smoke was **not run** because its mandatory inputs were not all available.
-The following source candidate exists and was inspected read-only:
+Existing accepted artifacts were used without rebuilding or modification:
+
+- Artifact root: `C:\Users\Zaid barghouthi\AppData\Local\Temp\p7sf3`
+- Catalog: exists and is opened read-only.
+- Active/validated generation: `gen_b549ce10d71b4a61ba322303d57b0514`
+- Paired projections: LanceDB and SQLite FTS5, 766 vector rows and 766 lexical rows.
+- Model path: `C:\Users\Zaid barghouthi\AppData\Local\Temp\phase7-final-artifacts\embeddings\BAAI--bge-small-en-v1.5`
+- Model/spec: `BAAI/bge-small-en-v1.5`, 384 dimensions, `fastembed-0.8.0`,
+  `onnx-cpu`, 512 model tokens / 510 corpus tokens, L2 normalization,
+  truncation disabled.
+- Artifact hash:
+  `sha256:dcc52dedc73755de62156d8cce48d99856550891584e3a4a35d23f6f178fa9a8`
+- Tokenizer fingerprint:
+  `sha256:68dc27b880f637aa72ef58f9c2468c8975be76b9a5b402b101bbabf02c70cc2f`
+- One local `KnowledgeQuery("order flow imbalance")` returned 3
+  provenance-bearing hits; no parser, ingestor, or writer was constructed;
+  network attempts: 0.
+
+## Real Phase 5/6 source preflight
 
 - Source DB: `C:\AITrading\TradingAgents\data_cache\phase6-final-authoritative-20260910.db`
-- Size: `241664` bytes
-- SHA-256: `3134819B19E54941A8EB1D17BB953AEC916CABC1ED1D0524BF6702146A420D84`
-- Creation UTC: `2026-09-10T12:49:53.1588817Z`
-- Last-write UTC: `2026-09-10T13:21:18.0533861Z`
-- WAL: `C:\AITrading\TradingAgents\data_cache\phase6-final-authoritative-20260910.db-wal` absent
+- SHA-256 before/after:
+  `3134819b19e54941a8eb1d17bb953aec916cabc1ed1d0524bf6702146a420d84`
+- Size before/after: `241664` bytes
+- mtime before/after: `1789046478053386100`
+- WAL before/after: absent
+- Read-only snapshot: 1 decision, 8 evaluations; source unchanged: `true`.
 
-No existing Phase 7 published catalog/artifact root or local embedding model
-was found in `C:\AITrading\TradingAgents-phase7-worktree`; its `data_cache`
-contains only `shadow_decisions.db`. Consequently there was no valid fresh
-dedicated Phase 8 root to create for a real run, and there are no smoke counts,
-generations, provenance/stats/evidence results, network-attempt count, or
-source before/after comparison to report. The smoke network-attempt count is
-therefore **not measured**, not zero. No Phase 8 artifact root was deleted or
-overwritten.
+## Final real Phase 8 smoke
 
-## Scope and forbidden-boundary audit
+The first smoke was attempted only after all preflights. Three report-contract
+defects were found and fixed test-first (nonexistent profile fingerprint,
+mappingproxy serialization, and enum tier-count formatting). Their failed
+roots remain untouched. The final justified run used a fresh root:
 
-`git diff --name-only a878fb39c8df22e4dfbe8f049a5e52861233bfaa..HEAD` was
-inspected. Changes are limited to Phase 8 package files, Phase 8 tests and
-fixture, the Phase 8 smoke script, the `experience` CLI metadata, explicitly
-scoped plan/task documentation, existing task reports, and the cleanup-only
-deletion of duplicate tracked root reports `task-6-report.md` and
-`task-8-report.md`. No files under
-`tradingagents/forex`, MT5/provider, execution, watcher, TradingAgents or
-LangGraph graph behavior, Qwen/Ollama prompts, training, or Phase 7 ingestion
-were changed. The worktree was clean before this report was created.
+- Fresh root (absent before run; no catalog, active pointer, or projections):
+  `C:\Users\Zaid barghouthi\AppData\Local\Temp\phase8-acceptance-9554029e59fe41a4be8261525bf9814e`
+- JSON report:
+  `C:\Users\Zaid barghouthi\AppData\Local\Temp\phase8-acceptance-9554029e59fe41a4be8261525bf9814e-report.json`
+- Invocation used the supported `scripts/experience_phase8_smoke.py` CLI
+  arguments through its `main()` entry point, preloading LanceDB locally on
+  Windows so its in-process socketpair is established before the guard. The
+  script’s offline guard was active before query-service construction.
+- Runtime: `1719.0 ms`; `analysis_invocations=0`; `network_attempts=0`.
+- Source integrity: unchanged (`true`).
 
-## Handoff limits
+Smoke counts and provenance:
 
-Because the real smoke and full repository suite gates are unresolved, this
-report intentionally does not claim generation, experience count, tier
-distribution, feature/profile versions, normalization cohort, leakage results,
-benchmark results, basis/horizon statistics, Knowledge hits, or an
-`EvidenceBundle` acceptance result from real artifacts. The focused tests cover
-the deterministic implementation contracts; they are not a substitute for the
-required real Phase 5/6 + Phase 7 integration smoke.
+- Decisions/evaluations/imported: `1 / 8 / 1`
+- Experiences: `1`; aliases: `1`; quarantine: `0`; feature population: `1`
+- Trust tiers: Tier A `0`, Tier B `0`, Tier C diagnostic-only `1`
+- Feature schema: `experience-features.v1`
+- Feature extractor: `phase8-feature-extractor.v1`
+- Trust policy: `trust-policy.v1`
+- Similarity profile: `similarity-profile.v1`
+- Normalization cohort: `EURUSD / INTRADAY / M1/M5/M15/H1 /
+  experience-features.v1 / phase8-feature-extractor.v1`
+- Normalization population: `1`
+- Normalization fingerprint:
+  `60e2a04b400ec11b7c9b25cf3be4cb2ce6bf9630230076f49d3cf3a54d853a66`
+- Active Phase 8 generation: `gen-b1cd29849026170b2953ade9`
+- Statistics: basis `DECISION_REFERENCE`, horizon `0`, eligible `0`;
+  exclusions were `BASIS_OR_HORIZON_MISMATCH=1` and
+  `TIER_C_DIAGNOSTIC_ONLY=1`.
+- Experience hits: `0` because the only imported decision is correctly
+  excluded as Tier C; no numeric similarity or training evidence was
+  fabricated. Deterministic exact-similarity and leakage tests pass.
+- Phase 7 hits: `3`, each with document/chunk/content-type/page provenance.
+- Combined EvidenceBundle: `COMPLETE` for the requested knowledge source;
+  diagnostics empty.
+
+The source record itself is the known incomplete Phase 6 decision, so its Tier
+C classification and empty numeric-experience result are expected evidence,
+not a relabeling or fabricated success.
+
+## Scope and safety audit
+
+The final branch diff from the approved design baseline was inspected. It does
+not modify MT5/provider code, execution, watcher behavior, TradingAgents or
+LangGraph, Qwen/Ollama, prompts, training/fine-tuning, or Phase 7 ingestion.
+The smoke constructs no MT5/TradingAgents/Ollama resource and performs no
+source-database writes. Existing Phase 8 roots were not deleted or overwritten.
+
+## Handoff
+
+Functional Phase 8 implementation, deterministic tests, full pytest, compile,
+source integrity, fresh-root behavior, Phase 7 read-only integration, and
+offline/network isolation are verified. Completion remains **NOT COMPLETE**
+solely because the required broad Ruff scope exits non-zero on the existing
+reviewed codebase. No Phase 9 work was started; nothing was merged or pushed.
