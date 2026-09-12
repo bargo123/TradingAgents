@@ -20,8 +20,12 @@ from tradingagents.experience.normalization import NormalizationCohortV1, build_
 from tradingagents.experience.orchestrator import EvidenceOrchestrator
 from tradingagents.experience.outcomes import OutcomeStatsCalculator
 from tradingagents.experience.query import ExperienceQueryService
-from tradingagents.knowledge.models import IndexGeneration
+from tradingagents.knowledge.embeddings import EmbeddingProvider
+from tradingagents.knowledge.lexical_index import LexicalIndexReader
+from tradingagents.knowledge.models import EmbeddingSpec, IndexGeneration
 from tradingagents.knowledge.query import KnowledgeQueryService
+from tradingagents.knowledge.reranking import Reranker
+from tradingagents.knowledge.vector_index import VectorIndexReader
 
 from .evidence_context import (
     EvidenceBundleStatus,
@@ -62,6 +66,13 @@ def approved_readonly_factory(factory: Callable[..., Any]) -> Callable[..., Any]
 
     factory.__evidence_runtime_approved__ = True
     return factory
+
+
+def approved_readonly_component(component: Any) -> Any:
+    """Mark a concrete reader/provider wrapper as side-effect free."""
+
+    component.__evidence_runtime_readonly__ = True
+    return component
 
 
 _CLOSED_OBJECT_IDS: set[int] = set()
@@ -443,6 +454,15 @@ def _validate_child_orchestrator(
         raise TypeError("evidence child requires a read-only Phase 7 catalog adapter")
     if not isinstance(experience_catalog, ReadonlyExperienceCatalog):
         raise TypeError("evidence child requires a read-only Phase 8 catalog adapter")
+    vector_reader = getattr(orchestrator.knowledge_service, "vector_reader", None)
+    lexical_reader = getattr(orchestrator.knowledge_service, "lexical_reader", None)
+    embedder = getattr(orchestrator.knowledge_service, "embedder", None)
+    if not isinstance(vector_reader, VectorIndexReader) or not getattr(vector_reader, "__evidence_runtime_readonly__", False):
+        raise TypeError("evidence child requires an approved read-only vector reader")
+    if not isinstance(lexical_reader, LexicalIndexReader) or not getattr(lexical_reader, "__evidence_runtime_readonly__", False):
+        raise TypeError("evidence child requires an approved read-only lexical reader")
+    if not isinstance(embedder, EmbeddingProvider) or not getattr(embedder, "__evidence_runtime_readonly__", False):
+        raise TypeError("evidence child requires an approved read-only embedding provider")
 
     # Only walk the approved object graph.  Looking at every value reachable
     # from an experience record would be both expensive and too permissive;
@@ -454,6 +474,19 @@ def _validate_child_orchestrator(
     )
     pending = [orchestrator]
     seen: set[int] = set()
+    allowed_types = (
+        EvidenceOrchestrator,
+        KnowledgeQueryService,
+        ExperienceQueryService,
+        OutcomeStatsCalculator,
+        ReadonlyKnowledgeCatalog,
+        ReadonlyExperienceCatalog,
+        VectorIndexReader,
+        LexicalIndexReader,
+        EmbeddingProvider,
+        EmbeddingSpec,
+        Reranker,
+    )
     edges = (
         "knowledge_service", "experience_service", "statistics_calculator",
         "catalog", "vector_reader", "lexical_reader", "embedder", "reranker",
@@ -463,6 +496,10 @@ def _validate_child_orchestrator(
         if owner is None or id(owner) in seen:
             continue
         seen.add(id(owner))
+        if not isinstance(owner, allowed_types) and not getattr(owner, "__evidence_runtime_readonly__", False):
+            raise TypeError(
+                f"evidence child dependency is not approved: {type(owner).__module__}.{type(owner).__name__}"
+            )
         type_name = f"{type(owner).__module__}.{type(owner).__name__}".casefold()
         if any(token in type_name for token in forbidden):
             raise TypeError("evidence child cannot own writer or maintenance components")
@@ -478,7 +515,10 @@ def _validate_child_orchestrator(
         # attributes as well so a nested provider/writer cannot hide behind
         # an otherwise innocuous edge name.
         for value in getattr(owner, "__dict__", {}).values():
-            if callable(value) or isinstance(value, (str, bytes, bytearray, Path, Mapping, tuple, list, set, frozenset)):
+            if callable(value) or isinstance(
+                value,
+                (str, bytes, bytearray, int, float, complex, Path, Mapping, tuple, list, set, frozenset),
+            ):
                 continue
             pending.append(value)
 
@@ -633,5 +673,6 @@ __all__ = [
     "ReadonlyEvidenceRuntimeConfiguration",
     "ReadonlyExperienceCatalog",
     "ReadonlyKnowledgeCatalog",
+    "approved_readonly_component",
     "approved_readonly_factory",
 ]

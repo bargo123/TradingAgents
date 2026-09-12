@@ -18,6 +18,7 @@ from tradingagents.experience.models import (
     ExperienceSearchResult,
     TrustTier,
 )
+from tradingagents.experience.normalization import NormalizationCohortV1, build_profile
 from tradingagents.experience.orchestrator import EvidenceOrchestrator
 from tradingagents.experience.outcomes import OutcomeStatsCalculator
 from tradingagents.experience.query import ExperienceQueryService
@@ -32,10 +33,12 @@ from tradingagents.forex.evidence_runtime import (
     ReadonlyExperienceCatalog,
     ReadonlyKnowledgeCatalog,
     _close_orchestrator,
+    approved_readonly_component,
     approved_readonly_factory,
 )
 from tradingagents.knowledge.catalog import KnowledgeCatalog
-from tradingagents.knowledge.embeddings import EmbeddingSpecMismatch
+from tradingagents.knowledge.embeddings import EmbeddingProvider, EmbeddingSpecMismatch
+from tradingagents.knowledge.lexical_index import LexicalIndexReader
 from tradingagents.knowledge.models import (
     EmbeddingSpec,
     IndexGeneration,
@@ -43,6 +46,7 @@ from tradingagents.knowledge.models import (
     KnowledgeQuery,
 )
 from tradingagents.knowledge.query import KnowledgeQueryService
+from tradingagents.knowledge.vector_index import VectorIndexReader
 
 
 def _snapshot() -> ForexMarketSnapshot:
@@ -75,6 +79,26 @@ def _feature_state(value: float) -> dict[str, object]:
     }
 
 
+def _catalog_profiles(catalog):
+    rows = []
+    for record in catalog.active_records() + catalog.historical_records():
+        state = dict(record.market_state or {})
+        state.update(
+            experience_id=record.experience_id,
+            trust_tier=record.trust,
+            feature_fingerprint="persisted",
+            source_aliases=record.source_aliases,
+            analysis_snapshot_timestamp=record.analysis_snapshot_timestamp,
+            decision_completed_timestamp=record.decision_completed_timestamp,
+        )
+        rows.append(state)
+    cohorts = {NormalizationCohortV1(*tuple(row["cohort"])) for row in rows if row.get("cohort")}
+    return {
+        cohort: build_profile([row for row in rows if NormalizationCohortV1(*tuple(row["cohort"])) == cohort], cohort)
+        for cohort in cohorts
+    }
+
+
 def _artifact_roots(tmp_path: Path) -> dict[str, str]:
     roots = {name: tmp_path / name for name in ("knowledge", "experience")}
     for root in roots.values():
@@ -104,6 +128,9 @@ def _readonly_catalogs(config: ReadonlyEvidenceRuntimeConfiguration):
 class _TypedKnowledgeService(KnowledgeQueryService):
     def __init__(self, catalog, hits=(), delay=0.0):
         self.catalog = catalog
+        self.vector_reader = _ReadonlyVectorReader()
+        self.lexical_reader = _ReadonlyLexicalReader()
+        self.embedder = _ReadonlyEmbeddingProvider()
         self.hits = tuple(hits)
         self.delay = delay
 
@@ -111,6 +138,56 @@ class _TypedKnowledgeService(KnowledgeQueryService):
         if self.delay:
             time.sleep(self.delay)
         return self.hits
+
+
+@approved_readonly_component
+class _ReadonlyTokenizer:
+    model_max_input_tokens = 512
+    special_token_budget = 2
+
+    def encode(self, text, *, add_special_tokens, purpose, truncation):
+        return tuple(range(min(len(text), self.model_max_input_tokens)))
+
+
+@approved_readonly_component
+class _ReadonlyEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, spec=None):
+        super().__init__(spec=spec or EmbeddingSpec(), tokenizer=_ReadonlyTokenizer())
+
+    def _embed_formatted(self, texts):
+        return tuple((0.0,) * self.spec.dimensions for _ in texts)
+
+
+@approved_readonly_component
+class _ReadonlyVectorReader(VectorIndexReader):
+    def __init__(self):
+        self._metadata = {
+            "generation_id": "g1",
+            "population_hash": "pop",
+            "embedding_spec": EmbeddingSpec().to_dict(),
+        }
+
+    def metadata(self):
+        return dict(self._metadata)
+
+    def search(self, *_args, **_kwargs):
+        return ()
+
+
+@approved_readonly_component
+class _ReadonlyLexicalReader(LexicalIndexReader):
+    def __init__(self):
+        self._metadata = {
+            "generation_id": "g1",
+            "population_hash": "pop",
+            "embedding_spec": EmbeddingSpec().to_dict(),
+        }
+
+    def metadata(self):
+        return dict(self._metadata)
+
+    def search(self, *_args, **_kwargs):
+        return ()
 
 
 class _TypedExperienceService(ExperienceQueryService):
@@ -207,6 +284,18 @@ def _typed_writer_factory(config):
     knowledge, experience = _readonly_catalogs(config)
     return EvidenceOrchestrator(
         _WriterKnowledgeService(knowledge),
+        _TypedExperienceService(experience),
+        _TypedStatsCalculator(experience),
+    )
+
+
+@approved_readonly_factory
+def _untyped_dependency_factory(config):
+    knowledge, experience = _readonly_catalogs(config)
+    service = _TypedKnowledgeService(knowledge)
+    service.vector_reader = object()
+    return EvidenceOrchestrator(
+        service,
         _TypedExperienceService(experience),
         _TypedStatsCalculator(experience),
     )
@@ -327,6 +416,19 @@ def test_child_guard_rejects_typed_service_with_writer_component(tmp_path: Path)
     assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
 
 
+def test_child_guard_rejects_untyped_reader_dependency(tmp_path: Path):
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        orchestrator_factory=_untyped_dependency_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=_artifact_roots(tmp_path),
+    )
+    context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
+    assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
+
+
 def test_spawn_process_args_contain_no_callable_closures(tmp_path: Path):
     captured = {}
     roots = _artifact_roots(tmp_path)
@@ -366,19 +468,36 @@ def test_populated_phase8_readonly_adapter_matches_writer_semantics(tmp_path: Pa
         market_state=_feature_state(2.0),
         trust="TIER_B_LIMITED",
     )
+    future = writer.upsert_source_alias(
+        "source", "decision-3", "fp-3", symbol="EURUSD",
+        analysis_profile="INTRADAY", analysis_timeframe="M5",
+        analysis_snapshot_timestamp=datetime(2026, 1, 3, tzinfo=timezone.utc),
+        decision_completed_timestamp=datetime(2026, 1, 3, 1, tzinfo=timezone.utc),
+        market_state=_feature_state(3.0),
+        trust="TIER_A_HIGH_TRUST",
+    )
     writer.store_feature_projection(first.experience_id, dict(first.market_state))
+    writer.store_feature_projection(future.experience_id, dict(future.market_state))
     writer.append_evaluation_snapshot(first.experience_id, {"evaluation_status": "COMPLETE", "evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 60}, "eval-1")
     writer.mark_last_alias_removed(second.experience_id)
     writer.publish_generation("generation-1", population_fingerprint="population-1", metadata={"trust_policy_version": "trust-policy.v1"})
     database_before = (tmp_path / "experience" / "catalog.sqlite3").read_bytes()
     readonly = ReadonlyExperienceCatalog(tmp_path / "experience")
-    assert tuple(r.experience_id for r in readonly.active_records()) == (first.experience_id,)
+    assert {r.experience_id for r in readonly.active_records()} == {first.experience_id, future.experience_id}
     assert tuple(r.experience_id for r in readonly.historical_records()) == (second.experience_id,)
-    assert readonly.active_records()[0].source_aliases == writer.active_records()[0].source_aliases
+    assert {r.experience_id for r in readonly.active_records()} == {r.experience_id for r in writer.active_records()}
+    assert readonly.active_records()[0].source_aliases in [r.source_aliases for r in writer.active_records()]
     assert readonly.evaluation_snapshots(first.experience_id) == writer.evaluation_snapshots(first.experience_id)
     assert readonly.feature_projection(first.experience_id)["values"] == [1.0] * len(FEATURE_NAMES_V1)
     assert readonly.active_generation() == writer.active_generation()
-    assert readonly.active_records()[0].trust == writer.active_records()[0].trust
+    assert {r.trust for r in readonly.active_records()} == {r.trust for r in writer.active_records()}
+    writer_profiles = _catalog_profiles(writer)
+    assert set(readonly.profiles) == set(writer_profiles)
+    assert {
+        cohort: profile.population_fingerprint for cohort, profile in readonly.profiles.items()
+    } == {
+        cohort: profile.population_fingerprint for cohort, profile in writer_profiles.items()
+    }
     query = ExperienceQuery(
         market_state=first.market_state,
         top_k=10,
@@ -394,8 +513,18 @@ def test_populated_phase8_readonly_adapter_matches_writer_semantics(tmp_path: Pa
         hit.experience_id for hit in writer_result.hits
     )
     assert readonly_result.excluded_counts == writer_result.excluded_counts
+    assert future.experience_id not in {hit.experience_id for hit in readonly_result.hits}
+    assert readonly_result.excluded_counts["as_of"] == writer_result.excluded_counts["as_of"]
+    no_cutoff = replace(query, as_of=None, trust_tiers=(TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED))
+    readonly_no_cutoff = ExperienceQueryService(readonly, profiles=readonly.profiles).search(no_cutoff)
+    writer_no_cutoff = ExperienceQueryService(writer, profiles=writer_profiles).search(no_cutoff)
+    assert second.experience_id not in {hit.experience_id for hit in readonly_no_cutoff.hits}
+    assert readonly_no_cutoff.excluded_counts["tombstone"] == writer_no_cutoff.excluded_counts["tombstone"] == 1
     stats_request = type("StatsRequest", (), {"experience_ids": (first.experience_id,), "evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 60, "trust_tiers": (TrustTier.TIER_A_HIGH_TRUST,), "as_of": query.as_of})()
-    assert OutcomeStatsCalculator(readonly).calculate(stats_request).excluded_counts == OutcomeStatsCalculator(writer).calculate(stats_request).excluded_counts
+    readonly_stats = OutcomeStatsCalculator(readonly).calculate(stats_request)
+    writer_stats = OutcomeStatsCalculator(writer).calculate(stats_request)
+    assert readonly_stats == writer_stats
+    assert readonly_stats.excluded_counts == writer_stats.excluded_counts
     readonly.close()
     assert (tmp_path / "experience" / "catalog.sqlite3").read_bytes() == database_before
 
@@ -415,6 +544,14 @@ def test_populated_phase7_readonly_adapter_matches_published_generation(tmp_path
     readonly = ReadonlyKnowledgeCatalog(tmp_path)
     assert readonly.active_generation().generation_id == writer.active_generation().generation_id
     assert readonly.document_is_retrieval_ready("doc") == writer.document_is_retrieval_ready("doc") is True
+    query_service = KnowledgeQueryService(
+        _ReadonlyVectorReader(),
+        _ReadonlyLexicalReader(),
+        readonly,
+        _ReadonlyEmbeddingProvider(),
+    )
+    assert query_service.search(KnowledgeQuery(text="published evidence")) == ()
+    assert readonly.active_generation().embedding_spec.to_dict() == EmbeddingSpec().to_dict()
     assert artifact.read_bytes() == artifact_before
 
 
