@@ -1,8 +1,8 @@
 # Phase 8 verification and handoff
 
-Date: 2026-09-12  
-Worktree: `C:\AITrading\TradingAgents-phase8-implementation`  
-Branch: `codex/phase-8-experience-memory`  
+Date: 2026-09-12
+Worktree: `C:\AITrading\TradingAgents-phase8-implementation`
+Branch: `codex/phase-8-experience-memory`
 Approved design baseline: `a878fb39c8df22e4dfbe8f049a5e52861233bfaa`
 
 ## Decision
@@ -20,17 +20,17 @@ second time.
 
 | Gate | Command/evidence | Result |
 |---|---|---|
-| Focused Phase 8 tests | `pytest` over the 20 files matching `tests/test_experience_*.py` (PowerShell enumerated explicit paths) | **PASS — 116 passed in 4.44s** |
+| Focused Phase 8 tests | `pytest` over the 20 files matching `tests/test_experience_*.py` (PowerShell enumerated explicit paths) | **PASS — 120 passed in 4.47s** |
 | Repository tests | `pytest -q` | **BLOCKED — exit 1; 63 collection errors in 2.99s** |
 | Missing dependency evidence | Collection reported missing `requests`, `langchain_core`, `langchain_anthropic`, `langgraph`, `typer`, `questionary`, `yfinance`, and `httpx` (among the pre-existing non-Phase-8 tests) | **BLOCKED** |
 | Ruff | `ruff check tradingagents/experience tests/test_experience_*.py scripts/experience_phase8_smoke.py` | **BLOCKED — `ruff` command not recognized** |
 | Compile | `python -m compileall tradingagents/experience scripts/experience_phase8_smoke.py` | **PASS — exit 0** |
-| Whitespace | `git diff --check` | **PASS — exit 0** |
+| Branch diff whitespace | `git diff --check a878fb39c8df22e4dfbe8f049a5e52861233bfaa` | **PASS — exit 0** |
 
 The first literal PowerShell invocation of `pytest tests/test_experience_*.py
 -q` did not expand the wildcard and collected no tests; the required focused
 suite was then run with all 20 matching file paths explicitly and produced the
-116-test result above.
+120-test result above.
 
 ## Real smoke preflight
 
