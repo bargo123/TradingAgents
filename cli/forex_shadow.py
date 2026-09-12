@@ -82,6 +82,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="INTRADAY",
         help="bounded forex analysis profile (default: INTRADAY)",
     )
+    evidence_group = parser.add_mutually_exclusive_group()
+    evidence_group.add_argument(
+        "--evidence-enabled", dest="evidence_enabled", action="store_true"
+    )
+    evidence_group.add_argument(
+        "--no-evidence", dest="evidence_enabled", action="store_false"
+    )
+    parser.set_defaults(evidence_enabled=None)
 
     # Non-secret runtime overrides. Credentials remain in the provider/host
     # configuration and are never accepted as command-line arguments.
@@ -109,6 +117,8 @@ def _runtime_config(args: argparse.Namespace) -> dict[str, Any]:
         "temperature": args.temperature,
         "max_tokens": args.max_tokens,
     }
+    if args.evidence_enabled is not None:
+        values["forex_evidence_enabled"] = args.evidence_enabled
     return {key: value for key, value in values.items() if value is not None}
 
 
@@ -210,6 +220,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"VALID FOR SECONDS: {getattr(decision, 'valid_for_seconds', None) or 'unknown'}")
     print(f"VALID UNTIL: {_format_timestamp(getattr(decision, 'valid_until', None))}")
     print(f"MACRO/EVENT STATUS: {_metric(metrics, 'macro_event_status')}")
+    print(f"EVIDENCE STATUS: {_metric(metrics, 'evidence_integration_status')}")
     bars_used = metrics.get("bars_used")
     if isinstance(bars_used, Mapping):
         print(f"BARS USED: {json.dumps(dict(bars_used), sort_keys=True)}")

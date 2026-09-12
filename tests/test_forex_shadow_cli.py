@@ -16,9 +16,17 @@ def test_forex_shadow_parser_defaults_and_positive_count():
     assert args.analysts == "market,news"
     assert args.analysis_profile == "INTRADAY"
     assert args.count > 0
+    assert args.evidence_enabled is None
 
     with pytest.raises(SystemExit):
         build_parser().parse_args(["--count", "0"])
+
+
+def test_parser_exposes_evidence_switches_only_for_forex_shadow():
+    assert build_parser().parse_args(["--evidence-enabled"]).evidence_enabled is True
+    assert build_parser().parse_args(["--no-evidence"]).evidence_enabled is False
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--evidence-enabled", "--no-evidence"])
 
 
 def test_forex_shadow_parser_exposes_only_non_secret_runtime_overrides():
@@ -84,6 +92,31 @@ def test_stock_cli_entry_point_string_remains_unchanged():
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
     assert 'tradingagents = "cli.main:app"' in pyproject
     assert "forex-shadow" in pyproject
+
+
+def test_runtime_config_uses_default_off():
+    args = build_parser().parse_args([])
+    assert "forex_evidence_enabled" not in __import__("cli.forex_shadow", fromlist=["_runtime_config"])._runtime_config(args)
+
+
+def test_cli_passes_evidence_flag_without_constructing_stock_graph(monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeRunner:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs.get("config")
+            self.store = type("Store", (), {"path": tmp_path / "shadow.db"})()
+
+        def run(self, **kwargs):
+            decision = type("Decision", (), {
+                "decision_id": "decision-001", "action": "HOLD",
+                "normalization_status": "NORMALIZED", "executed": False,
+            })()
+            return type("Result", (), {"decision": decision, "metrics": {}, "elapsed_seconds": 0})()
+
+    monkeypatch.setattr("cli.forex_shadow.ForexShadowRunner", FakeRunner)
+    assert main(["--evidence-enabled", "--db-path", str(tmp_path / "shadow.db")]) == 0
+    assert captured["config"] == {"forex_evidence_enabled": True}
 
 
 def test_cli_rejects_stock_analysts_before_constructing_runner(capsys, monkeypatch):

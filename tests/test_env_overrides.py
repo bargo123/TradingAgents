@@ -127,3 +127,31 @@ def test_unknown_env_var_is_ignored(monkeypatch):
         TRADINGAGENTS_NONEXISTENT_KEY="oops",
     )
     assert "nonexistent_key" not in dc.DEFAULT_CONFIG
+
+
+def test_forex_evidence_environment_values_are_strictly_coerced(monkeypatch):
+    dc = _reload_with_env(
+        monkeypatch,
+        TRADINGAGENTS_FOREX_EVIDENCE_ENABLED="true",
+        TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS="2.5",
+        TRADINGAGENTS_FOREX_EVIDENCE_KNOWLEDGE_ARTIFACT_ROOT=" C:/knowledge ",
+        TRADINGAGENTS_FOREX_EVIDENCE_KNOWLEDGE_EMBEDDING_MODEL_PATH="",
+        TRADINGAGENTS_FOREX_EVIDENCE_EXPERIENCE_ARTIFACT_ROOT="C:/experience",
+        TRADINGAGENTS_FOREX_EVIDENCE_STATISTICS_HORIZON_SECONDS="900",
+    )
+    assert dc.DEFAULT_CONFIG["forex_evidence_enabled"] is True
+    assert dc.DEFAULT_CONFIG["forex_evidence_timeout_seconds"] == pytest.approx(2.5)
+    assert dc.DEFAULT_CONFIG["forex_evidence_knowledge_artifact_root"] == "C:/knowledge"
+    assert dc.DEFAULT_CONFIG["forex_evidence_knowledge_embedding_model_path"] is None
+    assert dc.DEFAULT_CONFIG["forex_evidence_experience_artifact_root"] == "C:/experience"
+    assert dc.DEFAULT_CONFIG["forex_evidence_statistics_horizon_seconds"] == 900
+
+    monkeypatch.setenv("TRADINGAGENTS_FOREX_EVIDENCE_ENABLED", "maybe")
+    with pytest.raises(ValueError, match="TRADINGAGENTS_FOREX_EVIDENCE_ENABLED"):
+        importlib.reload(default_config_module)
+    monkeypatch.delenv("TRADINGAGENTS_FOREX_EVIDENCE_ENABLED", raising=False)
+    monkeypatch.setenv("TRADINGAGENTS_FOREX_EVIDENCE_STATISTICS_HORIZON_SECONDS", "not-a-number")
+    with pytest.raises(ValueError, match="TRADINGAGENTS_FOREX_EVIDENCE_STATISTICS_HORIZON_SECONDS"):
+        importlib.reload(default_config_module)
+    monkeypatch.delenv("TRADINGAGENTS_FOREX_EVIDENCE_STATISTICS_HORIZON_SECONDS", raising=False)
+    importlib.reload(default_config_module)

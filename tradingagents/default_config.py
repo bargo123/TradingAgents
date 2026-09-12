@@ -34,11 +34,23 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_FOREX_DEEP_EFFORT":            "forex_deep_effort",
     "TRADINGAGENTS_FOREX_QUICK_THINKING":         "forex_quick_thinking",
     "TRADINGAGENTS_FOREX_DEEP_THINKING":          "forex_deep_thinking",
+    "TRADINGAGENTS_FOREX_EVIDENCE_ENABLED": "forex_evidence_enabled",
+    "TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS": "forex_evidence_timeout_seconds",
+    "TRADINGAGENTS_FOREX_EVIDENCE_KNOWLEDGE_ARTIFACT_ROOT": "forex_evidence_knowledge_artifact_root",
+    "TRADINGAGENTS_FOREX_EVIDENCE_KNOWLEDGE_EMBEDDING_MODEL_PATH": "forex_evidence_knowledge_embedding_model_path",
+    "TRADINGAGENTS_FOREX_EVIDENCE_EXPERIENCE_ARTIFACT_ROOT": "forex_evidence_experience_artifact_root",
+    "TRADINGAGENTS_FOREX_EVIDENCE_STATISTICS_HORIZON_SECONDS": "forex_evidence_statistics_horizon_seconds",
 }
 
 
 _BOOL_TRUE = ("true", "1", "yes", "on")
 _BOOL_FALSE = ("false", "0", "no", "off")
+_NULLABLE_PATH_KEYS = {
+    "forex_evidence_knowledge_artifact_root",
+    "forex_evidence_knowledge_embedding_model_path",
+    "forex_evidence_experience_artifact_root",
+}
+_NULLABLE_INT_KEYS = {"forex_evidence_statistics_horizon_seconds"}
 
 
 def _coerce(value: str, reference):
@@ -64,14 +76,40 @@ def _coerce(value: str, reference):
     return value
 
 
+def _coerce_forex_evidence(value: str, key: str):
+    """Coerce forex evidence overrides, including nullable values."""
+    if key in _NULLABLE_PATH_KEYS:
+        stripped = value.strip()
+        return stripped or None
+    if key in _NULLABLE_INT_KEYS:
+        stripped = value.strip()
+        return int(stripped) if stripped else None
+    return _coerce(value, DEFAULT_CONFIG_TYPES[key])
+
+
+DEFAULT_CONFIG_TYPES = {
+    "forex_evidence_enabled": False,
+    "forex_evidence_timeout_seconds": 10.0,
+}
+
+
 def _apply_env_overrides(config: dict) -> dict:
     """Apply TRADINGAGENTS_* env vars to the config dict in-place."""
     for env_var, key in _ENV_OVERRIDES.items():
         raw = os.environ.get(env_var)
-        if raw is None or raw == "":
+        if raw is None:
             continue
         try:
-            config[key] = _coerce(raw, config.get(key))
+            if (
+                key in _NULLABLE_PATH_KEYS
+                or key in _NULLABLE_INT_KEYS
+                or key in DEFAULT_CONFIG_TYPES
+            ):
+                config[key] = _coerce_forex_evidence(raw, key)
+            elif raw == "":
+                continue
+            else:
+                config[key] = _coerce(raw, config.get(key))
         except ValueError as exc:
             raise ValueError(f"Invalid value for {env_var}: {exc}") from exc
     return config
@@ -111,6 +149,16 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "forex_deep_effort": None,
     "forex_quick_thinking": False,
     "forex_deep_thinking": True,
+    # Optional read-only Phase 9 evidence augmentation (forex only).
+    "forex_evidence_enabled": False,
+    "forex_evidence_timeout_seconds": 10.0,
+    "forex_evidence_knowledge_artifact_root": None,
+    "forex_evidence_knowledge_embedding_model_path": None,
+    "forex_evidence_experience_artifact_root": None,
+    "forex_evidence_evaluation_basis": "ANALYSIS_SNAPSHOT",
+    "forex_evidence_statistics_horizon_seconds": None,
+    "forex_evidence_knowledge_top_k": 10,
+    "forex_evidence_experience_top_k": 50,
     # Sampling temperature, forwarded to every provider when set. None leaves
     # each provider at its own default. Lower values reduce run-to-run
     # variation on models that honor it; reasoning models largely ignore it
