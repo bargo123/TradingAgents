@@ -564,6 +564,12 @@ candidate chunk the tokenizer is called with `truncation=False` and the
 purpose `corpus`, including any corpus instruction/formatting and required
 special tokens. The chunker computes:
 
+The public constructor is `StructureAwareChunker(policy, tokenizer)` and both
+arguments are required. There is no default tokenizer or default policy.
+Ingestion derives `policy = ChunkPolicy.for_embedding(provider.spec)` and
+passes `provider.tokenizer`, so the chunker and embedder cannot silently use
+different context limits.
+
 ```text
 effective_content_token_limit =
     max_input_tokens - special_token_budget - corpus_instruction_tokens
@@ -1265,6 +1271,10 @@ The test matrix must include:
 41. offline/no-network behavior when local model artifacts are present; and
 42. isolation checks proving no imports or storage paths reference forex,
     MT5, TradingAgents decisions, or experience memory.
+43. one bounded real local end-to-end smoke over one to three approved source
+    resources, using explicitly provisioned local Docling/FastEmbed artifacts,
+    `do_ocr=False`, offline indexing/search, paired projections, hybrid query,
+    complete provenance, and unchanged source bytes/metadata.
 
 Optional dependency tests may run when the knowledge extra is installed, but
 the core contract tests remain runnable with fakes in the base development
@@ -1429,6 +1439,9 @@ The evidence must also show:
 - query dense retrieval compares the complete embedding specification with the
   active generation before issuing a vector search;
 - interrupted ingestion leaves the last active index usable;
+- one bounded real local parser/embedding/index/query smoke succeeds over one
+  to three approved resources after a separate explicit provisioning step;
+  normal indexing and search remain offline and never auto-download artifacts;
 - no MT5, TradingAgents, stock CLI, execution, or shadow decision behavior
   changes;
 - no RAG context is injected into trading decisions;

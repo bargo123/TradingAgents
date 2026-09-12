@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "title": "Microstructure Fixture",
+    "authors": ["A. Author"],
+    "document_type": "paper",
+    "format": "pdf"
+  },
+  "blocks": [
+    {
+      "block_id": "b-0",
+      "content_type": "PROSE",
+      "text": "A short introduction to the fixture.",
+      "reading_order": 0,
+      "page_start": 1,
+      "section_path": ["Introduction"]
+    },
+    {
+      "block_id": "b-1",
+      "content_type": "EQUATION",
+      "text": "p_t = m_t + lambda I_t",
+      "reading_order": 1,
+      "page_start": 4,
+      "section_path": ["Results", "Prediction"],
+      "equation": {
+        "latex": "p_t = m_t + \\lambda I_t",
+        "parser_native": "p_t = m_t + lambda I_t"
+      }
+    },
+    {
+      "block_id": "b-2",
+      "content_type": "TABLE",
+      "text": "Horizon Accuracy 1 0.71",
+      "reading_order": 2,
+      "page_start": 4,
+      "section_path": ["Results", "Prediction"],
+      "table": {
+        "caption": "Prediction accuracy",
+        "headers": ["Horizon", "Accuracy"],
+        "cells": [["1", "0.71"]]
+      }
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+# Task 9 implementation report
+
+## Scope
+
+- Added the standalone `knowledge` console command without changing the stock
+  `tradingagents` or forex/MT5 command surfaces.
+- Added explicit `index`, `rebuild`, `status`, `list`, `search`, `document`,
+  and `quarantine` dispatch with JSON output and nonzero operational exits.
+- Kept metadata commands catalog-only; search opens only the query embedder and
+  active read-only index readers, and delegates full `EmbeddingSpec`
+  compatibility validation to `KnowledgeQueryService` before dense retrieval.
+- Added operator documentation for offline artifacts, states, aliases,
+  versioned activation, provenance, and the Phase 8 boundary.
+
+## TDD and verification
+
+- Added `tests/test_knowledge_cli.py` first; it failed before implementation
+  because `tradingagents.knowledge.cli` and the `knowledge` entry point did
+  not exist.
+- `python -m pytest tests/test_knowledge_cli.py -q` — 9 passed.
+- Tasks 1–9 suite (`test_knowledge_*.py`) — 150 passed, 1 skipped because
+  optional `docling` is not installed.
+- Repository virtual-environment Ruff check — passed.
+- `py_compile` for the CLI and its tests — passed.
+- `git diff --check` — passed.
+
+## Review fix: stale retrieval option
+
+- Removed the CLI-only `--include-stale` flag. The underlying query service
+  always enforces active/current retrieval readiness, so forwarding that flag
+  was a misleading no-op rather than an approved stale-catalog path.
+- Added a regression test that proves `knowledge search --include-stale` is
+  rejected by argument parsing.
+- Re-verified: focused CLI suite — 10 passed; Tasks 1–9 knowledge suite — 151
+  passed, 1 optional-Docling skip; Ruff, `py_compile`, and `git diff --check`
+  passed.
+
+## Review fix: local model configuration
+
+- `_safe_query_source_root` now selects a real directory disjoint from both
+  the artifact root and the resolved local embedding-model path before it
+  constructs the read-only `KnowledgeConfig` used by search.
+- Added a regression covering `KNOWLEDGE_EMBEDDING_MODEL_PATH` below the user
+  profile; this previously failed because the synthetic source root was the
+  user profile itself.
+- Re-verified: focused CLI suite — 11 passed; Tasks 1–9 knowledge suite — 152
+  passed, 1 optional-Docling skip; Ruff, `py_compile`, and `git diff --check`
+  passed.

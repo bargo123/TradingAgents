@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "langchain-core>=0.3.81",
+    "numpy>=1.26",
     "backtrader>=1.9.78.123",
     "langchain-anthropic>=0.3.15",
     "langchain-experimental>=0.3.4",
@@ -39,6 +40,12 @@ dev = [
     "pytest>=8.0",
     "pytest-subtests>=0.13",
 ]
+knowledge = [
+    "docling>=2.0",
+    "fastembed>=0.4",
+    "onnxruntime>=1.18",
+    "lancedb>=0.18",
+]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
 # stays lean: pip install "tradingagents[bedrock]".
 bedrock = [
@@ -50,6 +57,8 @@ mt5 = [
 
 [project.scripts]
 tradingagents = "cli.main:app"
+experience = "tradingagents.experience.cli:main"
+knowledge = "tradingagents.knowledge.cli:main"
 forex-shadow = "cli.forex_shadow:main"
 forex-evaluate = "cli.forex_evaluate:main"
 forex-watch = "cli.forex_watch:main"
