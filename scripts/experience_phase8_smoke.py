@@ -9,22 +9,26 @@ import socket
 import sys
 import time
 import urllib.request
-from dataclasses import asdict, is_dataclass
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
 from tradingagents.experience.catalog import ExperienceCatalog
-from tradingagents.experience.errors import ExperienceArtifactNotEmptyError, Phase7KnowledgeUnavailableError
+from tradingagents.experience.errors import (
+    ExperienceArtifactNotEmptyError,
+    Phase7KnowledgeUnavailableError,
+)
 from tradingagents.experience.features import extract_market_state
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
 from tradingagents.experience.models import EvidenceRequest, OutcomeStatsRequest, TrustTier
-from tradingagents.experience.normalization import build_profile, NormalizationCohortV1
+from tradingagents.experience.normalization import NormalizationCohortV1, build_profile
 from tradingagents.experience.orchestrator import EvidenceOrchestrator
 from tradingagents.experience.outcomes import OutcomeStatsCalculator
 from tradingagents.experience.query import ExperienceQueryService
 from tradingagents.experience.source_reader import ReadonlySourceReader
-from tradingagents.knowledge.config import KnowledgeConfig
 from tradingagents.knowledge.catalog import KnowledgeCatalog
+from tradingagents.knowledge.config import KnowledgeConfig
 from tradingagents.knowledge.embeddings import FastEmbedProvider
 from tradingagents.knowledge.index_generation import IncompatibleIndexGeneration
 from tradingagents.knowledge.lexical_index import LexicalIndexReader
@@ -85,11 +89,33 @@ def _source_integrity(path: Path) -> dict[str, Any]:
 
 def _json(value: Any) -> Any:
     if is_dataclass(value):
-        return {k: _json(v) for k, v in asdict(value).items()}
-    if isinstance(value, dict): return {str(k): _json(v) for k, v in value.items()}
-    if isinstance(value, (tuple, list)): return [_json(v) for v in value]
-    if isinstance(value, Path): return str(value)
+        return {field.name: _json(getattr(value, field.name)) for field in fields(value)}
+    if isinstance(value, Mapping):
+        return {str(k): _json(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
     return value
+
+
+def _normalization_fingerprint(profiles: dict[Any, Any]) -> str | None:
+    """Return the canonical fingerprint for the first built profile."""
+
+    for profile in profiles.values():
+        if profile is not None:
+            return profile.to_fingerprint()
+    return None
+
+
+def _tier_counts(records: tuple[Any, ...]) -> dict[str, int]:
+    """Count catalog trust tiers using their stable serialized values."""
+
+    def value(record: Any) -> str:
+        trust = getattr(record, "trust", "")
+        return trust.value if isinstance(trust, TrustTier) else str(trust)
+
+    return {tier.value: sum(value(record) == tier.value for record in records) for tier in TrustTier}
 
 
 def _ensure_fresh(root: Path) -> None:
@@ -173,9 +199,9 @@ def run_smoke(source_db: str | Path, *, experience_artifact_root: str | Path,
         "source_size_before": before["db"]["size"], "source_size_after": after["db"]["size"], "source_mtime_before": before["db"]["mtime_ns"], "source_mtime_after": after["db"]["mtime_ns"],
         "source_wal_before": before["wal"], "source_wal_after": after["wal"], "source_unchanged": before == after,
         "decision_count": len(snapshot.decisions), "evaluation_count": len(snapshot.evaluations), "import_count": imported.indexed_count,
-        "experience_count": len(records), "tier_counts": {tier.value: sum(str(getattr(r, "trust", "")) == tier.value for r in records) for tier in TrustTier},
+        "experience_count": len(records), "tier_counts": _tier_counts(records),
         "quarantine_count": catalog.quarantine_count(), "alias_count": sum(catalog.current_alias_count(r.experience_id) for r in records), "feature_population_count": len(vectors),
-        "active_generation_id": generation.generation_id, "normalization_cohort_count": len(profiles), "normalization_population": len(vectors), "normalization_fingerprint": next((p.fingerprint for p in profiles.values() if p), None),
+        "active_generation_id": generation.generation_id, "normalization_cohort_count": len(profiles), "normalization_population": len(vectors), "normalization_fingerprint": _normalization_fingerprint(profiles),
         "similarity_examples": [_json(hit) for hit in bundle.experience[:3]], "statistics": _json(stats.calculate(OutcomeStatsRequest(experience_ids=tuple(r.experience_id for r in records), evaluation_basis="DECISION_REFERENCE", horizon_seconds=0))),
         "phase7_generation_id": knowledge_generation.generation_id, "knowledge_embedding_spec": _json(knowledge_generation.embedding_spec), "knowledge_artifact_identity": knowledge_generation.population_hash,
         "knowledge_hit_count": len(bundle.knowledge), "experience_hit_count": len(bundle.experience), "evidence_status": bundle.status, "evidence_bundle": _json(bundle),
