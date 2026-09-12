@@ -11,6 +11,7 @@ import hashlib
 import inspect
 import json
 import math
+import re
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
@@ -28,6 +29,7 @@ from tradingagents.dataflows.mt5.models import (
     Mt5SymbolInfo,
 )
 
+from .evidence_audit import _contains_forbidden
 from .evidence_context import (
     EvidenceAuditStatus,
     EvidenceIntegrationStatus,
@@ -357,39 +359,46 @@ class EvidenceReplayReport:
         return self.rejected_references
 
 
-def _json_value(value: Any) -> Any:
-    forbidden = ("prompt", "completion", "reasoning", "credential", "api_key", "password", "token")
+_PRIVACY_FORBIDDEN = ("prompt", "completion", "reasoning", "credential", "apikey", "password", "token", "chainofthought")
+
+
+def _privacy_forbidden(value: str) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "", value.lower())
+    return _contains_forbidden(value) or any(token in normalized for token in _PRIVACY_FORBIDDEN)
+
+
+def _strict_privacy(value: Any, *, omit_rendered_context: bool = False) -> Any:
     if isinstance(value, Enum):
         return value.value
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     if isinstance(value, Path):
-        return str(value)
+        text = str(value)
+        return "[REDACTED_SENSITIVE_TEXT]" if _privacy_forbidden(text) else text
     if is_dataclass(value):
         return {
-            field.name: _json_value(getattr(value, field.name))
+            field.name: _strict_privacy(getattr(value, field.name), omit_rendered_context=omit_rendered_context)
             for field in fields(value)
-            if not any(
-                token in field.name.lower()
-                for token in ("prompt", "completion", "reasoning", "credential", "api_key")
-            ) and field.name != "rendered_context"
+            if not _privacy_forbidden(field.name)
+            and (not omit_rendered_context or field.name != "rendered_context")
         }
     if isinstance(value, Mapping):
         return {
-            str(key): _json_value(item)
+            key if isinstance(key, str) else "[REDACTED_UNSERIALIZABLE_KEY]": _strict_privacy(item, omit_rendered_context=omit_rendered_context)
             for key, item in value.items()
-            if not any(
-                token in str(key).lower()
-                for token in ("prompt", "completion", "reasoning", "credential", "api_key")
-            )
+            if isinstance(key, str) and not _privacy_forbidden(key)
         }
     if isinstance(value, (tuple, list, set, frozenset)):
-        return [_json_value(item) for item in value]
+        return [_strict_privacy(item, omit_rendered_context=omit_rendered_context) for item in value]
     if isinstance(value, str):
-        return "[REDACTED_SENSITIVE_TEXT]" if any(token in value.lower() for token in forbidden) else value
+        return "[REDACTED_SENSITIVE_TEXT]" if _privacy_forbidden(value) else value
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return "[REDACTED_UNSERIALIZABLE]"
+
+
+def _json_value(value: Any) -> Any:
+    return _strict_privacy(value, omit_rendered_context=True)
 
 
 def _fingerprint(path: str | Path) -> dict[str, Any]:

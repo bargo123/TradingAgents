@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import urllib.request
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from scripts.phase9_evidence_smoke import (
     resolve_verified_phase8_root,
     run_smoke,
 )
-from tradingagents.forex.evidence_replay import EvidenceReplayReport
+from tradingagents.forex.evidence_replay import EvidenceReplayReport, _json_value
 
 
 def _catalog(root: Path, *, tier_c_only: bool = False, published: bool = True) -> Path:
@@ -367,3 +368,21 @@ def test_child_network_telemetry_survives_fallback():
 def test_replay_report_exposes_typed_context_normalization_and_reference_status():
     names = set(EvidenceReplayReport.__dataclass_fields__)
     assert {"integration_status", "normalization_status", "normalization_error", "context_integrity_status", "reference_validation_status", "available_references", "rendered_character_count", "source_status"} <= names
+
+
+def test_standalone_replay_privacy_is_recursive_and_separator_aware():
+    @dataclass
+    class Nested:
+        password: str
+        safe: str
+
+    payload = _json_value(
+        {
+            "nested": Nested(password="password=secret", safe="chain-of-thought details"),
+            "items": [{"api-key": "credential-value", "chain_of_thought": "reasoning"}],
+            "safe": object(),
+        }
+    )
+    encoded = json.dumps(payload).lower()
+    assert all(token not in encoded for token in ("password", "api-key", "chain_of_thought", "chain-of-thought", "credential", "reasoning"))
+    assert "object at" not in encoded

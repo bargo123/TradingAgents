@@ -12,9 +12,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, fields, is_dataclass
-from datetime import datetime, timezone
-from enum import Enum
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -41,6 +39,7 @@ from tradingagents.forex.evidence_replay import (
     SavedSnapshotCodec,
     SavedSnapshotReplay,
     SnapshotReplayError,
+    _strict_privacy,
 )
 from tradingagents.forex.evidence_runtime import (
     ReadonlyExperienceCatalog,
@@ -376,24 +375,7 @@ LoopbackOnlyNetworkGuard = OfflineNetworkGuard
 
 
 def _privacy(value: Any) -> Any:
-    forbidden = ("prompt", "completion", "reasoning", "credential", "api_key", "password", "token")
-    if is_dataclass(value):
-        return {field.name: _privacy(getattr(value, field.name)) for field in fields(value) if not any(token in field.name.lower() for token in forbidden)}
-    if isinstance(value, Mapping):
-        return {str(key): _privacy(item) for key, item in value.items() if not any(token in str(key).lower() for token in forbidden)}
-    if isinstance(value, (tuple, list, set, frozenset)):
-        return [_privacy(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, Enum):
-        return value.value
-    if isinstance(value, datetime):
-        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        if isinstance(value, str) and any(token in value.lower() for token in forbidden):
-            return "[REDACTED_SENSITIVE_TEXT]"
-        return value
-    return "[REDACTED_UNSERIALIZABLE]"
+    return _strict_privacy(value, omit_rendered_context=True)
 
 
 def build_report(**values: Any) -> dict[str, Any]:
