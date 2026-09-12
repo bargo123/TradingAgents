@@ -283,6 +283,180 @@ class EvidenceReferenceValidation:
         object.__setattr__(self, "evidence_refs_rejected", tuple(self.evidence_refs_rejected))
 
 
+_TRANSIENT_EVIDENCE_KEYS = frozenset(
+    {
+        "evidence_context",
+        "evidence_context_hash",
+        "evidence_context_status",
+        "evidence_use_status",
+        "evidence_refs_used",
+        "evidence_refs_rejected",
+        "evidence_audit_status",
+        "evidence_generation_id",
+        "evidence_query",
+        "evidence_query_fingerprint",
+        "evidence_query_policy_version",
+        "evidence_integration_status",
+        "evidence_bundle_status",
+        "evidence_rendered_context",
+        "evidence_rendered_context_hash",
+        "evidence_selected_counts",
+        "evidence_dropped_counts",
+        "evidence_retrieval_count",
+        "evidence_retrieval_latency_seconds",
+        "evidence_builder_latency_seconds",
+        "evidence_source_status",
+        "evidence_source_errors",
+        "evidence_node_context_hashes",
+        "evidence_missing_nodes",
+    }
+)
+
+
+def _transient_evidence_key(key: Any) -> bool:
+    normalized = str(key).strip().lower().replace("-", "_")
+    return normalized.startswith("evidence_") or normalized in _TRANSIENT_EVIDENCE_KEYS
+
+
+def _strip_transient_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            key: _strip_transient_value(child)
+            for key, child in value.items()
+            if not _transient_evidence_key(key)
+        }
+    if isinstance(value, list):
+        return [_strip_transient_value(child) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_transient_value(child) for child in value)
+    if isinstance(value, set):
+        return {_strip_transient_value(child) for child in value}
+    if isinstance(value, frozenset):
+        return frozenset(_strip_transient_value(child) for child in value)
+    return value
+
+
+def strip_transient_evidence_metadata(raw_result: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return a deep copy of a result without Phase 9 evidence metadata."""
+    if not isinstance(raw_result, Mapping):
+        raise TypeError("raw_result must be a mapping")
+    return _strip_transient_value(raw_result)
+
+
+def _reference_values(raw_result: Mapping[str, Any], key: str) -> tuple[list[Any], bool]:
+    value = raw_result.get(key, ())
+    if value is None:
+        return [], True
+    if isinstance(value, (list, tuple)):
+        return list(value), True
+    return [value], False
+
+
+def _reference_id(item: Any) -> str | None:
+    if not isinstance(item, str):
+        return None
+    value = item.strip()
+    return value if value == item else None
+
+
+def _context_reference_ids(context: EvidenceContext) -> tuple[str, ...]:
+    return tuple(
+        str(display_id)
+        for items in (context.knowledge_items, context.experience_items, context.statistics_items)
+        for item in items
+        for display_id in (_field(item, "display_id"),)
+        if display_id is not None
+    )
+
+
+def validate_evidence_references(
+    context: EvidenceContext,
+    raw_result: Mapping[str, Any],
+    *,
+    runtime_integration_status: EvidenceIntegrationStatus,
+) -> EvidenceReferenceValidation:
+    """Validate final-decision evidence IDs against one immutable context.
+
+    The function only returns audit metadata. It never mutates ``raw_result``
+    and never participates in action/rating normalization.
+    """
+    if not isinstance(context, EvidenceContext):
+        raise TypeError("context must be an EvidenceContext")
+    if not isinstance(raw_result, Mapping):
+        raise TypeError("raw_result must be a mapping")
+    runtime = EvidenceIntegrationStatus(runtime_integration_status)
+    available = set(_context_reference_ids(context))
+    used_values, used_shape_ok = _reference_values(raw_result, "evidence_refs_used")
+    rejected_values, rejected_shape_ok = _reference_values(raw_result, "evidence_refs_rejected")
+    invalid = not used_shape_ok or not rejected_shape_ok
+
+    valid_used: list[str] = []
+    seen_used: set[str] = set()
+    for raw_ref in used_values:
+        ref = _reference_id(raw_ref)
+        if ref is None or ref not in available:
+            invalid = True
+            continue
+        if ref not in seen_used:
+            valid_used.append(ref)
+            seen_used.add(ref)
+
+    valid_rejected: list[EvidenceReferenceRejection] = []
+    seen_rejected: set[tuple[str, EvidenceReferenceRejectionReason]] = set()
+    for raw_rejection in rejected_values:
+        if isinstance(raw_rejection, EvidenceReferenceRejection):
+            ref_value = raw_rejection.ref
+            reason_value = raw_rejection.reason
+        elif isinstance(raw_rejection, Mapping):
+            ref_value = raw_rejection.get("ref")
+            reason_value = raw_rejection.get("reason")
+        else:
+            invalid = True
+            continue
+        ref = _reference_id(ref_value)
+        if ref is None or ref not in available:
+            invalid = True
+            continue
+        try:
+            reason = EvidenceReferenceRejectionReason(reason_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("evidence reference rejection reason is not allowed") from exc
+        key = (ref, reason)
+        if key not in seen_rejected:
+            valid_rejected.append(EvidenceReferenceRejection(ref=ref, reason=reason))
+            seen_rejected.add(key)
+
+    model_status = raw_result.get("evidence_use_status", EvidenceUseStatus.NONE_RELEVANT)
+    try:
+        model_status = EvidenceUseStatus(model_status)
+    except (TypeError, ValueError):
+        model_status = EvidenceUseStatus.NONE_RELEVANT
+        invalid = True
+
+    if runtime is EvidenceIntegrationStatus.DISABLED:
+        status = EvidenceUseStatus.DISABLED
+        valid_used = []
+        valid_rejected = []
+    elif runtime is EvidenceIntegrationStatus.FALLBACK:
+        status = EvidenceUseStatus.USED if valid_used else EvidenceUseStatus.UNAVAILABLE
+        valid_rejected = valid_rejected if status is EvidenceUseStatus.USED else []
+    elif model_status is EvidenceUseStatus.USED:
+        status = EvidenceUseStatus.USED
+    elif model_status is EvidenceUseStatus.NONE_RELEVANT:
+        status = EvidenceUseStatus.NONE_RELEVANT
+    else:
+        status = EvidenceUseStatus.USED if valid_used else EvidenceUseStatus.NONE_RELEVANT
+
+    return EvidenceReferenceValidation(
+        evidence_use_status=status,
+        evidence_refs_used=tuple(valid_used),
+        evidence_refs_rejected=tuple(valid_rejected),
+        evidence_audit_status=(
+            EvidenceAuditStatus.INVALID_REFERENCE if invalid else EvidenceAuditStatus.VALID
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceContext:
     version: str = "v1"
@@ -509,5 +683,11 @@ class Phase9EvidenceContextBuilder:
 __all__ = [
     name
     for name in globals()
-    if name.startswith("Evidence") or name.startswith("Canonical") or name == "Phase9EvidenceContextBuilder"
+    if name.startswith("Evidence")
+    or name.startswith("Canonical")
+    or name in {
+        "Phase9EvidenceContextBuilder",
+        "strip_transient_evidence_metadata",
+        "validate_evidence_references",
+    }
 ]

@@ -33,6 +33,7 @@ StructuredOutputRequiredError = structured.StructuredOutputRequiredError
 invoke_structured_only = structured.invoke_structured_only
 
 from tradingagents.agents.schemas import ForexPortfolioDecision  # noqa: E402
+from tradingagents.forex.evidence_context import strip_transient_evidence_metadata  # noqa: E402
 from tradingagents.forex.shadow import (  # noqa: E402  # isolated helper import must run first
     PortfolioDecision,
     PortfolioRating,
@@ -105,6 +106,37 @@ def test_normalization_uses_exact_portfolio_rating_vocabulary_only() -> None:
     assert normalize_portfolio_manager_result({"rating": "Hold"}).action == "HOLD"
     assert normalize_portfolio_manager_result({"rating": "Overweight"}).action == "BUY"
     assert normalize_portfolio_manager_result({"rating": "Underweight"}).action == "SELL"
+
+
+def test_phase5_shadow_schema_has_no_phase9_columns(tmp_path: Path) -> None:
+    store = ShadowDecisionStore(tmp_path / "schema.db")
+    store.initialize()
+    with sqlite3.connect(store.path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(shadow_decisions)")}
+    assert columns.isdisjoint(
+        {
+            "evidence_use_status",
+            "evidence_refs_used",
+            "evidence_refs_rejected",
+            "evidence_audit_status",
+            "evidence_context_hash",
+        }
+    )
+
+
+def test_shadow_contract_does_not_persist_transient_evidence_fields() -> None:
+    raw = {
+        "rating": "Hold",
+        "evidence_use_status": "USED",
+        "nested": {
+            "evidence_refs_used": ["K1"],
+            "evidence_context_hash": "hash",
+            "kept": True,
+        },
+    }
+    stripped = strip_transient_evidence_metadata(raw)
+    assert stripped == {"rating": "Hold", "nested": {"kept": True}}
+    assert raw["nested"]["evidence_refs_used"] == ["K1"]
 
 
 def test_normalization_uses_structured_rating_only() -> None:

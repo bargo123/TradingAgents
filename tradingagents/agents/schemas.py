@@ -24,6 +24,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from tradingagents.forex.evidence_context import EvidenceReferenceRejection
+
 # LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
 # numeric field instead of omitting it. Coerce those to None so the structured
 # call validates instead of erroring (#1058). Pydantic still parses real numeric
@@ -260,6 +262,18 @@ class ForexPortfolioDecision(PortfolioDecision):
             "How many seconds this intraday shadow decision remains relevant from "
             "the supplied MT5 snapshot; keep it bounded to the current session."
         ),
+    )
+    evidence_use_status: Literal["USED", "NONE_RELEVANT", "UNAVAILABLE", "DISABLED"] = Field(
+        default="NONE_RELEVANT",
+        description="Transient Phase 9 evidence-use status for the final forex decision.",
+    )
+    evidence_refs_used: list[str] = Field(
+        default_factory=list,
+        description="Transient Phase 9 display IDs materially used by the final decision.",
+    )
+    evidence_refs_rejected: list[EvidenceReferenceRejection] = Field(
+        default_factory=list,
+        description="Transient Phase 9 evidence display IDs rejected with a closed reason.",
     )
     time_horizon: str | None = Field(
         default=None,
