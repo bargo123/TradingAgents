@@ -85,6 +85,20 @@ def test_statistics_status_defaults_to_not_requested():
     assert EvidenceContext().statistics_status == "NOT_REQUESTED"
 
 
+def test_collection_entries_are_deeply_immutable():
+    context = EvidenceContext(
+        knowledge_items=({"nested": {"items": [1]}},),
+        experience_items=([{"x": 1}],),
+        statistics_items=({"values": [1, 2]},),
+    )
+    with pytest.raises(TypeError):
+        context.knowledge_items[0]["nested"]["items"][0] = 9
+    with pytest.raises(TypeError):
+        context.experience_items[0][0]["x"] = 9
+    with pytest.raises(TypeError):
+        context.statistics_items[0]["values"][0] = 9
+
+
 def test_contracts_are_json_serializable():
     item = CanonicalEvidenceItem("k1", "KNOWLEDGE", "auth", "text", "rule", 0.5, {"source": "x"})
     context = EvidenceContext(knowledge_query=CanonicalKnowledgeQuery("q", "fp", "v1"), knowledge_items=(item,))

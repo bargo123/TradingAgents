@@ -100,6 +100,11 @@ def _utc(value: datetime, name: str = "as_of") -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _freeze_items(values: Any) -> tuple[Any, ...]:
+    """Freeze arbitrary item entries while preserving canonical contract items."""
+    return tuple(value if isinstance(value, CanonicalEvidenceItem) else _freeze(value) for value in values)
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalKnowledgeQuery:
     text: str = ""
@@ -219,7 +224,7 @@ class EvidenceContext:
         object.__setattr__(self, "bundle_status", EvidenceBundleStatus(self.bundle_status))
         object.__setattr__(self, "as_of", _utc(self.as_of))
         for name in ("knowledge_items", "experience_items", "statistics_items"):
-            object.__setattr__(self, name, tuple(getattr(self, name)))
+            object.__setattr__(self, name, _freeze_items(getattr(self, name)))
         object.__setattr__(self, "diagnostics", _freeze(self.diagnostics or {}))
         object.__setattr__(self, "source_errors", _freeze(self.source_errors or {}))
 
