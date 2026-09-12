@@ -6,6 +6,7 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
+from tradingagents.forex.evidence_context import EvidenceContext
 
 
 class Propagator:
@@ -25,6 +26,7 @@ class Propagator:
         market_data_mode: str = "stock",
         market_context: str = "",
         forex_analysis_profile: str | None = None,
+        evidence_context: EvidenceContext | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -77,6 +79,8 @@ class Propagator:
         }
         if asset_type == "forex" or market_data_mode == "forex_mt5":
             state["forex_analysis_profile"] = forex_analysis_profile or "INTRADAY"
+        if evidence_context is not None:
+            state["evidence_context"] = evidence_context
         return state
 
     def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:

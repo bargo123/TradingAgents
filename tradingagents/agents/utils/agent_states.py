@@ -5,7 +5,9 @@ try:  # pragma: no cover - fallback for minimal test environments
 except ModuleNotFoundError:  # pragma: no cover - exercised in this environment
     class MessagesState(dict):
         pass
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
+
+from tradingagents.forex.evidence_context import EvidenceContext
 
 
 # Researcher team state
@@ -49,6 +51,7 @@ class RiskDebateState(TypedDict):
 
 
 class AgentState(MessagesState):
+    evidence_context: NotRequired[EvidenceContext | None]
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]

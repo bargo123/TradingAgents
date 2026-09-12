@@ -15,6 +15,7 @@ from tradingagents.dataflows.mt5.models import (
     Mt5SymbolInfo,
 )
 from tradingagents.forex.context import build_forex_market_context
+from tradingagents.forex.evidence_context import EvidenceContext
 from tradingagents.forex.tools import MT5ToolAdapter
 from tradingagents.graph.conditional_logic import ConditionalLogic
 from tradingagents.graph.propagation import Propagator
@@ -109,6 +110,15 @@ def test_forex_initial_state_carries_mode_and_market_context() -> None:
     assert state["normalization_status"] == ""
     assert state["normalization_error"] == ""
     assert AgentState.__annotations__["market_data_mode"]
+
+
+@pytest.mark.unit
+def test_forex_initial_state_accepts_evidence_context() -> None:
+    context = EvidenceContext()
+    state = Propagator().create_initial_state(
+        "EURUSD", "2026-09-08", asset_type="forex", evidence_context=context
+    )
+    assert state["evidence_context"] is context
 
 
 @pytest.mark.unit

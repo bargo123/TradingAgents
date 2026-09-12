@@ -76,7 +76,12 @@ def record_state_boundary(
     phase: str,
     state: Mapping[str, Any] | None,
 ) -> None:
-    """Append presence/size metadata without retaining state contents."""
+    """Append artifact and evidence-context metadata without retaining contents.
+
+    ``state_artifact_metrics`` includes only the evidence context hash, size,
+    and selected/dropped counts; rendered evidence, prompts, and messages are
+    never copied into the trace.
+    """
     trace = _STATE_TRACE.get()
     if trace is None:
         return

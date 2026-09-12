@@ -67,6 +67,18 @@ def _mapping_metric(value: Any) -> dict[str, Any]:
 def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return safe presence/size metadata for the required state artifacts."""
     state_map = _mapping(state)
+    evidence_context = state_map.get("evidence_context")
+    evidence_context_hash = getattr(evidence_context, "rendered_context_hash", None)
+    evidence_selected_counts = {
+        "knowledge": int(getattr(evidence_context, "selected_knowledge_count", 0) or 0),
+        "experience": int(getattr(evidence_context, "selected_experience_count", 0) or 0),
+        "statistics": int(getattr(evidence_context, "selected_statistics_count", 0) or 0),
+    }
+    evidence_dropped_counts = {
+        "knowledge": int(getattr(evidence_context, "dropped_knowledge_count", 0) or 0),
+        "experience": int(getattr(evidence_context, "dropped_experience_count", 0) or 0),
+        "statistics": int(getattr(evidence_context, "dropped_statistics_count", 0) or 0),
+    }
     investment = _mapping(state_map.get("investment_debate_state"))
     risk = _mapping(state_map.get("risk_debate_state"))
 
@@ -89,6 +101,11 @@ def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
     final_pm_valid = bool(final_pm_text) and final_pm_text != "FOREX_PORTFOLIO_MANAGER_FAILED"
 
     return {
+        "evidence_context_present": evidence_context is not None,
+        "evidence_context_hash": evidence_context_hash,
+        "evidence_rendered_chars": int(getattr(evidence_context, "rendered_character_count", 0) or 0),
+        "evidence_selected_counts": evidence_selected_counts,
+        "evidence_dropped_counts": evidence_dropped_counts,
         "market": {
             "field": "market_report",
             **_text_metric(state_map.get("market_report")),
@@ -174,6 +191,22 @@ def evaluate_context_integrity(
         if missing_nodes:
             missing.extend(f"node:{node}" for node in missing_nodes)
 
+    expected_hash = artifacts["evidence_context_hash"]
+    missing_context_hash_nodes: list[str] = []
+    divergent_context_hash_nodes: list[str] = []
+    if trace and artifacts["evidence_context_present"]:
+        for item in trace:
+            if not isinstance(item, Mapping) or item.get("phase") != "after":
+                continue
+            node = str(item.get("node"))
+            observed = _mapping(item.get("artifacts")).get("evidence_context_hash")
+            if not observed:
+                missing_context_hash_nodes.append(node)
+            elif expected_hash and observed != expected_hash:
+                divergent_context_hash_nodes.append(node)
+        missing.extend(f"context_hash:{node}" for node in missing_context_hash_nodes)
+        missing.extend(f"context_hash_divergent:{node}" for node in divergent_context_hash_nodes)
+
     status: DecisionContextStatus = "COMPLETE" if not missing else "INCOMPLETE"
     return {
         "status": status,
@@ -181,6 +214,8 @@ def evaluate_context_integrity(
         "artifacts": artifacts,
         "nodes_seen": sorted(seen),
         "missing_nodes": missing_nodes,
+        "missing_context_hash_nodes": missing_context_hash_nodes,
+        "divergent_context_hash_nodes": divergent_context_hash_nodes,
     }
 
 
