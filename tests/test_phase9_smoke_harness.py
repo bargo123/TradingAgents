@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,10 @@ from scripts.phase9_evidence_smoke import (
     NetworkAttempt,
     OfflineNetworkGuard,
     Phase8PreflightError,
+    SmokeAcceptanceError,
+    _append_audit,
+    _run_fake_ab,
+    _validate_smoke_result,
     build_report,
     resolve_verified_phase8_root,
     run_smoke,
@@ -128,3 +134,69 @@ def test_smoke_report_forbids_prompt_completion_reasoning():
     payload = build_report(warnings=["safe"], telemetry={"prompt": "secret", "ok": 1})
     encoded = json.dumps(payload).lower()
     assert all(token not in encoded for token in ("prompt", "completion", "reasoning"))
+
+
+def test_smoke_pass_requires_valid_non_fallback_replay_and_references():
+    with pytest.raises(SmokeAcceptanceError):
+        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": "x", "citation_status": "VALID", "normalization_status": "NORMALIZED", "integration_status": "FALLBACK"})
+    _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "citation_status": "VALID", "normalization_status": "NORMALIZED", "integration_status": "INJECTED", "evidence_audit_status": "VALID"})
+
+
+def test_fake_ab_executes_two_sequential_analyses_and_measures_them():
+    calls: list[bool] = []
+
+    class Fake:
+        def analyze(self, **kwargs):
+            calls.append(bool(kwargs["evidence_enabled"]))
+            return {"normalized_action": "BUY" if kwargs["evidence_enabled"] else "HOLD"}
+
+    report = _run_fake_ab(Fake(), snapshot=object(), snapshot_bytes=b"snapshot", config=object())
+    assert calls == [False, True]
+    assert report["analysis_count"] == 2
+    assert report["baseline_action"] == "HOLD"
+    assert report["evidence_action"] == "BUY"
+    assert report["latency_seconds"] >= 0
+
+
+def test_loopback_guard_patches_connect_ex_and_rejects_unc():
+    import socket
+
+    with OfflineNetworkGuard() as guard:
+        with pytest.raises(NetworkAttempt):
+            socket.socket().connect_ex(("203.0.113.1", 9))
+        with pytest.raises(NetworkAttempt):
+            socket.socket().connect((r"\\server\share", 9))
+    assert guard.external_network_attempts == 2
+
+
+def test_phase8_preflight_rejects_missing_generation_metadata(tmp_path: Path):
+    root = _catalog(tmp_path / "p8")
+    with sqlite3.connect(root / "catalog.sqlite3") as connection:
+        connection.execute("UPDATE experience_generations SET metadata_json='{}'")
+        connection.commit()
+    with pytest.raises(Phase8PreflightError, match="trust_policy_version"):
+        resolve_verified_phase8_root(root)
+
+
+def test_report_redacts_sensitive_values_without_default_string_conversion():
+    payload = build_report(error=ValueError("completion secret"), opaque=object())
+    assert "completion secret" not in json.dumps(payload).lower()
+    assert "object at" not in json.dumps(payload).lower()
+
+
+def test_smoke_appends_one_metadata_only_audit_outside_source(tmp_path: Path):
+    class Snapshot:
+        timestamp = datetime(2026, 9, 12, tzinfo=timezone.utc)
+
+    audit_path = tmp_path / "evidence_runtime" / "evidence_audit.sqlite3"
+    result = {"integration_status": "INJECTED", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"context").hexdigest()}
+    _append_audit(audit_path, decision_id="d1", source_run_id="r1", snapshot=Snapshot(), result=result)
+    with sqlite3.connect(audit_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence_usage_audit").fetchone()[0] == 1
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(evidence_usage_audit)")}
+        assert not {"prompt", "completion", "reasoning"} & columns
+
+
+def test_smoke_rejects_unreferenced_evidence_items():
+    with pytest.raises(SmokeAcceptanceError, match="reference"):
+        _validate_smoke_result({"comparison_status": "VALID", "bundle_status": "COMPLETE", "evidence_action": "BUY", "evidence_context_hash": hashlib.sha256(b"x").hexdigest(), "citation_status": "VALID", "integration_status": "INJECTED", "knowledge_count": 1})

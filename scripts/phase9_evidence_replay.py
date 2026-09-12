@@ -89,9 +89,16 @@ def run_replay(
                 continue
             raise SnapshotReplayError(f"report path must be outside {label} artifacts")
     # Replays pin only an already accepted, published Phase 8 generation.
-    from scripts.phase9_evidence_smoke import resolve_verified_phase8_root
+    from scripts.phase9_evidence_smoke import (
+        OfflineNetworkGuard,
+        _fingerprint,
+        _resolve_verified_phase7_generation,
+        _source_fingerprint,
+        resolve_verified_phase8_root,
+    )
 
     phase8_preflight = resolve_verified_phase8_root(experience_root)
+    phase7_preflight = _resolve_verified_phase7_generation(knowledge_root)
     reader = ReadonlySourceReader(source)
     snapshot_store = reader.read_snapshot()
     row = next((item for item in snapshot_store.decisions if str(item.get("decision_id")) == str(decision_id)), None)
@@ -100,7 +107,7 @@ def run_replay(
     snapshot = SavedSnapshotCodec.from_source_row(row)
     encoded = row.get("snapshot_json")
     snapshot_bytes = encoded if isinstance(encoded, bytes) else str(encoded).encode("utf-8")
-    phase7_generation = _load_generation(knowledge_root, phase=7)
+    phase7_generation = str(phase7_preflight.generation_id)
     phase8_generation = phase8_preflight.generation_id
     config = EvidenceReplayConfig(
         source_decision_id=str(decision_id),
@@ -137,11 +144,31 @@ def run_replay(
                 },
             )
         replay = SavedSnapshotReplay(runner=runner, generation_provider=(phase7_generation, phase8_generation))
-    result = replay.run(snapshot, snapshot_bytes=snapshot_bytes, config=config)
+    before = {"source": _source_fingerprint(source), "phase7": _fingerprint(knowledge_root), "phase8": _fingerprint(experience_root)}
+    guard = OfflineNetworkGuard()
+    failure: Exception | None = None
+    result: Any = None
+    try:
+        with guard:
+            result = replay.run(snapshot, snapshot_bytes=snapshot_bytes, config=config)
+    except Exception as exc:
+        if "external network blocked" in str(exc).lower():
+            guard.external_network_attempts = max(guard.external_network_attempts, 1)
+        failure = exc
+    after = {"source": _source_fingerprint(source), "phase7": _fingerprint(knowledge_root), "phase8": _fingerprint(experience_root)}
+    if before != after:
+        raise SnapshotReplayError("source or Phase 7/8 artifacts changed during replay")
+    if guard.external_network_attempts:
+        raise SnapshotReplayError("external network attempt blocked during replay") from failure
+    if failure is not None:
+        raise failure
     payload = result.to_dict()
+    payload["source_unchanged"] = True
+    payload["external_network_attempts"] = guard.external_network_attempts
+    payload["loopback_connection_attempts"] = guard.loopback_connection_attempts
     if report_path is not None:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+        destination.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return payload
 
 
@@ -162,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        print(json.dumps(run_replay(**vars(args)), indent=2, sort_keys=True, default=str))
+        print(json.dumps(run_replay(**vars(args)), indent=2, sort_keys=True))
         return 0
     except Exception as exc:  # command boundary is intentionally fail-closed
         print(f"PHASE 9 REPLAY FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
