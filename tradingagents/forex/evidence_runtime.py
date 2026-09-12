@@ -17,7 +17,11 @@ from urllib.parse import urlparse
 
 from tradingagents.experience.models import EvidenceBundle, EvidenceRequest, ExperienceRecord
 from tradingagents.experience.normalization import NormalizationCohortV1, build_profile
+from tradingagents.experience.orchestrator import EvidenceOrchestrator
+from tradingagents.experience.outcomes import OutcomeStatsCalculator
+from tradingagents.experience.query import ExperienceQueryService
 from tradingagents.knowledge.models import IndexGeneration
+from tradingagents.knowledge.query import KnowledgeQueryService
 
 from .evidence_context import (
     EvidenceBundleStatus,
@@ -357,7 +361,7 @@ def _resolve_factory(descriptor: Mapping[str, str]) -> Callable[..., Any]:
     value: Any = importlib.import_module(str(descriptor["module"]))
     for part in str(descriptor["qualname"]).split("."):
         value = getattr(value, part)
-    if not callable(value):
+    if not callable(value) or not getattr(value, "__evidence_runtime_approved__", False):
         raise TypeError("orchestrator factory descriptor is not callable")
     return value
 
@@ -391,7 +395,7 @@ def _close_orchestrator(orchestrator: Any) -> None:
             if value is not None:
                 pending.append(value)
         close = getattr(owner, "close", None)
-        if callable(close) and owner is not orchestrator:
+        if callable(close):
             if getattr(owner, "_evidence_runtime_closed", False) or id(owner) in _CLOSED_OBJECT_IDS:
                 continue
             close()
@@ -408,7 +412,7 @@ def _child_query(send_conn: Any, factory_descriptor: Mapping[str, str], envelope
         config = ReadonlyEvidenceRuntimeConfiguration.from_envelope(envelope)
         request = EvidenceRequest(**dict(envelope["request"]))
         orchestrator = _make_orchestrator(factory, config)
-        _validate_child_orchestrator(orchestrator)
+        _validate_child_orchestrator(orchestrator, config)
         bundle = orchestrator.query(request)
         send_conn.send(("ok", bundle.to_dict() if hasattr(bundle, "to_dict") else bundle))
     except BaseException as exc:  # process boundary transports a bounded typed failure
@@ -420,21 +424,77 @@ def _child_query(send_conn: Any, factory_descriptor: Mapping[str, str], envelope
         send_conn.close()
 
 
-def _validate_child_orchestrator(orchestrator: Any) -> None:
+def _validate_child_orchestrator(
+    orchestrator: Any, config: ReadonlyEvidenceRuntimeConfiguration | None = None
+) -> None:
     """Reject writer/maintenance objects crossing the approved child seam."""
 
-    if orchestrator is None or not callable(getattr(orchestrator, "query", None)):
+    if not isinstance(orchestrator, EvidenceOrchestrator):
         raise TypeError("approved evidence factory must return one EvidenceOrchestrator")
-    forbidden = ("writer", "maintenance", "migration", "importer", "initialize", "create_schema")
-    for name in dir(orchestrator):
-        lowered = name.casefold()
-        if any(token in lowered for token in forbidden):
+    if not isinstance(getattr(orchestrator, "knowledge_service", None), KnowledgeQueryService):
+        raise TypeError("evidence child requires a typed KnowledgeQueryService")
+    if not isinstance(getattr(orchestrator, "experience_service", None), ExperienceQueryService):
+        raise TypeError("evidence child requires a typed ExperienceQueryService")
+    if not isinstance(getattr(orchestrator, "statistics_calculator", None), OutcomeStatsCalculator):
+        raise TypeError("evidence child requires a typed OutcomeStatsCalculator")
+    knowledge_catalog = getattr(orchestrator.knowledge_service, "catalog", None)
+    experience_catalog = getattr(orchestrator.experience_service, "catalog", None)
+    if not isinstance(knowledge_catalog, ReadonlyKnowledgeCatalog):
+        raise TypeError("evidence child requires a read-only Phase 7 catalog adapter")
+    if not isinstance(experience_catalog, ReadonlyExperienceCatalog):
+        raise TypeError("evidence child requires a read-only Phase 8 catalog adapter")
+
+    # Only walk the approved object graph.  Looking at every value reachable
+    # from an experience record would be both expensive and too permissive;
+    # these are the service/index/provider edges that can own side effects.
+    forbidden = (
+        "writer", "maintenance", "migration", "importer", "initialize",
+        "create_schema", "download", "provision", "trainer", "training",
+        "fine_tune", "finetune", "model_provider", "downloader", "model_download",
+    )
+    pending = [orchestrator]
+    seen: set[int] = set()
+    edges = (
+        "knowledge_service", "experience_service", "statistics_calculator",
+        "catalog", "vector_reader", "lexical_reader", "embedder", "reranker",
+    )
+    while pending:
+        owner = pending.pop()
+        if owner is None or id(owner) in seen:
+            continue
+        seen.add(id(owner))
+        type_name = f"{type(owner).__module__}.{type(owner).__name__}".casefold()
+        if any(token in type_name for token in forbidden):
             raise TypeError("evidence child cannot own writer or maintenance components")
-    for name in ("knowledge_service", "experience_service", "statistics_calculator"):
-        service = getattr(orchestrator, name, None)
-        catalog = getattr(service, "catalog", None)
-        if catalog is not None and not isinstance(catalog, (ReadonlyKnowledgeCatalog, ReadonlyExperienceCatalog)):
-            raise TypeError("evidence child requires read-only catalog adapters")
+        for name in dir(owner):
+            lowered = name.casefold()
+            if any(token in lowered for token in forbidden):
+                raise TypeError("evidence child cannot own writer or maintenance components")
+        for name in edges:
+            value = getattr(owner, name, None)
+            if value is not None:
+                pending.append(value)
+        # Approved services are small, but recurse through their instance
+        # attributes as well so a nested provider/writer cannot hide behind
+        # an otherwise innocuous edge name.
+        for value in getattr(owner, "__dict__", {}).values():
+            if callable(value) or isinstance(value, (str, bytes, bytearray, Path, Mapping, tuple, list, set, frozenset)):
+                continue
+            pending.append(value)
+
+    if config is not None:
+        roots = config.roots()
+        if not {"knowledge", "experience"}.issubset(roots):
+            raise TypeError("evidence child requires knowledge and experience artifact roots")
+        expected = {
+            "knowledge": knowledge_catalog.database_path,
+            "experience": experience_catalog.database_path,
+        }
+        for key, database_path in expected.items():
+            root = Path(roots[key]).resolve()
+            allowed = root if root.name == "catalog.sqlite3" else root / "catalog.sqlite3"
+            if database_path.resolve() != allowed:
+                raise TypeError("read-only catalog is outside the configured artifact root")
 
 
 class EvidenceIntegrationService:
@@ -570,6 +630,8 @@ def _is_loopback(endpoint: str | None) -> bool:
 __all__ = [
     "EvidenceIntegrationService",
     "EvidenceTimeout",
+    "ReadonlyEvidenceRuntimeConfiguration",
     "ReadonlyExperienceCatalog",
     "ReadonlyKnowledgeCatalog",
+    "approved_readonly_factory",
 ]

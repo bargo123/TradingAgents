@@ -12,7 +12,13 @@ import pytest
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5AccountInfo, Mt5SymbolInfo
 from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.features import FEATURE_NAMES_V1
-from tradingagents.experience.models import EvidenceBundle, ExperienceQuery, TrustTier
+from tradingagents.experience.models import (
+    EvidenceBundle,
+    ExperienceQuery,
+    ExperienceSearchResult,
+    TrustTier,
+)
+from tradingagents.experience.orchestrator import EvidenceOrchestrator
 from tradingagents.experience.outcomes import OutcomeStatsCalculator
 from tradingagents.experience.query import ExperienceQueryService
 from tradingagents.forex.evidence_context import (
@@ -22,6 +28,7 @@ from tradingagents.forex.evidence_context import (
 )
 from tradingagents.forex.evidence_runtime import (
     EvidenceIntegrationService,
+    ReadonlyEvidenceRuntimeConfiguration,
     ReadonlyExperienceCatalog,
     ReadonlyKnowledgeCatalog,
     _close_orchestrator,
@@ -68,6 +75,14 @@ def _feature_state(value: float) -> dict[str, object]:
     }
 
 
+def _artifact_roots(tmp_path: Path) -> dict[str, str]:
+    roots = {name: tmp_path / name for name in ("knowledge", "experience")}
+    for root in roots.values():
+        root.mkdir()
+        sqlite3.connect(root / "catalog.sqlite3").close()
+    return {name: str(root) for name, root in roots.items()}
+
+
 class _FakeOrchestrator:
     def __init__(self, bundle: EvidenceBundle | None = None, error: Exception | None = None):
         self.bundle = bundle or EvidenceBundle(status="EMPTY")
@@ -81,37 +96,97 @@ class _FakeOrchestrator:
         return self.bundle
 
 
-@approved_readonly_factory
-def _empty_factory(_envelope=None):
-    return _FakeOrchestrator()
+def _readonly_catalogs(config: ReadonlyEvidenceRuntimeConfiguration):
+    roots = config.roots()
+    return ReadonlyKnowledgeCatalog(roots["knowledge"]), ReadonlyExperienceCatalog(roots["experience"])
 
 
-@approved_readonly_factory
-def _partial_factory(_envelope=None):
-    return _FakeOrchestrator(
-        EvidenceBundle(status="PARTIAL", source_status={"knowledge": "COMPLETE", "experience": "FAILED"})
+class _TypedKnowledgeService(KnowledgeQueryService):
+    def __init__(self, catalog, hits=(), delay=0.0):
+        self.catalog = catalog
+        self.hits = tuple(hits)
+        self.delay = delay
+
+    def search(self, _query):
+        if self.delay:
+            time.sleep(self.delay)
+        return self.hits
+
+
+class _TypedExperienceService(ExperienceQueryService):
+    def __init__(self, catalog, *, fail=False):
+        self.catalog = catalog
+        self.fail = fail
+
+    def search(self, _query):
+        if self.fail:
+            raise RuntimeError("experience unavailable")
+        return ExperienceSearchResult()
+
+
+class _TypedStatsCalculator(OutcomeStatsCalculator):
+    def __init__(self, catalog):
+        super().__init__(catalog)
+
+
+class _CountingEvidenceOrchestrator(EvidenceOrchestrator):
+    def __init__(self, *services):
+        super().__init__(*services)
+        self.query_count = 0
+
+    def query(self, request):
+        self.query_count += 1
+        bundle = super().query(request)
+        return replace(bundle, source_status={**dict(bundle.source_status), "query_count": self.query_count})
+
+
+def _typed_orchestrator(config, *, hits=(), experience_fails=False, delay=0.0, count_query=False):
+    knowledge, experience = _readonly_catalogs(config)
+    orchestrator_type = _CountingEvidenceOrchestrator if count_query else EvidenceOrchestrator
+    return orchestrator_type(
+        _TypedKnowledgeService(knowledge, hits, delay),
+        _TypedExperienceService(experience, fail=experience_fails),
+        _TypedStatsCalculator(experience),
     )
 
 
 @approved_readonly_factory
-def _error_factory(_envelope=None):
-    return _FakeOrchestrator(error=RuntimeError("boom"))
+def _empty_factory(config):
+    return _typed_orchestrator(config)
 
 
 @approved_readonly_factory
-def _child_evidence_factory(_envelope=None):
-    return _FakeOrchestrator(EvidenceBundle(status="COMPLETE", knowledge=(KnowledgeHit(chunk_id="child-chunk", document_id="child-doc", text="child evidence"),), source_status={"query_count": 1}))
+def _partial_factory(config):
+    return _typed_orchestrator(config, experience_fails=True)
 
 
-class _SlowOrchestrator:
+class _ErrorEvidenceOrchestrator(EvidenceOrchestrator):
     def query(self, _request):
-        time.sleep(1.0)
-        return EvidenceBundle(status="EMPTY")
+        raise RuntimeError("boom")
 
 
 @approved_readonly_factory
-def _slow_factory(_envelope=None):
-    return _SlowOrchestrator()
+def _error_factory(config):
+    knowledge, experience = _readonly_catalogs(config)
+    return _ErrorEvidenceOrchestrator(
+        _TypedKnowledgeService(knowledge),
+        _TypedExperienceService(experience),
+        _TypedStatsCalculator(experience),
+    )
+
+
+@approved_readonly_factory
+def _child_evidence_factory(config):
+    return _typed_orchestrator(
+        config,
+        hits=(KnowledgeHit(chunk_id="child-chunk", document_id="child-doc", text="child evidence"),),
+        count_query=True,
+    )
+
+
+@approved_readonly_factory
+def _slow_factory(config):
+    return _typed_orchestrator(config, delay=1.0)
 
 
 def _unapproved_factory(_config=None):
@@ -121,6 +196,20 @@ def _unapproved_factory(_config=None):
 @approved_readonly_factory
 def _approved_writer_factory(_config=None):
     return type("WriterOwner", (), {"writer": object(), "query": lambda self, _request: EvidenceBundle(status="COMPLETE")})()
+
+
+class _WriterKnowledgeService(_TypedKnowledgeService):
+    writer = object()
+
+
+@approved_readonly_factory
+def _typed_writer_factory(config):
+    knowledge, experience = _readonly_catalogs(config)
+    return EvidenceOrchestrator(
+        _WriterKnowledgeService(knowledge),
+        _TypedExperienceService(experience),
+        _TypedStatsCalculator(experience),
+    )
 
 
 class _ImmediateProcess:
@@ -166,26 +255,31 @@ def _hanging_process_factory(*, target, args):
     return _HangingProcess(target=target, args=args)
 
 
-def test_real_spawn_query_uses_serializable_envelope_and_reaches_child():
+def test_real_spawn_query_uses_serializable_envelope_and_reaches_child(tmp_path: Path):
+    roots = _artifact_roots(tmp_path)
+    before = {Path(path) / "catalog.sqlite3": (Path(path) / "catalog.sqlite3").read_bytes() for path in roots.values()}
     service = EvidenceIntegrationService(
         policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
         orchestrator_factory=_child_evidence_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=roots,
     )
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.INJECTED
     assert context.knowledge_items[0].authoritative_id == "child-chunk"
     assert context.diagnostics["source_status"]["query_count"] == 1
     assert service.active_evidence_workers == 0
+    assert {path: path.read_bytes() for path in before} == before
 
 
-def test_real_spawn_timeout_leaves_zero_workers():
+def test_real_spawn_timeout_leaves_zero_workers(tmp_path: Path):
     service = EvidenceIntegrationService(
         policy=EvidenceQueryPolicy(evidence_timeout_seconds=0.05),
         orchestrator_factory=_slow_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=_artifact_roots(tmp_path),
     )
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
@@ -206,20 +300,36 @@ def test_child_rejects_unapproved_or_writer_factory_without_query():
     assert service.active_evidence_workers == 0
 
 
-def test_child_guard_rejects_approved_factory_that_owns_writer():
+def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):
+    roots = _artifact_roots(tmp_path)
     service = EvidenceIntegrationService(
         policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
         orchestrator_factory=_approved_writer_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=roots,
     )
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert service.active_evidence_workers == 0
 
 
-def test_spawn_process_args_contain_no_callable_closures():
+def test_child_guard_rejects_typed_service_with_writer_component(tmp_path: Path):
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        orchestrator_factory=_typed_writer_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=_artifact_roots(tmp_path),
+    )
+    context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
+    assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
+
+
+def test_spawn_process_args_contain_no_callable_closures(tmp_path: Path):
     captured = {}
+    roots = _artifact_roots(tmp_path)
 
     def process_factory(*, target, args):
         captured["args"] = args
@@ -227,17 +337,15 @@ def test_spawn_process_args_contain_no_callable_closures():
 
     service = EvidenceIntegrationService(
         policy=EvidenceQueryPolicy(),
-        orchestrator_factory=_empty_factory,
+        orchestrator_factory=_child_evidence_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
         process_factory=process_factory,
-        artifact_roots={"knowledge": "C:/knowledge", "experience": "C:/experience"},
+        artifact_roots=roots,
     )
     service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert not any(callable(value) for value in captured["args"])
-    assert captured["args"][2]["artifact_roots"] == {
-        "knowledge": "C:/knowledge", "experience": "C:/experience"
-    }
+    assert captured["args"][2]["artifact_roots"] == roots
 
 
 def test_populated_phase8_readonly_adapter_matches_writer_semantics(tmp_path: Path):
@@ -391,13 +499,19 @@ def test_enabled_request_uses_snapshot_as_of():
 
 
 def test_partial_bundle_maps_to_fallback():
-    context = _service(factory=_partial_factory).retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    context = _service(
+        _FakeOrchestrator(
+            EvidenceBundle(status="PARTIAL", source_status={"knowledge": "COMPLETE", "experience": "FAILED"})
+        )
+    ).retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert context.bundle_status is EvidenceBundleStatus.PARTIAL
 
 
 def test_orchestrator_exception_maps_to_fallback():
-    context = _service(factory=_error_factory).retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    context = _service(_FakeOrchestrator(error=RuntimeError("boom"))).retrieve(
+        _snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5"
+    )
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert "ORCHESTRATOR" in str(context.diagnostics).upper()
 
