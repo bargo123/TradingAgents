@@ -51,6 +51,15 @@ def test_audit_rejects_prompt_completion_reasoning_and_credentials(tmp_path):
         store.append(audit(source_errors={"credential": "x"}))
 
 
+def test_audit_rejects_hyphenated_forbidden_fields_and_sensitive_values(tmp_path):
+    store = EvidenceAuditStore(tmp_path / "audit.sqlite3")
+    store.initialize()
+    with pytest.raises(ValueError):
+        store.append(audit(diagnostics={"nested": {"chain-of-thought": "hidden"}}))
+    with pytest.raises(ValueError):
+        store.append(audit(source_errors={"nested": ["api-key"]}))
+
+
 def test_audit_is_append_only(tmp_path):
     store = EvidenceAuditStore(tmp_path / "audit.sqlite3")
     store.initialize()

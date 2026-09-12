@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
@@ -13,8 +12,22 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-_FORBIDDEN = re.compile(r"(?:prompt|completion|reasoning|chain[_ ]of[_ ]thought|api[_ ]key|password|token|credential)", re.I)
+_FORBIDDEN_WORDS = (
+    "prompt",
+    "completion",
+    "reasoning",
+    "chain of thought",
+    "api key",
+    "password",
+    "token",
+    "credential",
+)
 _DIAGNOSTIC_KEYS = {"diagnostics", "source_errors"}
+
+
+def _contains_forbidden(value: str) -> bool:
+    normalized = " ".join("".join(char if char.isalnum() else " " for char in value.lower()).split())
+    return any(word in normalized for word in _FORBIDDEN_WORDS)
 
 
 class AuditWriteError(RuntimeError):
@@ -38,13 +51,13 @@ def _jsonable(value: Any) -> Any:
 def _reject_forbidden(value: Any, path: str = "") -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
-            if _FORBIDDEN.search(str(key)):
+            if _contains_forbidden(str(key)):
                 raise ValueError(f"forbidden audit field: {path}.{key}")
             _reject_forbidden(child, f"{path}.{key}")
     elif isinstance(value, (tuple, list, set, frozenset)):
         for i, child in enumerate(value):
             _reject_forbidden(child, f"{path}[{i}]")
-    elif isinstance(value, str) and _FORBIDDEN.search(value):
+    elif isinstance(value, str) and _contains_forbidden(value):
         raise ValueError(f"forbidden audit value: {path}")
 
 
