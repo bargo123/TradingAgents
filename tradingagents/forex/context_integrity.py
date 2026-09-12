@@ -194,16 +194,24 @@ def evaluate_context_integrity(
     expected_hash = artifacts["evidence_context_hash"]
     missing_context_hash_nodes: list[str] = []
     divergent_context_hash_nodes: list[str] = []
-    if trace and artifacts["evidence_context_present"]:
+    if trace is not None and artifacts["evidence_context_present"]:
+        after_hashes: dict[str, list[Any]] = {node: [] for node in EXPECTED_FOREX_NODES}
         for item in trace:
             if not isinstance(item, Mapping) or item.get("phase") != "after":
                 continue
             node = str(item.get("node"))
+            if node not in after_hashes:
+                continue
             observed = _mapping(item.get("artifacts")).get("evidence_context_hash")
-            if not observed:
+            after_hashes[node].append(observed)
+        for node, observations in after_hashes.items():
+            if not observations or any(not observed for observed in observations):
                 missing_context_hash_nodes.append(node)
-            elif expected_hash and observed != expected_hash:
+            if expected_hash and any(observed and observed != expected_hash for observed in observations):
                 divergent_context_hash_nodes.append(node)
+        if missing_context_hash_nodes:
+            missing_nodes = sorted(set(missing_nodes).union(missing_context_hash_nodes), key=EXPECTED_FOREX_NODES.index)
+            missing.extend(f"node:{node}" for node in missing_context_hash_nodes if f"node:{node}" not in missing)
         missing.extend(f"context_hash:{node}" for node in missing_context_hash_nodes)
         missing.extend(f"context_hash_divergent:{node}" for node in divergent_context_hash_nodes)
 

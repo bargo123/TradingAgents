@@ -99,3 +99,54 @@ def test_context_integrity_reports_divergent_hash_observation():
     result = evaluate_context_integrity(state, trace=trace)
     assert result["status"] == "INCOMPLETE"
     assert result["divergent_context_hash_nodes"] == ["News Analyst"]
+
+
+def test_context_integrity_fails_closed_when_evidence_trace_is_empty():
+    state = Propagator().create_initial_state(
+        "EURUSD", "2026-09-12", asset_type="forex", evidence_context=_context()
+    )
+    result = evaluate_context_integrity(state, trace=[])
+    assert result["status"] == "INCOMPLETE"
+    assert result["missing_context_hash_nodes"] == [
+        "Market Analyst",
+        "News Analyst",
+        "Bull Researcher",
+        "Bear Researcher",
+        "Research Manager",
+        "Trader",
+        "Aggressive Analyst",
+        "Conservative Analyst",
+        "Neutral Analyst",
+        "Portfolio Manager",
+    ]
+
+
+def test_context_integrity_marks_unobserved_expected_nodes_only():
+    state = Propagator().create_initial_state(
+        "EURUSD", "2026-09-12", asset_type="forex", evidence_context=_context()
+    )
+    trace = [
+        {
+            "node": "Market Analyst",
+            "phase": "after",
+            "artifacts": {"evidence_context_hash": "hash-123"},
+        },
+        {
+            "node": "Unknown Node",
+            "phase": "after",
+            "artifacts": {},
+        },
+    ]
+    result = evaluate_context_integrity(state, trace=trace)
+    assert result["missing_context_hash_nodes"] == [
+        "News Analyst",
+        "Bull Researcher",
+        "Bear Researcher",
+        "Research Manager",
+        "Trader",
+        "Aggressive Analyst",
+        "Conservative Analyst",
+        "Neutral Analyst",
+        "Portfolio Manager",
+    ]
+    assert "Unknown Node" not in result["missing_context_hash_nodes"]
