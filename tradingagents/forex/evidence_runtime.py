@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import inspect
 import json
 import multiprocessing
 import sqlite3
@@ -38,6 +40,7 @@ def _database_path(root: str | Path) -> Path:
 class _ReadonlySQLite:
     def __init__(self, root: str | Path):
         self.database_path = _database_path(root).resolve()
+        self.path = self.database_path
         self._connection = self._open()
 
     def _open(self) -> sqlite3.Connection:
@@ -54,7 +57,15 @@ class _ReadonlySQLite:
             pass
 
     def close(self) -> None:
-        self._connection.close()
+        if self._connection is not None:
+            self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        self.close()
+        return False
 
 
 class ReadonlyKnowledgeCatalog(_ReadonlySQLite):
@@ -297,14 +308,57 @@ def _request_payload(request: EvidenceRequest) -> dict[str, Any]:
     return payload
 
 
-def _child_query(send_conn: Any, factory: Callable[[], Any], request_payload: Mapping[str, Any]) -> None:
+def _factory_descriptor(factory: Callable[..., Any]) -> dict[str, str]:
+    module = getattr(factory, "__module__", "")
+    qualname = getattr(factory, "__qualname__", "")
+    if not module or not qualname or "<locals>" in qualname or "<lambda>" in qualname:
+        raise TypeError("orchestrator factory must be a top-level importable callable")
+    return {"module": module, "qualname": qualname}
+
+
+def _resolve_factory(descriptor: Mapping[str, str]) -> Callable[..., Any]:
+    value: Any = importlib.import_module(str(descriptor["module"]))
+    for part in str(descriptor["qualname"]).split("."):
+        value = getattr(value, part)
+    if not callable(value):
+        raise TypeError("orchestrator factory descriptor is not callable")
+    return value
+
+
+def _make_orchestrator(factory: Callable[..., Any], envelope: Mapping[str, Any]) -> Any:
     try:
-        bundle = factory().query(EvidenceRequest(**dict(request_payload)))
+        parameters = inspect.signature(factory).parameters
+    except (TypeError, ValueError):
+        parameters = {}
+    return factory(envelope) if parameters else factory()
+
+
+def _close_orchestrator(orchestrator: Any) -> None:
+    seen: set[int] = set()
+    for name in ("knowledge_service", "experience_service", "statistics_calculator", "knowledge_catalog", "experience_catalog"):
+        value = getattr(orchestrator, name, None)
+        if value is None or id(value) in seen:
+            continue
+        seen.add(id(value))
+        close = getattr(value, "close", None)
+        if callable(close):
+            close()
+
+
+def _child_query(send_conn: Any, factory_descriptor: Mapping[str, str], envelope: Mapping[str, Any]) -> None:
+    orchestrator = None
+    try:
+        factory = _resolve_factory(factory_descriptor)
+        request = EvidenceRequest(**dict(envelope["request"]))
+        orchestrator = _make_orchestrator(factory, envelope)
+        bundle = orchestrator.query(request)
         send_conn.send(("ok", bundle.to_dict() if hasattr(bundle, "to_dict") else bundle))
     except BaseException as exc:  # process boundary transports a bounded typed failure
         kind = "timeout" if isinstance(exc, EvidenceTimeout) else "error"
         send_conn.send((kind, type(exc).__name__, str(exc).replace("\r", " ").replace("\n", " ")[:500]))
     finally:
+        if orchestrator is not None:
+            _close_orchestrator(orchestrator)
         send_conn.close()
 
 
@@ -319,6 +373,7 @@ class EvidenceIntegrationService:
         provider_endpoint: str | Callable[[], str] | None,
         clock: Callable[[], datetime] | None = None,
         process_factory: Callable[..., Any] | None = None,
+        artifact_roots: Mapping[str, str | Path] | None = None,
     ) -> None:
         self.policy = policy
         self.orchestrator_factory = orchestrator_factory
@@ -326,7 +381,12 @@ class EvidenceIntegrationService:
         self.provider_endpoint = provider_endpoint
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.process_factory = process_factory
+        self.artifact_roots: dict[str, str] = {
+            str(key): str(value) for key, value in (artifact_roots or {}).items()
+        }
         self.active_evidence_workers = 0
+        self.retrieval_count = 0
+        self.last_request: Any = None
 
     @property
     def enabled(self) -> bool:
@@ -350,10 +410,13 @@ class EvidenceIntegrationService:
     def _query(self, request: Any) -> EvidenceBundle:
         process_factory = self.process_factory or multiprocessing.get_context("spawn").Process
         recv_conn, send_conn = multiprocessing.Pipe(duplex=False)
-        process = process_factory(
-            target=_child_query,
-            args=(send_conn, self.orchestrator_factory, _request_payload(request)),
-        )
+        envelope = {
+            "request": _request_payload(request),
+            "artifact_roots": dict(self.artifact_roots),
+            "evidence_timeout_seconds": float(self.policy.evidence_timeout_seconds),
+        }
+        descriptor = _factory_descriptor(self.orchestrator_factory)
+        process = process_factory(target=_child_query, args=(send_conn, descriptor, envelope))
         self.active_evidence_workers += 1
         try:
             process.start()
@@ -385,6 +448,7 @@ class EvidenceIntegrationService:
             return EvidenceContext(as_of=as_of, integration_status=EvidenceIntegrationStatus.DISABLED)
         query = None
         generations = (None, None)
+        self.retrieval_count += 1
         try:
             request, query = self.policy.build_request(
                 snapshot,
@@ -393,6 +457,7 @@ class EvidenceIntegrationService:
                 analysis_timeframe=analysis_timeframe,
                 as_of=as_of,
             )
+            self.last_request = request
             generations = _generations(self.generation_provider)
             bundle = self._query(request)
             post_generations = _generations(self.generation_provider)
