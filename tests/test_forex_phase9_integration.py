@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -266,6 +266,17 @@ def _slow_factory(config):
     return _typed_orchestrator(config, delay=1.0)
 
 
+@approved_readonly_factory
+def _profile_child_factory(config):
+    orchestrator = _typed_orchestrator(
+        config,
+        hits=(KnowledgeHit(chunk_id="profile-child", document_id="doc", text="profile evidence"),),
+        count_query=True,
+    )
+    orchestrator.experience_service.profiles = orchestrator.experience_service.catalog.profiles
+    return orchestrator
+
+
 def _unapproved_factory(_config=None):
     return type("WriterOwner", (), {"writer": object(), "query": lambda self, _request: EvidenceBundle(status="COMPLETE")})()
 
@@ -471,6 +482,48 @@ def test_child_guard_recurses_nested_dependency_containers(tmp_path: Path, facto
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
+
+
+def test_populated_profiles_pass_adapter_backed_spawn_guard(tmp_path: Path):
+    roots = _artifact_roots(tmp_path)
+    writer = ExperienceCatalog(roots["experience"])
+    record = writer.upsert_source_alias(
+        "source", "profile-decision", "profile-fingerprint", symbol="EURUSD",
+        analysis_profile="INTRADAY", analysis_timeframe="M5",
+        analysis_snapshot_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        decision_completed_timestamp=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
+        market_state=_feature_state(1.0), trust="TIER_A_HIGH_TRUST",
+    )
+    writer.store_feature_projection(record.experience_id, dict(record.market_state))
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        orchestrator_factory=_profile_child_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=roots,
+    )
+    context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    assert context.integration_status is EvidenceIntegrationStatus.INJECTED
+    assert context.diagnostics["source_status"]["query_count"] == 1
+    assert service.active_evidence_workers == 0
+
+
+def test_phase8_profile_and_cohort_models_are_immutable(tmp_path: Path):
+    roots = _artifact_roots(tmp_path)
+    writer = ExperienceCatalog(roots["experience"])
+    record = writer.upsert_source_alias(
+        "source", "immutable-decision", "immutable-fingerprint", symbol="EURUSD",
+        analysis_profile="INTRADAY", analysis_timeframe="M5",
+        analysis_snapshot_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        decision_completed_timestamp=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
+        market_state=_feature_state(1.0), trust="TIER_A_HIGH_TRUST",
+    )
+    writer.store_feature_projection(record.experience_id, dict(record.market_state))
+    catalog = ReadonlyExperienceCatalog(roots["experience"])
+    profile = next(iter(catalog.profiles.values()))
+    assert isinstance(profile.cohort, NormalizationCohortV1)
+    with pytest.raises(FrozenInstanceError):
+        profile.population_count = 99
 
 
 def test_spawn_process_args_contain_no_callable_closures(tmp_path: Path):

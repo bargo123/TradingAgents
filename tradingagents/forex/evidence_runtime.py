@@ -22,10 +22,15 @@ from tradingagents.experience.models import (
     ExperienceRecord,
     ExperienceSearchResult,
 )
-from tradingagents.experience.normalization import NormalizationCohortV1, build_profile
+from tradingagents.experience.normalization import (
+    NormalizationCohortV1,
+    SimilarityProfileV1,
+    build_profile,
+)
 from tradingagents.experience.orchestrator import EvidenceOrchestrator
 from tradingagents.experience.outcomes import OutcomeStatsCalculator
 from tradingagents.experience.query import ExperienceQueryService
+from tradingagents.experience.similarity import ExactSimilarityIndex
 from tradingagents.knowledge.embeddings import EmbeddingProvider
 from tradingagents.knowledge.lexical_index import LexicalIndexReader
 from tradingagents.knowledge.models import EmbeddingSpec, IndexGeneration, KnowledgeHit
@@ -485,6 +490,7 @@ def _validate_child_orchestrator(
         KnowledgeQueryService,
         ExperienceQueryService,
         OutcomeStatsCalculator,
+        ExactSimilarityIndex,
         ReadonlyKnowledgeCatalog,
         ReadonlyExperienceCatalog,
         VectorIndexReader,
@@ -521,7 +527,7 @@ def _validate_child_orchestrator(
         # writer hidden in ``{"dependencies": [writer]}`` must be rejected,
         # while scalar metadata and immutable value objects remain benign.
         def enqueue(value: Any) -> None:
-            if value is None or callable(value) or isinstance(
+            if value is None or inspect.isroutine(value) or isinstance(
                 value, (str, bytes, bytearray, int, float, complex, bool, Path, datetime, Enum)
             ):
                 return
@@ -537,7 +543,15 @@ def _validate_child_orchestrator(
             if hasattr(value, "__dataclass_fields__") and not isinstance(value, type):
                 if not isinstance(
                     value,
-                    (EvidenceBundle, ExperienceRecord, ExperienceSearchResult, IndexGeneration, EmbeddingSpec, KnowledgeHit),
+                    (
+                        EvidenceBundle,
+                        ExperienceRecord,
+                        ExperienceSearchResult,
+                        IndexGeneration,
+                        EmbeddingSpec,
+                        KnowledgeHit,
+                        SimilarityProfileV1,
+                    ),
                 ) and not getattr(value, "__evidence_runtime_readonly__", False):
                     raise TypeError(
                         f"evidence child dependency is not approved: {type(value).__module__}.{type(value).__name__}"
@@ -547,7 +561,11 @@ def _validate_child_orchestrator(
                 return
             pending.append(value)
 
-        for value in getattr(owner, "__dict__", {}).values():
+        for name, value in getattr(owner, "__dict__", {}).items():
+            if name == "_connection" and isinstance(
+                owner, (ReadonlyKnowledgeCatalog, ReadonlyExperienceCatalog)
+            ):
+                continue
             enqueue(value)
 
     if config is not None:
