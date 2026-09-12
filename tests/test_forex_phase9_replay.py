@@ -181,7 +181,7 @@ def test_replay_pins_phase7_and_phase8_generations(tmp_path: Path):
 
 
 def test_knowledge_generation_change_invalidates_replay(tmp_path: Path):
-    generations = iter((("p7", "p8"), ("changed", "p8")))
+    generations = iter((("p7", "p8"), ("p7", "p8"), ("changed", "p8")))
     calls: list[dict] = []
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner(calls, generations=("p7", "p8")), generation_provider=lambda: next(generations))
     report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
@@ -190,9 +190,28 @@ def test_knowledge_generation_change_invalidates_replay(tmp_path: Path):
 
 
 def test_experience_generation_change_invalidates_replay(tmp_path: Path):
-    generations = iter((("p7", "p8"), ("p7", "changed")))
+    generations = iter((("p7", "p8"), ("p7", "p8"), ("p7", "changed")))
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: next(generations))
     report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
+    assert report.comparison_status == "INVALID_GENERATION_CHANGED"
+    assert report.did_action_change is None
+
+
+def test_generation_change_between_legs_invalidates_even_if_restored(tmp_path: Path):
+    samples = iter((("p7", "p8"), ("changed", "p8"), ("p7", "p8")))
+    observed: list[tuple[str | None, str | None]] = []
+
+    def generation_provider():
+        value = next(samples)
+        observed.append(value)
+        return value
+
+    replay = SavedSnapshotReplay(
+        runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")),
+        generation_provider=generation_provider,
+    )
+    report = replay.run(None, snapshot_bytes=_source_bytes(), config=_config(tmp_path))
+    assert len(observed) == 3
     assert report.comparison_status == "INVALID_GENERATION_CHANGED"
     assert report.did_action_change is None
 
@@ -304,7 +323,7 @@ def test_actual_runner_replay_leg_passes_toggle_and_generation_pins(tmp_path: Pa
             pinned_phase7_generation_id="p7",
             pinned_phase8_generation_id="p8",
             provider="ollama",
-            models={"deep": "qwen"},
+            models={"quick": "qwen", "deep": "qwen"},
             model_settings={"temperature": 0},
             normalization_path="v1",
             persist=False,
@@ -313,7 +332,58 @@ def test_actual_runner_replay_leg_passes_toggle_and_generation_pins(tmp_path: Pa
     assert [graph.kwargs["config"]["forex_evidence_enabled"] for graph in graphs] == [False, True]
     assert graphs[1].kwargs["config"]["pinned_phase7_generation_id"] == "p7"
     assert graphs[1].kwargs["config"]["pinned_phase8_generation_id"] == "p8"
+    assert graphs[1].kwargs["config"]["llm_provider"] == "ollama"
+    assert graphs[1].kwargs["config"]["quick_think_llm"] == "qwen"
+    assert graphs[1].kwargs["config"]["deep_think_llm"] == "qwen"
+    assert graphs[1].kwargs["config"]["temperature"] == 0
     assert seen_configs and seen_configs[0]["pinned_phase7_generation_id"] == "p7"
+
+
+def test_normal_runner_keeps_scalar_llm_provider_when_mt5_provider_is_live(tmp_path: Path):
+    snapshot = _snapshot()
+    graph_configs: list[dict] = []
+
+    class _Provider:
+        market_snapshot_calls = 0
+
+        def initialize(self):
+            return True
+
+        def shutdown(self):
+            return None
+
+        def ensure_symbol(self, _symbol):
+            return snapshot.symbol
+
+        def get_market_snapshot(self, _symbol, count=100):
+            self.market_snapshot_calls += 1
+            return snapshot
+
+        def get_spread(self, symbol):
+            return type("Spread", (), {"symbol": symbol, "bid": snapshot.bid, "ask": snapshot.ask, "price": snapshot.spread, "points": snapshot.spread_points, "timestamp": snapshot.timestamp})()
+
+    class _Graph:
+        def __init__(self, **kwargs):
+            graph_configs.append(kwargs["config"])
+            self.propagator = type(
+                "P",
+                (),
+                {
+                    "create_initial_state": lambda _self, *args, **kw: kw,
+                    "get_graph_args": lambda _self, **_kw: {},
+                },
+            )()
+
+        def invoke(self, _state, **_kwargs):
+            return {"portfolio_manager_raw_result": {"rating": "Hold"}, "final_trade_decision": {"rating": "Hold"}}
+
+    runner = ForexShadowRunner(
+        provider_factory=lambda **_kwargs: _Provider(),
+        graph_factory=lambda **kwargs: _Graph(**kwargs),
+        config={"llm_provider": "openai", "data_cache_dir": str(tmp_path / "cache")},
+    )
+    runner.analyze(symbol="EURUSD", analysis_date=snapshot.timestamp.date())
+    assert graph_configs and graph_configs[0]["llm_provider"] == "openai"
 
 
 def test_replay_binds_to_source_decision_and_snapshot_bytes(tmp_path: Path):

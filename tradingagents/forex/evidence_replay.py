@@ -393,15 +393,17 @@ def _source_row(path: str | Path, decision_id: str) -> sqlite3.Row:
     if not source.is_file():
         raise SnapshotReplayError(f"source database does not exist: {source}")
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
     try:
-        with sqlite3.connect(uri, uri=True) as connection:
-            connection.row_factory = sqlite3.Row
-            row = connection.execute(
-                "SELECT * FROM shadow_decisions WHERE decision_id = ?",
-                (decision_id,),
-            ).fetchone()
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM shadow_decisions WHERE decision_id = ?",
+            (decision_id,),
+        ).fetchone()
     except sqlite3.Error as exc:
         raise SnapshotReplayError("source database cannot be read for replay") from exc
+    finally:
+        connection.close()
     if row is None:
         raise SnapshotReplayError(f"source decision not found: {decision_id}")
     return row
@@ -662,6 +664,8 @@ class SavedSnapshotReplay:
         kwargs_a = _analysis_kwargs(snapshot, snapshot_bytes, effective_config, False)
         kwargs_b = _analysis_kwargs(snapshot, snapshot_bytes, effective_config, True)
         baseline = _invoke_analysis(runner, kwargs_a)
+        before_b7, before_b8 = self._generations(effective_config)
+        generation_changed = generation_changed or before_b7 is None or before_b8 is None or before_b7 != pinned7 or before_b8 != pinned8
         evidence = _invoke_analysis(runner, kwargs_b)
         after7, after8 = self._generations(effective_config)
         generation_changed = generation_changed or after7 is None or after8 is None or after7 != pinned7 or after8 != pinned8

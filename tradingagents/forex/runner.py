@@ -501,7 +501,7 @@ class ForexShadowRunner:
             raise ValueError("saved snapshot symbol does not match requested symbol")
         if snapshot is not None and snapshot_bytes is not None and not isinstance(snapshot_bytes, bytes):
             raise ValueError("snapshot_bytes must be immutable bytes")
-        provider: Any | None = None
+        mt5_provider: Any | None = None
         callback_list = list(callbacks or ())
         if source_run_id is not None:
             if not isinstance(source_run_id, str) or not source_run_id.strip():
@@ -512,14 +512,14 @@ class ForexShadowRunner:
         profile = resolve_forex_profile(analysis_profile)
         analysis_telemetry: dict[str, Any] = {}
         try:
-            provider = _SavedSnapshotProvider(snapshot) if snapshot is not None else self.provider_factory(terminal_path=terminal_path)
-            if not provider.initialize():
+            mt5_provider = _SavedSnapshotProvider(snapshot) if snapshot is not None else self.provider_factory(terminal_path=terminal_path)
+            if not mt5_provider.initialize():
                 raise RuntimeError("MT5 provider initialization failed")
-            resolved_symbol = snapshot.symbol if snapshot is not None else provider.ensure_symbol(symbol)
+            resolved_symbol = snapshot.symbol if snapshot is not None else mt5_provider.ensure_symbol(symbol)
             if not isinstance(resolved_symbol, str) or not resolved_symbol.strip():
                 raise RuntimeError("MT5 provider returned an invalid resolved symbol")
             if snapshot is None:
-                snapshot = provider.get_market_snapshot(resolved_symbol, count=count)
+                snapshot = mt5_provider.get_market_snapshot(resolved_symbol, count=count)
             snapshot_json = snapshot_to_dict(snapshot)
             evidence_context: EvidenceContext | None = None
             config_for_graph = dict(self.config)
@@ -546,9 +546,35 @@ class ForexShadowRunner:
             if provider is not None:
                 config_for_graph["llm_provider"] = provider
             if models is not None:
-                config_for_graph["replay_models"] = dict(models)
+                model_values = dict(models)
+                config_for_graph["replay_models"] = model_values
+                quick_model = (
+                    model_values.get("quick_think_llm")
+                    or model_values.get("quick_model")
+                    or model_values.get("quick")
+                )
+                deep_model = (
+                    model_values.get("deep_think_llm")
+                    or model_values.get("deep_model")
+                    or model_values.get("deep")
+                )
+                if quick_model is not None:
+                    config_for_graph["quick_think_llm"] = quick_model
+                if deep_model is not None:
+                    config_for_graph["deep_think_llm"] = deep_model
             if model_settings is not None:
-                config_for_graph["replay_model_settings"] = dict(model_settings)
+                settings = dict(model_settings)
+                config_for_graph["replay_model_settings"] = settings
+                for key in (
+                    "temperature",
+                    "llm_max_retries",
+                    "max_tokens",
+                    "google_thinking_level",
+                    "openai_reasoning_effort",
+                    "anthropic_effort",
+                ):
+                    if key in settings:
+                        config_for_graph[key] = settings[key]
             if normalization_path is not None:
                 config_for_graph["replay_normalization_path"] = normalization_path
             if pinned_phase7_generation_id is not None:
@@ -581,7 +607,7 @@ class ForexShadowRunner:
 
             market_context = build_forex_market_context(snapshot, profile)
             instrument_context = build_instrument_context(resolved_symbol, "forex", {})
-            adapter = MT5ToolAdapter(provider, snapshot)
+            adapter = MT5ToolAdapter(mt5_provider, snapshot)
             graph_factory = self.graph_factory or self._default_graph_factory
             graph = graph_factory(
                 selected_analysts=selected_analysts,
@@ -635,7 +661,7 @@ class ForexShadowRunner:
             decision_reference: dict[str, Any] | None = None
             decision_reference_error: str | None = None
             try:
-                decision_reference = _fresh_reference_quote(provider, resolved_symbol, decision_completed_timestamp)
+                decision_reference = _fresh_reference_quote(mt5_provider, resolved_symbol, decision_completed_timestamp)
             except Exception as exc:
                 decision_reference_error = str(exc)
             valid_for_seconds = None
@@ -647,7 +673,7 @@ class ForexShadowRunner:
             analysis_telemetry.update(_callback_metrics(callback_list))
             analysis_telemetry.update(
                 {
-                    "provider_snapshot_calls": getattr(provider, "market_snapshot_calls", 1),
+                    "provider_snapshot_calls": getattr(mt5_provider, "market_snapshot_calls", 1),
                     "evidence_integration_status": (
                         "DISABLED" if evidence_context is None else str(evidence_context.integration_status)
                     ),
@@ -679,7 +705,7 @@ class ForexShadowRunner:
                 source_run_id=source_run_id,
             )
         finally:
-            shutdown = getattr(provider, "shutdown", None) if provider is not None else None
+            shutdown = getattr(mt5_provider, "shutdown", None) if mt5_provider is not None else None
             if callable(shutdown):
                 shutdown()
 
