@@ -11,7 +11,11 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any
 
-from tradingagents.experience.models import EvidenceBundle, TrustTier
+from tradingagents.dataflows.mt5.models import ForexMarketSnapshot
+from tradingagents.experience.features import extract_market_state
+from tradingagents.experience.models import EvidenceBundle, EvidenceRequest, TrustTier
+
+from .context import snapshot_to_dict
 
 
 class _ValueEnum(str, Enum):
@@ -116,9 +120,23 @@ class CanonicalKnowledgeQuery:
 @dataclass(frozen=True, slots=True)
 class EvidenceSnapshotAdapter:
     def to_market_state(
-        self, snapshot: Any, *, resolved_symbol: str, analysis_profile: str, analysis_timeframe: str
+        self, snapshot: ForexMarketSnapshot, *, resolved_symbol: str, analysis_profile: str, analysis_timeframe: str
     ) -> Mapping[str, Any]:
-        raise NotImplementedError("snapshot adapters must implement to_market_state")
+        payload = snapshot_to_dict(snapshot, include_candles=False)
+        row = {
+            "resolved_symbol": str(resolved_symbol).strip().upper(),
+            "analysis_profile": str(analysis_profile).strip().upper(),
+            "analysis_timeframe": str(analysis_timeframe).strip().upper(),
+            "analysis_snapshot_timestamp": snapshot.timestamp,
+            "snapshot_json": payload,
+        }
+        vector = extract_market_state(row)
+        return {
+            "values": vector.values,
+            "mask": vector.mask,
+            "feature_names": vector.feature_names,
+            "cohort": vector.cohort,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,6 +165,80 @@ class EvidenceQueryPolicy:
             raise ValueError("trust_tiers contains an unapproved tier")
         if self.statistics_horizon_seconds is not None and (self.statistics_horizon_seconds <= 0 or not self.evaluation_basis):
             raise ValueError("statistics horizon requires a valid evaluation_basis")
+
+    @staticmethod
+    def _normal(value: Any) -> str:
+        if isinstance(value, Enum):
+            value = value.value
+        if isinstance(value, float):
+            return format(value, ".15g")
+        return " ".join(str(value).strip().split()).upper()
+
+    def build_knowledge_query(
+        self,
+        snapshot: ForexMarketSnapshot,
+        *,
+        resolved_symbol: str,
+        analysis_profile: str,
+        analysis_timeframe: str,
+    ) -> CanonicalKnowledgeQuery:
+        payload = snapshot_to_dict(snapshot, include_candles=False)
+        terms = [
+            ("symbol", resolved_symbol),
+            ("profile", analysis_profile),
+            ("timeframe", analysis_timeframe),
+        ]
+        features = payload.get("features", {})
+        for timeframe in ("M1", "M5", "M15", "H1"):
+            section = features.get(timeframe)
+            if not isinstance(section, Mapping):
+                continue
+            for name in ("direction", "return_over_bars", "range_pct", "average_true_range"):
+                value = section.get(name)
+                if value is not None and str(value).upper() != "INSUFFICIENT_DATA":
+                    terms.append((f"{timeframe}.{name}", value))
+        spread = (payload.get("quote") or {}).get("spread_points")
+        if spread is not None:
+            terms.append(("spread_points", spread))
+        text = " ".join(f"{key}={self._normal(value)}" for key, value in terms)
+        fingerprint_payload = f"{self.query_policy_version}|{text}".encode()
+        fingerprint = hashlib.sha256(fingerprint_payload).hexdigest()
+        return CanonicalKnowledgeQuery(text=text, fingerprint=fingerprint, policy_version=self.query_policy_version)
+
+    def build_request(
+        self,
+        snapshot: ForexMarketSnapshot,
+        *,
+        resolved_symbol: str,
+        analysis_profile: str,
+        analysis_timeframe: str,
+        as_of: datetime,
+    ) -> tuple[EvidenceRequest, CanonicalKnowledgeQuery]:
+        query = self.build_knowledge_query(
+            snapshot,
+            resolved_symbol=resolved_symbol,
+            analysis_profile=analysis_profile,
+            analysis_timeframe=analysis_timeframe,
+        )
+        request = EvidenceRequest(
+            research_question=query.text,
+            market_state=EvidenceSnapshotAdapter().to_market_state(
+                snapshot,
+                resolved_symbol=resolved_symbol,
+                analysis_profile=analysis_profile,
+                analysis_timeframe=analysis_timeframe,
+            ),
+            knowledge_top_k=self.knowledge_top_k,
+            experience_top_k=self.experience_top_k,
+            symbol=str(resolved_symbol).strip().upper(),
+            analysis_profile=str(analysis_profile).strip().upper(),
+            analysis_timeframe=str(analysis_timeframe).strip().upper(),
+            evaluation_basis=self.evaluation_basis if self.statistics_horizon_seconds is not None else None,
+            horizon_seconds=self.statistics_horizon_seconds,
+            as_of=_utc(as_of),
+            trust_tiers=self.trust_tiers,
+        )
+        return request, query
 
 
 @dataclass(frozen=True, slots=True)
