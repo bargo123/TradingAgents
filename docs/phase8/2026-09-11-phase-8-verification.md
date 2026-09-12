@@ -11,11 +11,14 @@ Closure code commit: `da8d5b4762added679f13657d80c2a9e86639112`
 
 **PHASE 8 NOT COMPLETE**
 
-All functional and real read-only smoke gates pass. The required repository
-Ruff scope remains non-zero because the existing Phase 8 package and tests
-contain 195 pre-existing style findings (mostly compact-layout `E701`/`I001`
-findings). The two files changed during this closure are Ruff-clean. No mass
-formatting of the already-reviewed Phase 8 implementation was performed.
+The real read-only smoke and all functional tests pass. Its one imported real
+decision is correctly Tier C, so there is no eligible A/B numeric experience
+candidate or positive similarity hit to claim; deterministic exact-similarity
+tests pass. The required repository Ruff scope remains non-zero because the
+existing Phase 8 package and tests contain 195 pre-existing style findings
+(mostly compact-layout `E701`/`I001` findings). The two files changed during
+this closure are Ruff-clean. No mass formatting of the already-reviewed Phase
+8 implementation was performed.
 
 ## Environment restoration
 
@@ -135,5 +138,7 @@ source-database writes. Existing Phase 8 roots were not deleted or overwritten.
 Functional Phase 8 implementation, deterministic tests, full pytest, compile,
 source integrity, fresh-root behavior, Phase 7 read-only integration, and
 offline/network isolation are verified. Completion remains **NOT COMPLETE**
-solely because the required broad Ruff scope exits non-zero on the existing
-reviewed codebase. No Phase 9 work was started; nothing was merged or pushed.
+because the required broad Ruff scope exits non-zero on the existing reviewed
+codebase, and the supplied real source contains no eligible A/B experience row
+for a positive similarity example. No Phase 9 work was started; nothing was
+merged or pushed.
