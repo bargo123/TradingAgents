@@ -264,17 +264,28 @@ class Phase9EvidenceContextBuilder:
 
     @classmethod
     def _item(cls, value: Any, kind: EvidenceSourceKind, display_id: str) -> CanonicalEvidenceItem:
+        existing_provenance = dict(_field(value, "provenance", {}) or {})
         if kind is EvidenceSourceKind.KNOWLEDGE:
-            authoritative_id = str(_field(value, "chunk_id") or _field(value, "document_id") or "unknown")
+            authoritative_value = (
+                _field(value, "chunk_id")
+                or _field(value, "document_id")
+                or existing_provenance.get("chunk_id")
+                or existing_provenance.get("document_id")
+            )
         elif kind is EvidenceSourceKind.EXPERIENCE:
-            authoritative_id = str(_field(value, "experience_id") or "unknown")
+            authoritative_value = _field(value, "experience_id") or existing_provenance.get("experience_id")
         else:
-            authoritative_id = str(
+            authoritative_value = (
                 _field(value, "authoritative_id")
                 or _field(value, "statistics_id")
                 or _field(value, "experience_id")
-                or "statistics"
+                or existing_provenance.get("authoritative_id")
+                or existing_provenance.get("statistics_id")
+                or existing_provenance.get("experience_id")
             )
+        if not authoritative_value:
+            raise ValueError(f"{kind.value} item is missing an authoritative identifier")
+        authoritative_id = str(authoritative_value)
         score = _field(value, "score", _field(value, "similarity_score", 0.0))
         metadata = _field(value, "metadata", _field(value, "extra", {})) or {}
         return CanonicalEvidenceItem(
@@ -403,4 +414,8 @@ class Phase9EvidenceContextBuilder:
         )
 
 
-__all__ = [name for name in globals() if name.startswith("Evidence") or name.startswith("Canonical")]
+__all__ = [
+    name
+    for name in globals()
+    if name.startswith("Evidence") or name.startswith("Canonical") or name == "Phase9EvidenceContextBuilder"
+]

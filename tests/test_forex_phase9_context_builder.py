@@ -109,6 +109,25 @@ def test_provenance_ids_are_complete():
     assert context.experience_items[0].provenance["source_decision_id"] == "dec-e"
 
 
+def test_authoritative_ids_fall_back_to_structured_provenance():
+    knowledge = SimpleNamespace(
+        text="knowledge", content_type="PROSE", score=1.0,
+        provenance={"document_id": "doc-from-prov", "chunk_id": "chunk-from-prov"},
+    )
+    experience = SimpleNamespace(
+        text="experience", content_type="PROSE", score=1.0,
+        provenance={"experience_id": "exp-from-prov", "source_database_id": "db-from-prov"},
+    )
+    context = build_context(bundle(knowledge=[knowledge], experience=[experience]))
+    assert context.knowledge_items[0].authoritative_id == "chunk-from-prov"
+    assert context.experience_items[0].authoritative_id == "exp-from-prov"
+
+
+def test_builder_is_publicly_exported():
+    import tradingagents.forex.evidence_context as module
+    assert "Phase9EvidenceContextBuilder" in module.__all__
+
+
 def test_builder_preserves_statistics_as_separate_items():
     context = build_context(bundle(statistics=[item("STATISTICS", "s1", "one"), item("STATISTICS", "s2", "two")]))
     assert [x.source_kind.value for x in context.statistics_items] == ["STATISTICS", "STATISTICS"]
