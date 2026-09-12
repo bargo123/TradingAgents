@@ -4,17 +4,25 @@ import hashlib
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5AccountInfo, Mt5SymbolInfo
 from tradingagents.experience.models import EvidenceBundle, ExperienceHit, TrustTier
-from tradingagents.forex.evidence_audit import EvidenceUsageAudit
+from tradingagents.forex.evidence_audit import EvidenceAuditStore, EvidenceUsageAudit
 from tradingagents.forex.evidence_context import (
+    EvidenceContext,
     EvidenceIntegrationStatus,
     EvidenceQueryPolicy,
 )
-from tradingagents.forex.evidence_runtime import EvidenceIntegrationService
+from tradingagents.forex.evidence_prompt import render_supporting_evidence
+from tradingagents.forex.evidence_runtime import (
+    EvidenceIntegrationService,
+    _validate_forbidden_surface,
+)
+from tradingagents.forex.runner import ForexShadowRunner
+from tradingagents.forex.shadow import ShadowDecisionStore
 
 
 def _snapshot() -> ForexMarketSnapshot:
@@ -115,6 +123,171 @@ def test_hosted_provider_with_text_falls_back_without_leakage():
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert context.rendered_context == ""
     assert "private evidence" not in str(context.to_dict())
+
+
+def test_hosted_provider_with_statistics_falls_back_without_leakage():
+    class Orchestrator:
+        def query(self, _request):
+            return EvidenceBundle(
+                status="COMPLETE",
+                statistics={"statistics_id": "s1", "text": "private statistics"},
+            )
+
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(statistics_horizon_seconds=60),
+        orchestrator_factory=lambda: Orchestrator(),
+        generation_provider=lambda: (None, None),
+        provider_endpoint="https://hosted.example/v1",
+    )
+    service._query = lambda _request: Orchestrator().query(_request)
+    context = service.retrieve(
+        _snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5"
+    )
+    assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
+    assert context.rendered_context == ""
+    assert render_supporting_evidence({"evidence_context": context}).endswith("\n") is False
+    assert "private statistics" not in render_supporting_evidence({"evidence_context": context})
+
+
+def test_enabled_evidence_reads_leave_source_and_catalog_immutable(tmp_path: Path):
+    source = tmp_path / "phase6.db"
+    with sqlite3.connect(source) as db:
+        db.execute("CREATE TABLE shadow_trade_decisions (decision_id TEXT, action TEXT)")
+        db.execute("INSERT INTO shadow_trade_decisions VALUES ('d1', 'HOLD')")
+        db.commit()
+        before_rows = db.execute("SELECT * FROM shadow_trade_decisions").fetchall()
+        before_schema = db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
+    roots = {}
+    before_bytes = {source: source.read_bytes()}
+    before_catalog_state = {}
+    for name in ("knowledge", "experience"):
+        root = tmp_path / name
+        root.mkdir()
+        catalog = root / "catalog.sqlite3"
+        sqlite3.connect(catalog).close()
+        roots[name] = root
+        before_bytes[catalog] = catalog.read_bytes()
+        with sqlite3.connect(catalog) as db:
+            before_catalog_state[catalog] = (
+                db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall(),
+                db.execute("SELECT name, type FROM sqlite_master ORDER BY name").fetchall(),
+            )
+
+    class Orchestrator:
+        def query(self, _request):
+            return EvidenceBundle(status="EMPTY")
+
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(), orchestrator_factory=lambda: Orchestrator(),
+        generation_provider=lambda: ("p7", "p8"), provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=roots,
+    )
+    service._query = lambda _request: Orchestrator().query(_request)
+    service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    assert {path: path.read_bytes() for path in before_bytes} == before_bytes
+    for catalog, (schema, rows) in before_catalog_state.items():
+        with sqlite3.connect(catalog) as db:
+            assert db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall() == schema
+            assert db.execute("SELECT name, type FROM sqlite_master ORDER BY name").fetchall() == rows
+    with sqlite3.connect(source) as db:
+        assert db.execute("SELECT * FROM shadow_trade_decisions").fetchall() == before_rows
+        assert db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall() == before_schema
+
+
+def test_enabled_normal_runner_writes_one_shadow_row_and_audit_only_to_runtime(tmp_path: Path):
+    snapshot = _snapshot()
+
+    class Provider:
+        market_snapshot_calls = 0
+
+        def initialize(self):
+            return True
+
+        def shutdown(self):
+            return None
+
+        def ensure_symbol(self, _symbol):
+            return snapshot.symbol
+
+        def get_market_snapshot(self, _symbol, count=100):
+            type(self).market_snapshot_calls += 1
+            return snapshot
+
+        def get_spread(self, symbol):
+            return SimpleNamespace(
+                symbol=symbol, bid=snapshot.bid, ask=snapshot.ask, price=snapshot.spread,
+                points=snapshot.spread_points, timestamp=snapshot.timestamp,
+            )
+
+    class Graph:
+        def __init__(self, **_kwargs):
+            self.propagator = SimpleNamespace(
+                create_initial_state=lambda *_args, **kwargs: kwargs,
+                get_graph_args=lambda **_kwargs: {"config": {}},
+            )
+            self.graph = SimpleNamespace(
+                invoke=lambda _state, **_kwargs: {
+                    "final_trade_decision": {"rating": "Hold"},
+                    "portfolio_manager_raw_result": {"rating": "Hold"},
+                }
+            )
+
+    class Evidence:
+        calls = 0
+
+        def retrieve(self, _snapshot, **_kwargs):
+            type(self).calls += 1
+            return EvidenceContext(
+                integration_status=EvidenceIntegrationStatus.INJECTED,
+                as_of=snapshot.timestamp,
+                rendered_context="",
+                rendered_context_hash=hashlib.sha256(b"").hexdigest(),
+            )
+
+    source = tmp_path / "shadow.sqlite3"
+    audit_path = tmp_path / "cache" / "evidence_runtime" / "evidence_audit.sqlite3"
+    runner = ForexShadowRunner(
+        provider_factory=lambda **_kwargs: Provider(),
+        graph_factory=lambda **kwargs: Graph(**kwargs),
+        store=ShadowDecisionStore(source),
+        evidence_service_factory=lambda **_kwargs: Evidence(),
+        evidence_audit_store_factory=lambda **_kwargs: EvidenceAuditStore(audit_path),
+        config={
+            "llm_provider": "local", "quick_think_llm": "qwen", "deep_think_llm": "qwen",
+            "backend_url": "http://127.0.0.1:11434", "data_cache_dir": str(tmp_path / "cache"),
+            "forex_evidence_enabled": True,
+        },
+    )
+    result = runner.run(symbol="EURUSD", analysis_date="2026-01-02")
+    source_before_replay = source.read_bytes()
+    replay = runner.analyze(
+        symbol="EURUSD",
+        analysis_date="2026-01-02",
+        snapshot=snapshot,
+        snapshot_bytes=b"immutable-saved-snapshot",
+        evidence_enabled=True,
+        persist=False,
+    )
+    with sqlite3.connect(source) as db:
+        assert db.execute("SELECT COUNT(*) FROM shadow_decisions").fetchone()[0] == 1
+        assert "evidence" not in " ".join(row[1] for row in db.execute("PRAGMA table_info(shadow_decisions)"))
+    assert Evidence.calls == 2
+    assert audit_path.exists()
+    assert result.decision.executed is False
+    assert replay.normalized_action == "HOLD"
+    assert source.read_bytes() == source_before_replay
+    assert audit_path.parent == tmp_path / "cache" / "evidence_runtime"
+
+
+def test_forbidden_maintenance_and_mutation_fakes_are_rejected():
+    for attribute in (
+        "ExperienceRebuilder", "KnowledgeIngestor", "ingest", "rebuild", "ingestor",
+        "ingestion", "from_pretrained", "snapshot_download", "hf_hub_download",
+        "order_send", "buy", "sell", "close_position", "modify_position",
+    ):
+        fake = SimpleNamespace(**{attribute: lambda: None})
+        with pytest.raises(TypeError, match="forbidden|maintenance"):
+            _validate_forbidden_surface(fake)
 
 
 def test_no_mt5_mutation_api_is_called():

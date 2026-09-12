@@ -395,6 +395,28 @@ def _without_tier_c(bundle: EvidenceBundle) -> EvidenceBundle:
     )
 
 
+_FORBIDDEN_SURFACE_TOKENS = (
+    "writer", "maintenance", "migration", "importer", "initialize", "ingest",
+    "ingestion", "ingestor", "rebuild", "rebuilder", "create_schema", "download",
+    "provision", "trainer", "training", "fine_tune", "finetune", "model_provider",
+    "downloader", "model_download", "docling", "from_pretrained", "download_model",
+    "snapshot_download", "hf_hub_download", "order_send", "place_order", "send_order",
+    "cancel_order", "open_position", "buy", "sell", "close_position", "modify_position",
+    "riskgovernor", "mt5", "execution",
+)
+
+
+def _validate_forbidden_surface(owner: Any) -> None:
+    """Reject names associated with mutation, maintenance, or model loading."""
+
+    type_name = f"{type(owner).__module__}.{type(owner).__name__}".casefold()
+    if any(token in type_name for token in _FORBIDDEN_SURFACE_TOKENS):
+        raise TypeError("evidence child cannot own forbidden maintenance or mutation components")
+    for name in dir(owner):
+        if any(token in name.casefold() for token in _FORBIDDEN_SURFACE_TOKENS):
+            raise TypeError("evidence child cannot own forbidden maintenance or mutation components")
+
+
 def _generations(provider: Any) -> tuple[str | None, str | None]:
     value = provider() if callable(provider) else provider
     if isinstance(value, Mapping):
@@ -525,13 +547,6 @@ def _validate_child_orchestrator(
     # Only walk the approved object graph.  Looking at every value reachable
     # from an experience record would be both expensive and too permissive;
     # these are the service/index/provider edges that can own side effects.
-    forbidden = (
-        "writer", "maintenance", "migration", "importer", "initialize",
-        "create_schema", "download", "provision", "trainer", "training",
-        "fine_tune", "finetune", "model_provider", "downloader", "model_download",
-        "docling", "from_pretrained", "download_model", "order_send", "buy",
-        "sell", "close_position", "modify_position", "mt5", "riskgovernor",
-    )
     pending = [orchestrator]
     seen: set[int] = set()
     allowed_types = (
@@ -561,13 +576,7 @@ def _validate_child_orchestrator(
             raise TypeError(
                 f"evidence child dependency is not approved: {type(owner).__module__}.{type(owner).__name__}"
             )
-        type_name = f"{type(owner).__module__}.{type(owner).__name__}".casefold()
-        if any(token in type_name for token in forbidden):
-            raise TypeError("evidence child cannot own writer or maintenance components")
-        for name in dir(owner):
-            lowered = name.casefold()
-            if any(token in lowered for token in forbidden):
-                raise TypeError("evidence child cannot own writer or maintenance components")
+        _validate_forbidden_surface(owner)
         for name in edges:
             value = getattr(owner, name, None)
             if value is not None:
@@ -772,7 +781,9 @@ class EvidenceIntegrationService:
                 phase7_generation_id=generations[0],
                 phase8_generation_id=generations[1],
             )
-            has_text = bool(context.knowledge_items or context.experience_items)
+            has_text = bool(
+                context.knowledge_items or context.experience_items or context.statistics_items
+            )
             endpoint = self.provider_endpoint() if callable(self.provider_endpoint) else self.provider_endpoint
             if has_text and not _is_loopback(endpoint):
                 return self._fallback(
