@@ -375,38 +375,43 @@ def _fingerprint(path: str | Path) -> dict[str, Any]:
         "decision_row_count": None,
     }
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True)
     try:
-        with sqlite3.connect(uri, uri=True) as connection:
-            tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-            for table in tables:
-                columns = connection.execute(f'PRAGMA table_info("{table.replace(chr(34), chr(34) * 2)}")').fetchall()
-                result["tables"][table] = tuple((row[1], row[2], row[3], row[4], row[5]) for row in columns)
-            if "shadow_decisions" in tables:
-                result["decision_row_count"] = connection.execute("SELECT COUNT(*) FROM shadow_decisions").fetchone()[0]
+        tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
+        for table in tables:
+            columns = connection.execute(f'PRAGMA table_info("{table.replace(chr(34), chr(34) * 2)}")').fetchall()
+            result["tables"][table] = tuple((row[1], row[2], row[3], row[4], row[5]) for row in columns)
+        if "shadow_decisions" in tables:
+            result["decision_row_count"] = connection.execute("SELECT COUNT(*) FROM shadow_decisions").fetchone()[0]
     except sqlite3.Error as exc:
         raise SnapshotReplayError(f"source database is not readable SQLite: {source}") from exc
+    finally:
+        connection.close()
     return result
 
 
-def _source_row(path: str | Path, decision_id: str) -> sqlite3.Row:
+def _source_row(path: str | Path, decision_id: str) -> Mapping[str, Any]:
     source = Path(path)
     if not source.is_file():
         raise SnapshotReplayError(f"source database does not exist: {source}")
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
     connection = sqlite3.connect(uri, uri=True)
+    row_dict: dict[str, Any] | None = None
     try:
         connection.row_factory = sqlite3.Row
         row = connection.execute(
             "SELECT * FROM shadow_decisions WHERE decision_id = ?",
             (decision_id,),
         ).fetchone()
+        if row is not None:
+                row_dict = dict(zip(row.keys(), row, strict=True))
     except sqlite3.Error as exc:
         raise SnapshotReplayError("source database cannot be read for replay") from exc
     finally:
         connection.close()
-    if row is None:
+    if row_dict is None:
         raise SnapshotReplayError(f"source decision not found: {decision_id}")
-    return row
+    return row_dict
 
 
 def _contains_transient(value: Any) -> bool:
@@ -420,7 +425,8 @@ def _contains_transient(value: Any) -> bool:
 def _source_has_transient(path: str | Path) -> bool:
     source = Path(path)
     uri = f"file:{source.resolve().as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as connection:
+    connection = sqlite3.connect(uri, uri=True)
+    try:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "shadow_decisions" not in tables:
             return False
@@ -434,7 +440,9 @@ def _source_has_transient(path: str | Path) -> bool:
                         return True
                 except json.JSONDecodeError:
                     continue
-    return False
+        return False
+    finally:
+        connection.close()
 
 
 def _generation(value: Any) -> tuple[str | None, str | None]:

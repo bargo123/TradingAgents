@@ -27,6 +27,9 @@ from tradingagents.forex.evidence_replay import (
     SavedSnapshotCodec,
     SavedSnapshotReplay,
     SnapshotReplayError,
+    _fingerprint,
+    _source_has_transient,
+    _source_row,
 )
 from tradingagents.forex.runner import ForexShadowRunner
 
@@ -93,9 +96,13 @@ class _FakeRunner:
 
 def _config(tmp_path: Path) -> EvidenceReplayConfig:
     db = tmp_path / "source.db"
-    with sqlite3.connect(db) as conn:
+    conn = sqlite3.connect(db)
+    try:
         conn.execute("CREATE TABLE shadow_decisions (decision_id TEXT PRIMARY KEY, snapshot_json TEXT NOT NULL)")
         conn.execute("INSERT INTO shadow_decisions VALUES (?, ?)", ("decision-1", _row()["snapshot_json"]))
+        conn.commit()
+    finally:
+        conn.close()
     return EvidenceReplayConfig(
         source_decision_id="decision-1",
         profile="INTRADAY",
@@ -401,6 +408,20 @@ def test_replay_requires_read_only_source_database_binding(tmp_path: Path):
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
     with pytest.raises(SnapshotReplayError, match="source database"):
         replay.run(_snapshot(), snapshot_bytes=_source_bytes(), config=config)
+
+
+def test_source_helpers_release_windows_sqlite_handles(tmp_path: Path):
+    helpers = (
+        lambda path: _source_row(path, "decision-1"),
+        lambda path: _fingerprint(path)["decision_row_count"],
+        _source_has_transient,
+    )
+    for helper in helpers:
+        config = _config(tmp_path)
+        result = helper(config.source_database_path)
+        assert result is not None
+        config.source_database_path.unlink()
+        assert not config.source_database_path.exists()
 
 
 def test_replay_rejects_requested_audit_path_instead_of_ignoring_it(tmp_path: Path):
