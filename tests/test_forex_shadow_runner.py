@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -19,6 +20,13 @@ from tradingagents.dataflows.mt5.models import (
     Mt5SymbolInfo,
 )
 from tradingagents.forex import runner as runner_module
+from tradingagents.forex.evidence_audit import AuditWriteError
+from tradingagents.forex.evidence_context import (
+    CanonicalEvidenceItem,
+    EvidenceContext,
+    EvidenceIntegrationStatus,
+    EvidenceSourceKind,
+)
 from tradingagents.forex.runner import ForexShadowRunner, ForexShadowRunResult
 from tradingagents.forex.shadow import ShadowDecisionStore
 from tradingagents.graph.propagation import Propagator
@@ -780,3 +788,342 @@ def test_runner_marks_older_broker_quote_temporally_invalid(
     assert decision.decision_reference_status == "INVALID_TEMPORAL"
     assert decision.decision_reference_delay_seconds == pytest.approx(-41.0)
     assert decision.decision_reference_bid == pytest.approx(1.1004)
+
+
+class _RunnerEvidenceService:
+    def __init__(self, events: list[str], context: EvidenceContext | None = None):
+        self.events = events
+        self.context = context or EvidenceContext(
+            integration_status=EvidenceIntegrationStatus.INJECTED,
+            as_of=_snapshot().timestamp,
+            rendered_context="evidence",
+            rendered_context_hash=hashlib.sha256(b"evidence").hexdigest(),
+        )
+        self.calls = 0
+        self.snapshots = []
+
+    def retrieve(self, snapshot, *, resolved_symbol, analysis_profile, analysis_timeframe):
+        self.calls += 1
+        self.events.append("evidence")
+        self.snapshots.append((snapshot, resolved_symbol, analysis_profile, analysis_timeframe))
+        return self.context
+
+
+class _RunnerAuditStore:
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+        self.records = []
+
+    def append(self, audit):
+        if self.error:
+            raise self.error
+        self.records.append(audit)
+
+
+def _phase9_runner(
+    tmp_path: Path,
+    final_state: dict,
+    *,
+    enabled: bool = True,
+    events: list[str] | None = None,
+    evidence_context: EvidenceContext | None = None,
+    audit_store=None,
+    evidence_service_factory=None,
+    evidence_audit_store_factory=None,
+):
+    event_log = events if events is not None else []
+    provider = _FakeProvider(_snapshot())
+    original_snapshot = provider.get_market_snapshot
+
+    def get_market_snapshot(*args, **kwargs):
+        event_log.append("snapshot")
+        return original_snapshot(*args, **kwargs)
+
+    provider.get_market_snapshot = get_market_snapshot
+    graph = _FakeGraph(final_state)
+    service = _RunnerEvidenceService(event_log, evidence_context)
+    store = ShadowDecisionStore(tmp_path / "shadow.db")
+    runner = ForexShadowRunner(
+        provider_factory=lambda terminal_path=None: provider,
+        graph_factory=lambda **kwargs: graph,
+        store=store,
+        config={
+            "llm_provider": "local",
+            "quick_think_llm": "qwen",
+            "deep_think_llm": "qwen",
+            "backend_url": None,
+            "data_cache_dir": str(tmp_path / "cache"),
+            "results_dir": str(tmp_path / "results"),
+            "max_recur_limit": 16,
+            "forex_evidence_enabled": enabled,
+        },
+        evidence_service_factory=evidence_service_factory or (lambda **kwargs: service),
+        evidence_audit_store_factory=evidence_audit_store_factory or (lambda **kwargs: audit_store),
+    )
+    return runner, provider, graph, store, service, event_log
+
+
+def test_enabled_runner_retrieves_once_after_snapshot(tmp_path):
+    events = []
+    runner, _, _, _, service, events = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        events=events,
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert service.calls == 1
+    assert events.index("evidence") > events.index("snapshot")
+    assert result.metrics["evidence_integration_status"] == "INJECTED"
+
+
+def test_enabled_runner_passes_snapshot_as_of(tmp_path):
+    runner, _, _, _, service, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.snapshot_json["timestamp"] == "2026-09-08T12:00:00Z"
+    assert result.metrics["evidence_as_of"] == _snapshot().timestamp
+
+
+def test_enabled_runner_injects_one_context_hash(tmp_path):
+    context = EvidenceContext(
+        integration_status=EvidenceIntegrationStatus.INJECTED,
+        as_of=_snapshot().timestamp,
+        rendered_context="evidence",
+        rendered_context_hash=hashlib.sha256(b"evidence").hexdigest(),
+    )
+    runner, _, graph, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        evidence_context=context,
+    )
+
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    initial_state = graph.invocations[0][0]
+    assert initial_state["evidence_context"] is context
+    assert graph.invocations[0][1]["config"]["forex_evidence_context_hash"]
+
+
+def test_disabled_runner_constructs_no_evidence_service(tmp_path):
+    runner, _, graph, _, service, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        enabled=False,
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert service.calls == 0
+    assert "evidence_context" not in graph.invocations[0][0]
+    assert result.metrics["evidence_integration_status"] == "DISABLED"
+
+
+def test_analyze_does_not_write_shadow_store(tmp_path):
+    runner, _, _, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+    )
+    runner.store.record = lambda _decision: (_ for _ in ()).throw(AssertionError("analyze persisted a decision"))
+
+    result = runner.analyze(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.normalized_action == "HOLD"
+
+
+def test_normal_run_persists_existing_shadow_decision(tmp_path):
+    runner, _, _, store, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert store.get(result.decision.decision_id).executed is False
+
+
+def test_enabled_fallback_audit_records_fallback_status(tmp_path):
+    audit_store = _RunnerAuditStore()
+    context = EvidenceContext(integration_status=EvidenceIntegrationStatus.FALLBACK)
+    runner, _, _, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        evidence_context=context,
+        audit_store=audit_store,
+    )
+
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert len(audit_store.records) == 1
+    assert audit_store.records[0].integration_status == "FALLBACK"
+
+
+def test_shadow_row_excludes_transient_evidence_fields(tmp_path):
+    audit_store = _RunnerAuditStore()
+    runner, _, _, store, _, _ = _phase9_runner(
+        tmp_path,
+        {
+            "final_trade_decision": {"rating": "Hold"},
+            "portfolio_manager_raw_result": {
+                "rating": "Hold",
+                "evidence_use_status": "USED",
+                "evidence_refs_used": ["K1"],
+                "evidence_context_hash": "secret-hash",
+            },
+        },
+        audit_store=audit_store,
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+    raw_json = store.get(result.decision.decision_id).raw_portfolio_manager_result_json
+
+    assert "evidence_use_status" not in raw_json
+    assert "evidence_refs_used" not in raw_json
+    assert "evidence_context_hash" not in raw_json
+
+
+def test_audit_failure_preserves_shadow_decision(tmp_path):
+    audit_store = _RunnerAuditStore(AuditWriteError("audit unavailable"))
+    runner, _, _, store, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        audit_store=audit_store,
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.decision.executed is False
+    assert store.get(result.decision.decision_id) is not None
+    assert result.metrics["audit_status"] == "AUDIT_WRITE_FAILED"
+
+
+def test_baseline_runs_without_phase7_or_phase8_artifacts(tmp_path):
+    runner, _, graph, _, service, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        enabled=False,
+    )
+
+    runner.config["data_cache_dir"] = str(tmp_path / "missing-cache")
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert service.calls == 0
+    assert "evidence_context" not in graph.invocations[0][0]
+
+
+def test_evidence_factory_failure_falls_back_and_persists(tmp_path):
+    def broken_factory(**_kwargs):
+        raise RuntimeError("bad evidence configuration")
+
+    runner, _, _, store, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        evidence_service_factory=broken_factory,
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.metrics["evidence_integration_status"] == "FALLBACK"
+    assert result.decision.executed is False
+    assert store.get(result.decision.decision_id) is not None
+
+
+def test_invalid_evidence_context_becomes_fallback(tmp_path):
+    invalid = EvidenceContext(
+        integration_status=EvidenceIntegrationStatus.INJECTED,
+        as_of=datetime(2026, 9, 8, 11, 0, tzinfo=timezone.utc),
+        rendered_context="evidence",
+        rendered_context_hash="wrong",
+    )
+    runner, _, graph, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        evidence_context=invalid,
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.metrics["evidence_integration_status"] == "FALLBACK"
+    assert graph.invocations[0][0]["evidence_context"].integration_status is EvidenceIntegrationStatus.FALLBACK
+
+
+def test_fallback_audit_never_claims_used(tmp_path):
+    fallback = EvidenceContext(
+        integration_status=EvidenceIntegrationStatus.FALLBACK,
+        as_of=_snapshot().timestamp,
+        rendered_context="evidence",
+        rendered_context_hash=hashlib.sha256(b"evidence").hexdigest(),
+        knowledge_items=(CanonicalEvidenceItem(
+            display_id="K1", source_kind=EvidenceSourceKind.KNOWLEDGE,
+            authoritative_id="chunk-1", text="evidence", content_type="text", score=1.0, provenance={},
+        ),),
+    )
+    audit_store = _RunnerAuditStore()
+    runner, _, _, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {
+            "rating": "Hold", "evidence_use_status": "USED", "evidence_refs_used": ["K1"],
+        }},
+        evidence_context=fallback,
+        audit_store=audit_store,
+    )
+
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert audit_store.records[0].evidence_use_status == "UNAVAILABLE"
+    assert audit_store.records[0].evidence_refs_used == ()
+
+
+def test_validator_failure_preserves_persisted_decision(tmp_path, monkeypatch):
+    audit_store = _RunnerAuditStore()
+    runner, _, _, store, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        audit_store=audit_store,
+    )
+    monkeypatch.setattr(runner_module, "validate_evidence_references", lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("closed vocabulary")))
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.decision.executed is False
+    assert store.get(result.decision.decision_id) is not None
+    assert result.metrics["audit_status"] in {"INVALID_REFERENCE", "AUDIT_WRITE_FAILED"}
+
+
+def test_audit_factory_failure_preserves_persisted_decision(tmp_path):
+    def broken_factory(**_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    runner, _, _, store, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        evidence_audit_store_factory=broken_factory,
+    )
+
+    result = runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert result.decision.executed is False
+    assert store.get(result.decision.decision_id) is not None
+    assert result.metrics["audit_status"] == "AUDIT_WRITE_FAILED"
+
+
+def test_audit_captures_metadata_only_telemetry(tmp_path):
+    audit_store = _RunnerAuditStore()
+    runner, _, _, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        audit_store=audit_store,
+    )
+
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+    audit = audit_store.records[0]
+
+    assert audit.builder_latency_seconds == 0.0
+    assert audit.node_context_hashes is not None
+    assert audit.missing_nodes is not None
+    assert audit.telemetry_references is not None

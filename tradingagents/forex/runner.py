@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
+import inspect
 import math
 import time
 import uuid
@@ -14,6 +16,17 @@ from tradingagents.agents.utils.agent_utils import build_instrument_context
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.context_integrity import evaluate_context_integrity
+from tradingagents.forex.evidence_audit import EvidenceAuditStore, EvidenceUsageAudit
+from tradingagents.forex.evidence_context import (
+    EvidenceAuditStatus,
+    EvidenceContext,
+    EvidenceIntegrationStatus,
+    EvidenceReferenceValidation,
+    EvidenceUseStatus,
+    strip_transient_evidence_metadata,
+    validate_evidence_references,
+)
+from tradingagents.forex.evidence_runtime import EvidenceIntegrationService
 from tradingagents.forex.profile import MACRO_EVENT_UNAVAILABLE, resolve_forex_profile
 from tradingagents.forex.shadow import (
     ShadowDecisionStore,
@@ -114,6 +127,12 @@ def _identifier(value: Any) -> str:
     return text or "unknown"
 
 
+def _summary_without_evidence(value: Any) -> str:
+    if isinstance(value, Mapping):
+        return _text(strip_transient_evidence_metadata(value))
+    return _text(value)
+
+
 def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
     """Read optional callback statistics without making telemetry required."""
     metrics: dict[str, Any] = {
@@ -176,6 +195,45 @@ class ForexShadowRunResult:
         return self.final_state
 
 
+@dataclass(frozen=True, slots=True)
+class ForexAnalysisResult:
+    """Complete in-memory forex analysis, before optional shadow persistence."""
+
+    analysis_date: date
+    requested_symbol: str
+    resolved_symbol: str
+    snapshot: Any
+    snapshot_json: Mapping[str, Any]
+    final_state: Mapping[str, Any]
+    raw_portfolio_manager_result: Mapping[str, Any]
+    normalized_action: str | None
+    normalization_status: str
+    normalization_error: str | None
+    context_integrity: Mapping[str, Any]
+    evidence_context: EvidenceContext | None
+    decision_reference: Mapping[str, Any] | None
+    decision_reference_error: str | None
+    decision_completed_timestamp: datetime
+    state_trace: tuple[Mapping[str, Any], ...]
+    analysis_telemetry: Mapping[str, Any]
+    valid_for_seconds: int | None
+    valid_until: datetime | None
+    profile_name: str
+    source_run_id: str | None
+
+    @property
+    def raw_state(self) -> Mapping[str, Any]:
+        return self.final_state
+
+    @property
+    def decision_reference_quote(self) -> Mapping[str, Any] | None:
+        return self.decision_reference
+
+    @property
+    def evidence_context_hash(self) -> str:
+        return ForexShadowRunner._evidence_hash(self.evidence_context)
+
+
 class ForexShadowRunner:
     """Run one read-only forex analysis session against one cached snapshot."""
 
@@ -186,6 +244,9 @@ class ForexShadowRunner:
         store: ShadowDecisionStore | None = None,
         config: Mapping[str, Any] | None = None,
         selected_analysts: Sequence[str] = ("market", "news"),
+        *,
+        evidence_service_factory: Callable[..., Any] | None = None,
+        evidence_audit_store_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.provider_factory = provider_factory or self._default_provider_factory
         self.graph_factory = graph_factory
@@ -200,6 +261,8 @@ class ForexShadowRunner:
         # Retained as a compatibility convenience; run() is the public place
         # to choose analysts and defaults to exactly market/news.
         self.selected_analysts = tuple(selected_analysts)
+        self.evidence_service_factory = evidence_service_factory
+        self.evidence_audit_store_factory = evidence_audit_store_factory
 
     def _default_provider_factory(self, terminal_path: str | None = None) -> Any:
         module = importlib.import_module("tradingagents.dataflows.mt5.provider")
@@ -272,6 +335,249 @@ class ForexShadowRunner:
             raise TypeError("forex graph must expose a compiled graph invoke() method")
         return invoke(initial_state, **dict(graph_args))
 
+    @staticmethod
+    def _call_factory(factory: Callable[..., Any], **kwargs: Any) -> Any:
+        """Call injected factories without imposing one test/runtime signature."""
+        try:
+            parameters = inspect.signature(factory).parameters
+        except (TypeError, ValueError):
+            return factory()
+        if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            return factory(**kwargs)
+        accepted = {name: value for name, value in kwargs.items() if name in parameters}
+        required_positional = [
+            parameter
+            for parameter in parameters.values()
+            if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            and parameter.default is inspect.Parameter.empty
+        ]
+        if required_positional and not accepted:
+            return factory(kwargs.get("config", {}))
+        return factory(**accepted)
+
+    @staticmethod
+    def _evidence_is_enabled(config: Mapping[str, Any]) -> bool:
+        return bool(config.get("forex_evidence_enabled", False))
+
+    def _default_evidence_service_factory(self, **kwargs: Any) -> EvidenceIntegrationService:
+        config = kwargs.get("config", self.config)
+        from tradingagents.forex.evidence_context import EvidenceQueryPolicy
+
+        policy = EvidenceQueryPolicy(
+            evidence_timeout_seconds=float(config.get("evidence_timeout_seconds", 10.0)),
+        )
+        roots = config.get("forex_evidence_artifact_roots", config.get("evidence_artifact_roots", {}))
+        return EvidenceIntegrationService(
+            policy=policy,
+            orchestrator_factory=config.get("evidence_orchestrator_factory"),
+            generation_provider=config.get("evidence_generation_provider", (None, None)),
+            provider_endpoint=config.get("backend_url"),
+            artifact_roots=roots if isinstance(roots, Mapping) else {},
+        )
+
+    def _default_evidence_audit_store_factory(self, **kwargs: Any) -> EvidenceAuditStore:
+        config = kwargs.get("config", self.config)
+        root = Path(config.get("data_cache_dir", "data_cache")) / "evidence_runtime"
+        return EvidenceAuditStore(root / "evidence_audit.sqlite3")
+
+    @staticmethod
+    def _fallback_evidence_context(
+        snapshot: Any,
+        detail: Any = "",
+        *,
+        code: str = "ORCHESTRATOR_FAILURE",
+    ) -> EvidenceContext:
+        return EvidenceContext(
+            as_of=snapshot.timestamp,
+            integration_status=EvidenceIntegrationStatus.FALLBACK,
+            diagnostics={
+                "integration": {
+                    "code": code,
+                    "message": str(detail).replace("\r", " ").replace("\n", " ")[:500],
+                }
+            },
+        )
+
+    @staticmethod
+    def _validate_evidence_context(snapshot: Any, context: EvidenceContext) -> None:
+        if context.as_of != snapshot.timestamp:
+            raise ValueError("evidence context as_of does not match snapshot timestamp")
+        expected_hash = hashlib.sha256(context.rendered_context.encode("utf-8")).hexdigest()
+        if context.rendered_context_hash != expected_hash:
+            raise ValueError("evidence context hash does not match canonical payload")
+
+    @staticmethod
+    def _evidence_hash(context: EvidenceContext | None) -> str:
+        if context is None:
+            return ""
+        return str(
+            context.rendered_context_hash
+            or hashlib.sha256(context.rendered_context.encode("utf-8")).hexdigest()
+        )
+
+    def analyze(
+        self,
+        symbol: str = "EURUSD",
+        count: int = 100,
+        analysis_date: date | str | None = None,
+        terminal_path: str | None = None,
+        analysts: Sequence[str] | None = None,
+        *,
+        callbacks: Sequence[Any] | None = None,
+        analysis_profile: str = "INTRADAY",
+        source_run_id: str | None = None,
+    ) -> ForexAnalysisResult:
+        """Analyze one snapshot without constructing or writing a shadow store row."""
+        provider: Any | None = None
+        callback_list = list(callbacks or ())
+        if source_run_id is not None:
+            if not isinstance(source_run_id, str) or not source_run_id.strip():
+                raise ValueError("source_run_id must be a non-empty string")
+            source_run_id = source_run_id.strip()
+        selected_analysts = self.selected_analysts if analysts is None else tuple(analysts)
+        parsed_date = self._validate_inputs(symbol, count, analysis_date, selected_analysts)
+        profile = resolve_forex_profile(analysis_profile)
+        analysis_telemetry: dict[str, Any] = {}
+        try:
+            provider = self.provider_factory(terminal_path=terminal_path)
+            if not provider.initialize():
+                raise RuntimeError("MT5 provider initialization failed")
+            resolved_symbol = provider.ensure_symbol(symbol)
+            if not isinstance(resolved_symbol, str) or not resolved_symbol.strip():
+                raise RuntimeError("MT5 provider returned an invalid resolved symbol")
+            snapshot = provider.get_market_snapshot(resolved_symbol, count=count)
+            snapshot_json = snapshot_to_dict(snapshot)
+            evidence_context: EvidenceContext | None = None
+            config_for_graph = dict(self.config)
+            evidence_enabled = self._evidence_is_enabled(self.config)
+            if evidence_enabled:
+                factory = self.evidence_service_factory or self._default_evidence_service_factory
+                started_retrieval = time.perf_counter()
+                service: Any | None = None
+                try:
+                    service = self._call_factory(factory, config=self.config, runner=self)
+                    evidence_context = service.retrieve(
+                        snapshot,
+                        resolved_symbol=resolved_symbol,
+                        analysis_profile=profile.name,
+                        analysis_timeframe="M1/M5/M15/H1",
+                    )
+                    if not isinstance(evidence_context, EvidenceContext):
+                        raise TypeError("evidence service must return EvidenceContext")
+                    self._validate_evidence_context(snapshot, evidence_context)
+                except Exception as exc:  # evidence is best-effort and advisory
+                    code = "EVIDENCE_CONTEXT_INVALID" if isinstance(evidence_context, EvidenceContext) else "ORCHESTRATOR_FAILURE"
+                    evidence_context = self._fallback_evidence_context(snapshot, exc, code=code)
+                analysis_telemetry["evidence_retrieval_latency_seconds"] = time.perf_counter() - started_retrieval
+                analysis_telemetry["evidence_retrieval_count"] = getattr(service, "retrieval_count", 1)
+            context_hash = self._evidence_hash(evidence_context)
+            config_for_graph["forex_evidence_enabled"] = evidence_enabled
+            config_for_graph["forex_evidence_context_hash"] = context_hash
+
+            market_context = build_forex_market_context(snapshot, profile)
+            instrument_context = build_instrument_context(resolved_symbol, "forex", {})
+            adapter = MT5ToolAdapter(provider, snapshot)
+            graph_factory = self.graph_factory or self._default_graph_factory
+            graph = graph_factory(
+                selected_analysts=selected_analysts,
+                market_data_mode="forex_mt5",
+                mt5_tools=adapter,
+                config=config_for_graph,
+                callbacks=callback_list,
+                forex_analysis_profile=profile.name,
+            )
+            initial_kwargs = {
+                "asset_type": "forex",
+                "past_context": "",
+                "instrument_context": instrument_context,
+                "market_data_mode": "forex_mt5",
+                "market_context": market_context,
+                "forex_analysis_profile": profile.name,
+            }
+            if evidence_context is not None:
+                initial_kwargs["evidence_context"] = evidence_context
+            initial_state = graph.propagator.create_initial_state(
+                resolved_symbol, parsed_date.isoformat(), **initial_kwargs
+            )
+            graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
+            graph_args = dict(graph_args or {})
+            graph_args_config = dict(graph_args.get("config", {}))
+            graph_args_config["forex_evidence_enabled"] = evidence_enabled
+            graph_args_config["forex_evidence_context_hash"] = context_hash
+            graph_args["config"] = graph_args_config
+            with capture_state_trace() as state_trace:
+                final_state = self._invoke_compiled_graph(graph, initial_state, graph_args)
+            if not isinstance(final_state, Mapping):
+                raise TypeError("compiled forex graph must return a mapping state")
+            final_state = dict(final_state)
+            decision_completed_timestamp = _utc_now()
+            context_integrity = evaluate_context_integrity(final_state, trace=state_trace)
+            context_integrity["boundaries"] = list(state_trace)
+            raw_pm_result = self._extract_raw_pm_result(final_state)
+            try:
+                normalized = normalize_portfolio_manager_result(raw_pm_result, forex_profile=profile.name)
+            except Exception as exc:
+                normalized = _failed_normalization(exc)
+            if normalized.normalization_status == "FAILED":
+                state_error = final_state.get("normalization_error")
+                if isinstance(state_error, str) and state_error.strip():
+                    normalized = ShadowNormalization(
+                        action=None,
+                        normalization_status="FAILED",
+                        normalization_error=state_error.strip(),
+                        raw_result=normalized.raw_result,
+                    )
+            decision_reference: dict[str, Any] | None = None
+            decision_reference_error: str | None = None
+            try:
+                decision_reference = _fresh_reference_quote(provider, resolved_symbol, decision_completed_timestamp)
+            except Exception as exc:
+                decision_reference_error = str(exc)
+            valid_for_seconds = None
+            valid_until = None
+            if normalized.normalization_status == "NORMALIZED":
+                raw_validity = normalized.raw_result.get("valid_for_seconds")
+                valid_for_seconds = raw_validity if isinstance(raw_validity, int) and not isinstance(raw_validity, bool) else profile.valid_for_seconds
+                valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
+            analysis_telemetry.update(_callback_metrics(callback_list))
+            analysis_telemetry.update(
+                {
+                    "provider_snapshot_calls": getattr(provider, "market_snapshot_calls", 1),
+                    "evidence_integration_status": (
+                        "DISABLED" if evidence_context is None else str(evidence_context.integration_status)
+                    ),
+                    "evidence_context_hash": context_hash,
+                    "evidence_as_of": None if evidence_context is None else evidence_context.as_of,
+                }
+            )
+            return ForexAnalysisResult(
+                analysis_date=parsed_date,
+                requested_symbol=symbol,
+                resolved_symbol=resolved_symbol,
+                snapshot=snapshot,
+                snapshot_json=snapshot_json,
+                final_state=final_state,
+                raw_portfolio_manager_result=normalized.raw_result,
+                normalized_action=normalized.action,
+                normalization_status=normalized.normalization_status,
+                normalization_error=normalized.normalization_error,
+                context_integrity=context_integrity,
+                evidence_context=evidence_context,
+                decision_reference=decision_reference,
+                decision_reference_error=decision_reference_error,
+                decision_completed_timestamp=decision_completed_timestamp,
+                state_trace=tuple(state_trace),
+                analysis_telemetry=analysis_telemetry,
+                valid_for_seconds=valid_for_seconds,
+                valid_until=valid_until,
+                profile_name=profile.name,
+                source_run_id=source_run_id,
+            )
+        finally:
+            shutdown = getattr(provider, "shutdown", None) if provider is not None else None
+            if callable(shutdown):
+                shutdown()
+
     def run(
         self,
         symbol: str = "EURUSD",
@@ -286,227 +592,198 @@ class ForexShadowRunner:
         source_run_id: str | None = None,
     ) -> ForexShadowRunResult:
         started = time.perf_counter()
-        provider: Any | None = None
-        callback_list = list(callbacks or ())
-        if source_run_id is not None:
-            if not isinstance(source_run_id, str) or not source_run_id.strip():
-                raise ValueError("source_run_id must be a non-empty string")
-            source_run_id = source_run_id.strip()
         if db_path is not None:
             self.store = ShadowDecisionStore(db_path)
-
-        try:
-            selected_analysts = (
-                self.selected_analysts if analysts is None else tuple(analysts)
-            )
-            parsed_date = self._validate_inputs(
-                symbol, count, analysis_date, selected_analysts
-            )
-            profile = resolve_forex_profile(analysis_profile)
-            provider = self.provider_factory(terminal_path=terminal_path)
-            if not provider.initialize():
-                raise RuntimeError("MT5 provider initialization failed")
-            resolved_symbol = provider.ensure_symbol(symbol)
-            if not isinstance(resolved_symbol, str) or not resolved_symbol.strip():
-                raise RuntimeError("MT5 provider returned an invalid resolved symbol")
-            snapshot = provider.get_market_snapshot(resolved_symbol, count=count)
-            snapshot_json = snapshot_to_dict(snapshot)
-            market_context = build_forex_market_context(snapshot, profile)
-            instrument_context = build_instrument_context(resolved_symbol, "forex", {})
-            adapter = MT5ToolAdapter(provider, snapshot)
-
-            graph_factory = self.graph_factory or self._default_graph_factory
-            graph = graph_factory(
-                selected_analysts=selected_analysts,
-                market_data_mode="forex_mt5",
-                mt5_tools=adapter,
-                config=self.config,
-                callbacks=callback_list,
-                forex_analysis_profile=profile.name,
-            )
-            initial_state = graph.propagator.create_initial_state(
-                resolved_symbol,
-                parsed_date.isoformat(),
-                asset_type="forex",
-                past_context="",
-                instrument_context=instrument_context,
-                market_data_mode="forex_mt5",
-                market_context=market_context,
-                forex_analysis_profile=profile.name,
-            )
-            graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
-            # The runner deliberately calls the already compiled graph. The
-            # stock propagate helper performs Yahoo identity/memory-log work.
-            with capture_state_trace() as state_trace:
-                final_state = self._invoke_compiled_graph(graph, initial_state, graph_args)
-            if not isinstance(final_state, Mapping):
-                raise TypeError("compiled forex graph must return a mapping state")
-            final_state = dict(final_state)
-            # This is an application completion timestamp, captured as soon
-            # as the structured graph result is available.  It is deliberately
-            # distinct from the broker timestamp in the fresh reference quote.
-            decision_completed_timestamp = _utc_now()
-            context_integrity = evaluate_context_integrity(
-                final_state,
-                trace=state_trace,
-            )
-            # The trace contains only node/phase names and artifact
-            # presence/size metadata; report content and private reasoning
-            # are deliberately never retained.
-            context_integrity["boundaries"] = list(state_trace)
-
-            raw_pm_result = self._extract_raw_pm_result(final_state)
-            try:
-                normalized = normalize_portfolio_manager_result(
-                    raw_pm_result,
-                    forex_profile=profile.name,
-                )
-            except Exception as exc:  # malformed structured output fails closed
-                normalized = _failed_normalization(exc)
-
-            if normalized.normalization_status == "FAILED":
-                state_error = final_state.get("normalization_error")
-                if isinstance(state_error, str) and state_error.strip():
-                    normalized = ShadowNormalization(
-                        action=None,
-                        normalization_status="FAILED",
-                        normalization_error=state_error.strip(),
-                        raw_result=normalized.raw_result,
-                    )
-
-            decision_reference: dict[str, Any] | None = None
-            decision_reference_error: str | None = None
-            try:
-                decision_reference = _fresh_reference_quote(
-                    provider,
-                    resolved_symbol,
-                    decision_completed_timestamp,
-                )
-            except Exception as exc:  # preserve analysis evidence on quote failure
-                decision_reference_error = str(exc)
-
-            valid_for_seconds = None
-            valid_until = None
-            if normalized.normalization_status == "NORMALIZED":
-                raw_validity = (
-                    normalized.raw_result.get("valid_for_seconds")
-                    if isinstance(normalized.raw_result, Mapping)
-                    else None
-                )
-                valid_for_seconds = (
-                    raw_validity
-                    if isinstance(raw_validity, int) and not isinstance(raw_validity, bool)
-                    else profile.valid_for_seconds
-                )
-                valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
-
-            persisted_source_run_id = source_run_id or str(uuid.uuid4())
-            graph_config = getattr(graph, "config", {})
-            effective_config = dict(graph_config) if isinstance(graph_config, Mapping) else {}
-            effective_config.update(self.config)
-            investment_debate_state = final_state.get("investment_debate_state", {})
-            if not isinstance(investment_debate_state, Mapping):
-                investment_debate_state = {}
-            decision = ShadowTradeDecision(
-                decision_id=str(uuid.uuid4()),
-                created_at=decision_completed_timestamp,
-                snapshot_timestamp=snapshot.timestamp,
-                analysis_date=parsed_date,
-                requested_symbol=symbol,
-                resolved_symbol=snapshot.symbol,
-                action=normalized.action,
-                raw_portfolio_manager_result=normalized.raw_result,
-                normalization_status=normalized.normalization_status,
-                normalization_error=normalized.normalization_error,
-                decision_context_status=context_integrity["status"],
-                confidence=None,
-                reference_bid=snapshot.bid,
-                reference_ask=snapshot.ask,
-                reference_mid=(snapshot.bid + snapshot.ask) / 2,
-                spread=snapshot.spread,
-                spread_points=snapshot.spread_points,
-                analysis_timeframe="M1/M5/M15/H1",
-                trader_summary=_text(final_state.get("trader_investment_plan")),
-                portfolio_manager_summary=_text(final_state.get("final_trade_decision")),
-                bull_summary=_text(investment_debate_state.get("bull_history")) or None,
-                bear_summary=_text(investment_debate_state.get("bear_history")) or None,
-                llm_provider=_identifier(effective_config.get("llm_provider")),
-                quick_model=_identifier(effective_config.get("quick_think_llm")),
-                deep_model=_identifier(effective_config.get("deep_think_llm")),
-                snapshot_json=dict(snapshot_json),
-                source_run_id=persisted_source_run_id,
-                analysis_profile=profile.name,
-                valid_for_seconds=valid_for_seconds,
-                valid_until=valid_until,
-                analysis_snapshot_timestamp=snapshot.timestamp,
-                analysis_snapshot_bid=snapshot.bid,
-                analysis_snapshot_ask=snapshot.ask,
-                analysis_snapshot_spread=snapshot.spread,
-                analysis_snapshot_spread_points=snapshot.spread_points,
-                decision_completed_timestamp=decision_completed_timestamp,
-                analysis_latency_seconds=(
-                    decision_completed_timestamp - snapshot.timestamp
-                ).total_seconds(),
-                decision_reference_timestamp=(
-                    None if decision_reference is None else decision_reference["timestamp"]
-                ),
-                decision_reference_bid=(
-                    None if decision_reference is None else decision_reference["bid"]
-                ),
-                decision_reference_ask=(
-                    None if decision_reference is None else decision_reference["ask"]
-                ),
-                decision_reference_spread=(
-                    None if decision_reference is None else decision_reference["spread"]
-                ),
-                decision_reference_spread_points=(
-                    None
-                    if decision_reference is None
-                    else decision_reference["spread_points"]
-                ),
-                decision_reference_status=(
-                    "UNAVAILABLE"
-                    if decision_reference is None
-                    else decision_reference["status"]
-                ),
-                decision_reference_delay_seconds=(
-                    None if decision_reference is None else decision_reference["delay"]
-                ),
-                decision_reference_error=decision_reference_error,
-            )
-            self.store.record(decision)
-            elapsed_seconds = time.perf_counter() - started
-            callback_metrics = _callback_metrics(callback_list)
-            metrics = {
-                "provider_snapshot_calls": getattr(provider, "market_snapshot_calls", 1),
-                "elapsed_seconds": elapsed_seconds,
+        result = self.analyze(
+            symbol=symbol,
+            count=count,
+            analysis_date=analysis_date,
+            terminal_path=terminal_path,
+            analysts=analysts,
+            callbacks=callbacks,
+            analysis_profile=analysis_profile,
+            source_run_id=source_run_id,
+        )
+        completed = result.decision_completed_timestamp
+        decision_reference = result.decision_reference
+        investment_debate_state = result.final_state.get("investment_debate_state", {})
+        if not isinstance(investment_debate_state, Mapping):
+            investment_debate_state = {}
+        effective_config = dict(self.config)
+        raw_result = dict(strip_transient_evidence_metadata(result.raw_portfolio_manager_result))
+        decision = ShadowTradeDecision(
+            decision_id=str(uuid.uuid4()),
+            created_at=completed,
+            snapshot_timestamp=result.snapshot.timestamp,
+            analysis_date=result.analysis_date,
+            requested_symbol=result.requested_symbol,
+            resolved_symbol=result.snapshot.symbol,
+            action=result.normalized_action,
+            raw_portfolio_manager_result=raw_result,
+            normalization_status=result.normalization_status,
+            normalization_error=result.normalization_error,
+            decision_context_status=result.context_integrity["status"],
+            confidence=None,
+            reference_bid=result.snapshot.bid,
+            reference_ask=result.snapshot.ask,
+            reference_mid=(result.snapshot.bid + result.snapshot.ask) / 2,
+            spread=result.snapshot.spread,
+            spread_points=result.snapshot.spread_points,
+            analysis_timeframe="M1/M5/M15/H1",
+            trader_summary=_summary_without_evidence(result.final_state.get("trader_investment_plan")),
+            portfolio_manager_summary=_summary_without_evidence(result.final_state.get("final_trade_decision")),
+            bull_summary=_summary_without_evidence(investment_debate_state.get("bull_history")) or None,
+            bear_summary=_summary_without_evidence(investment_debate_state.get("bear_history")) or None,
+            llm_provider=_identifier(effective_config.get("llm_provider")),
+            quick_model=_identifier(effective_config.get("quick_think_llm")),
+            deep_model=_identifier(effective_config.get("deep_think_llm")),
+            snapshot_json=dict(result.snapshot_json),
+            source_run_id=result.source_run_id or str(uuid.uuid4()),
+            analysis_profile=result.profile_name,
+            valid_for_seconds=result.valid_for_seconds,
+            valid_until=result.valid_until,
+            analysis_snapshot_timestamp=result.snapshot.timestamp,
+            analysis_snapshot_bid=result.snapshot.bid,
+            analysis_snapshot_ask=result.snapshot.ask,
+            analysis_snapshot_spread=result.snapshot.spread,
+            analysis_snapshot_spread_points=result.snapshot.spread_points,
+            decision_completed_timestamp=completed,
+            analysis_latency_seconds=(completed - result.snapshot.timestamp).total_seconds(),
+            decision_reference_timestamp=None if decision_reference is None else decision_reference["timestamp"],
+            decision_reference_bid=None if decision_reference is None else decision_reference["bid"],
+            decision_reference_ask=None if decision_reference is None else decision_reference["ask"],
+            decision_reference_spread=None if decision_reference is None else decision_reference["spread"],
+            decision_reference_spread_points=None if decision_reference is None else decision_reference["spread_points"],
+            decision_reference_status="UNAVAILABLE" if decision_reference is None else decision_reference["status"],
+            decision_reference_delay_seconds=None if decision_reference is None else decision_reference["delay"],
+            decision_reference_error=result.decision_reference_error,
+        )
+        self.store.record(decision)
+        metrics = dict(result.analysis_telemetry)
+        metrics.update(
+            {
+                "provider_snapshot_calls": metrics.get("provider_snapshot_calls", 1),
+                "elapsed_seconds": time.perf_counter() - started,
                 "market_data_mode": "forex_mt5",
-                "selected_analysts": selected_analysts,
-                "analysis_profile": profile.name,
+                "selected_analysts": self.selected_analysts if analysts is None else tuple(analysts),
+                "analysis_profile": result.profile_name,
                 "bars_used": {
-                    timeframe: snapshot_json.get("features", {})
-                    .get(timeframe, {})
-                    .get("candle_count", 0)
+                    timeframe: result.snapshot_json.get("features", {}).get(timeframe, {}).get("candle_count", 0)
                     for timeframe in ("M1", "M5", "M15", "H1")
                 },
-                "market_features": snapshot_json.get("features", {}),
+                "market_features": result.snapshot_json.get("features", {}),
                 "macro_event_status": MACRO_EVENT_UNAVAILABLE,
-                "decision_valid_for_seconds": valid_for_seconds,
-                "decision_valid_until": valid_until,
-                "decision_context_status": context_integrity["status"],
-                "context_integrity": context_integrity,
-                "state_boundaries": list(state_trace),
-                **callback_metrics,
+                "decision_valid_for_seconds": result.valid_for_seconds,
+                "decision_valid_until": result.valid_until,
+                "decision_context_status": result.context_integrity["status"],
+                "context_integrity": result.context_integrity,
+                "state_boundaries": list(result.state_trace),
+                "audit_status": "NOT_REQUESTED",
             }
-            return ForexShadowRunResult(
-                decision=decision,
-                final_state=final_state,
-                snapshot_json=snapshot_json,
-                provider_snapshot_calls=metrics["provider_snapshot_calls"],
-                elapsed_seconds=elapsed_seconds,
-                metrics=metrics,
-            )
-        finally:
-            shutdown = getattr(provider, "shutdown", None) if provider is not None else None
-            if callable(shutdown):
-                shutdown()
+        )
+        context = result.evidence_context
+        if context is not None and context.integration_status in (
+            EvidenceIntegrationStatus.INJECTED,
+            EvidenceIntegrationStatus.FALLBACK,
+        ):
+            try:
+                validation = validate_evidence_references(
+                    context,
+                    result.raw_portfolio_manager_result,
+                    runtime_integration_status=context.integration_status,
+                )
+            except Exception:
+                validation = EvidenceReferenceValidation(
+                    evidence_use_status=EvidenceUseStatus.UNAVAILABLE,
+                    evidence_refs_used=(),
+                    evidence_refs_rejected=(),
+                    evidence_audit_status=EvidenceAuditStatus.INVALID_REFERENCE,
+                )
+            if context.integration_status is EvidenceIntegrationStatus.FALLBACK and (
+                validation.evidence_use_status is EvidenceUseStatus.USED
+            ):
+                validation = EvidenceReferenceValidation(
+                    evidence_use_status=EvidenceUseStatus.UNAVAILABLE,
+                    evidence_refs_used=(),
+                    evidence_refs_rejected=(),
+                    evidence_audit_status=(
+                        EvidenceAuditStatus.INVALID_REFERENCE
+                        if validation.evidence_refs_used
+                        else validation.evidence_audit_status
+                    ),
+                )
+            try:
+                audit_factory = self.evidence_audit_store_factory or self._default_evidence_audit_store_factory
+                audit_path = Path(self.config.get("data_cache_dir", "data_cache")) / "evidence_runtime" / "evidence_audit.sqlite3"
+                audit_store = self._call_factory(
+                    audit_factory,
+                    config=self.config,
+                    runner=self,
+                    path=audit_path,
+                )
+                if audit_store is None:
+                    audit_store = self._default_evidence_audit_store_factory(config=self.config)
+                available = {
+                    "knowledge": tuple(item.display_id for item in context.knowledge_items),
+                    "experience": tuple(item.display_id for item in context.experience_items),
+                    "statistics": tuple(item.display_id for item in context.statistics_items),
+                }
+                node_context_hashes = {
+                    str(item.get("node")): str(item.get("artifacts", {}).get("evidence_context_hash"))
+                    for item in result.state_trace
+                    if isinstance(item, Mapping)
+                    and item.get("phase") == "after"
+                    and isinstance(item.get("artifacts"), Mapping)
+                    and item.get("artifacts", {}).get("evidence_context_hash")
+                }
+                telemetry_references = result.analysis_telemetry.get("telemetry_references", ())
+                if not isinstance(telemetry_references, (tuple, list)):
+                    telemetry_references = ()
+                audit = EvidenceUsageAudit(
+                    decision_id=decision.decision_id,
+                    source_run_id=decision.source_run_id or "",
+                    integration_status=str(context.integration_status),
+                    bundle_status=str(context.bundle_status),
+                    as_of=context.as_of,
+                    knowledge_generation_id=context.knowledge_generation_id,
+                    experience_generation_id=context.experience_generation_id,
+                    query_normalization_fingerprint=context.query_normalization_fingerprint,
+                    knowledge_query=context.knowledge_query,
+                    knowledge_query_fingerprint=context.knowledge_query_fingerprint,
+                    query_policy_version=context.knowledge_query_policy_version,
+                    rendered_context=context.rendered_context,
+                    rendered_context_hash=self._evidence_hash(context),
+                    available_knowledge_ids=available["knowledge"],
+                    available_experience_ids=available["experience"],
+                    available_statistics_ids=available["statistics"],
+                    evidence_use_status=str(validation.evidence_use_status),
+                    evidence_refs_used=validation.evidence_refs_used,
+                    evidence_refs_rejected=validation.evidence_refs_rejected,
+                    evidence_audit_status=str(validation.evidence_audit_status),
+                    source_status=context.diagnostics.get("source_status", {}) if isinstance(context.diagnostics, Mapping) else {},
+                    diagnostics=context.diagnostics,
+                    source_errors=context.source_errors,
+                    retrieval_count=int(metrics.get("evidence_retrieval_count", 1)),
+                    retrieval_latency_seconds=metrics.get("evidence_retrieval_latency_seconds"),
+                    builder_latency_seconds=float(metrics.get("evidence_builder_latency_seconds", 0.0)),
+                    selected_counts={"knowledge": context.selected_knowledge_count, "experience": context.selected_experience_count, "statistics": context.selected_statistics_count},
+                    dropped_counts={"knowledge": context.dropped_knowledge_count, "experience": context.dropped_experience_count, "statistics": context.dropped_statistics_count},
+                    telemetry_references=tuple(str(value) for value in telemetry_references),
+                    node_context_hashes=node_context_hashes,
+                    missing_nodes=tuple(str(value) for value in result.context_integrity.get("missing_nodes", ())),
+                    provider=_identifier(effective_config.get("llm_provider")),
+                    model=_identifier(effective_config.get("deep_think_llm")),
+                )
+                audit_store.append(audit)
+            except Exception:
+                metrics["audit_status"] = "AUDIT_WRITE_FAILED"
+            else:
+                metrics["audit_status"] = str(validation.evidence_audit_status)
+        return ForexShadowRunResult(
+            decision=decision,
+            final_state=result.final_state,
+            snapshot_json=result.snapshot_json,
+            provider_snapshot_calls=metrics["provider_snapshot_calls"],
+            elapsed_seconds=metrics["elapsed_seconds"],
+            metrics=metrics,
+        )
