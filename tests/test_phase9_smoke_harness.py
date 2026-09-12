@@ -16,6 +16,7 @@ from scripts.phase9_evidence_smoke import (
     Phase8PreflightError,
     SmokeAcceptanceError,
     _append_audit,
+    _configured_ollama_models,
     _run_fake_ab,
     _validate_smoke_result,
     build_report,
@@ -26,6 +27,16 @@ from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
 from tradingagents.forex.evidence_replay import EvidenceReplayReport, _json_value
+
+
+def test_smoke_uses_local_ollama_model_defaults_and_env_overrides(monkeypatch):
+    monkeypatch.delenv("TRADINGAGENTS_QUICK_THINK_LLM", raising=False)
+    monkeypatch.delenv("TRADINGAGENTS_DEEP_THINK_LLM", raising=False)
+    assert _configured_ollama_models() == ("qwen3.5:2b", "qwen3.5:4b")
+
+    monkeypatch.setenv("TRADINGAGENTS_QUICK_THINK_LLM", "local-quick")
+    monkeypatch.setenv("TRADINGAGENTS_DEEP_THINK_LLM", "local-deep")
+    assert _configured_ollama_models() == ("local-quick", "local-deep")
 
 
 def _catalog(root: Path, *, tier_c_only: bool = False, published: bool = True) -> Path:

@@ -65,6 +65,21 @@ class SmokeAcceptanceError(SmokeGateError):
     """The replay output does not satisfy the evidence acceptance contract."""
 
 
+def _configured_ollama_models() -> tuple[str, str]:
+    """Return the local Ollama model IDs used by the acceptance smoke.
+
+    The smoke is pinned to the local Ollama provider.  Reuse the project's
+    normal model environment overrides when present, while keeping the
+    installed Phase 6 Qwen pair as deterministic local defaults.  A bare
+    provider label such as ``qwen`` is not an Ollama model ID and must not be
+    sent to ``/v1/chat/completions``.
+    """
+
+    quick = os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM", "").strip()
+    deep = os.environ.get("TRADINGAGENTS_DEEP_THINK_LLM", "").strip()
+    return quick or "qwen3.5:2b", deep or "qwen3.5:4b"
+
+
 @dataclass(frozen=True, slots=True)
 class Phase8ArtifactPreflight:
     root: Path
@@ -642,7 +657,8 @@ def run_smoke(
     encoded = row["snapshot_json"]
     snapshot_bytes = encoded if isinstance(encoded, bytes) else str(encoded).encode("utf-8")
     generation7 = str(generation7_obj.generation_id)
-    config = EvidenceReplayConfig(source_decision_id=str(row["decision_id"]), profile=profile, analysts=tuple(analysts), provider="ollama", models={"quick": "qwen", "deep": "qwen"}, model_settings={"temperature": 0}, pinned_phase7_generation_id=generation7, pinned_phase8_generation_id=phase8.generation_id, phase7_root=knowledge_root, phase8_root=experience_root, source_database_path=source)
+    quick_model, deep_model = _configured_ollama_models()
+    config = EvidenceReplayConfig(source_decision_id=str(row["decision_id"]), profile=profile, analysts=tuple(analysts), provider="ollama", models={"quick": quick_model, "deep": deep_model}, model_settings={"temperature": 0}, pinned_phase7_generation_id=generation7, pinned_phase8_generation_id=phase8.generation_id, phase7_root=knowledge_root, phase8_root=experience_root, source_database_path=source)
     started = time.monotonic()
     guard = OfflineNetworkGuard()
     replay_result: Any = None
@@ -654,7 +670,7 @@ def run_smoke(
             else:
                 if runner is None:
                     from tradingagents.forex.runner import ForexShadowRunner
-                    runner = ForexShadowRunner(store=type("NoopStore", (), {})(), config={"forex_evidence_enabled": True, "forex_evidence_artifact_roots": {"knowledge": str(knowledge_root), "experience": str(experience_root), "knowledge_embedding_model_path": str(model_path)}, "evidence_orchestrator_factory": build_local_orchestrator, "llm_provider": "ollama", "backend_url": "http://127.0.0.1:11434/v1", "quick_think_llm": "qwen", "deep_think_llm": "qwen"})
+                    runner = ForexShadowRunner(store=type("NoopStore", (), {})(), config={"forex_evidence_enabled": True, "forex_evidence_artifact_roots": {"knowledge": str(knowledge_root), "experience": str(experience_root), "knowledge_embedding_model_path": str(model_path)}, "evidence_orchestrator_factory": build_local_orchestrator, "llm_provider": "ollama", "backend_url": "http://127.0.0.1:11434/v1", "quick_think_llm": quick_model, "deep_think_llm": deep_model})
                 replay_result = SavedSnapshotReplay(runner=runner, generation_provider=(generation7, phase8.generation_id)).run(snapshot, snapshot_bytes=snapshot_bytes, config=config)
     except Exception as exc:
         # Keep reports diagnostic-only; arbitrary exception text may contain
@@ -703,7 +719,7 @@ def run_smoke(
             except Exception as exc:
                 audit_status = "FAILED"
                 errors.append(f"audit append failed: {type(exc).__name__}")
-    report = build_report(real_smoke="PASS" if not errors else "FAILED", source_fingerprint={"before": before["source"], "after": after["source"]}, artifact_fingerprints={"phase7": {"before": before["phase7"], "after": after["phase7"]}, "phase8": {"before": before["phase8"], "after": after["phase8"]}}, source_unchanged=unchanged, phase8_preflight=phase8.to_dict(), replay=result_payload, fake_ab=fake_ab, audit_status=audit_status, audit_path=audit_report_path, loopback_connection_attempts=guard.loopback_connection_attempts, external_network_attempts=guard.external_network_attempts, retrieval_count=1 if replay_result is not None else 0, latency_seconds=time.monotonic() - started, provider="ollama", models={"quick": "qwen", "deep": "qwen"}, warnings=[], errors=errors, saved_snapshot_replay=_uses_saved_snapshot())
+    report = build_report(real_smoke="PASS" if not errors else "FAILED", source_fingerprint={"before": before["source"], "after": after["source"]}, artifact_fingerprints={"phase7": {"before": before["phase7"], "after": after["phase7"]}, "phase8": {"before": before["phase8"], "after": after["phase8"]}}, source_unchanged=unchanged, phase8_preflight=phase8.to_dict(), replay=result_payload, fake_ab=fake_ab, audit_status=audit_status, audit_path=audit_report_path, loopback_connection_attempts=guard.loopback_connection_attempts, external_network_attempts=guard.external_network_attempts, retrieval_count=1 if replay_result is not None else 0, latency_seconds=time.monotonic() - started, provider="ollama", models={"quick": quick_model, "deep": deep_model}, warnings=[], errors=errors, saved_snapshot_replay=_uses_saved_snapshot())
     if report_path is not None:
         destination = Path(report_path).expanduser().resolve()
         destination.parent.mkdir(parents=True, exist_ok=True)
