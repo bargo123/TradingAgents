@@ -39,6 +39,12 @@ def test_smoke_uses_local_ollama_model_defaults_and_env_overrides(monkeypatch):
     assert _configured_ollama_models() == ("local-quick", "local-deep")
 
 
+def test_smoke_rejects_bare_qwen_provider_label(monkeypatch):
+    monkeypatch.setenv("TRADINGAGENTS_QUICK_THINK_LLM", "qwen")
+    with pytest.raises(ValueError, match="bare.*qwen"):
+        _configured_ollama_models()
+
+
 def _catalog(root: Path, *, tier_c_only: bool = False, published: bool = True) -> Path:
     root.mkdir()
     db = root / "catalog.sqlite3"

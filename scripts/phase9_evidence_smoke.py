@@ -75,9 +75,18 @@ def _configured_ollama_models() -> tuple[str, str]:
     sent to ``/v1/chat/completions``.
     """
 
-    quick = os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM", "").strip()
-    deep = os.environ.get("TRADINGAGENTS_DEEP_THINK_LLM", "").strip()
-    return quick or "qwen3.5:2b", deep or "qwen3.5:4b"
+    values = (
+        os.environ.get("TRADINGAGENTS_QUICK_THINK_LLM", "").strip()
+        or "qwen3.5:2b",
+        os.environ.get("TRADINGAGENTS_DEEP_THINK_LLM", "").strip()
+        or "qwen3.5:4b",
+    )
+    if any(value.casefold() == "qwen" for value in values):
+        raise ValueError(
+            "bare qwen provider label is not a valid Ollama model ID; "
+            "use an installed model tag such as qwen3.5:2b"
+        )
+    return values
 
 
 @dataclass(frozen=True, slots=True)
