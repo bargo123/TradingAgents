@@ -111,6 +111,13 @@ def test_query_market_state_cohort_must_match_selected_profile():
     assert result.excluded_counts["query_cohort"] == 1
 
 
+def test_query_malformed_non_none_cohort_fails_closed():
+    service = ExperienceQueryService([row("good")], profile=profile())
+    result = service.search(ExperienceQuery(query_state(cohort="malformed-cohort")))
+    assert result.hits == ()
+    assert result.excluded_counts["query_cohort_invalid"] == 1
+
+
 def test_query_market_state_feature_names_must_match_selected_profile():
     service = ExperienceQueryService([row("good")], profile=profile())
     result = service.search(ExperienceQuery(query_state(feature_names=tuple(reversed(NAMES)))))

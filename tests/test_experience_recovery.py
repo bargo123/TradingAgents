@@ -15,4 +15,3 @@ def test_rebuild_failure_preserves_previous_generation(tmp_path):
         rebuilder.rebuild(fail_after_stage="features")
 
     assert catalog.active_generation()["generation_id"] == old.generation_id
-

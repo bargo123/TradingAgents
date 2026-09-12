@@ -103,10 +103,14 @@ class ExperienceQueryService:
         state = query.market_state
         state_cohort = state.get("cohort") if isinstance(state, Mapping) else None
         if state_cohort is not None:
+            invalid_state_cohort = False
             try:
                 state_cohort = state_cohort if isinstance(state_cohort, NormalizationCohortV1) else NormalizationCohortV1(*tuple(state_cohort))
             except (TypeError, ValueError):
-                state_cohort = None
+                invalid_state_cohort = True
+            if invalid_state_cohort:
+                exclusions["query_cohort_invalid"] = 1
+                return ExperienceSearchResult(candidate_count=len(rows), excluded_counts=exclusions, active_generation_id=self.generation_id)
             if state_cohort != profile.cohort:
                 exclusions["query_cohort"] = 1
                 return ExperienceSearchResult(candidate_count=len(rows), excluded_counts=exclusions, active_generation_id=self.generation_id)

@@ -52,7 +52,14 @@ integrations remain outside this task.
 - Full experience regression after fixes: `60 passed`.
 - `python -m compileall -q tradingagents/experience` and `git diff --check`
   passed.
+## Whole-branch review round 2
 
+- Malformed non-`None` query cohorts now fail closed with an explicit
+  `query_cohort_invalid` exclusion before numeric search.
+- Removed extra blank lines at EOF from Task 6-related report/recovery files.
+- Focused suite: `14 passed`; full experience regression: `120 passed`.
+- `python -m compileall -q tradingagents/experience` and `git diff --check`
+  passed.
 ## Reviewer-fix round 2
 
 - Malformed timestamp strings are now treated as invalid and excluded by the
@@ -70,4 +77,3 @@ integrations remain outside this task.
 - Focused suite: `13 passed`; full experience regression: `119 passed`.
 - `python -m compileall -q tradingagents/experience` and `git diff --check`
   passed.
-
