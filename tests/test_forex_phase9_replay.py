@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from tradingagents.forex.evidence_replay import (
     SavedSnapshotReplay,
     SnapshotReplayError,
 )
+from tradingagents.forex.runner import ForexShadowRunner
 
 
 def _snapshot() -> ForexMarketSnapshot:
@@ -107,6 +109,10 @@ def _config(tmp_path: Path) -> EvidenceReplayConfig:
     )
 
 
+def _source_bytes() -> bytes:
+    return _row()["snapshot_json"].encode("utf-8")
+
+
 def test_saved_snapshot_codec_validates_row():
     snapshot = SavedSnapshotCodec.from_source_row(_row())
     assert snapshot.symbol == "EURUSDm"
@@ -118,6 +124,10 @@ def test_saved_snapshot_codec_validates_row():
 
     with pytest.raises(SnapshotReplayError):
         SavedSnapshotCodec.from_source_row({"snapshot_json": "{}"})
+    mismatched = _row()
+    mismatched["analysis_snapshot_timestamp"] = "2026-09-12T12:01:00Z"
+    with pytest.raises(SnapshotReplayError, match="analysis_snapshot_timestamp"):
+        SavedSnapshotCodec.from_source_row(mismatched)
 
 
 def test_replay_uses_identical_snapshot_fingerprint(tmp_path: Path):
@@ -125,8 +135,8 @@ def test_replay_uses_identical_snapshot_fingerprint(tmp_path: Path):
     runner = _FakeRunner(calls, generations=("p7", "p8"))
     replay = SavedSnapshotReplay(runner_factory=lambda **_: runner, generation_provider=lambda: ("p7", "p8"))
     snapshot = SavedSnapshotCodec.from_source_row(_row())
-    result = replay.run(snapshot, snapshot_bytes=b"snapshot-bytes", config=_config(tmp_path))
-    assert result.snapshot_fingerprint == hashlib.sha256(b"snapshot-bytes").hexdigest()
+    result = replay.run(snapshot, snapshot_bytes=_source_bytes(), config=_config(tmp_path))
+    assert result.snapshot_fingerprint == hashlib.sha256(_source_bytes()).hexdigest()
     assert calls[0]["snapshot_bytes"] is calls[1]["snapshot_bytes"]
     assert calls[0]["snapshot_fingerprint"] == calls[1]["snapshot_fingerprint"] == result.snapshot_fingerprint
 
@@ -135,7 +145,7 @@ def test_replay_runs_baseline_then_evidence_sequentially(tmp_path: Path):
     calls: list[dict] = []
     runner = _FakeRunner(calls, generations=("p7", "p8"))
     replay = SavedSnapshotReplay(runner_factory=lambda **_: runner, generation_provider=lambda: ("p7", "p8"))
-    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=b"bytes", config=_config(tmp_path))
+    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
     assert [call["forex_evidence_enabled"] for call in calls] == [False, True]
     assert report.baseline_action == "HOLD"
     assert report.evidence_action == "BUY"
@@ -147,7 +157,7 @@ def test_replay_does_not_change_source_schema_or_rows(tmp_path: Path):
     config = _config(tmp_path)
     before = config.source_database_path.read_bytes()
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
-    replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=b"bytes", config=config)
+    replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=config)
     assert config.source_database_path.read_bytes() == before
     with sqlite3.connect(config.source_database_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM shadow_decisions").fetchone()[0] == 1
@@ -156,7 +166,7 @@ def test_replay_does_not_change_source_schema_or_rows(tmp_path: Path):
 def test_replay_is_not_a_normal_opportunity(tmp_path: Path):
     runner = _FakeRunner([], generations=("p7", "p8"))
     replay = SavedSnapshotReplay(runner_factory=lambda **_: runner, generation_provider=lambda: ("p7", "p8"))
-    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=b"bytes", config=_config(tmp_path))
+    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
     assert not hasattr(report, "decision")
     assert runner.run_called is False
 
@@ -165,7 +175,7 @@ def test_replay_pins_phase7_and_phase8_generations(tmp_path: Path):
     calls: list[dict] = []
     runner = _FakeRunner(calls, generations=("p7", "p8"))
     replay = SavedSnapshotReplay(runner_factory=lambda **_: runner, generation_provider=lambda: ("p7", "p8"))
-    replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=b"bytes", config=_config(tmp_path))
+    replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
     assert all(call["pinned_phase7_generation_id"] == "p7" for call in calls)
     assert all(call["pinned_phase8_generation_id"] == "p8" for call in calls)
 
@@ -174,7 +184,7 @@ def test_knowledge_generation_change_invalidates_replay(tmp_path: Path):
     generations = iter((("p7", "p8"), ("changed", "p8")))
     calls: list[dict] = []
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner(calls, generations=("p7", "p8")), generation_provider=lambda: next(generations))
-    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=b"bytes", config=_config(tmp_path))
+    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
     assert report.comparison_status == "INVALID_GENERATION_CHANGED"
     assert report.did_action_change is None
 
@@ -182,15 +192,190 @@ def test_knowledge_generation_change_invalidates_replay(tmp_path: Path):
 def test_experience_generation_change_invalidates_replay(tmp_path: Path):
     generations = iter((("p7", "p8"), ("p7", "changed")))
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: next(generations))
-    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=b"bytes", config=_config(tmp_path))
+    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
     assert report.comparison_status == "INVALID_GENERATION_CHANGED"
     assert report.did_action_change is None
 
 
 def test_replay_report_excludes_prompts_and_reasoning(tmp_path: Path):
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
-    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=b"bytes", config=_config(tmp_path))
+    report = replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=_config(tmp_path))
     payload = report.to_dict()
     forbidden = {"prompt", "completion", "reasoning", "private_reasoning"}
     assert not forbidden.intersection(payload)
     assert all(not any(word in str(key).lower() for word in forbidden) for key in payload)
+
+
+def test_actual_runner_consumes_saved_snapshot_without_mt5_or_persistence(tmp_path: Path):
+    class _NoMt5:
+        def __call__(self, **_kwargs):
+            raise AssertionError("saved replay must not construct MT5")
+
+    class _Graph:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.propagator = type(
+                "P",
+                (),
+                {
+                    "create_initial_state": lambda _self, *args, **kw: kw,
+                    "get_graph_args": lambda _self, **_kw: {},
+                },
+            )()
+
+        def invoke(self, _state, **_kwargs):
+            return {
+                "portfolio_manager_raw_result": {"rating": "Hold"},
+                "final_trade_decision": {"rating": "Hold"},
+            }
+
+    runner = ForexShadowRunner(
+        provider_factory=_NoMt5(),
+        graph_factory=lambda **kwargs: _Graph(**kwargs),
+        store=type("Store", (), {"record": lambda *_args: (_ for _ in ()).throw(AssertionError("persisted"))})(),
+    )
+    snapshot = _snapshot()
+    result = runner.analyze(
+        symbol=snapshot.symbol,
+        analysis_date=snapshot.timestamp.date(),
+        snapshot=snapshot,
+        snapshot_bytes=b"saved-row-bytes",
+        forex_evidence_enabled=False,
+        pinned_phase7_generation_id="p7",
+        pinned_phase8_generation_id="p8",
+        persist=False,
+    )
+    assert result.snapshot is snapshot
+    assert result.normalized_action == "HOLD"
+
+
+def test_actual_runner_replay_leg_passes_toggle_and_generation_pins(tmp_path: Path):
+    class _NoMt5:
+        def __call__(self, **_kwargs):
+            raise AssertionError("saved replay must not construct MT5")
+
+    graphs: list[object] = []
+
+    class _Graph:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            graphs.append(self)
+            self.propagator = type(
+                "P",
+                (),
+                {
+                    "create_initial_state": lambda _self, *args, **kw: kw,
+                    "get_graph_args": lambda _self, **_kw: {},
+                },
+            )()
+
+        def invoke(self, _state, **_kwargs):
+            return {
+                "portfolio_manager_raw_result": {"rating": "Hold"},
+                "final_trade_decision": {"rating": "Hold"},
+            }
+
+    class _Evidence:
+        def retrieve(self, snapshot, **_kwargs):
+            rendered = "saved evidence"
+            return EvidenceContext(
+                integration_status=EvidenceIntegrationStatus.INJECTED,
+                as_of=snapshot.timestamp,
+                knowledge_generation_id="p7",
+                experience_generation_id="p8",
+                rendered_context=rendered,
+                rendered_context_hash=hashlib.sha256(rendered.encode()).hexdigest(),
+            )
+
+    seen_configs: list[dict] = []
+    runner = ForexShadowRunner(
+        provider_factory=_NoMt5(),
+        graph_factory=lambda **kwargs: _Graph(**kwargs),
+        evidence_service_factory=lambda config, **_kwargs: (seen_configs.append(config) or _Evidence()),
+    )
+    snapshot = _snapshot()
+    for enabled in (False, True):
+        runner.analyze(
+            symbol=snapshot.symbol,
+            analysis_date=snapshot.timestamp.date(),
+            snapshot=snapshot,
+            snapshot_bytes=b"saved-row-bytes",
+            evidence_enabled=enabled,
+            pinned_phase7_generation_id="p7",
+            pinned_phase8_generation_id="p8",
+            provider="ollama",
+            models={"deep": "qwen"},
+            model_settings={"temperature": 0},
+            normalization_path="v1",
+            persist=False,
+        )
+    assert len(graphs) == 2
+    assert [graph.kwargs["config"]["forex_evidence_enabled"] for graph in graphs] == [False, True]
+    assert graphs[1].kwargs["config"]["pinned_phase7_generation_id"] == "p7"
+    assert graphs[1].kwargs["config"]["pinned_phase8_generation_id"] == "p8"
+    assert seen_configs and seen_configs[0]["pinned_phase7_generation_id"] == "p7"
+
+
+def test_replay_binds_to_source_decision_and_snapshot_bytes(tmp_path: Path):
+    config = _config(tmp_path)
+    source_bytes = _row()["snapshot_json"].encode("utf-8")
+    replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
+    with pytest.raises(SnapshotReplayError, match="source"):
+        replay.run(replace(_snapshot(), bid=2.0), snapshot_bytes=source_bytes, config=config)
+
+    replay.run(None, snapshot_bytes=source_bytes, config=config)
+
+
+def test_replay_requires_read_only_source_database_binding(tmp_path: Path):
+    config = replace(_config(tmp_path), source_database_path=None)
+    replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
+    with pytest.raises(SnapshotReplayError, match="source database"):
+        replay.run(_snapshot(), snapshot_bytes=_source_bytes(), config=config)
+
+
+def test_replay_rejects_requested_audit_path_instead_of_ignoring_it(tmp_path: Path):
+    config = _config(tmp_path)
+    config = replace(config, audit_path=tmp_path / "audit.sqlite3")
+    replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
+    with pytest.raises(SnapshotReplayError, match="audit"):
+        replay.run(None, snapshot_bytes=_row()["snapshot_json"].encode(), config=config)
+
+
+def test_missing_generation_or_evidence_context_invalidates_replay(tmp_path: Path):
+    config = _config(tmp_path)
+    replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: (None, "p8"))
+    with pytest.raises(SnapshotReplayError, match="generation"):
+        replay.run(None, snapshot_bytes=_row()["snapshot_json"].encode(), config=config)
+
+    class _NoContext:
+        def analyze(self, **_kwargs):
+            return {"normalized_action": "HOLD", "evidence_context": None}
+
+    replay = SavedSnapshotReplay(runner=_NoContext(), generation_provider=lambda: ("p7", "p8"))
+    report = replay.run(None, snapshot_bytes=_row()["snapshot_json"].encode(), config=config)
+    assert report.comparison_status == "INVALID_GENERATION_CHANGED"
+    assert report.did_action_change is None
+
+
+def test_report_sanitizes_forbidden_fields_inside_dataclasses(tmp_path: Path):
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class _Telemetry:
+        reasoning: str
+        nested: dict[str, str]
+
+    class _Runner:
+        def analyze(self, **kwargs):
+            return {
+                "normalized_action": "HOLD",
+                "evidence_context": None,
+                "analysis_telemetry": _Telemetry("secret", {"completion": "secret"}),
+            }
+
+    replay = SavedSnapshotReplay(runner=_Runner(), generation_provider=lambda: ("p7", "p8"))
+    report = replay.run(None, snapshot_bytes=_row()["snapshot_json"].encode(), config=_config(tmp_path))
+    report = replace(report, models={"nested": _Telemetry("secret", {"completion": "secret"})})
+    payload = report.to_dict()
+    assert "reasoning" not in json.dumps(payload).lower()
+    assert "completion" not in json.dumps(payload).lower()

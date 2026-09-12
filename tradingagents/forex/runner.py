@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from tradingagents.agents.utils.agent_utils import build_instrument_context
+from tradingagents.dataflows.mt5.models import ForexMarketSnapshot
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.context_integrity import evaluate_context_integrity
@@ -235,6 +236,44 @@ class ForexAnalysisResult:
         return ForexShadowRunner._evidence_hash(self.evidence_context)
 
 
+class _SavedSnapshotProvider:
+    """Read-only provider facade used by saved-snapshot replay."""
+
+    market_snapshot_calls = 0
+
+    def __init__(self, snapshot: ForexMarketSnapshot) -> None:
+        self.snapshot = snapshot
+
+    def initialize(self) -> bool:
+        return True
+
+    def shutdown(self) -> None:
+        return None
+
+    def ensure_symbol(self, symbol: str) -> str:
+        if symbol.casefold() != self.snapshot.symbol.casefold():
+            raise ValueError("saved snapshot symbol does not match requested symbol")
+        return self.snapshot.symbol
+
+    def get_market_snapshot(self, *_args: Any, **_kwargs: Any) -> ForexMarketSnapshot:
+        raise AssertionError("saved replay must not retrieve a second market snapshot")
+
+    def get_tick(self, symbol: str) -> Any:
+        return type("SavedTick", (), {"symbol": symbol, "timestamp": self.snapshot.timestamp, "bid": self.snapshot.bid, "ask": self.snapshot.ask})()
+
+    def get_bars(self, symbol: str, timeframe: str, count: int) -> Any:
+        return getattr(self.snapshot, f"{timeframe.lower()}_candles")[:count]
+
+    def get_account_info(self) -> Any:
+        return self.snapshot.account
+
+    def get_positions(self, symbol: str | None = None) -> Any:
+        return self.snapshot.positions
+
+    def get_spread(self, symbol: str) -> Any:
+        return type("SavedSpread", (), {"symbol": symbol, "bid": self.snapshot.bid, "ask": self.snapshot.ask, "price": self.snapshot.spread, "points": self.snapshot.spread_points, "timestamp": self.snapshot.timestamp})()
+
+
 class ForexShadowRunner:
     """Run one read-only forex analysis session against one cached snapshot."""
 
@@ -440,8 +479,28 @@ class ForexShadowRunner:
         callbacks: Sequence[Any] | None = None,
         analysis_profile: str = "INTRADAY",
         source_run_id: str | None = None,
+        snapshot: ForexMarketSnapshot | None = None,
+        snapshot_bytes: bytes | None = None,
+        forex_evidence_enabled: bool | None = None,
+        evidence_enabled: bool | None = None,
+        pinned_phase7_generation_id: str | None = None,
+        pinned_phase8_generation_id: str | None = None,
+        snapshot_fingerprint: str | None = None,
+        provider: str | None = None,
+        models: Mapping[str, Any] | None = None,
+        model_settings: Mapping[str, Any] | None = None,
+        normalization_path: str | None = None,
+        persist: bool = False,
     ) -> ForexAnalysisResult:
         """Analyze one snapshot without constructing or writing a shadow store row."""
+        if persist:
+            raise ValueError("analyze() is non-persisting; use run() for normal shadow persistence")
+        if snapshot is not None and not isinstance(snapshot, ForexMarketSnapshot):
+            raise ValueError("snapshot must be a ForexMarketSnapshot")
+        if snapshot is not None and symbol.casefold() != snapshot.symbol.casefold():
+            raise ValueError("saved snapshot symbol does not match requested symbol")
+        if snapshot is not None and snapshot_bytes is not None and not isinstance(snapshot_bytes, bytes):
+            raise ValueError("snapshot_bytes must be immutable bytes")
         provider: Any | None = None
         callback_list = list(callbacks or ())
         if source_run_id is not None:
@@ -453,23 +512,55 @@ class ForexShadowRunner:
         profile = resolve_forex_profile(analysis_profile)
         analysis_telemetry: dict[str, Any] = {}
         try:
-            provider = self.provider_factory(terminal_path=terminal_path)
+            provider = _SavedSnapshotProvider(snapshot) if snapshot is not None else self.provider_factory(terminal_path=terminal_path)
             if not provider.initialize():
                 raise RuntimeError("MT5 provider initialization failed")
-            resolved_symbol = provider.ensure_symbol(symbol)
+            resolved_symbol = snapshot.symbol if snapshot is not None else provider.ensure_symbol(symbol)
             if not isinstance(resolved_symbol, str) or not resolved_symbol.strip():
                 raise RuntimeError("MT5 provider returned an invalid resolved symbol")
-            snapshot = provider.get_market_snapshot(resolved_symbol, count=count)
+            if snapshot is None:
+                snapshot = provider.get_market_snapshot(resolved_symbol, count=count)
             snapshot_json = snapshot_to_dict(snapshot)
             evidence_context: EvidenceContext | None = None
             config_for_graph = dict(self.config)
-            evidence_enabled = self._evidence_is_enabled(self.config)
-            if evidence_enabled:
+            if (
+                forex_evidence_enabled is not None
+                and evidence_enabled is not None
+                and bool(forex_evidence_enabled) != bool(evidence_enabled)
+            ):
+                raise ValueError("conflicting evidence-enabled replay flags")
+            effective_evidence_enabled = (
+                self._evidence_is_enabled(self.config)
+                if forex_evidence_enabled is None and evidence_enabled is None
+                else bool(
+                    forex_evidence_enabled
+                    if forex_evidence_enabled is not None
+                    else evidence_enabled
+                )
+            )
+            config_for_graph["forex_evidence_enabled"] = effective_evidence_enabled
+            config_for_graph["forex_replay"] = snapshot_bytes is not None
+            config_for_graph["forex_replay_persist"] = False
+            if snapshot_fingerprint is not None:
+                config_for_graph["forex_replay_snapshot_fingerprint"] = snapshot_fingerprint
+            if provider is not None:
+                config_for_graph["llm_provider"] = provider
+            if models is not None:
+                config_for_graph["replay_models"] = dict(models)
+            if model_settings is not None:
+                config_for_graph["replay_model_settings"] = dict(model_settings)
+            if normalization_path is not None:
+                config_for_graph["replay_normalization_path"] = normalization_path
+            if pinned_phase7_generation_id is not None:
+                config_for_graph["pinned_phase7_generation_id"] = pinned_phase7_generation_id
+            if pinned_phase8_generation_id is not None:
+                config_for_graph["pinned_phase8_generation_id"] = pinned_phase8_generation_id
+            if effective_evidence_enabled:
                 factory = self.evidence_service_factory or self._default_evidence_service_factory
                 started_retrieval = time.perf_counter()
                 service: Any | None = None
                 try:
-                    service = self._call_factory(factory, config=self.config, runner=self)
+                    service = self._call_factory(factory, config=config_for_graph, runner=self)
                     evidence_context = service.retrieve(
                         snapshot,
                         resolved_symbol=resolved_symbol,
@@ -485,7 +576,7 @@ class ForexShadowRunner:
                 analysis_telemetry["evidence_retrieval_latency_seconds"] = time.perf_counter() - started_retrieval
                 analysis_telemetry["evidence_retrieval_count"] = getattr(service, "retrieval_count", 1)
             context_hash = self._evidence_hash(evidence_context)
-            config_for_graph["forex_evidence_enabled"] = evidence_enabled
+            config_for_graph["forex_evidence_enabled"] = effective_evidence_enabled
             config_for_graph["forex_evidence_context_hash"] = context_hash
 
             market_context = build_forex_market_context(snapshot, profile)
@@ -516,7 +607,7 @@ class ForexShadowRunner:
             graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
             graph_args = dict(graph_args or {})
             graph_args_config = dict(graph_args.get("config", {}))
-            graph_args_config["forex_evidence_enabled"] = evidence_enabled
+            graph_args_config["forex_evidence_enabled"] = effective_evidence_enabled
             graph_args_config["forex_evidence_context_hash"] = context_hash
             graph_args["config"] = graph_args_config
             with capture_state_trace() as state_trace:

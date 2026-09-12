@@ -138,6 +138,8 @@ class SavedSnapshotCodec:
 
     @staticmethod
     def from_source_row(row: Mapping[str, Any]) -> ForexMarketSnapshot:
+        if not isinstance(row, Mapping) and hasattr(row, "keys"):
+            row = {key: row[key] for key in row}
         if not isinstance(row, Mapping):
             raise SnapshotReplayError("source row must be a mapping")
         encoded = row.get("snapshot_json")
@@ -226,6 +228,11 @@ class SavedSnapshotCodec:
             raise SnapshotReplayError("source resolved_symbol does not match snapshot symbol")
         if row.get("snapshot_timestamp") is not None and _utc(row["snapshot_timestamp"], "source snapshot_timestamp") != timestamp:
             raise SnapshotReplayError("source snapshot_timestamp does not match snapshot")
+        if row.get("analysis_snapshot_timestamp") is not None and _utc(row["analysis_snapshot_timestamp"], "source analysis_snapshot_timestamp") != timestamp:
+            raise SnapshotReplayError("source analysis_snapshot_timestamp does not match snapshot")
+        for field, expected in (("analysis_snapshot_bid", bid), ("analysis_snapshot_ask", ask), ("analysis_snapshot_spread", spread), ("analysis_snapshot_spread_points", spread_points)):
+            if row.get(field) is not None and _number(row[field], f"source {field}") != expected:
+                raise SnapshotReplayError(f"source {field} does not match snapshot quote")
         return snapshot
 
 
@@ -333,7 +340,14 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     if is_dataclass(value):
-        return {field.name: _json_value(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _json_value(getattr(value, field.name))
+            for field in fields(value)
+            if not any(
+                token in field.name.lower()
+                for token in ("prompt", "completion", "reasoning", "credential", "api_key")
+            )
+        }
     if isinstance(value, Mapping):
         return {
             str(key): _json_value(item)
@@ -372,6 +386,25 @@ def _fingerprint(path: str | Path) -> dict[str, Any]:
     except sqlite3.Error as exc:
         raise SnapshotReplayError(f"source database is not readable SQLite: {source}") from exc
     return result
+
+
+def _source_row(path: str | Path, decision_id: str) -> sqlite3.Row:
+    source = Path(path)
+    if not source.is_file():
+        raise SnapshotReplayError(f"source database does not exist: {source}")
+    uri = f"file:{source.resolve().as_posix()}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute(
+                "SELECT * FROM shadow_decisions WHERE decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise SnapshotReplayError("source database cannot be read for replay") from exc
+    if row is None:
+        raise SnapshotReplayError(f"source decision not found: {decision_id}")
+    return row
 
 
 def _contains_transient(value: Any) -> bool:
@@ -567,21 +600,58 @@ class SavedSnapshotReplay:
         self.generation_provider = generation_provider
 
     def _generations(self, config: EvidenceReplayConfig) -> tuple[str | None, str | None]:
+        if self.generation_provider is None:
+            return (config.phase7_generation, config.phase8_generation)
         value = self.generation_provider() if callable(self.generation_provider) else self.generation_provider
-        phase7, phase8 = _generation(value)
-        return (phase7 or config.phase7_generation, phase8 or config.phase8_generation)
+        return _generation(value)
 
-    def run(self, snapshot: ForexMarketSnapshot, *, snapshot_bytes: bytes, config: EvidenceReplayConfig) -> EvidenceReplayReport:
-        if not isinstance(snapshot, ForexMarketSnapshot):
-            raise SnapshotReplayError("snapshot must be ForexMarketSnapshot")
-        if not isinstance(snapshot_bytes, bytes):
-            raise SnapshotReplayError("snapshot_bytes must be immutable bytes")
+    def run(self, snapshot: ForexMarketSnapshot | None = None, *, snapshot_bytes: bytes | None = None, config: EvidenceReplayConfig) -> EvidenceReplayReport:
         if not isinstance(config, EvidenceReplayConfig):
             raise TypeError("config must be EvidenceReplayConfig")
-        source_before = _fingerprint(config.source_database_path) if config.source_database_path is not None else None
-        if config.source_database_path is not None and _source_has_transient(config.source_database_path):
+        if config.audit_path is not None:
+            raise SnapshotReplayError(
+                "audit_path is not supported by replay; use a Phase 9 evidence_runtime audit sink"
+            )
+        if config.source_database_path is None:
+            raise SnapshotReplayError("source database path is required for saved replay")
+        source_row = None
+        source_snapshot_bytes = None
+        source_row = _source_row(config.source_database_path, config.source_decision_id)
+        source_snapshot_value = source_row["snapshot_json"]
+        if isinstance(source_snapshot_value, bytes):
+            source_snapshot_bytes = source_snapshot_value
+        elif isinstance(source_snapshot_value, str):
+            source_snapshot_bytes = source_snapshot_value.encode("utf-8")
+        else:
+            raise SnapshotReplayError("source snapshot_json must be text or bytes")
+        if snapshot_bytes is not None and snapshot_bytes != source_snapshot_bytes:
+            raise SnapshotReplayError("snapshot bytes do not match source decision")
+        snapshot_bytes = source_snapshot_bytes
+        decoded_snapshot = SavedSnapshotCodec.from_source_row(dict(source_row))
+        if snapshot is not None and snapshot != decoded_snapshot:
+            raise SnapshotReplayError("snapshot does not match source decision")
+        snapshot = decoded_snapshot
+        if not isinstance(snapshot, ForexMarketSnapshot):
+            raise SnapshotReplayError("snapshot must be loaded from the source decision")
+        if not isinstance(snapshot_bytes, bytes):
+            raise SnapshotReplayError("snapshot_bytes must be loaded from the source decision")
+        source_before = _fingerprint(config.source_database_path)
+        if _source_has_transient(config.source_database_path):
             raise SnapshotReplayError("source row contains transient Phase 9 evidence metadata")
-        pinned7, pinned8 = self._generations(config)
+        observed7, observed8 = self._generations(config)
+        configured7, configured8 = config.phase7_generation, config.phase8_generation
+        pinned7 = configured7 or observed7
+        pinned8 = configured8 or observed8
+        if pinned7 is None or pinned8 is None or (
+            self.generation_provider is not None and (observed7 is None or observed8 is None)
+        ):
+            raise SnapshotReplayError(
+                "both Phase 7 and Phase 8 generation IDs are required at replay start"
+            )
+        generation_changed = (
+            (configured7 is not None and observed7 is not None and observed7 != configured7)
+            or (configured8 is not None and observed8 is not None and observed8 != configured8)
+        )
         effective_config = EvidenceReplayConfig(**{**{field.name: getattr(config, field.name) for field in fields(config)}, "pinned_phase7_generation_id": pinned7, "pinned_phase8_generation_id": pinned8})
         if self.runner_factory is None:
             raise SnapshotReplayError(
@@ -594,15 +664,17 @@ class SavedSnapshotReplay:
         baseline = _invoke_analysis(runner, kwargs_a)
         evidence = _invoke_analysis(runner, kwargs_b)
         after7, after8 = self._generations(effective_config)
-        generation_changed = (after7 is not None and pinned7 is not None and after7 != pinned7) or (after8 is not None and pinned8 is not None and after8 != pinned8)
+        generation_changed = generation_changed or after7 is None or after8 is None or after7 != pinned7 or after8 != pinned8
         for result in (baseline, evidence):
             context = _result_value(result, "evidence_context")
             if context is not None:
-                generation_changed = generation_changed or (pinned7 is not None and _context_value(context, "knowledge_generation_id") not in (None, pinned7)) or (pinned8 is not None and _context_value(context, "experience_generation_id") not in (None, pinned8))
-        source_after = _fingerprint(config.source_database_path) if config.source_database_path is not None else None
+                generation_changed = generation_changed or (pinned7 is not None and _context_value(context, "knowledge_generation_id") not in (pinned7,)) or (pinned8 is not None and _context_value(context, "experience_generation_id") not in (pinned8,))
+            elif result is evidence:
+                generation_changed = True
+        source_after = _fingerprint(config.source_database_path)
         if source_before is not None and source_after != source_before:
             raise SnapshotReplayError("source database changed during replay")
-        if config.source_database_path is not None and _source_has_transient(config.source_database_path):
+        if _source_has_transient(config.source_database_path):
             raise SnapshotReplayError("source row gained transient Phase 9 evidence metadata")
 
         evidence_metrics = _context_metrics(evidence)
