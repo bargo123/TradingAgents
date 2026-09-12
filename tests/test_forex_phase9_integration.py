@@ -11,7 +11,10 @@ import pytest
 
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5AccountInfo, Mt5SymbolInfo
 from tradingagents.experience.catalog import ExperienceCatalog
-from tradingagents.experience.models import EvidenceBundle
+from tradingagents.experience.features import FEATURE_NAMES_V1
+from tradingagents.experience.models import EvidenceBundle, ExperienceQuery, TrustTier
+from tradingagents.experience.outcomes import OutcomeStatsCalculator
+from tradingagents.experience.query import ExperienceQueryService
 from tradingagents.forex.evidence_context import (
     EvidenceBundleStatus,
     EvidenceIntegrationStatus,
@@ -21,6 +24,8 @@ from tradingagents.forex.evidence_runtime import (
     EvidenceIntegrationService,
     ReadonlyExperienceCatalog,
     ReadonlyKnowledgeCatalog,
+    _close_orchestrator,
+    approved_readonly_factory,
 )
 from tradingagents.knowledge.catalog import KnowledgeCatalog
 from tradingagents.knowledge.embeddings import EmbeddingSpecMismatch
@@ -51,6 +56,18 @@ def _snapshot() -> ForexMarketSnapshot:
     )
 
 
+def _feature_state(value: float) -> dict[str, object]:
+    return {
+        "values": [value] * len(FEATURE_NAMES_V1),
+        "mask": [True] * len(FEATURE_NAMES_V1),
+        "feature_names": FEATURE_NAMES_V1,
+        "cohort": [
+            "EURUSD", "INTRADAY", "M5", "experience-features.v1",
+            "phase8-feature-extractor.v1",
+        ],
+    }
+
+
 class _FakeOrchestrator:
     def __init__(self, bundle: EvidenceBundle | None = None, error: Exception | None = None):
         self.bundle = bundle or EvidenceBundle(status="EMPTY")
@@ -64,22 +81,26 @@ class _FakeOrchestrator:
         return self.bundle
 
 
+@approved_readonly_factory
 def _empty_factory(_envelope=None):
     return _FakeOrchestrator()
 
 
+@approved_readonly_factory
 def _partial_factory(_envelope=None):
     return _FakeOrchestrator(
         EvidenceBundle(status="PARTIAL", source_status={"knowledge": "COMPLETE", "experience": "FAILED"})
     )
 
 
+@approved_readonly_factory
 def _error_factory(_envelope=None):
     return _FakeOrchestrator(error=RuntimeError("boom"))
 
 
+@approved_readonly_factory
 def _child_evidence_factory(_envelope=None):
-    return _FakeOrchestrator(EvidenceBundle(status="COMPLETE", knowledge=(KnowledgeHit(chunk_id="child-chunk", document_id="child-doc", text="child evidence"),)))
+    return _FakeOrchestrator(EvidenceBundle(status="COMPLETE", knowledge=(KnowledgeHit(chunk_id="child-chunk", document_id="child-doc", text="child evidence"),), source_status={"query_count": 1}))
 
 
 class _SlowOrchestrator:
@@ -88,8 +109,18 @@ class _SlowOrchestrator:
         return EvidenceBundle(status="EMPTY")
 
 
+@approved_readonly_factory
 def _slow_factory(_envelope=None):
     return _SlowOrchestrator()
+
+
+def _unapproved_factory(_config=None):
+    return type("WriterOwner", (), {"writer": object(), "query": lambda self, _request: EvidenceBundle(status="COMPLETE")})()
+
+
+@approved_readonly_factory
+def _approved_writer_factory(_config=None):
+    return type("WriterOwner", (), {"writer": object(), "query": lambda self, _request: EvidenceBundle(status="COMPLETE")})()
 
 
 class _ImmediateProcess:
@@ -107,6 +138,19 @@ class _ImmediateProcess:
 
     def terminate(self):
         self._alive = False
+
+
+class _BoundProcess(_ImmediateProcess):
+    def __init__(self, *, target, args, orchestrator):
+        super().__init__(target=target, args=args)
+        self.orchestrator = orchestrator
+
+    def start(self):
+        from tradingagents.experience.models import EvidenceRequest
+
+        request = EvidenceRequest(**dict(self.args[2]["request"]))
+        bundle = self.orchestrator.query(request)
+        self.args[0].send(("ok", bundle.to_dict()))
 
 
 class _HangingProcess(_ImmediateProcess):
@@ -132,6 +176,7 @@ def test_real_spawn_query_uses_serializable_envelope_and_reaches_child():
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.INJECTED
     assert context.knowledge_items[0].authoritative_id == "child-chunk"
+    assert context.diagnostics["source_status"]["query_count"] == 1
     assert service.active_evidence_workers == 0
 
 
@@ -145,6 +190,31 @@ def test_real_spawn_timeout_leaves_zero_workers():
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert context.diagnostics["integration"]["code"] == "EVIDENCE_TIMEOUT"
+    assert service.active_evidence_workers == 0
+
+
+def test_child_rejects_unapproved_or_writer_factory_without_query():
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        orchestrator_factory=_unapproved_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+    )
+    context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
+    assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
+    assert service.active_evidence_workers == 0
+
+
+def test_child_guard_rejects_approved_factory_that_owns_writer():
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        orchestrator_factory=_approved_writer_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+    )
+    context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
+    assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert service.active_evidence_workers == 0
 
 
@@ -177,7 +247,7 @@ def test_populated_phase8_readonly_adapter_matches_writer_semantics(tmp_path: Pa
         analysis_profile="INTRADAY", analysis_timeframe="M5",
         analysis_snapshot_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
         decision_completed_timestamp=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
-        market_state={"values": [1.0], "mask": [True], "feature_names": ["x"], "cohort": ["EURUSD", "INTRADAY", "M5", "s", "e"]},
+        market_state=_feature_state(1.0),
         trust="TIER_A_HIGH_TRUST",
     )
     second = writer.upsert_source_alias(
@@ -185,26 +255,49 @@ def test_populated_phase8_readonly_adapter_matches_writer_semantics(tmp_path: Pa
         analysis_profile="INTRADAY", analysis_timeframe="M5",
         analysis_snapshot_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
         decision_completed_timestamp=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
-        market_state={"values": [2.0], "mask": [True], "feature_names": ["x"], "cohort": ["EURUSD", "INTRADAY", "M5", "s", "e"]},
+        market_state=_feature_state(2.0),
         trust="TIER_B_LIMITED",
     )
     writer.store_feature_projection(first.experience_id, dict(first.market_state))
     writer.append_evaluation_snapshot(first.experience_id, {"evaluation_status": "COMPLETE", "evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 60}, "eval-1")
     writer.mark_last_alias_removed(second.experience_id)
     writer.publish_generation("generation-1", population_fingerprint="population-1", metadata={"trust_policy_version": "trust-policy.v1"})
+    database_before = (tmp_path / "experience" / "catalog.sqlite3").read_bytes()
     readonly = ReadonlyExperienceCatalog(tmp_path / "experience")
     assert tuple(r.experience_id for r in readonly.active_records()) == (first.experience_id,)
     assert tuple(r.experience_id for r in readonly.historical_records()) == (second.experience_id,)
     assert readonly.active_records()[0].source_aliases == writer.active_records()[0].source_aliases
     assert readonly.evaluation_snapshots(first.experience_id) == writer.evaluation_snapshots(first.experience_id)
-    assert readonly.feature_projection(first.experience_id)["values"] == [1.0]
+    assert readonly.feature_projection(first.experience_id)["values"] == [1.0] * len(FEATURE_NAMES_V1)
     assert readonly.active_generation() == writer.active_generation()
     assert readonly.active_records()[0].trust == writer.active_records()[0].trust
+    query = ExperienceQuery(
+        market_state=first.market_state,
+        top_k=10,
+        symbol="EURUSD",
+        analysis_profile="INTRADAY",
+        analysis_timeframe="M5",
+        as_of=datetime(2026, 1, 2, tzinfo=timezone.utc),
+        trust_tiers=(TrustTier.TIER_A_HIGH_TRUST,),
+    )
+    writer_result = ExperienceQueryService(writer, profiles=readonly.profiles).search(query)
+    readonly_result = ExperienceQueryService(readonly, profiles=readonly.profiles).search(query)
+    assert tuple(hit.experience_id for hit in readonly_result.hits) == tuple(
+        hit.experience_id for hit in writer_result.hits
+    )
+    assert readonly_result.excluded_counts == writer_result.excluded_counts
+    stats_request = type("StatsRequest", (), {"experience_ids": (first.experience_id,), "evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 60, "trust_tiers": (TrustTier.TIER_A_HIGH_TRUST,), "as_of": query.as_of})()
+    assert OutcomeStatsCalculator(readonly).calculate(stats_request).excluded_counts == OutcomeStatsCalculator(writer).calculate(stats_request).excluded_counts
+    readonly.close()
+    assert (tmp_path / "experience" / "catalog.sqlite3").read_bytes() == database_before
 
 
 def test_populated_phase7_readonly_adapter_matches_published_generation(tmp_path: Path):
     writer = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
     writer.initialize()
+    artifact = tmp_path / "published-vector.bin"
+    artifact.write_bytes(b"published-read-only-artifact")
+    artifact_before = artifact.read_bytes()
     with sqlite3.connect(tmp_path / "catalog.sqlite3") as db:
         spec = EmbeddingSpec().to_dict()
         db.execute("INSERT INTO knowledge_index_generations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("g1", "vector/g1", "keyword/g1", json.dumps(spec), "fts5-v1", "{}", "index-v1", "pop", "identity", 1, 1, 1, 1, "VALIDATED", None, None, "{}", 1))
@@ -214,6 +307,7 @@ def test_populated_phase7_readonly_adapter_matches_published_generation(tmp_path
     readonly = ReadonlyKnowledgeCatalog(tmp_path)
     assert readonly.active_generation().generation_id == writer.active_generation().generation_id
     assert readonly.document_is_retrieval_ready("doc") == writer.document_is_retrieval_ready("doc") is True
+    assert artifact.read_bytes() == artifact_before
 
 
 class _QueryReader:
@@ -251,13 +345,19 @@ def test_complete_embedding_spec_compatibility_matrix_fails_closed():
 
 
 def _service(orchestrator=None, *, enabled=True, endpoint="http://127.0.0.1:11434", factory=None):
+    process_factory = _process_factory
+    if orchestrator is not None:
+        def bound_process_factory(*, target, args):
+            return _BoundProcess(target=target, args=args, orchestrator=orchestrator)
+
+        process_factory = bound_process_factory
     return EvidenceIntegrationService(
         policy=EvidenceQueryPolicy() if enabled else None,
         orchestrator_factory=factory or _empty_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint=endpoint,
         clock=lambda: datetime(2030, 1, 1, tzinfo=timezone.utc),
-        process_factory=_process_factory,
+        process_factory=process_factory,
     )
 
 
@@ -275,9 +375,11 @@ def test_disabled_service_constructs_no_dependencies():
 
 
 def test_enabled_service_calls_orchestrator_once():
-    service = _service(_FakeOrchestrator())
+    orchestrator = _FakeOrchestrator()
+    service = _service(orchestrator)
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert service.retrieval_count == 1
+    assert len(orchestrator.calls) == 1
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
 
 
@@ -368,6 +470,34 @@ def test_readonly_catalog_context_manager_closes_owned_handle(tmp_path: Path):
         assert active.active_generation() is None
     with pytest.raises(sqlite3.ProgrammingError):
         catalog._connection.execute("SELECT 1")
+
+
+def test_readonly_catalog_close_releases_windows_file_handle(tmp_path: Path):
+    db = tmp_path / "catalog.sqlite3"
+    sqlite3.connect(db).close()
+    catalog = ReadonlyKnowledgeCatalog(tmp_path)
+    catalog.close()
+    db.unlink()
+    assert not db.exists()
+
+
+def test_close_orchestrator_recurses_through_service_catalog_idempotently():
+    class Closed:
+        def __init__(self):
+            self.count = 0
+
+        def close(self):
+            self.count += 1
+
+    knowledge = Closed()
+    experience = Closed()
+    service_a = type("Service", (), {"catalog": knowledge})()
+    service_b = type("Service", (), {"catalog": experience})()
+    orchestrator = type("Orchestrator", (), {"knowledge_service": service_a, "experience_service": service_b})()
+    _close_orchestrator(orchestrator)
+    _close_orchestrator(orchestrator)
+    assert knowledge.count == 1
+    assert experience.count == 1
 
 
 def test_readonly_experience_adapter_matches_phase8_reader_semantics(tmp_path: Path):

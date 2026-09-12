@@ -9,7 +9,7 @@ import multiprocessing
 import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,37 @@ from .evidence_context import (
 
 class EvidenceTimeout(TimeoutError):
     """The isolated evidence worker exceeded its configured deadline."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReadonlyEvidenceRuntimeConfiguration:
+    """Serializable child configuration; it contains paths, never services."""
+
+    artifact_roots: tuple[tuple[str, str], ...] = ()
+    evidence_timeout_seconds: float = 10.0
+
+    @classmethod
+    def from_envelope(cls, envelope: Mapping[str, Any]) -> ReadonlyEvidenceRuntimeConfiguration:
+        roots = envelope.get("artifact_roots") or {}
+        if not isinstance(roots, Mapping):
+            raise TypeError("artifact_roots must be a mapping")
+        return cls(
+            tuple(sorted((str(key), str(value)) for key, value in roots.items())),
+            float(envelope.get("evidence_timeout_seconds", 10.0)),
+        )
+
+    def roots(self) -> dict[str, str]:
+        return dict(self.artifact_roots)
+
+
+def approved_readonly_factory(factory: Callable[..., Any]) -> Callable[..., Any]:
+    """Mark one top-level factory as an approved read-only child seam."""
+
+    factory.__evidence_runtime_approved__ = True
+    return factory
+
+
+_CLOSED_OBJECT_IDS: set[int] = set()
 
 
 def _database_path(root: str | Path) -> Path:
@@ -311,7 +342,13 @@ def _request_payload(request: EvidenceRequest) -> dict[str, Any]:
 def _factory_descriptor(factory: Callable[..., Any]) -> dict[str, str]:
     module = getattr(factory, "__module__", "")
     qualname = getattr(factory, "__qualname__", "")
-    if not module or not qualname or "<locals>" in qualname or "<lambda>" in qualname:
+    if (
+        not module
+        or not qualname
+        or "<locals>" in qualname
+        or "<lambda>" in qualname
+        or not getattr(factory, "__evidence_runtime_approved__", False)
+    ):
         raise TypeError("orchestrator factory must be a top-level importable callable")
     return {"module": module, "qualname": qualname}
 
@@ -325,32 +362,53 @@ def _resolve_factory(descriptor: Mapping[str, str]) -> Callable[..., Any]:
     return value
 
 
-def _make_orchestrator(factory: Callable[..., Any], envelope: Mapping[str, Any]) -> Any:
+def _make_orchestrator(factory: Callable[..., Any], config: ReadonlyEvidenceRuntimeConfiguration) -> Any:
     try:
         parameters = inspect.signature(factory).parameters
     except (TypeError, ValueError):
         parameters = {}
-    return factory(envelope) if parameters else factory()
+    return factory(config) if parameters else factory()
 
 
 def _close_orchestrator(orchestrator: Any) -> None:
     seen: set[int] = set()
-    for name in ("knowledge_service", "experience_service", "statistics_calculator", "knowledge_catalog", "experience_catalog"):
-        value = getattr(orchestrator, name, None)
-        if value is None or id(value) in seen:
+    pending = [orchestrator]
+    names = (
+        "knowledge_service",
+        "experience_service",
+        "statistics_calculator",
+        "knowledge_catalog",
+        "experience_catalog",
+        "catalog",
+    )
+    while pending:
+        owner = pending.pop()
+        if owner is None or id(owner) in seen:
             continue
-        seen.add(id(value))
-        close = getattr(value, "close", None)
-        if callable(close):
+        seen.add(id(owner))
+        for name in names:
+            value = getattr(owner, name, None)
+            if value is not None:
+                pending.append(value)
+        close = getattr(owner, "close", None)
+        if callable(close) and owner is not orchestrator:
+            if getattr(owner, "_evidence_runtime_closed", False) or id(owner) in _CLOSED_OBJECT_IDS:
+                continue
             close()
+            try:
+                owner._evidence_runtime_closed = True
+            except (AttributeError, TypeError):
+                _CLOSED_OBJECT_IDS.add(id(owner))
 
 
 def _child_query(send_conn: Any, factory_descriptor: Mapping[str, str], envelope: Mapping[str, Any]) -> None:
     orchestrator = None
     try:
         factory = _resolve_factory(factory_descriptor)
+        config = ReadonlyEvidenceRuntimeConfiguration.from_envelope(envelope)
         request = EvidenceRequest(**dict(envelope["request"]))
-        orchestrator = _make_orchestrator(factory, envelope)
+        orchestrator = _make_orchestrator(factory, config)
+        _validate_child_orchestrator(orchestrator)
         bundle = orchestrator.query(request)
         send_conn.send(("ok", bundle.to_dict() if hasattr(bundle, "to_dict") else bundle))
     except BaseException as exc:  # process boundary transports a bounded typed failure
@@ -360,6 +418,23 @@ def _child_query(send_conn: Any, factory_descriptor: Mapping[str, str], envelope
         if orchestrator is not None:
             _close_orchestrator(orchestrator)
         send_conn.close()
+
+
+def _validate_child_orchestrator(orchestrator: Any) -> None:
+    """Reject writer/maintenance objects crossing the approved child seam."""
+
+    if orchestrator is None or not callable(getattr(orchestrator, "query", None)):
+        raise TypeError("approved evidence factory must return one EvidenceOrchestrator")
+    forbidden = ("writer", "maintenance", "migration", "importer", "initialize", "create_schema")
+    for name in dir(orchestrator):
+        lowered = name.casefold()
+        if any(token in lowered for token in forbidden):
+            raise TypeError("evidence child cannot own writer or maintenance components")
+    for name in ("knowledge_service", "experience_service", "statistics_calculator"):
+        service = getattr(orchestrator, name, None)
+        catalog = getattr(service, "catalog", None)
+        if catalog is not None and not isinstance(catalog, (ReadonlyKnowledgeCatalog, ReadonlyExperienceCatalog)):
+            raise TypeError("evidence child requires read-only catalog adapters")
 
 
 class EvidenceIntegrationService:
