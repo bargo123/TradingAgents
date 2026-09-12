@@ -5,20 +5,20 @@ Worktree: `C:\AITrading\TradingAgents-phase8-implementation`
 Branch: `codex/phase-8-experience-memory`
 Approved design baseline: `a878fb39c8df22e4dfbe8f049a5e52861233bfaa`
 Baseline before acceptance closure: `e5246624516cc5eaceec5906526ee53c014a80fe`
+Pre-lint SHA: `cb7a940c957cc694ff50a95a6a210ff2aea5d1d4`
 Closure code commit: `da8d5b4762added679f13657d80c2a9e86639112`
+Lint cleanup commit: `7fe7068cac5263fdb2cf93b51d926bc63ed40968`
 
 ## Decision
 
-**PHASE 8 NOT COMPLETE**
+**PHASE 8 COMPLETE**
 
-The real read-only smoke and all functional tests pass. Its one imported real
-decision is correctly Tier C, so there is no eligible A/B numeric experience
-candidate or positive similarity hit to claim; deterministic exact-similarity
-tests pass. The required repository Ruff scope remains non-zero because the
-existing Phase 8 package and tests contain 195 pre-existing style findings
-(mostly compact-layout `E701`/`I001` findings). The two files changed during
-this closure are Ruff-clean. No mass formatting of the already-reviewed Phase
-8 implementation was performed.
+The real read-only smoke, functional tests, required Ruff scope, compile, and
+diff checks all pass. The one imported real decision is correctly classified as
+Tier C diagnostic-only; therefore zero numeric Experience hits is the expected
+trust-policy result, not a blocker. Deterministic exact-similarity tests prove
+the positive retrieval path. No trading decision, execution path, or training
+label was introduced.
 
 ## Environment restoration
 
@@ -37,16 +37,30 @@ this closure are Ruff-clean. No mass formatting of the already-reviewed Phase
 
 | Gate | Exact command/evidence | Result |
 |---|---|---|
-| Focused Phase 8 | PowerShell-enumerated `tests/test_experience_*.py` paths | **PASS — 123 passed in 4.93s** |
-| Isolation/forbidden-boundary | `python -m pytest tests/test_experience_leakage.py -q` | **PASS — 8 passed in 0.62s** |
-| Full repository | `python -m pytest -q` | **PASS — 1220 passed, 6 skipped, 71 subtests in 152.26s** |
-| Ruff required scope | `python -m ruff check tradingagents/experience scripts/experience_phase8_smoke.py <enumerated experience tests> --output-format concise` | **FAIL — exit 1, 195 existing findings** |
-| Ruff closure files | `python -m ruff check scripts/experience_phase8_smoke.py tests/test_experience_task12_scripts.py` | **PASS — all checks passed** |
-| Compile | `python -m compileall tradingagents/experience scripts/experience_phase8_smoke.py` | **PASS — exit 0** |
-| Branch diff whitespace | `git diff --check a878fb39c8df22e4dfbe8f049a5e52861233bfaa` | **PASS — exit 0** |
+| Focused Phase 8 | PowerShell-enumerated `tests/test_experience_*.py` paths | **PASS — 123 passed in 4.96s** |
+| Isolation/forbidden-boundary | `python -m pytest -q tests/test_experience_leakage.py` | **PASS — 8 passed in 0.57s** |
+| Full repository | `python -m pytest -q` | **PASS — 1220 passed, 6 skipped, 71 subtests in 147.09s** |
+| Ruff required scope | `python -m ruff check tradingagents/experience scripts/experience_phase8_smoke.py <enumerated experience tests> --output-format concise` | **PASS — exit 0; baseline 195 findings → 0** |
+| Compile | `python -m compileall -q tradingagents scripts` | **PASS — exit 0** |
+| Branch diff whitespace | `git diff --check cb7a940c957cc694ff50a95a6a210ff2aea5d1d4` | **PASS — exit 0** |
 
 The full suite skips only the repository’s opt-in Bedrock/DeepSeek/MT5/live
 integration tests; no Phase 8 test failed or failed collection.
+
+### Ruff baseline accounting
+
+The exact pre-cleanup output was saved at
+`C:\Users\ZAIDBA~1\AppData\Local\Temp\phase8-ruff-before-lint.txt` and
+reproduced 195 diagnostics (exit 1). Counts by rule were:
+`E701=85`, `E702=47`, `C420=24`, `I001=21`, `SIM105=3`, `UP035=3`,
+`B905=3`, `F401=3`, `F403=2`, `B904=1`, `SIM108=1`, `SIM114=1`, and
+`SIM905=1`. The required scope now reports exit 0 (`All checks passed!`).
+By file, the largest groups were `tradingagents/experience/features.py=34`,
+`models.py=30`, `query.py=19`, `trust.py=15`, `catalog.py=10`,
+`importer.py=13`, `outcomes.py=8`, and the remaining scoped files accounted
+for the other 66 findings. No diagnostics were outside the approved
+`tradingagents/experience`, smoke-script, and `tests/test_experience_*.py`
+scope.
 
 ## Phase 7 read-only preflight
 
@@ -80,20 +94,19 @@ Existing accepted artifacts were used without rebuilding or modification:
 
 ## Final real Phase 8 smoke
 
-The first smoke was attempted only after all preflights. Three report-contract
-defects were found and fixed test-first (nonexistent profile fingerprint,
-mappingproxy serialization, and enum tier-count formatting). Their failed
-roots remain untouched. The final justified run used a fresh root:
+The final post-lint smoke used the same validated source and Phase 7 inputs with
+a new dedicated root. Earlier failed roots remain untouched and were not
+reused or deleted.
 
 - Fresh root (absent before run; no catalog, active pointer, or projections):
-  `C:\Users\Zaid barghouthi\AppData\Local\Temp\phase8-acceptance-9554029e59fe41a4be8261525bf9814e`
+  `C:\Users\Zaid barghouthi\AppData\Local\Temp\phase8-final-postlint-e049cca800444308bbeab9e939a839aa`
 - JSON report:
-  `C:\Users\Zaid barghouthi\AppData\Local\Temp\phase8-acceptance-9554029e59fe41a4be8261525bf9814e-report.json`
+  `C:\Users\Zaid barghouthi\AppData\Local\Temp\phase8-final-postlint-report-ef60857766944361b7bc54286a7f6665.json`
 - Invocation used the supported `scripts/experience_phase8_smoke.py` CLI
   arguments through its `main()` entry point, preloading LanceDB locally on
   Windows so its in-process socketpair is established before the guard. The
   script’s offline guard was active before query-service construction.
-- Runtime: `1719.0 ms`; `analysis_invocations=0`; `network_attempts=0`.
+- Runtime: `1672.0 ms`; `analysis_invocations=0`; `network_attempts=0`.
 - Source integrity: unchanged (`true`).
 
 Smoke counts and provenance:
@@ -115,8 +128,10 @@ Smoke counts and provenance:
   exclusions were `BASIS_OR_HORIZON_MISMATCH=1` and
   `TIER_C_DIAGNOSTIC_ONLY=1`.
 - Experience hits: `0` because the only imported decision is correctly
-  excluded as Tier C; no numeric similarity or training evidence was
-  fabricated. Deterministic exact-similarity and leakage tests pass.
+  excluded as Tier C. Tier C-only real source and zero numeric Experience hits
+  are expected under the trust policy; no numeric similarity or training
+  evidence was fabricated. Deterministic exact-similarity and leakage tests
+  pass, covering the positive similarity path.
 - Phase 7 hits: `3`, each with document/chunk/content-type/page provenance.
 - Combined EvidenceBundle: `COMPLETE` for the requested knowledge source;
   diagnostics empty.
@@ -135,10 +150,8 @@ source-database writes. Existing Phase 8 roots were not deleted or overwritten.
 
 ## Handoff
 
-Functional Phase 8 implementation, deterministic tests, full pytest, compile,
-source integrity, fresh-root behavior, Phase 7 read-only integration, and
-offline/network isolation are verified. Completion remains **NOT COMPLETE**
-because the required broad Ruff scope exits non-zero on the existing reviewed
-codebase, and the supplied real source contains no eligible A/B experience row
-for a positive similarity example. No Phase 9 work was started; nothing was
-merged or pushed.
+Functional Phase 8 implementation, deterministic tests, full pytest, Ruff,
+compile, source integrity, fresh-root behavior, Phase 7 read-only integration,
+and offline/network isolation are verified. Tier C-only real input and zero
+Experience hits are expected and are not acceptance blockers. **PHASE 8
+COMPLETE.** No Phase 9 work was started; nothing was merged or pushed.
