@@ -22,6 +22,9 @@ from scripts.phase9_evidence_smoke import (
     resolve_verified_phase8_root,
     run_smoke,
 )
+from tests.fixtures.experience_source_db import create_source_db
+from tradingagents.experience.catalog import ExperienceCatalog
+from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
 from tradingagents.forex.evidence_replay import EvidenceReplayReport, _json_value
 
 
@@ -260,6 +263,42 @@ def test_phase8_preflight_rejects_missing_generation_metadata(tmp_path: Path):
         connection.commit()
     with pytest.raises(Phase8PreflightError, match="trust_policy_version"):
         resolve_verified_phase8_root(root)
+
+
+def test_real_phase8_generation_passes_preflight_with_tier_c_only(tmp_path: Path):
+    source = create_source_db(tmp_path / "source.sqlite3")
+    snapshot = {
+        "point": 0.00001,
+        "digits": 5,
+        "quote": {"bid": 1.1, "ask": 1.10001, "spread_points": 1.0},
+        "features": {
+            timeframe: {
+                "return_over_bars": 0.01,
+                "range_pct": 0.02,
+                "close_position": 0.5,
+                "average_true_range": 0.001,
+                "direction": "UP",
+            }
+            for timeframe in ("M1", "M5", "M15", "H1")
+        },
+    }
+    with sqlite3.connect(source) as connection:
+        connection.execute(
+            "UPDATE shadow_decisions SET snapshot_json=?", (json.dumps(snapshot),)
+        )
+        connection.commit()
+
+    root = tmp_path / "artifact"
+    catalog = ExperienceCatalog(root)
+    ExperienceImporter(catalog).import_sources((source,))
+    ExperienceRebuilder(catalog).rebuild()
+
+    result = resolve_verified_phase8_root(root)
+
+    assert result.tier_counts["TIER_C_DIAGNOSTIC_ONLY"] == 1
+    assert result.numeric_trust_tiers == ("TIER_A_HIGH_TRUST", "TIER_B_LIMITED")
+    assert result.numeric_similarity_count == 0
+    assert result.numeric_statistics_eligible_count == 0
 
 
 def test_report_redacts_sensitive_values_without_default_string_conversion():

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import ExperienceCatalog
+from .config import ExperienceConfig
 from .errors import ExperienceImportLockedError, SourceDecisionConflictError
 from .features import extract_market_state
 from .identity import source_decision_fingerprint, source_evaluation_fingerprint
@@ -49,6 +50,28 @@ def _stable_source_id(snapshot: ReadonlySourceSnapshot) -> str:
     return hashlib.sha256(
         ("phase8.source.v1\0" + snapshot.canonical_path + "\0" + schema).encode()
     ).hexdigest()
+
+
+def _generation_metadata(row_count: int) -> dict[str, Any]:
+    metadata = {"rows": row_count, "retains_historical_features": True}
+    metadata.update(
+        {
+            key: value
+            for key, value in ExperienceConfig().to_dict().items()
+            if key.endswith("_version")
+        }
+    )
+    return metadata
+
+
+def _feature_projection_metadata(
+    market_state: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    config = ExperienceConfig()
+    return (
+        {**market_state, "version": config.feature_extractor_version},
+        config.feature_schema_version,
+    )
 
 
 class ExperienceImporter:
@@ -202,8 +225,9 @@ class ExperienceImporter:
                             if existing is not None:
                                 aliases += 1
                             if vector is not None:
+                                projection, schema_version = _feature_projection_metadata(market_state)
                                 self.catalog.store_feature_projection(
-                                    record.experience_id, market_state
+                                    record.experience_id, projection, schema_version=schema_version
                                 )
                             eval_count += self._append_evaluations(
                                 record, snapshot, decision_id, source_id
@@ -272,7 +296,7 @@ class ExperienceRebuilder:
             ids = [r.experience_id for r in records]
             population = hashlib.sha256(json.dumps(ids, sort_keys=True).encode()).hexdigest()
             generation_id = "gen-" + population[:24]
-            metadata = {"rows": len(records), "retains_historical_features": True}
+            metadata = _generation_metadata(len(records))
             self.catalog.publish_generation(generation_id, population, metadata)
             return GenerationManifest(
                 generation_id, population, len(records), len(records), metadata
