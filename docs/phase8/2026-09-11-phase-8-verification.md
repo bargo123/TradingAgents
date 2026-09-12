@@ -106,6 +106,7 @@ reused or deleted.
   arguments through its `main()` entry point, preloading LanceDB locally on
   Windows so its in-process socketpair is established before the guard. The
   script’s offline guard was active before query-service construction.
+- Exact CLI arguments: `--source-db C:\\AITrading\\TradingAgents\\data_cache\\phase6-final-authoritative-20260910.db --experience-artifact-root C:\\Users\\Zaid barghouthi\\AppData\\Local\\Temp\\phase8-final-postlint-e049cca800444308bbeab9e939a839aa --knowledge-artifact-root C:\\Users\\Zaid barghouthi\\AppData\\Local\\Temp\\p7sf3 --knowledge-embedding-model-path C:\\Users\\Zaid barghouthi\\AppData\\Local\\Temp\\phase7-final-artifacts\\embeddings\\BAAI--bge-small-en-v1.5 --offline`.
 - Runtime: `1672.0 ms`; `analysis_invocations=0`; `network_attempts=0`.
 - Source integrity: unchanged (`true`).
 
