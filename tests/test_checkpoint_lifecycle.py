@@ -45,17 +45,76 @@ def _workflow() -> StateGraph:
     return b
 
 
-def _bare_graph(tmpdir, *, enabled=True):
+def _bare_graph(tmpdir, *, enabled=True, market_data_mode="stock", evidence_enabled=False, context_hash=""):
     g = object.__new__(TradingAgentsGraph)
     g.config = {
         "checkpoint_enabled": enabled, "data_cache_dir": tmpdir,
         "max_debate_rounds": 1, "max_risk_discuss_rounds": 1,
+        "forex_evidence_enabled": evidence_enabled,
+        "forex_evidence_context_hash": context_hash,
     }
     g.selected_analysts = ("market",)
+    g.market_data_mode = market_data_mode
     g.workflow = _workflow()
     g.graph = g.workflow.compile()
     g._checkpointer_ctx = None
     return g
+
+
+@pytest.mark.unit
+def test_forex_evidence_mode_changes_run_signature():
+    with tempfile.TemporaryDirectory() as tmp:
+        baseline = _bare_graph(tmp, market_data_mode="forex_mt5")
+        enabled = _bare_graph(
+            tmp, market_data_mode="forex_mt5", evidence_enabled=True, context_hash="ctx-a"
+        )
+        assert baseline._run_signature("forex") != enabled._run_signature("forex")
+        assert "forex_evidence=disabled/" in baseline._run_signature("forex")
+        assert "forex_evidence=enabled/ctx-a" in enabled._run_signature("forex")
+
+
+@pytest.mark.unit
+def test_forex_context_hash_changes_thread_id():
+    with tempfile.TemporaryDirectory() as tmp:
+        first = _bare_graph(
+            tmp, market_data_mode="forex_mt5", evidence_enabled=True, context_hash="ctx-a"
+        )
+        second = _bare_graph(
+            tmp, market_data_mode="forex_mt5", evidence_enabled=True, context_hash="ctx-b"
+        )
+        first_id = first.begin_checkpoint("EURUSD", "2026-09-08", "forex")
+        first.end_checkpoint()
+        second_id = second.begin_checkpoint("EURUSD", "2026-09-08", "forex")
+        second.end_checkpoint()
+        assert first_id != second_id
+
+
+@pytest.mark.unit
+def test_snapshot_context_cannot_resume_another_snapshot():
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot_a = _bare_graph(
+            tmp, market_data_mode="forex_mt5", evidence_enabled=True, context_hash="snapshot-a"
+        )
+        snapshot_b = _bare_graph(
+            tmp, market_data_mode="forex_mt5", evidence_enabled=True, context_hash="snapshot-b"
+        )
+        snapshot_a.begin_checkpoint("EURUSD", "2026-09-08", "forex")
+        snapshot_a.end_checkpoint()
+        snapshot_b.begin_checkpoint("EURUSD", "2026-09-08", "forex")
+        try:
+            assert snapshot_b._resuming is False
+        finally:
+            snapshot_b.end_checkpoint()
+
+
+@pytest.mark.unit
+def test_stock_signature_is_unchanged():
+    with tempfile.TemporaryDirectory() as tmp:
+        graph = _bare_graph(tmp, evidence_enabled=True, context_hash="should-not-appear")
+        assert graph._run_signature("stock") == (
+            "analysts=market|debate=1|risk=1|asset=stock|market_data_mode=stock|"
+            "forex_profile=INTRADAY"
+        )
 
 
 

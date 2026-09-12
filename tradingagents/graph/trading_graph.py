@@ -498,14 +498,20 @@ class TradingAgentsGraph:
         selection, debate/risk depth, or asset mode starts fresh instead of
         silently continuing the previous graph (#1089).
         """
-        return "|".join([
+        signature_parts = [
             "analysts=" + ",".join(self.selected_analysts),
             f"debate={self.config['max_debate_rounds']}",
             f"risk={self.config['max_risk_discuss_rounds']}",
             f"asset={asset_type}",
             f"market_data_mode={getattr(self, 'market_data_mode', 'stock')}",
             f"forex_profile={getattr(self, 'forex_analysis_profile', 'INTRADAY')}",
-        ])
+        ]
+        if getattr(self, "market_data_mode", "stock") == "forex_mt5":
+            evidence_enabled = bool(self.config.get("forex_evidence_enabled", False))
+            context_hash = str(self.config.get("forex_evidence_context_hash", "") or "")
+            evidence_identity = f"enabled/{context_hash}" if evidence_enabled else "disabled/"
+            signature_parts.append(f"forex_evidence={evidence_identity}")
+        return "|".join(signature_parts)
 
     def propagate(self, company_name, trade_date, asset_type: str = "stock"):
         """Run the trading agents graph for a company on a specific date.

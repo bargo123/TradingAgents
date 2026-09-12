@@ -151,6 +151,18 @@ def test_forex_run_signature_includes_market_data_mode() -> None:
 
 
 @pytest.mark.unit
+def test_graph_config_accepts_evidence_identity() -> None:
+    graph = _bare_graph()
+    graph.market_data_mode = "forex_mt5"
+    graph.config.update(
+        forex_evidence_enabled=True,
+        forex_evidence_context_hash="ctx-123",
+    )
+    signature = graph._run_signature("forex")
+    assert "forex_evidence=enabled/ctx-123" in signature
+
+
+@pytest.mark.unit
 def test_forex_graph_setup_rejects_stock_specific_analysts(
     forex_snapshot: ForexMarketSnapshot,
 ) -> None:
