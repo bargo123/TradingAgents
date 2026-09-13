@@ -149,6 +149,29 @@ def test_runner_maps_forex_evidence_config_to_service(monkeypatch, tmp_path):
     }
 
 
+def test_runner_defaults_local_evidence_worker_timeout_to_thirty_seconds(
+    monkeypatch, tmp_path
+):
+    captured = {}
+
+    class FakeService:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("tradingagents.forex.runner.EvidenceIntegrationService", FakeService)
+    runner = ForexShadowRunner(
+        config={
+            "forex_evidence_knowledge_artifact_root": tmp_path / "knowledge",
+            "forex_evidence_knowledge_embedding_model_path": tmp_path / "model",
+            "forex_evidence_experience_artifact_root": tmp_path / "experience",
+        }
+    )
+
+    runner._default_evidence_service_factory()
+
+    assert captured["policy"].evidence_timeout_seconds == 30.0
+
+
 def test_cli_rejects_stock_analysts_before_constructing_runner(capsys, monkeypatch):
     class MustNotConstruct:
         def __init__(self, **kwargs):

@@ -95,7 +95,7 @@ def _coerce_forex_evidence(value: str, key: str):
 
 DEFAULT_CONFIG_TYPES = {
     "forex_evidence_enabled": False,
-    "forex_evidence_timeout_seconds": 10.0,
+    "forex_evidence_timeout_seconds": 30.0,
 }
 
 
@@ -157,7 +157,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "forex_deep_thinking": True,
     # Optional read-only Phase 9 evidence augmentation (forex only).
     "forex_evidence_enabled": False,
-    "forex_evidence_timeout_seconds": 10.0,
+    "forex_evidence_timeout_seconds": 30.0,
     "forex_evidence_knowledge_artifact_root": None,
     "forex_evidence_knowledge_embedding_model_path": None,
     "forex_evidence_experience_artifact_root": None,
