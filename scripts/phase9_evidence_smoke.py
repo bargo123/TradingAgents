@@ -554,7 +554,10 @@ def _append_audit(path: Path | EvidenceAuditStore, *, decision_id: str, source_r
         as_of=snapshot.timestamp,
         knowledge_generation_id=_value(result, "pinned_phase7_generation_id"),
         experience_generation_id=_value(result, "pinned_phase8_generation_id"),
+        query_normalization_fingerprint=_value(result, "query_normalization_fingerprint"),
+        knowledge_query=_value(result, "knowledge_query"),
         knowledge_query_fingerprint=_value(result, "knowledge_query_fingerprint"),
+        query_policy_version=_value(result, "query_policy_version"),
         rendered_context=rendered_context,
         rendered_context_hash=context_hash,
         available_knowledge_ids=tuple(str(item) for item in (available or ()) if str(item).startswith("K")),
@@ -566,7 +569,9 @@ def _append_audit(path: Path | EvidenceAuditStore, *, decision_id: str, source_r
         evidence_audit_status=str(_value(result, "reference_validation_status", _value(result, "citation_status", "NOT_RECORDED"))),
         source_status=_privacy(_value(result, "source_status")) if isinstance(_value(result, "source_status"), Mapping) else None,
         diagnostics=_privacy(_value(result, "evidence_telemetry")) if isinstance(_value(result, "evidence_telemetry"), Mapping) else None,
-        retrieval_count=1,
+        retrieval_count=int(_value(result, "retrieval_count", 1) or 0),
+        retrieval_latency_seconds=_value(result, "retrieval_latency_seconds"),
+        builder_latency_seconds=_value(result, "builder_latency_seconds"),
         selected_counts={"knowledge": int(_value(result, "knowledge_count", 0) or 0), "experience": int(_value(result, "experience_count", 0) or 0), "statistics": int(_value(result, "statistics_count", 0) or 0)},
         provider=None if provider is None else str(provider),
         model=None if model is None else str(model),
@@ -612,9 +617,13 @@ def build_local_orchestrator(config: Any = None) -> Any:
         raise Phase8PreflightError("Phase 7 has no active generation")
     model_path = Path(roots["knowledge_embedding_model_path"])
     knowledge_config = KnowledgeConfig(source_root=Path.cwd(), artifact_root=knowledge.path.parent, embedding_model_path=model_path, offline=True)
-    embedder = FastEmbedProvider.from_config(knowledge_config)
-    vector_reader = VectorIndexReader(generation.vector_location)
-    lexical_reader = LexicalIndexReader(generation.lexical_location)
+    # The child validator requires explicit read-only capability markers on
+    # every resource that can touch a persisted index.  Mark these objects at
+    # construction time; the marker is metadata only and does not add a
+    # writer/maintenance surface.
+    embedder = approved_readonly_component(FastEmbedProvider.from_config(knowledge_config))
+    vector_reader = approved_readonly_component(VectorIndexReader(generation.vector_location))
+    lexical_reader = approved_readonly_component(LexicalIndexReader(generation.lexical_location))
     knowledge_service = KnowledgeQueryService(vector_reader, lexical_reader, knowledge, embedder)
     experience_service = ExperienceQueryService(experience, feature_vectors=experience.feature_vectors, profiles=experience.profiles, generation_id=experience.active_generation().get("generation_id") if experience.active_generation() else None)
     orchestrator = EvidenceOrchestrator(knowledge_service, experience_service, OutcomeStatsCalculator(experience))
@@ -636,6 +645,7 @@ def run_smoke(
     runner: Any | None = None,
     fake_runner: Any | None = None,
     audit_store: EvidenceAuditStore | None = None,
+    persist_phase9_audit: bool = True,
 ) -> dict[str, Any]:
     if not offline:
         raise ValueError("--offline is required")
@@ -708,26 +718,24 @@ def run_smoke(
     guard.external_network_attempts += child_external
     if child_external:
         errors.append("NetworkAttempt")
+    if replay_result is not None and persist_phase9_audit:
+        audit_target = _audit_path(None if report_path is None else Path(report_path).expanduser().resolve(), source)
+        _assert_report_outside(audit_target, ((source, "source"), (Path(str(source) + "-wal"), "source WAL"), (knowledge_root, "Phase 7"), (experience_root, "Phase 8"), (model_path, "embedding model")))
+        if audit_store is not None:
+            configured_audit_path = getattr(audit_store, "path", None)
+            if configured_audit_path is not None:
+                audit_report_path = str(Path(configured_audit_path).expanduser().resolve())
+                _assert_report_outside(Path(configured_audit_path), ((source, "source"), (Path(str(source) + "-wal"), "source WAL"), (knowledge_root, "Phase 7"), (experience_root, "Phase 8"), (model_path, "embedding model")))
+        try:
+            audit_status = _append_audit(audit_target if audit_store is None else audit_store, decision_id=str(row["decision_id"]), source_run_id=str(row.get("source_run_id") or row["decision_id"]), snapshot=snapshot, result=replay_result)
+        except Exception as exc:
+            audit_status = "FAILED"
+            errors.append(f"audit append failed: {type(exc).__name__}")
     if replay_result is not None:
-        validation_ok = False
         try:
             _validate_smoke_result(replay_result)
-            validation_ok = True
         except SmokeAcceptanceError as exc:
             errors.append(f"{type(exc).__name__}: {exc}")
-        if validation_ok:
-            audit_target = _audit_path(None if report_path is None else Path(report_path).expanduser().resolve(), source)
-            _assert_report_outside(audit_target, ((source, "source"), (Path(str(source) + "-wal"), "source WAL"), (knowledge_root, "Phase 7"), (experience_root, "Phase 8"), (model_path, "embedding model")))
-            if audit_store is not None:
-                configured_audit_path = getattr(audit_store, "path", None)
-                if configured_audit_path is not None:
-                    audit_report_path = str(Path(configured_audit_path).expanduser().resolve())
-                    _assert_report_outside(Path(configured_audit_path), ((source, "source"), (Path(str(source) + "-wal"), "source WAL"), (knowledge_root, "Phase 7"), (experience_root, "Phase 8"), (model_path, "embedding model")))
-            try:
-                audit_status = _append_audit(audit_target if audit_store is None else audit_store, decision_id=str(row["decision_id"]), source_run_id=str(row.get("source_run_id") or row["decision_id"]), snapshot=snapshot, result=replay_result)
-            except Exception as exc:
-                audit_status = "FAILED"
-                errors.append(f"audit append failed: {type(exc).__name__}")
     report = build_report(real_smoke="PASS" if not errors else "FAILED", source_fingerprint={"before": before["source"], "after": after["source"]}, artifact_fingerprints={"phase7": {"before": before["phase7"], "after": after["phase7"]}, "phase8": {"before": before["phase8"], "after": after["phase8"]}}, source_unchanged=unchanged, phase8_preflight=phase8.to_dict(), replay=result_payload, fake_ab=fake_ab, audit_status=audit_status, audit_path=audit_report_path, loopback_connection_attempts=guard.loopback_connection_attempts, external_network_attempts=guard.external_network_attempts, retrieval_count=1 if replay_result is not None else 0, latency_seconds=time.monotonic() - started, provider="ollama", models={"quick": quick_model, "deep": deep_model}, warnings=[], errors=errors, saved_snapshot_replay=_uses_saved_snapshot())
     if report_path is not None:
         destination = Path(report_path).expanduser().resolve()

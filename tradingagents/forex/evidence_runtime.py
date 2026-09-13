@@ -8,6 +8,7 @@ import inspect
 import json
 import multiprocessing
 import sqlite3
+import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -587,6 +588,15 @@ def _validate_child_orchestrator(
                 f"evidence child dependency is not approved: {type(owner).__module__}.{type(owner).__name__}"
             )
         _validate_forbidden_surface(owner)
+        # A validated EmbeddingProvider is the explicit capability boundary
+        # for its local tokenizer/ONNX runtime internals.  Those implementation
+        # objects are not independently addressable evidence components and
+        # may expose opaque third-party attributes that cannot be classified
+        # by this graph walk.  Keep the provider itself typed and marked
+        # read-only, then treat it as a leaf without weakening checks on the
+        # surrounding services/readers.
+        if isinstance(owner, (EmbeddingProvider, VectorIndexReader, LexicalIndexReader)) and getattr(owner, "__evidence_runtime_readonly__", False):
+            continue
         for name in edges:
             value = getattr(owner, name, None)
             if value is not None:
@@ -745,16 +755,38 @@ class EvidenceIntegrationService:
         try:
             process.start()
             timeout = max(0.0, float(self.policy.evidence_timeout_seconds if self.policy else 0.0))
-            process.join(timeout)
+            deadline = time.monotonic() + timeout
+            result = None
+            # Drain the pipe while the worker is running.  Joining first can
+            # deadlock when a normal multi-hit bundle is larger than the OS
+            # pipe buffer: the child blocks in send() and can never exit.
+            while result is None:
+                if recv_conn.poll(min(0.05, max(0.0, deadline - time.monotonic()))):
+                    result = recv_conn.recv()
+                    break
+                if not process.is_alive():
+                    break
+                if time.monotonic() >= deadline:
+                    process.terminate()
+                    process.join()
+                    if process.is_alive():
+                        raise EvidenceTimeout("evidence worker survived termination")
+                    raise EvidenceTimeout("evidence query exceeded timeout")
+            if result is None:
+                if recv_conn.poll():
+                    result = recv_conn.recv()
+                else:
+                    raise RuntimeError("evidence worker returned no result")
+            # Ensure a worker that delivered a result does not linger beyond
+            # the bounded call.  The payload has already been drained, so a
+            # short cleanup join cannot deadlock on the pipe.
+            remaining = max(0.0, deadline - time.monotonic())
+            process.join(remaining)
             if process.is_alive():
                 process.terminate()
                 process.join()
                 if process.is_alive():
                     raise EvidenceTimeout("evidence worker survived termination")
-                raise EvidenceTimeout("evidence query exceeded timeout")
-            if not recv_conn.poll():
-                raise RuntimeError("evidence worker returned no result")
-            result = recv_conn.recv()
             telemetry_value = (
                 result[2]
                 if result[0] == "ok" and len(result) > 2

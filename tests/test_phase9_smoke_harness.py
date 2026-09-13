@@ -26,6 +26,7 @@ from scripts.phase9_evidence_smoke import (
 from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
+from tradingagents.forex.evidence_audit import EvidenceAuditStore
 from tradingagents.forex.evidence_replay import EvidenceReplayReport, _json_value
 
 
@@ -354,17 +355,220 @@ def test_spawned_child_boundary_returns_network_telemetry(monkeypatch):
     assert connection.values[-1][-1] == {"loopback_connection_attempts": 3, "external_network_attempts": 1}
 
 
+def test_local_orchestrator_marks_all_readers_and_embedder_read_only(monkeypatch, tmp_path: Path):
+    """The spawned evidence validator must accept every local read-only edge."""
+
+    import types
+
+    import scripts.phase9_evidence_smoke as smoke
+    import tradingagents.experience.outcomes as outcomes_module
+    import tradingagents.experience.query as experience_query_module
+    import tradingagents.forex.evidence_runtime as runtime_module
+    import tradingagents.knowledge.embeddings as embeddings_module
+    import tradingagents.knowledge.lexical_index as lexical_module
+    import tradingagents.knowledge.query as knowledge_query_module
+    import tradingagents.knowledge.vector_index as vector_module
+
+    class _KnowledgeCatalog:
+        def __init__(self, _root):
+            self.path = tmp_path / "knowledge"
+
+        def active_generation(self):
+            return types.SimpleNamespace(generation_id="p7", vector_location="vector", lexical_location="lexical")
+
+    class _ExperienceCatalog:
+        feature_vectors = {}
+        profiles = {}
+
+        def __init__(self, _root):
+            self.path = tmp_path / "experience"
+
+        def active_generation(self):
+            return {"generation_id": "p8"}
+
+    class _Embedder:
+        @classmethod
+        def from_config(cls, _config):
+            return cls()
+
+    class _VectorReader:
+        def __init__(self, _location):
+            pass
+
+    class _LexicalReader:
+        def __init__(self, _location):
+            pass
+
+    class _KnowledgeService:
+        def __init__(self, *_args):
+            pass
+
+    class _ExperienceService:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class _Stats:
+        def __init__(self, *_args):
+            pass
+
+    monkeypatch.setattr(runtime_module, "ReadonlyKnowledgeCatalog", _KnowledgeCatalog)
+    monkeypatch.setattr(runtime_module, "ReadonlyExperienceCatalog", _ExperienceCatalog)
+    monkeypatch.setattr(smoke, "ReadonlyKnowledgeCatalog", _KnowledgeCatalog)
+    monkeypatch.setattr(smoke, "ReadonlyExperienceCatalog", _ExperienceCatalog)
+    monkeypatch.setattr(embeddings_module, "FastEmbedProvider", _Embedder)
+    monkeypatch.setattr(vector_module, "VectorIndexReader", _VectorReader)
+    monkeypatch.setattr(lexical_module, "LexicalIndexReader", _LexicalReader)
+    monkeypatch.setattr(knowledge_query_module, "KnowledgeQueryService", _KnowledgeService)
+    monkeypatch.setattr(experience_query_module, "ExperienceQueryService", _ExperienceService)
+    monkeypatch.setattr(outcomes_module, "OutcomeStatsCalculator", _Stats)
+
+    marked: list[object] = []
+    monkeypatch.setattr(smoke, "approved_readonly_component", lambda component: marked.append(component) or component)
+    model = tmp_path / "model"
+    model.mkdir()
+    orchestrator = smoke.build_local_orchestrator(
+        {
+            "knowledge": str(tmp_path / "p7"),
+            "experience": str(tmp_path / "p8"),
+            "knowledge_embedding_model_path": str(model),
+        }
+    )
+    try:
+        assert orchestrator is not None
+        assert len(marked) >= 4
+    finally:
+        # The production child owns this guard until its query finishes.  The
+        # unit test builds the factory in-process, so explicitly close that
+        # process-scoped patch to avoid leaking network hooks into later tests.
+        orchestrator._phase9_network_guard.__exit__(None, None, None)
+
+
 def test_smoke_appends_one_metadata_only_audit_outside_source(tmp_path: Path):
     class Snapshot:
         timestamp = datetime(2026, 9, 12, tzinfo=timezone.utc)
 
     audit_path = tmp_path / "evidence_runtime" / "evidence_audit.sqlite3"
-    result = {"integration_status": "INJECTED", "bundle_status": "COMPLETE", "evidence_action": "BUY", "rendered_context": "context", "evidence_context_hash": hashlib.sha256(b"context").hexdigest()}
+    result = {
+        "integration_status": "INJECTED",
+        "bundle_status": "COMPLETE",
+        "evidence_action": "BUY",
+        "rendered_context": "context",
+        "evidence_context_hash": hashlib.sha256(b"context").hexdigest(),
+        "knowledge_query": {"text": "forex liquidity", "fingerprint": "q-fp", "policy_version": "v2"},
+        "knowledge_query_fingerprint": "q-fp",
+        "query_policy_version": "v2",
+        "available_references": ("K1", "E1", "S1"),
+        "used_references": ("K1",),
+        "evidence_use_status": "USED",
+        "reference_validation_status": "VALID",
+    }
     _append_audit(audit_path, decision_id="d1", source_run_id="r1", snapshot=Snapshot(), result=result)
     with sqlite3.connect(audit_path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM evidence_usage_audit").fetchone()[0] == 1
+        row = connection.execute(
+            "SELECT knowledge_query, knowledge_query_fingerprint, query_policy_version, available_knowledge_ids, evidence_refs_used FROM evidence_usage_audit"
+        ).fetchone()
+        assert row == ('{"fingerprint":"q-fp","policy_version":"v2","text":"forex liquidity"}', "q-fp", "v2", '["K1"]', '["K1"]')
         columns = {row[1] for row in connection.execute("PRAGMA table_info(evidence_usage_audit)")}
         assert not {"prompt", "completion", "reasoning"} & columns
+
+
+def test_replay_smoke_can_write_phase9_audit_without_writing_phase56_decision(
+    monkeypatch, tmp_path: Path
+):
+    """A failed evidence replay still records its Phase 9 audit separately."""
+
+    source = tmp_path / "source.db"
+    source.write_bytes(b"phase56-source")
+    knowledge = tmp_path / "p7"
+    experience = tmp_path / "p8"
+    model = tmp_path / "model"
+    knowledge.mkdir()
+    experience.mkdir()
+    (knowledge / "catalog.sqlite3").write_bytes(b"catalog")
+    model.write_bytes(b"local-model")
+    audit_path = tmp_path / "phase9-audit.sqlite3"
+    for name in ("KNOWLEDGE_OFFLINE", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        monkeypatch.setenv(name, "1")
+
+    class _Snapshot:
+        timestamp = datetime(2026, 9, 12, tzinfo=timezone.utc)
+
+    snapshot = _Snapshot()
+    row = {
+        "decision_id": "decision-1",
+        "source_run_id": "run-1",
+        "snapshot_json": b"snapshot-bytes",
+    }
+
+    class _Reader:
+        def read_snapshot(self):
+            return type("SourceSnapshot", (), {"decisions": (row,)})()
+
+    class _Generation:
+        generation_id = "p7"
+
+    class _Phase8:
+        generation_id = "p8"
+
+        def to_dict(self):
+            return {"generation_id": self.generation_id}
+
+    monkeypatch.setattr("scripts.phase9_evidence_smoke.ReadonlySourceReader", lambda _path: _Reader())
+    monkeypatch.setattr(
+        "scripts.phase9_evidence_smoke.SavedSnapshotCodec",
+        type("Codec", (), {"from_source_row": staticmethod(lambda _row: snapshot)}),
+    )
+    monkeypatch.setattr("scripts.phase9_evidence_smoke._resolve_verified_phase7_generation", lambda _root: _Generation())
+    monkeypatch.setattr("scripts.phase9_evidence_smoke.resolve_verified_phase8_root", lambda _root: _Phase8())
+    monkeypatch.setattr("scripts.phase9_evidence_smoke._fingerprint", lambda _path: {"sha256": "same"})
+    monkeypatch.setattr("scripts.phase9_evidence_smoke._source_fingerprint", lambda _path: {"db": {"sha256": "same"}})
+
+    rendered = "fallback evidence context"
+    replay_result = {
+        "comparison_status": "VALID",
+        "integration_status": "FALLBACK",
+        "bundle_status": "EMPTY",
+        "rendered_context": rendered,
+        "evidence_context_hash": hashlib.sha256(rendered.encode()).hexdigest(),
+        "available_references": (),
+        "used_references": (),
+        "rejected_references": (),
+        "evidence_use_status": "UNAVAILABLE",
+        "reference_validation_status": "NOT_RECORDED",
+        "source_status": {},
+        "knowledge_count": 0,
+        "experience_count": 0,
+        "statistics_count": 0,
+        "pinned_phase7_generation_id": "p7",
+        "pinned_phase8_generation_id": "p8",
+        "provider": "fake",
+        "models": {"quick": "fake", "deep": "fake"},
+        "evidence_telemetry": {},
+    }
+
+    def replay_factory(**kwargs):
+        assert kwargs["config"].source_database_path == source.resolve()
+        return replay_result
+
+    source_before = source.read_bytes()
+    with pytest.raises(Exception, match="Phase 9 smoke"):
+        run_smoke(
+            source,
+            experience_artifact_root=experience,
+            knowledge_artifact_root=knowledge,
+            knowledge_embedding_model_path=model,
+            offline=True,
+            replay_factory=replay_factory,
+            audit_store=EvidenceAuditStore(audit_path),
+        )
+
+    assert source.read_bytes() == source_before
+    with sqlite3.connect(audit_path) as connection:
+        row = connection.execute(
+            "SELECT decision_id, source_run_id, integration_status, bundle_status FROM evidence_usage_audit"
+        ).fetchone()
+    assert row == ("decision-1", "run-1", "FALLBACK", "EMPTY")
 
 
 def test_smoke_rejects_unreferenced_evidence_items():

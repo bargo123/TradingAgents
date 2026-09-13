@@ -332,6 +332,12 @@ class EvidenceReplayReport:
     rendered_context: str = ""
     loopback_connection_attempts: int = 0
     external_network_attempts: int = 0
+    # Safe deterministic retrieval metadata is retained so the Phase 9 audit
+    # can prove exactly which query policy produced the injected context.
+    knowledge_query: Any = None
+    knowledge_query_fingerprint: str | None = None
+    query_policy_version: str | None = None
+    query_normalization_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return _json_value(self)
@@ -570,7 +576,7 @@ def _context_metrics(result: Any) -> dict[str, Any]:
     context = _result_value(result, "evidence_context")
     if context is None:
         normalization = str(_result_value(result, "normalization_status", "UNKNOWN"))
-        return {"context": None, "hash": None, "hash_valid": False, "rendered": "", "rendered_characters": 0, "bundle": "EMPTY", "integration": "DISABLED", "knowledge": 0, "experience": 0, "statistics": 0, "statistics_status": None, "normalization": normalization, "normalization_error": _result_value(result, "normalization_error"), "context_integrity": str(_result_value(result, "context_integrity", {}).get("status", "UNKNOWN")) if isinstance(_result_value(result, "context_integrity", {}), Mapping) else "UNKNOWN", "available": (), "used": (), "rejected": (), "use_status": "DISABLED", "citation": "NOT_RECORDED", "source_status": {}, "loopback": 0, "external": 0}
+        return {"context": None, "hash": None, "hash_valid": False, "rendered": "", "rendered_characters": 0, "bundle": "EMPTY", "integration": "DISABLED", "knowledge": 0, "experience": 0, "statistics": 0, "statistics_status": None, "normalization": normalization, "normalization_error": _result_value(result, "normalization_error"), "context_integrity": str(_result_value(result, "context_integrity", {}).get("status", "UNKNOWN")) if isinstance(_result_value(result, "context_integrity", {}), Mapping) else "UNKNOWN", "available": (), "used": (), "rejected": (), "use_status": "DISABLED", "citation": "NOT_RECORDED", "source_status": {}, "loopback": 0, "external": 0, "knowledge_query": None, "knowledge_query_fingerprint": None, "query_policy_version": None, "query_normalization_fingerprint": None}
     diagnostics = _context_value(context, "diagnostics", {})
     source_status = diagnostics.get("source_status", {}) if isinstance(diagnostics, Mapping) else {}
     raw_result = _result_value(result, "raw_portfolio_manager_result", {})
@@ -617,6 +623,10 @@ def _context_metrics(result: Any) -> dict[str, Any]:
         "source_status": source_status,
         "loopback": int(network.get("loopback_connection_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
         "external": int(network.get("external_network_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
+        "knowledge_query": _context_value(context, "knowledge_query"),
+        "knowledge_query_fingerprint": _context_value(context, "knowledge_query_fingerprint"),
+        "query_policy_version": _context_value(context, "knowledge_query_policy_version"),
+        "query_normalization_fingerprint": _context_value(context, "query_normalization_fingerprint"),
     }
 
 
@@ -803,6 +813,10 @@ class SavedSnapshotReplay:
             rendered_context=evidence_metrics["rendered"],
             loopback_connection_attempts=evidence_metrics["loopback"],
             external_network_attempts=evidence_metrics["external"],
+            knowledge_query=evidence_metrics["knowledge_query"],
+            knowledge_query_fingerprint=evidence_metrics["knowledge_query_fingerprint"],
+            query_policy_version=evidence_metrics["query_policy_version"],
+            query_normalization_fingerprint=evidence_metrics["query_normalization_fingerprint"],
         )
 
 

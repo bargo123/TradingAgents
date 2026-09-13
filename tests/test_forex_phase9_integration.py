@@ -33,6 +33,7 @@ from tradingagents.forex.evidence_runtime import (
     ReadonlyExperienceCatalog,
     ReadonlyKnowledgeCatalog,
     _close_orchestrator,
+    _validate_child_orchestrator,
     approved_readonly_component,
     approved_readonly_factory,
 )
@@ -262,6 +263,19 @@ def _child_evidence_factory(config):
 
 
 @approved_readonly_factory
+def _large_child_evidence_factory(config):
+    hits = tuple(
+        KnowledgeHit(
+            chunk_id=f"large-child-{index}",
+            document_id="large-doc",
+            text="bounded evidence " * 100,
+        )
+        for index in range(80)
+    )
+    return _typed_orchestrator(config, hits=hits)
+
+
+@approved_readonly_factory
 def _slow_factory(config):
     return _typed_orchestrator(config, delay=1.0)
 
@@ -417,6 +431,26 @@ def test_real_spawn_timeout_leaves_zero_workers(tmp_path: Path):
     assert service.active_evidence_workers == 0
 
 
+def test_real_spawn_drains_large_bundle_without_pipe_deadlock(tmp_path: Path):
+    roots = _artifact_roots(tmp_path)
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=10),
+        orchestrator_factory=_large_child_evidence_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+        artifact_roots=roots,
+    )
+    context = service.retrieve(
+        _snapshot(),
+        resolved_symbol="EURUSD",
+        analysis_profile="INTRADAY",
+        analysis_timeframe="M5",
+    )
+    assert context.integration_status is EvidenceIntegrationStatus.INJECTED
+    assert context.selected_knowledge_count > 0
+    assert service.active_evidence_workers == 0
+
+
 def test_child_rejects_unapproved_or_writer_factory_without_query():
     service = EvidenceIntegrationService(
         policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
@@ -468,6 +502,31 @@ def test_child_guard_rejects_untyped_reader_dependency(tmp_path: Path):
     context = service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
+
+
+def test_child_guard_treats_approved_embedding_provider_as_read_only_leaf(tmp_path: Path):
+    roots = _artifact_roots(tmp_path)
+
+    @approved_readonly_component
+    class _OpaqueEmbeddingProvider(_ReadonlyEmbeddingProvider):
+        def __init__(self):
+            super().__init__()
+            # FastEmbed owns tokenizer/runtime implementation objects that are
+            # internal to the approved provider, not independent evidence
+            # components.  The guard must not mistake those internals for a
+            # writer simply because they are reachable via __dict__.
+            self._runtime = type("OpaqueRuntime", (), {})()
+
+    orchestrator = _typed_orchestrator(
+        ReadonlyEvidenceRuntimeConfiguration(tuple(sorted(roots.items())))
+    )
+    orchestrator.knowledge_service.embedder = _OpaqueEmbeddingProvider()
+    orchestrator.knowledge_service.vector_reader.backend = type("OpaqueVectorBackend", (), {})()
+
+    _validate_child_orchestrator(
+        orchestrator,
+        ReadonlyEvidenceRuntimeConfiguration(tuple(sorted(roots.items()))),
+    )
 
 
 @pytest.mark.parametrize("factory", [_nested_writer_dependency_factory, _nested_untyped_dependency_factory])

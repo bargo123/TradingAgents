@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from tradingagents.agents.schemas import ForexPortfolioDecision
 from tradingagents.dataflows.mt5.models import (
     ForexMarketSnapshot,
     Mt5AccountInfo,
@@ -18,9 +19,12 @@ from tradingagents.dataflows.mt5.models import (
 )
 from tradingagents.forex.context import snapshot_to_dict
 from tradingagents.forex.evidence_context import (
+    CanonicalEvidenceItem,
+    CanonicalKnowledgeQuery,
     EvidenceBundleStatus,
     EvidenceContext,
     EvidenceIntegrationStatus,
+    EvidenceSourceKind,
 )
 from tradingagents.forex.evidence_replay import (
     EvidenceReplayConfig,
@@ -32,6 +36,7 @@ from tradingagents.forex.evidence_replay import (
     _source_row,
 )
 from tradingagents.forex.runner import ForexShadowRunner
+from tradingagents.forex.telemetry import record_state_boundary
 
 
 def _snapshot() -> ForexMarketSnapshot:
@@ -296,6 +301,35 @@ def test_replay_report_excludes_prompts_and_reasoning(tmp_path: Path):
     assert all(not any(word in str(key).lower() for word in forbidden) for key in payload)
 
 
+def test_replay_report_preserves_safe_knowledge_query_metadata(tmp_path: Path):
+    class _Runner:
+        def analyze(self, **kwargs):
+            context = None
+            if kwargs.get("forex_evidence_enabled"):
+                context = EvidenceContext(
+                    integration_status=EvidenceIntegrationStatus.INJECTED,
+                    bundle_status=EvidenceBundleStatus.COMPLETE,
+                    as_of=kwargs["snapshot"].timestamp,
+                    knowledge_generation_id="p7",
+                    experience_generation_id="p8",
+                    knowledge_query=CanonicalKnowledgeQuery("forex liquidity", "query-fp", "v2"),
+                    knowledge_query_fingerprint="query-fp",
+                    knowledge_query_policy_version="v2",
+                    rendered_context="bounded evidence",
+                    rendered_context_hash=hashlib.sha256(b"bounded evidence").hexdigest(),
+                )
+            return {
+                "normalized_action": "BUY" if kwargs.get("forex_evidence_enabled") else "HOLD",
+                "evidence_context": context,
+            }
+
+    replay = SavedSnapshotReplay(runner=_Runner(), generation_provider=lambda: ("p7", "p8"))
+    report = replay.run(None, snapshot_bytes=_source_bytes(), config=_config(tmp_path))
+    assert report.knowledge_query == CanonicalKnowledgeQuery("forex liquidity", "query-fp", "v2")
+    assert report.knowledge_query_fingerprint == "query-fp"
+    assert report.query_policy_version == "v2"
+
+
 def test_actual_runner_consumes_saved_snapshot_without_mt5_or_persistence(tmp_path: Path):
     class _NoMt5:
         def __call__(self, **_kwargs):
@@ -408,6 +442,115 @@ def test_actual_runner_replay_leg_passes_toggle_and_generation_pins(tmp_path: Pa
     assert graphs[1].kwargs["config"]["deep_think_llm"] == "qwen"
     assert graphs[1].kwargs["config"]["temperature"] == 0
     assert seen_configs and seen_configs[0]["pinned_phase7_generation_id"] == "p7"
+
+
+def test_deterministic_structured_replay_populates_context_and_normalizes(tmp_path: Path):
+    """A fake structured PM result proves replay wiring without MT5/Ollama."""
+
+    class _NoMt5:
+        def __call__(self, **_kwargs):
+            raise AssertionError("saved replay must not construct MT5")
+
+    class _Graph:
+        def __init__(self, **_kwargs):
+            self.propagator = type(
+                "P",
+                (),
+                {
+                    "create_initial_state": lambda _self, *args, **kw: kw,
+                    "get_graph_args": lambda _self, **_kw: {},
+                },
+            )()
+
+        def invoke(self, state, **_kwargs):
+            decision = ForexPortfolioDecision(
+                rating="Hold",
+                executive_summary="bounded fake decision",
+                investment_thesis="deterministic replay fixture",
+                evidence_use_status="USED",
+                evidence_refs_used=["K1"],
+            )
+            output = {
+                **state,
+                "market_report": "market report",
+                "news_report": "news report",
+                "investment_debate_state": {
+                    "bull_history": "bull report",
+                    "bear_history": "bear report",
+                    "history": "research debate",
+                },
+                "investment_plan": "research manager plan",
+                "trader_investment_plan": "trader plan",
+                "risk_debate_state": {
+                    "history": "risk debate",
+                    "aggressive_history": "aggressive",
+                    "conservative_history": "conservative",
+                    "neutral_history": "neutral",
+                },
+                "portfolio_manager_raw_result": decision,
+                "final_trade_decision": "HOLD",
+            }
+            for node in (
+                "Market Analyst",
+                "News Analyst",
+                "Bull Researcher",
+                "Bear Researcher",
+                "Research Manager",
+                "Trader",
+                "Aggressive Analyst",
+                "Conservative Analyst",
+                "Neutral Analyst",
+                "Portfolio Manager",
+            ):
+                record_state_boundary(node, "after", output)
+            return output
+
+    rendered = '{"items":[{"display_id":"K1"}]}'
+    context = EvidenceContext(
+        integration_status=EvidenceIntegrationStatus.INJECTED,
+        bundle_status=EvidenceBundleStatus.COMPLETE,
+        as_of=_snapshot().timestamp,
+        knowledge_generation_id="p7",
+        experience_generation_id="p8",
+        knowledge_query=CanonicalKnowledgeQuery("forex liquidity", "query-fp", "v2"),
+        knowledge_query_fingerprint="query-fp",
+        knowledge_query_policy_version="v2",
+        knowledge_items=(
+            CanonicalEvidenceItem(
+                display_id="K1",
+                source_kind=EvidenceSourceKind.KNOWLEDGE,
+                authoritative_id="chunk-1",
+                text="liquidity",
+                content_type="PROSE",
+                score=1.0,
+                provenance={"document_id": "doc-1", "chunk_id": "chunk-1"},
+            ),
+        ),
+        selected_knowledge_count=1,
+        rendered_context=rendered,
+        rendered_context_hash=hashlib.sha256(rendered.encode()).hexdigest(),
+        rendered_character_count=len(rendered),
+    )
+
+    class _Evidence:
+        def retrieve(self, _snapshot, **_kwargs):
+            return context
+
+    runner = ForexShadowRunner(
+        provider_factory=_NoMt5(),
+        graph_factory=lambda **kwargs: _Graph(**kwargs),
+        evidence_service_factory=lambda **_kwargs: _Evidence(),
+    )
+    replay = SavedSnapshotReplay(runner=runner, generation_provider=lambda: ("p7", "p8"))
+    report = replay.run(None, snapshot_bytes=_source_bytes(), config=_config(tmp_path))
+
+    assert report.comparison_status == "VALID"
+    assert report.evidence_action == "HOLD"
+    assert report.normalization_status == "NORMALIZED"
+    assert report.context_integrity_status == "COMPLETE"
+    assert report.knowledge_count == 1
+    assert report.evidence_use_status == "USED"
+    assert report.used_references == ("K1",)
 
 
 def test_normal_runner_keeps_scalar_llm_provider_when_mt5_provider_is_live(tmp_path: Path):
