@@ -186,7 +186,10 @@ class GraphSetup:
             if self.market_data_mode == "forex_mt5"
             else self.quick_thinking_llm
         )
-        trader_node = create_trader(trader_llm)
+        trader_node = create_trader(
+            trader_llm,
+            forex_mode=self.market_data_mode == "forex_mt5",
+        )
 
         # Create risk analysis nodes
         aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)

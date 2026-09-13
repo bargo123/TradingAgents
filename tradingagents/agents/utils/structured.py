@@ -77,14 +77,22 @@ NO_EXTERNAL_TOOLS = (
 )
 
 
-def bind_structured(llm: Any, schema: type[T], agent_name: str) -> Any | None:
+def bind_structured(
+    llm: Any,
+    schema: type[T],
+    agent_name: str,
+    *,
+    method: str | None = None,
+) -> Any | None:
     """Return ``llm.with_structured_output(schema)`` or ``None`` if unsupported.
 
     Logs a warning when the binding fails so the user understands the agent
     will use free-text generation for every call instead of one-shot fallback.
     """
     try:
-        return llm.with_structured_output(schema)
+        if method is None:
+            return llm.with_structured_output(schema)
+        return llm.with_structured_output(schema, method=method)
     except (NotImplementedError, AttributeError) as exc:
         logger.warning(
             "%s: provider does not support with_structured_output (%s); "

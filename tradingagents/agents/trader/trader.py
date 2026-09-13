@@ -15,13 +15,25 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
     bind_structured,
+    invoke_structured_only,
     invoke_structured_or_freetext,
 )
 from tradingagents.forex.profile import build_forex_profile_context
+from tradingagents.llm_clients.openai_client import OllamaChatOpenAI
 
 
-def create_trader(llm):
-    structured_llm = bind_structured(llm, TraderProposal, "Trader")
+def create_trader(llm, *, forex_mode: bool = False):
+    # Ollama's OpenAI-compatible endpoint does not support tool_choice and
+    # Qwen can answer with prose instead of voluntarily selecting the schema
+    # tool on production-sized Trader prompts.  Its response_format JSON-schema
+    # path is reliable, so use that path only for the forex Ollama Trader.
+    ollama_forex = forex_mode and isinstance(llm, OllamaChatOpenAI)
+    structured_llm = bind_structured(
+        llm,
+        TraderProposal,
+        "Trader",
+        method="json_schema" if ollama_forex else None,
+    )
 
     def trader_node(state, name):
         company_name = state["company_of_interest"]
@@ -106,13 +118,18 @@ def create_trader(llm):
                 },
             ]
 
-        trader_plan = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            messages,
-            render_trader_proposal,
-            "Trader",
-        )
+        if ollama_forex:
+            trader_plan = render_trader_proposal(
+                invoke_structured_only(structured_llm, messages, "Trader")
+            )
+        else:
+            trader_plan = invoke_structured_or_freetext(
+                structured_llm,
+                llm,
+                messages,
+                render_trader_proposal,
+                "Trader",
+            )
 
         return {
             "messages": [AIMessage(content=trader_plan)],
