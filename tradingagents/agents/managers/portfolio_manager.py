@@ -27,6 +27,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
+    bind_forex_ollama_structured,
     bind_structured,
     invoke_structured_only,
     invoke_structured_or_freetext,
@@ -136,7 +137,7 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
 
         if is_forex:
             if forex_structured_llm is None:
-                forex_structured_llm = bind_structured(
+                forex_structured_llm = bind_forex_ollama_structured(
                     llm,
                     ForexPortfolioDecision,
                     "Forex Portfolio Manager",

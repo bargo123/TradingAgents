@@ -10,22 +10,41 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
+    bind_forex_ollama_structured,
     bind_structured,
+    invoke_structured_only,
     invoke_structured_or_freetext,
+    is_ollama_chat_model,
 )
 from tradingagents.forex.profile import build_forex_profile_context
 
 
 def create_research_manager(llm):
-    structured_llm = bind_structured(llm, ResearchPlan, "Research Manager")
+    # Preserve the existing stock binding and invocation timing.  The forex
+    # binding is selected lazily because it needs the Ollama-specific JSON
+    # Schema method only when this node is actually running in forex mode.
+    stock_structured_llm = bind_structured(llm, ResearchPlan, "Research Manager")
+    forex_structured_llm = None
 
     def research_manager_node(state) -> dict:
+        nonlocal forex_structured_llm
         instrument_context = get_instrument_context_from_state(state)
         history = state["investment_debate_state"].get("history", "")
 
         investment_debate_state = state["investment_debate_state"]
 
         is_forex = state.get("asset_type") == "forex"
+        if is_forex:
+            if forex_structured_llm is None:
+                forex_structured_llm = bind_forex_ollama_structured(
+                    llm,
+                    ResearchPlan,
+                    "Research Manager",
+                )
+            structured_llm = forex_structured_llm
+        else:
+            structured_llm = stock_structured_llm
+
         if is_forex:
             evidence_block = render_supporting_evidence(state)
             evidence_before_suffix = f"{evidence_block}\n\n" if evidence_block else ""
@@ -76,13 +95,18 @@ Commit to a directional stance only when the debate's strongest arguments clearl
 
 {NO_EXTERNAL_TOOLS}""" + get_language_instruction()
 
-        investment_plan = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            prompt,
-            render_research_plan,
-            "Research Manager",
-        )
+        if is_forex and is_ollama_chat_model(llm):
+            investment_plan = render_research_plan(
+                invoke_structured_only(structured_llm, prompt, "Research Manager")
+            )
+        else:
+            investment_plan = invoke_structured_or_freetext(
+                structured_llm,
+                llm,
+                prompt,
+                render_research_plan,
+                "Research Manager",
+            )
 
         new_investment_debate_state = {
             "judge_decision": investment_plan,

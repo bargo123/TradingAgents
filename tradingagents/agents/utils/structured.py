@@ -24,6 +24,8 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
+from tradingagents.llm_clients.openai_client import OllamaChatOpenAI
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
@@ -83,6 +85,7 @@ def bind_structured(
     agent_name: str,
     *,
     method: str | None = None,
+    **kwargs: Any,
 ) -> Any | None:
     """Return ``llm.with_structured_output(schema)`` or ``None`` if unsupported.
 
@@ -91,8 +94,8 @@ def bind_structured(
     """
     try:
         if method is None:
-            return llm.with_structured_output(schema)
-        return llm.with_structured_output(schema, method=method)
+            return llm.with_structured_output(schema, **kwargs)
+        return llm.with_structured_output(schema, method=method, **kwargs)
     except (NotImplementedError, AttributeError) as exc:
         logger.warning(
             "%s: provider does not support with_structured_output (%s); "
@@ -100,6 +103,35 @@ def bind_structured(
             agent_name, exc,
         )
         return None
+
+
+def is_ollama_chat_model(llm: Any) -> bool:
+    """Return whether ``llm`` is the Ollama OpenAI-compatible client."""
+    return isinstance(llm, OllamaChatOpenAI)
+
+
+def bind_forex_ollama_structured(
+    llm: Any,
+    schema: type[T],
+    agent_name: str,
+) -> Any | None:
+    """Bind a forex schema using Ollama's strict JSON-schema request path.
+
+    Ollama's OpenAI-compatible endpoint is unreliable when Qwen must choose a
+    schema tool on production-sized prompts.  Its ``response_format`` JSON
+    schema path is deterministic when thinking is disabled with the documented
+    ``reasoning_effort=none`` request field.  Other providers retain the
+    existing capability-selected binding and invocation semantics.
+    """
+    if not is_ollama_chat_model(llm):
+        return bind_structured(llm, schema, agent_name)
+    return bind_structured(
+        llm,
+        schema,
+        agent_name,
+        method="json_schema",
+        reasoning_effort="none",
+    )
 
 
 def invoke_structured_or_freetext(
