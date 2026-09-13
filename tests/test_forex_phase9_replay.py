@@ -187,6 +187,70 @@ def test_replay_pins_phase7_and_phase8_generations(tmp_path: Path):
     assert all(call["pinned_phase8_generation_id"] == "p8" for call in calls)
 
 
+def test_replay_propagates_pinned_generations_to_evidence_service(tmp_path: Path):
+    seen_generation_providers: list[object] = []
+
+    class _Graph:
+        def __init__(self, **_kwargs):
+            self.propagator = type(
+                "P",
+                (),
+                {
+                    "create_initial_state": lambda _self, *args, **kw: kw,
+                    "get_graph_args": lambda _self, **_kw: {},
+                },
+            )()
+
+        def invoke(self, _state, **_kwargs):
+            return {
+                "portfolio_manager_raw_result": {"rating": "Hold"},
+                "final_trade_decision": {"rating": "Hold"},
+            }
+
+    class _Evidence:
+        def __init__(self, generations: tuple[str | None, str | None]):
+            self.generations = generations
+
+        def retrieve(self, snapshot, **_kwargs):
+            rendered = "saved evidence"
+            return EvidenceContext(
+                integration_status=EvidenceIntegrationStatus.INJECTED,
+                bundle_status=EvidenceBundleStatus.COMPLETE,
+                as_of=snapshot.timestamp,
+                knowledge_generation_id=self.generations[0],
+                experience_generation_id=self.generations[1],
+                rendered_context=rendered,
+                rendered_context_hash=hashlib.sha256(rendered.encode()).hexdigest(),
+            )
+
+    def evidence_factory(config, **_kwargs):
+        provider = config.get("evidence_generation_provider", (None, None))
+        seen_generation_providers.append(provider)
+        return _Evidence(tuple(provider))
+
+    runner = ForexShadowRunner(
+        provider_factory=lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("saved replay must not construct MT5")
+        ),
+        graph_factory=lambda **kwargs: _Graph(**kwargs),
+        evidence_service_factory=evidence_factory,
+    )
+    config = _config(tmp_path)
+    replay = SavedSnapshotReplay(
+        runner=runner,
+        generation_provider=lambda: ("p7", "p8"),
+    )
+
+    report = replay.run(
+        None,
+        snapshot_bytes=_source_bytes(),
+        config=config,
+    )
+
+    assert report.comparison_status == "VALID"
+    assert seen_generation_providers == [("p7", "p8")]
+
+
 def test_knowledge_generation_change_invalidates_replay(tmp_path: Path):
     generations = iter((("p7", "p8"), ("p7", "p8"), ("changed", "p8")))
     calls: list[dict] = []

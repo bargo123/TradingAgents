@@ -615,6 +615,14 @@ class ForexShadowRunner:
                 config_for_graph["pinned_phase7_generation_id"] = pinned_phase7_generation_id
             if pinned_phase8_generation_id is not None:
                 config_for_graph["pinned_phase8_generation_id"] = pinned_phase8_generation_id
+            if (
+                pinned_phase7_generation_id is not None
+                or pinned_phase8_generation_id is not None
+            ):
+                config_for_graph["evidence_generation_provider"] = (
+                    pinned_phase7_generation_id,
+                    pinned_phase8_generation_id,
+                )
             if effective_evidence_enabled:
                 factory = self.evidence_service_factory or self._default_evidence_service_factory
                 started_retrieval = time.perf_counter()
