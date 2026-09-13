@@ -141,7 +141,7 @@ class EvidenceSnapshotAdapter:
 
 @dataclass(frozen=True, slots=True)
 class EvidenceQueryPolicy:
-    query_policy_version: str = "v1"
+    query_policy_version: str = "v2"
     budget_policy_version: str = "v1"
     knowledge_top_k: int = 10
     experience_top_k: int = 50
@@ -183,24 +183,43 @@ class EvidenceQueryPolicy:
         analysis_timeframe: str,
     ) -> CanonicalKnowledgeQuery:
         payload = snapshot_to_dict(snapshot, include_candles=False)
-        terms = [
-            ("symbol", resolved_symbol),
-            ("profile", analysis_profile),
-            ("timeframe", analysis_timeframe),
+        # The research question is sent to both dense and SQLite FTS5 search.
+        # The former key=value representation was not a valid FTS5 expression
+        # (``=`` is parsed as syntax), so keep this envelope to plain lexical
+        # terms while retaining deterministic snapshot/profile descriptors.
+        terms: list[str] = [
+            "forex",
+            "foreign exchange",
+            "market microstructure",
+            "spread",
+            "liquidity",
+            "volatility",
+            "trend",
+            "regime",
+            self._normal(resolved_symbol),
+            self._normal(analysis_profile),
         ]
+        terms.extend(self._normal(analysis_timeframe).replace("/", " ").split())
         features = payload.get("features", {})
+        directions: list[str] = []
         for timeframe in ("M1", "M5", "M15", "H1"):
             section = features.get(timeframe)
             if not isinstance(section, Mapping):
                 continue
-            for name in ("direction", "return_over_bars", "range_pct", "average_true_range"):
-                value = section.get(name)
-                if value is not None and str(value).upper() != "INSUFFICIENT_DATA":
-                    terms.append((f"{timeframe}.{name}", value))
-        spread = (payload.get("quote") or {}).get("spread_points")
-        if spread is not None:
-            terms.append(("spread_points", spread))
-        text = " ".join(f"{key}={self._normal(value)}" for key, value in terms)
+            direction = section.get("direction")
+            if direction is not None and str(direction).upper() != "INSUFFICIENT_DATA":
+                directions.append(self._normal(direction))
+        terms.extend(directions)
+        # De-duplicate without sorting so the query remains stable and easy to
+        # audit while preserving the domain vocabulary's intended order.
+        seen: set[str] = set()
+        normalized_terms = []
+        for term in terms:
+            value = " ".join(str(term).strip().split())
+            if value and value.casefold() not in seen:
+                seen.add(value.casefold())
+                normalized_terms.append(value)
+        text = " ".join(normalized_terms)
         fingerprint_payload = f"{self.query_policy_version}|{text}".encode()
         fingerprint = hashlib.sha256(fingerprint_payload).hexdigest()
         return CanonicalKnowledgeQuery(text=text, fingerprint=fingerprint, policy_version=self.query_policy_version)
