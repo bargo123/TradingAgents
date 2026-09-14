@@ -40,7 +40,7 @@ def _joined(tmp_path, **overrides):
     features = {tf: dict.fromkeys(("return_over_bars", "range_pct", "close_position", "average_true_range"), 1.0) | {"direction": "UP"} for tf in ("M1", "M5", "M15", "H1")}
     snapshot = {"quote": {"bid": 1.0, "ask": 1.1, "spread_points": 1.0}, "point": 0.0001, "digits": 5, "features": features}
     records = ({"experience_id": "e1", "source_decision_id": "d1", "source_run_id": "run1", "source_decision_fingerprint": "dfp", "trust": "TIER_A_HIGH_TRUST", "experience_schema_version": "phase8.experience.v1", "feature_schema_version": "v1", "feature_extractor_version": "v1", "trust_policy_version": "v1", "snapshot_json": snapshot, "source_evaluation_fingerprints": {"ANALYSIS_SNAPSHOT:300": "efp"}, "provenance": {"source_decision_fingerprint": "dfp"}},)
-    audit = ({"decision_id": "d1", "source_run_id": "run1", "context_integrity": "COMPLETE", "bundle_status": "COMPLETE", "evidence_audit_status": "VALID", "evidence_use_status": "NONE_RELEVANT", "evidence_refs_used": [], "evidence_refs_rejected": []},)
+    audit = ({"decision_id": "d1", "source_run_id": "run1", "context_integrity": "COMPLETE", "bundle_status": "COMPLETE", "evidence_audit_status": "VALID", "evidence_use_status": "NONE_RELEVANT", "evidence_refs_used": [], "evidence_refs_rejected": [], "missing_nodes": [], "node_context_hashes": {node: "hash-" + node for node in ("Market Analyst", "News Analyst", "Bull Researcher", "Bear Researcher", "Research Manager", "Trader", "Aggressive Analyst", "Conservative Analyst", "Neutral Analyst", "Portfolio Manager")}},)
     return join_observations(result, SourceReadResult(records=records), SourceReadResult(audits=audit))[0]
 
 
@@ -49,6 +49,30 @@ def test_valid_tier_a_complete_observation_is_eligible(tmp_path):
     assert isinstance(result, EligibilityResult)
     assert result.eligible
     assert result.reasons == ()
+
+
+def test_missing_graph_artifact_is_incomplete_even_when_top_level_context_complete(tmp_path):
+    observation = _joined(tmp_path)
+    audit = dict(observation.fields["audit"])
+    audit["missing_nodes"] = ["Portfolio Manager"]
+    observation = observation.__class__(
+        observation.decision, observation.evaluation, observation.evidence,
+        {**observation.fields, "audit": audit},
+    )
+    result = classify_observation(observation, _config(tmp_path))
+    assert DatasetExclusionReason.DECISION_CONTEXT_INCOMPLETE in result.reasons
+
+
+def test_missing_node_context_hashes_is_incomplete(tmp_path):
+    observation = _joined(tmp_path)
+    audit = dict(observation.fields["audit"])
+    audit["node_context_hashes"] = {"Market Analyst": "only-one"}
+    observation = observation.__class__(
+        observation.decision, observation.evaluation, observation.evidence,
+        {**observation.fields, "audit": audit},
+    )
+    result = classify_observation(observation, _config(tmp_path))
+    assert DatasetExclusionReason.DECISION_CONTEXT_INCOMPLETE in result.reasons
 
 
 def test_all_applicable_reasons_are_deterministically_ordered(tmp_path):
@@ -228,3 +252,23 @@ def test_phase8_snapshot_provenance_is_carried_to_source_evaluation(tmp_path):
     )
     assert joined[0].evaluation.fields["phase8_evaluation_fingerprint"] == "efp"
     assert joined[0].evaluation.fields["provenance"]["source_decision_id"] == "d1"
+
+
+def test_phase8_recovered_snapshot_pairs_with_complete_state_not_old_unavailable(tmp_path):
+    decision = _decision(source_decision_fingerprint="dfp")
+    evaluation = EvaluationObservation(
+        "d1", "ANALYSIS_SNAPSHOT", 300, "COMPLETE", True,
+        {"source_evaluation_fingerprint": "efp", "evaluated_at": datetime(2025, 1, 1, 0, 10, tzinfo=UTC)},
+    )
+    record = {
+        "source_decision_id": "d1", "source_run_id": "run1", "source_decision_fingerprint": "dfp",
+        "evaluation_snapshots": (
+            {"evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 300, "fingerprint": "unavailable", "observed_at": datetime(2025, 1, 1, 0, 3, tzinfo=UTC), "evaluation": {"evaluation_status": "DATA_UNAVAILABLE"}},
+            {"evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 300, "fingerprint": "complete", "observed_at": datetime(2025, 1, 1, 0, 9, tzinfo=UTC), "evaluation": {"evaluation_status": "COMPLETE"}},
+        ),
+    }
+    joined = join_observations(
+        SourceReadResult(decisions=(decision,), evaluations=(evaluation,)),
+        SourceReadResult(records=(record,)), SourceReadResult(),
+    )
+    assert joined[0].evaluation.fields["phase8_evaluation_fingerprint"] == "complete"

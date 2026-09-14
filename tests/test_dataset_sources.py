@@ -186,6 +186,35 @@ def test_phase8_requires_columns_on_each_required_table(tmp_path):
         ReadonlyExperienceSource(path).read()
 
 
+def test_phase8_adapter_derives_version_provenance_from_catalog_contract(tmp_path):
+    from tradingagents.datasets.sources import _PHASE8_REQUIRED
+
+    path = tmp_path / "catalog.sqlite3"
+    with sqlite3.connect(path) as db:
+        for table, columns in _PHASE8_REQUIRED.items():
+            db.execute(f'CREATE TABLE "{table}" (' + ", ".join(f'"{column}" TEXT' for column in columns) + ")")
+        record_values = dict.fromkeys(_PHASE8_REQUIRED["experience_records"], "")
+        record_values.update({
+            "experience_id": "e1", "source_decision_id": "d1", "source_database_id": "s1",
+            "source_decision_fingerprint": "dfp", "symbol": "EURUSD", "tombstoned": "0",
+            "market_state_json": "{}", "decision_evidence_json": "{}", "provenance_json": "{}",
+            "source_evaluation_fingerprints_json": "{}", "trust": "TIER_A_HIGH_TRUST",
+        })
+        cols = sorted(record_values)
+        db.execute('INSERT INTO experience_records (' + ','.join('"' + c + '"' for c in cols) + ') VALUES (' + ','.join('?' for _ in cols) + ')', [record_values[c] for c in cols])
+        projection_values = dict.fromkeys(_PHASE8_REQUIRED["experience_feature_projections"], "")
+        projection_values.update({"experience_id": "e1", "feature_schema_version": "experience-features.v1", "projection_json": '{"version":"phase8-feature-extractor.v1"}'})
+        cols = sorted(projection_values)
+        db.execute('INSERT INTO experience_feature_projections (' + ','.join('"' + c + '"' for c in cols) + ') VALUES (' + ','.join('?' for _ in cols) + ')', [projection_values[c] for c in cols])
+        db.commit()
+    result = ReadonlyExperienceSource(path).read()
+    row = result.records[0]
+    assert row["experience_schema_version"] == "phase8.experience.v1"
+    assert row["feature_schema_version"] == "experience-features.v1"
+    assert row["feature_extractor_version"] == "phase8-feature-extractor.v1"
+    assert row["trust_policy_version"] == "trust-policy.v1"
+
+
 def test_audit_retains_policy_fingerprints_and_rejects_incomplete_schema(tmp_path):
     path = tmp_path / "audit.sqlite3"
     with sqlite3.connect(path) as db:

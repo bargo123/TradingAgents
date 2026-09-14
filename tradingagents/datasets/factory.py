@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from .models import (
     DatasetExclusion,
     DatasetExclusionReason,
     DatasetManifest,
+    EvaluationObservation,
+    JoinedObservation,
     SourceFingerprint,
 )
 from .sources import (
@@ -55,6 +58,8 @@ def _fingerprint(result: SourceReadResult | Any, kind: str) -> dict[str, Any]:
 
 def _manifest(path: Path) -> DatasetManifest:
     data = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    counts = data.get("counts", {})
+    candidate_summary = data.get("candidate_summary", {})
     return DatasetManifest(
         dataset_id=str(data["dataset_id"]),
         examples=int(data.get("examples", 0)),
@@ -63,6 +68,10 @@ def _manifest(path: Path) -> DatasetManifest:
         safety=data.get("safety", _SAFETY),
         source_fingerprints=data.get("source_fingerprints", {}),
         status=str(data.get("status", "EMPTY_ELIGIBLE_SET")),
+        candidate_count=int(candidate_summary.get("candidates", data.get("examples", 0) + data.get("exclusions", 0))),
+        eligible_count=int(candidate_summary.get("eligible", data.get("examples", 0))),
+        excluded_count=int(candidate_summary.get("excluded", data.get("exclusions", 0))),
+        reason_counts=counts.get("reason_counts", {}),
     )
 
 
@@ -209,6 +218,35 @@ def _source_error_exclusion(path: Path, exc: Exception) -> DatasetExclusion:
     )
 
 
+def _effective_observation(observation: JoinedObservation, eligibility: Any, config: DatasetConfig) -> JoinedObservation:
+    """Pair canonical output with the exact basis/horizon classified as eligible."""
+    details = getattr(eligibility, "details", {}) or {}
+    basis = details.get("effective_evaluation_basis", config.evaluation_basis)
+    horizon = int(details.get("effective_horizon_seconds", config.horizon_seconds))
+    current = observation.evaluation
+    if (
+        current is not None
+        and current.evaluation_basis == basis
+        and current.horizon_seconds == horizon
+    ):
+        return observation
+    for item in observation.fields.get("evaluations", ()):
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("evaluation_basis") != basis or int(item.get("horizon_seconds", 0) or 0) != horizon:
+            continue
+        selected = EvaluationObservation(
+            str(item.get("decision_id")),
+            str(item.get("evaluation_basis")),
+            int(item.get("horizon_seconds")),
+            str(item.get("evaluation_status")),
+            bool(item.get("source_context_eligible")),
+            item.get("fields", {}),
+        )
+        return replace(observation, evaluation=selected)
+    return observation
+
+
 def _bind_sqlite_marks(result: SourceReadResult, marks_digest: str) -> SourceReadResult:
     """Bind the adapter result to both the SQLite main file and WAL marks."""
     fingerprint = getattr(result, "fingerprint", None)
@@ -322,6 +360,19 @@ class DatasetFactory:
                 joined = join_observations(result, phase8, phase9)
             except Exception as exc:
                 errors.append(f"join: {type(exc).__name__}")
+                reason = (
+                    DatasetExclusionReason.SCHEMA_UNSUPPORTED
+                    if isinstance(exc, (TypeError, ValueError))
+                    else DatasetExclusionReason.SOURCE_INTEGRITY_FAILED
+                )
+                exclusions.extend(
+                    DatasetExclusion(
+                        decision.decision_id,
+                        (reason,),
+                        {"error_type": type(exc).__name__, "stage": "join"},
+                    )
+                    for decision in result.decisions
+                )
                 continue
             for observation in joined:
                 eligibility = classify_observation(observation, config)
@@ -346,7 +397,7 @@ class DatasetFactory:
                     exclusions.append(eligibility.exclusion)
                     continue
                 try:
-                    examples.append(canonicalize(observation, eligibility))
+                    examples.append(canonicalize(_effective_observation(observation, eligibility, config), eligibility))
                 except Exception as exc:
                     exclusions.append(
                         DatasetExclusion(

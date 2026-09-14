@@ -191,8 +191,8 @@ class DatasetConfig(Contract):
             + (self.phase8_root,)
             + ((self.phase9_audit_path,) if self.phase9_audit_path else ())
         )
-        if any(out == r or r in out.parents for r in roots):
-            raise DatasetConfigError("output root overlaps a source root")
+        if any(out == r or r in out.parents or out in r.parents for r in roots):
+            raise DatasetConfigError("output root overlaps or contains a source root")
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +331,8 @@ class EvidenceObservation(Contract):
                     }:
                         raise ValueError("refs_rejected has an unsupported reason")
                     normalized.append(_freeze({"ref": ref_id, "reason": reason}))
+                elif name == "refs_rejected":
+                    raise ValueError("refs_rejected entries must include a reason")
                 else:
                     _validate_id(ref, name)
                     normalized.append(ref)
@@ -434,6 +436,10 @@ class DatasetManifest(Contract):
     # on-disk writer manifest, including when no candidate is eligible.
     source_fingerprints: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     status: str = "EMPTY_ELIGIBLE_SET"
+    candidate_count: int = 0
+    eligible_count: int = 0
+    excluded_count: int = 0
+    reason_counts: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self):
         _validate_id(self.dataset_id, "dataset_id")
@@ -452,6 +458,16 @@ class DatasetManifest(Contract):
         for name, value in (("examples", self.examples), ("exclusions", self.exclusions)):
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
+        for name, value in (("candidate_count", self.candidate_count), ("eligible_count", self.eligible_count), ("excluded_count", self.excluded_count)):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        if not isinstance(self.reason_counts, Mapping):
+            raise ValueError("reason_counts must be a mapping")
+        for reason, count in self.reason_counts.items():
+            if not isinstance(reason, str) or not reason or len(reason) > 64:
+                raise ValueError("reason_counts keys must be bounded strings")
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise ValueError("reason_counts values must be non-negative integers")
         object.__setattr__(self, "safety", _freeze(self.safety))
         if not isinstance(self.safety, Mapping):
             raise ValueError("safety must be a mapping")
@@ -471,6 +487,7 @@ class DatasetManifest(Contract):
                 if not isinstance(value, str) or not value or len(value) > 512:
                     raise ValueError(f"invalid {phase} source fingerprint value: {name}")
         object.__setattr__(self, "source_fingerprints", _freeze(self.source_fingerprints))
+        object.__setattr__(self, "reason_counts", _freeze(self.reason_counts))
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,6 +496,22 @@ class BuildReport(Contract):
     manifest: DatasetManifest | None = None
     exclusions: tuple[DatasetExclusion, ...] = ()
     errors: tuple[str, ...] = ()
+
+    @property
+    def candidate_count(self) -> int:
+        return self.manifest.candidate_count if self.manifest else 0
+
+    @property
+    def eligible_count(self) -> int:
+        return self.manifest.eligible_count if self.manifest else 0
+
+    @property
+    def excluded_count(self) -> int:
+        return self.manifest.excluded_count if self.manifest else 0
+
+    @property
+    def reason_counts(self) -> Mapping[str, int]:
+        return self.manifest.reason_counts if self.manifest else MappingProxyType({})
 
     def __post_init__(self):
         if not isinstance(self.status, str) or self.status not in {

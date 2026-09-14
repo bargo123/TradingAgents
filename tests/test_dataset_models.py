@@ -73,6 +73,26 @@ def test_config_rejects_output_inside_source(tmp_path):
         DatasetConfig((tmp_path / "src",), tmp_path / "p8", None, tmp_path / "src" / "out")
 
 
+def test_config_rejects_output_root_that_contains_source_path(tmp_path):
+    with pytest.raises(DatasetConfigError):
+        DatasetConfig((tmp_path / "inputs" / "source.sqlite",), tmp_path / "p8", None, tmp_path)
+
+
+def test_refs_rejected_must_be_structured_with_closed_reason():
+    with pytest.raises(ValueError, match="refs_rejected"):
+        EvidenceObservation(refs_rejected=("K1",))
+
+
+def test_manifest_exposes_disk_accounting_fields():
+    manifest = DatasetManifest(
+        "m", examples=2, exclusions=3, candidate_count=5,
+        eligible_count=2, excluded_count=3,
+        reason_counts={"OUTCOME_INELIGIBLE": 3},
+    )
+    assert manifest.candidate_count == 5
+    assert manifest.reason_counts["OUTCOME_INELIGIBLE"] == 3
+
+
 def test_forbidden_keys_and_sensitive_values_are_rejected_recursively():
     for payload in ({"nested": {"password": "x"}}, {"nested": ["private token: x"]}):
         with pytest.raises(ValueError):

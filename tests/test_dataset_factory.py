@@ -380,3 +380,54 @@ def test_factory_deduplicates_same_decision_fingerprint_across_rows(tmp_path, mo
     report = DatasetFactory().build(config)
     assert len(report.exclusions) == 1
     assert report.exclusions[0].reasons == (DatasetExclusionReason.DUPLICATE,)
+
+
+def test_factory_uses_classifier_selected_basis_and_horizon_for_canonical_row(tmp_path, monkeypatch):
+    source = tmp_path / "source.db"
+    source.write_bytes(b"source")
+    phase8 = tmp_path / "phase8"
+    phase8.mkdir()
+    config = DatasetConfig((source,), phase8, None, tmp_path / "out", evaluation_basis="DECISION_REFERENCE", horizon_seconds=600)
+    fp = _fingerprint("phase56", source)
+    decision = SourceObservation("d1", datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 1, 0, 1, tzinfo=timezone.utc), action="BUY", fields={"source_decision_fingerprint": "dfp"})
+    source_result = SourceReadResult(decisions=(decision,), evaluations=(
+        EvaluationObservation("d1", "ANALYSIS_SNAPSHOT", 300, fields={"source_decision_fingerprint": "dfp"}),
+        EvaluationObservation("d1", "DECISION_REFERENCE", 600, fields={"source_decision_fingerprint": "dfp"}),
+    ), fingerprint=fp)
+    class Reader:
+        def __init__(self, path): self.path = Path(path)
+        def read(self): return source_result if self.path == source else SourceReadResult(fingerprint=_fingerprint("phase8", phase8))
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyPhase56Source", Reader)
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyExperienceSource", Reader)
+    monkeypatch.setattr("tradingagents.datasets.factory.join_observations", lambda *_: (JoinedObservation(decision, source_result.evaluations[0], fields={"evaluations": ({"decision_id": "d1", "evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 300, "evaluation_status": "COMPLETE", "source_context_eligible": True, "fields": {}}, {"decision_id": "d1", "evaluation_basis": "DECISION_REFERENCE", "horizon_seconds": 600, "evaluation_status": "COMPLETE", "source_context_eligible": True, "fields": {}})}),))
+    monkeypatch.setattr("tradingagents.datasets.factory.classify_observation", lambda *_: EligibilityResult(True, details={"decision_id": "d1", "effective_evaluation_basis": "DECISION_REFERENCE", "effective_horizon_seconds": 600}))
+    captured = {}
+    monkeypatch.setattr("tradingagents.datasets.factory.canonicalize", lambda observation, eligibility: (captured.setdefault("evaluation", observation.evaluation), _canonical("d1", {"phase56": fp, "phase8": _fingerprint("phase8", phase8), "phase9": _fingerprint("phase9", tmp_path / "audit")}))[1])
+    monkeypatch.setattr("tradingagents.datasets.factory.assign_splits", lambda rows: type("S", (), {"assignments": (), "status": "INSUFFICIENT_DATA"})())
+    monkeypatch.setattr("tradingagents.datasets.factory._manifest", lambda path: DatasetManifest(path.name))
+    monkeypatch.setattr("tradingagents.datasets.factory.write_generation", lambda *a, **kw: config.output_root)
+    DatasetFactory().build(config)
+    assert captured["evaluation"].evaluation_basis == "DECISION_REFERENCE"
+    assert captured["evaluation"].horizon_seconds == 600
+
+
+def test_factory_emits_join_failure_exclusion_for_each_candidate(tmp_path, monkeypatch):
+    source = tmp_path / "source.db"
+    source.write_bytes(b"source")
+    phase8 = tmp_path / "phase8"
+    phase8.mkdir()
+    config = DatasetConfig((source,), phase8, None, tmp_path / "out")
+    fp = _fingerprint("phase56", source)
+    decisions = tuple(SourceObservation(f"d{i}", datetime(2026, 1, i + 1, tzinfo=timezone.utc), fields={"source_decision_fingerprint": f"fp{i}"}) for i in range(2))
+    class Reader:
+        def __init__(self, path): self.path = Path(path)
+        def read(self): return SourceReadResult(decisions=decisions, fingerprint=fp) if self.path == source else SourceReadResult(fingerprint=_fingerprint("phase8", phase8))
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyPhase56Source", Reader)
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyExperienceSource", Reader)
+    monkeypatch.setattr("tradingagents.datasets.factory.join_observations", lambda *_: (_ for _ in ()).throw(ValueError("schema mismatch")))
+    monkeypatch.setattr("tradingagents.datasets.factory._manifest", lambda path: DatasetManifest(path.name))
+    captured = {}
+    monkeypatch.setattr("tradingagents.datasets.factory.write_generation", lambda *a, **kw: (captured.update({"exclusions": kw["metadata"], "rows": a[2]}) or config.output_root))
+    report = DatasetFactory().build(config)
+    assert {item.decision_id for item in report.exclusions if item.decision_id in {"d0", "d1"}} == {"d0", "d1"}
+    assert all(DatasetExclusionReason.SCHEMA_UNSUPPORTED in item.reasons for item in report.exclusions if item.decision_id in {"d0", "d1"})

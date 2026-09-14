@@ -26,6 +26,12 @@ from .models import (
     JoinedObservation,
 )
 
+_REQUIRED_GRAPH_NODES = (
+    "Market Analyst", "News Analyst", "Bull Researcher", "Bear Researcher",
+    "Research Manager", "Trader", "Aggressive Analyst", "Conservative Analyst",
+    "Neutral Analyst", "Portfolio Manager",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class EligibilityResult:
@@ -164,8 +170,32 @@ def _evaluation_contract(value: Any) -> Any:
     return value
 
 
+def _graph_artifacts_complete(audit: Any) -> bool:
+    """Validate bounded Phase 9 graph metadata, without retaining reports."""
+    if not isinstance(audit, Mapping):
+        return False
+    missing = audit.get("missing_nodes")
+    hashes = audit.get("node_context_hashes")
+    if not isinstance(missing, (list, tuple)) or missing:
+        return False
+    if not isinstance(hashes, Mapping):
+        return False
+    for node in _REQUIRED_GRAPH_NODES:
+        value = hashes.get(node)
+        if not isinstance(value, str) or not value or len(value) > 256:
+            return False
+    return True
+
+
 def _enrich_evaluation(evaluation: Any, record: Any) -> Any:
-    """Carry Phase 8 snapshot fingerprint/provenance beside the source row."""
+    """Pair a source outcome with the effective Phase 8 snapshot.
+
+    Phase 8 may retain an unavailable snapshot followed by a recovered
+    COMPLETE snapshot.  Pair by authoritative fingerprint/status first, then
+    choose the latest snapshot known by the source evaluation's observation
+    cutoff.  This avoids attaching the oldest DATA_UNAVAILABLE provenance to a
+    recovered outcome.
+    """
     snapshots = _get(record, "evaluation_snapshots", ()) if record else ()
     if not snapshots:
         return evaluation
@@ -179,7 +209,41 @@ def _enrich_evaluation(evaluation: Any, record: Any) -> Any:
     )
     if not matching:
         return evaluation
-    snapshot = matching[0]
+    source_fp = _evaluation_fingerprint(evaluation)
+
+    def snapshot_eval(snapshot: Any) -> Mapping[str, Any]:
+        value = _get(snapshot, "evaluation", {})
+        return value if isinstance(value, Mapping) else {}
+
+    exact = tuple(
+        snapshot for snapshot in matching
+        if str(_get(snapshot, "fingerprint", "")) == source_fp
+        or str(snapshot_eval(snapshot).get("fingerprint", "")) == source_fp
+    )
+    candidates = exact or tuple(
+        snapshot for snapshot in matching
+        if str(snapshot_eval(snapshot).get("evaluation_status", ""))
+        == str(_get(evaluation, "evaluation_status", ""))
+    ) or matching
+    known_at = None
+    for field_name in ("evaluated_at", "created_at", "recovered_from_unavailable_at", "known_at"):
+        known_at = _dt(_get(evaluation, "fields", {}).get(field_name))
+        if known_at is not None:
+            break
+    if known_at is not None:
+        before = tuple(
+            snapshot for snapshot in candidates
+            if (_dt(_get(snapshot, "observed_at")) or known_at) <= known_at
+        )
+        if before:
+            candidates = before
+    snapshot = max(
+        candidates,
+        key=lambda item: (
+            _dt(_get(item, "observed_at")) or datetime.min.replace(tzinfo=timezone.utc),
+            str(_get(item, "fingerprint", "")),
+        ),
+    )
     fields = dict(_get(evaluation, "fields", {}) or {})
     snapshot_fp = _get(snapshot, "fingerprint")
     if snapshot_fp:
@@ -351,7 +415,12 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
             trust_ok = False
     if not trust_ok:
         reasons.add(DatasetExclusionReason.UNTRUSTED_TIER)
-    if str(f.get("decision_context_status", "")).upper() != "COMPLETE" or not audit or str(_get(observation.evidence, "context_integrity", "")).upper() != "COMPLETE":
+    if (
+        str(f.get("decision_context_status", "")).upper() != "COMPLETE"
+        or not audit
+        or str(_get(observation.evidence, "context_integrity", "")).upper() != "COMPLETE"
+        or not _graph_artifacts_complete(audit)
+    ):
         reasons.add(DatasetExclusionReason.DECISION_CONTEXT_INCOMPLETE)
         if audit and str(_get(observation.evidence, "context_integrity", "")).upper() != "COMPLETE":
             reasons.add(DatasetExclusionReason.EVIDENCE_INCOMPLETE)
@@ -451,7 +520,13 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
             reasons.add(DatasetExclusionReason.TEMPORAL_INVALID)
     order = tuple(DatasetExclusionReason)
     ordered = tuple(reason for reason in order if reason in reasons)
-    return EligibilityResult(not ordered, ordered, {"decision_id": d.decision_id})
+    details = {"decision_id": d.decision_id}
+    if ev is not None:
+        details.update({
+            "effective_evaluation_basis": _get(ev, "evaluation_basis"),
+            "effective_horizon_seconds": int(_get(ev, "horizon_seconds", 0) or 0),
+        })
+    return EligibilityResult(not ordered, ordered, details)
 
 
 __all__ = ["EligibilityResult", "join_observations", "classify_observation"]

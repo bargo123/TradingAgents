@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from tradingagents.experience.config import (
+    EXPERIENCE_SCHEMA_VERSION,
+    TRUST_POLICY_VERSION,
+)
 from tradingagents.experience.identity import (
     source_decision_fingerprint,
     source_evaluation_fingerprint,
@@ -606,6 +610,40 @@ class ReadonlyExperienceSource(_Readonly):
                     snapshot["provenance"] = _decode_phase8_object(snapshot.pop("provenance_json"))
                 for projection in projections:
                     projection["projection"] = _decode_phase8_object(projection.pop("projection_json"))
+                # The Phase 8 v1 catalog intentionally stores the experience
+                # and trust versions in the configuration contract rather than
+                # repeating them on every record.  Derive only those official
+                # values and the feature versions actually present in the
+                # projection; never invent provenance from arbitrary prose.
+                feature_schema_versions = {
+                    str(item.get("feature_schema_version"))
+                    for item in projections
+                    if item.get("feature_schema_version")
+                }
+                extractor_versions = {
+                    str(item["projection"].get("version"))
+                    for item in projections
+                    if isinstance(item.get("projection"), dict)
+                    and item["projection"].get("version")
+                }
+                item["experience_schema_version"] = EXPERIENCE_SCHEMA_VERSION
+                item["feature_schema_version"] = (
+                    next(iter(feature_schema_versions))
+                    if len(feature_schema_versions) == 1
+                    else None
+                )
+                item["feature_extractor_version"] = (
+                    next(iter(extractor_versions))
+                    if len(extractor_versions) == 1
+                    else None
+                )
+                item["trust_policy_version"] = TRUST_POLICY_VERSION
+                item["phase8_version_provenance"] = {
+                    "experience_schema_version": "tradingagents.experience.config",
+                    "feature_schema_version": "experience_feature_projections",
+                    "feature_extractor_version": "projection.version",
+                    "trust_policy_version": "tradingagents.experience.trust.POLICY_VERSION",
+                }
                 item["accepted_aliases"] = aliases
                 item["feature_projections"] = projections
                 item["evaluation_snapshots"] = snapshots
