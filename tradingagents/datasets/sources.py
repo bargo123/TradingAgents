@@ -25,9 +25,12 @@ _AUDIT_TABLE = "evidence_usage_audit"
 _AUDIT_FIELDS = (
     "decision_id",
     "source_run_id",
+    "as_of",
+    "rendered_context",
     "rendered_context_hash",
     "knowledge_generation_id",
     "experience_generation_id",
+    "knowledge_query",
     "integration_status",
     "bundle_status",
     "evidence_use_status",
@@ -37,9 +40,20 @@ _AUDIT_FIELDS = (
     "evidence_refs_used",
     "evidence_refs_rejected",
     "query_policy_version",
+    "source_status",
+    "diagnostics",
+    "source_errors",
     "retrieval_count",
+    "retrieval_latency_seconds",
+    "builder_latency_seconds",
     "selected_counts",
     "dropped_counts",
+    "telemetry_references",
+    "node_context_hashes",
+    "missing_nodes",
+    "provider",
+    "model",
+    "audit_schema_version",
     "evidence_audit_status",
     "query_normalization_fingerprint",
     "knowledge_query_fingerprint",
@@ -51,7 +65,15 @@ _PHASE8_REQUIRED = {
         "source_database_id",
         "source_decision_fingerprint",
         "symbol",
+        "requested_symbol",
+        "analysis_profile",
+        "analysis_timeframe",
         "analysis_snapshot_timestamp",
+        "decision_completed_timestamp",
+        "decision_reference_timestamp",
+        "market_state_json",
+        "decision_evidence_json",
+        "tombstoned",
         "trust",
         "provenance_json",
         "source_evaluation_fingerprints_json",
@@ -63,6 +85,7 @@ _PHASE8_REQUIRED = {
         "experience_id",
         "state",
         "observed_at",
+        "scan_status",
     },
     "experience_outcome_snapshots": {
         "experience_id",
@@ -70,6 +93,8 @@ _PHASE8_REQUIRED = {
         "evaluation_json",
         "provenance_json",
         "observed_at",
+        "evaluation_basis",
+        "horizon_seconds",
     },
     "experience_feature_projections": {
         "experience_id",
@@ -407,6 +432,7 @@ class ReadonlyPhase9AuditSource(_Readonly):
                     if k in _AUDIT_FIELDS
                 }
                 for key in (
+                    "knowledge_query",
                     "available_knowledge_ids",
                     "available_experience_ids",
                     "available_statistics_ids",
@@ -414,12 +440,17 @@ class ReadonlyPhase9AuditSource(_Readonly):
                     "evidence_refs_rejected",
                     "selected_counts",
                     "dropped_counts",
+                    "source_status",
+                    "diagnostics",
+                    "source_errors",
+                    "node_context_hashes",
                 ):
                     if key in item:
                         try:
                             item[key] = json.loads(item[key] or "[]")
                         except (TypeError, json.JSONDecodeError):
                             item[key] = []
+                _normalize_row(item)
                 rows.append(item)
             self._check_after(marks)
             return SourceReadResult(

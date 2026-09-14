@@ -58,3 +58,23 @@ pytest -q tests/test_dataset_sources.py tests/test_dataset_models.py
 git diff --check
 passed (warnings only for Git LF/CRLF conversion)
 ```
+
+## Round 2 review fix
+
+Aligned Phase 8 validation with the complete catalog contract, including
+tombstone state, market/evidence JSON, requested and decision timestamps,
+aliases, projections, and retained evaluation metadata. The Phase 9 adapter
+now validates and retains every field written by `EvidenceAuditStore`, including
+as-of/context data, query and policy fingerprints, source diagnostics, latency,
+telemetry, node metadata, provider/model, and schema version. Structured JSON
+fields remain bounded and timestamps are normalized to UTC.
+
+Verification command/output:
+
+```text
+ruff check tradingagents/datasets/sources.py tests/test_dataset_sources.py
+All checks passed!
+
+pytest -q tests/test_dataset_sources.py tests/test_dataset_models.py
+21 passed
+```
