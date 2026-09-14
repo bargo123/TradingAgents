@@ -9,7 +9,7 @@ import re
 import uuid
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,11 @@ _SPLIT_STATUSES = {"COMPLETE", "INSUFFICIENT_DATA"}
 _GENERATION_ID_MODES = {"EXPLICIT", "CONTENT_DERIVED"}
 _REPRODUCIBILITY_FIELDS = {
     "writer_version", "generation_identity_version", "serialization",
+}
+_REPRODUCIBILITY_DEFAULTS = {
+    "writer_version": "phase10.writer.v1",
+    "generation_identity_version": _GENERATION_IDENTITY_VERSION,
+    "serialization": "json-sort-keys-compact-utf8-newline",
 }
 _SAFETY_FIELDS = {"network_attempts", "llm_calls", "tool_calls", "mt5_calls"}
 _EXCLUSION_FIELDS = {"decision_id", "reasons", "details"}
@@ -135,6 +140,29 @@ def _validated_policies(value: Mapping[str, str] | None) -> dict[str, str]:
         if result[name] != _POLICY_DEFAULTS[name]:
             raise GenerationValidationError(f"unsupported policy version: {name}")
     return {str(k): str(v) for k, v in sorted(result.items())}
+
+
+def _utc_analysis_timestamp(row: CanonicalExampleV1) -> datetime:
+    """Parse one canonical analysis timestamp and normalize it to UTC."""
+    value = row.decision.get("analysis_snapshot_timestamp")
+    if isinstance(value, datetime):
+        stamp = value
+    elif isinstance(value, str):
+        try:
+            stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise GenerationValidationError(
+                "analysis_snapshot_timestamp must be an ISO timestamp"
+            ) from exc
+    else:
+        raise GenerationValidationError(
+            "analysis_snapshot_timestamp must be a timezone-aware timestamp"
+        )
+    if stamp.tzinfo is None or stamp.utcoffset() is None:
+        raise GenerationValidationError(
+            "analysis_snapshot_timestamp must be timezone-aware"
+        )
+    return stamp.astimezone(timezone.utc)
 
 
 def _canonical_row(value: Any) -> CanonicalExampleV1:
@@ -271,8 +299,8 @@ def _validate_manifest_contract(manifest: Mapping[str, Any]) -> list[str]:
     if not isinstance(reproducibility, Mapping) or set(reproducibility) != _REPRODUCIBILITY_FIELDS:
         errors.append("manifest reproducibility is incomplete")
     else:
-        for name, value in reproducibility.items():
-            if not isinstance(value, str) or not value or len(value) > 256:
+        for name, expected in _REPRODUCIBILITY_DEFAULTS.items():
+            if reproducibility.get(name) != expected:
                 errors.append(f"manifest reproducibility field is invalid: {name}")
 
     time_range = manifest.get("time_range")
@@ -410,12 +438,8 @@ def write_generation(
             ),
         }
         timestamps = [
-            row.decision.get("analysis_snapshot_timestamp")
+            _utc_analysis_timestamp(row).isoformat().replace("+00:00", "Z")
             for row in rows
-            if isinstance(row.decision, Mapping)
-        ]
-        timestamps = [
-            x.isoformat() if isinstance(x, datetime) else x for x in timestamps if x is not None
         ]
         reason_counts = Counter(reason.value for item in excluded for reason in item.reasons)
         action_counts = Counter(str(row.decision.get("action", "")) for row in rows)
@@ -586,6 +610,11 @@ def validate_generation(path: str | Path):
             errors.append("duplicate or invalid example IDs")
         if manifest.get("examples") != len(rows):
             errors.append("example count mismatch")
+        expected_status = "PUBLISHED" if rows else "EMPTY_ELIGIBLE_SET"
+        if manifest.get("status") != expected_status:
+            errors.append("manifest status/population mismatch")
+        if manifest.get("dataset_id") != root.name:
+            errors.append("manifest dataset id does not match generation directory")
         excluded_rows = read_rows("excluded.jsonl")
         exclusions: list[DatasetExclusion] = []
         for value in excluded_rows:
@@ -616,6 +645,18 @@ def validate_generation(path: str | Path):
         }
         if candidate_summary != expected_candidates:
             errors.append("candidate summary mismatch")
+        try:
+            expected_times = sorted(_utc_analysis_timestamp(row) for row in rows)
+            expected_time_range = {
+                "first": expected_times[0].isoformat().replace("+00:00", "Z")
+                if expected_times else None,
+                "last": expected_times[-1].isoformat().replace("+00:00", "Z")
+                if expected_times else None,
+            }
+            if manifest.get("time_range") != expected_time_range:
+                errors.append("manifest time_range summary mismatch")
+        except GenerationValidationError as exc:
+            errors.append(str(exc))
         example_by_id = {item.example_id: item for item in rows}
         # Source fingerprints are part of the trust boundary: a generation
         # cannot claim one source while its canonical rows identify another.

@@ -314,6 +314,93 @@ def test_validate_generation_rejects_invalid_manifest_contract_fields(
     assert any(field.replace("_", " ") in error or field in error for error in report.errors)
 
 
+def test_validate_generation_rejects_status_inconsistent_with_population(tmp_path: Path):
+    root = write_generation(
+        tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        dataset_id="population-status", source_fingerprints=FINGERPRINTS,
+        policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["status"] = "EMPTY_ELIGIBLE_SET"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any("status" in error and "population" in error for error in report.errors)
+
+
+def test_validate_generation_rejects_tampered_explicit_dataset_id(tmp_path: Path):
+    root = write_generation(
+        tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        dataset_id="explicit-id", source_fingerprints=FINGERPRINTS,
+        policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["dataset_id"] = "different-id"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any("dataset id" in error for error in report.errors)
+
+
+def test_validate_generation_requires_canonical_reproducibility_values(tmp_path: Path):
+    root = write_generation(
+        tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        dataset_id="reproducibility", source_fingerprints=FINGERPRINTS,
+        policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["reproducibility"]["serialization"] = "non-canonical"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any("reproducibility" in error for error in report.errors)
+
+
+def test_validate_generation_requires_actual_utc_time_range(tmp_path: Path):
+    root = write_generation(
+        tmp_path,
+        (example("ex-1", "2026-01-01T00:00:00+00:00"),
+         example("ex-2", "2026-01-02T00:00:00+00:00")),
+        (), SplitResult((), "INSUFFICIENT_DATA"), dataset_id="time-range",
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["time_range"]["first"] = "2025-12-31T00:00:00+00:00"
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any("time_range" in error and "summary" in error for error in report.errors)
+
+
+def test_write_generation_normalizes_time_range_to_utc(tmp_path: Path):
+    root = write_generation(
+        tmp_path,
+        (example("ex-1", "2026-01-01T02:00:00+02:00"),
+         example("ex-2", "2026-01-01T01:00:00+00:00")),
+        (), SplitResult((), "INSUFFICIENT_DATA"), dataset_id="utc-range",
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["time_range"] == {
+        "first": "2026-01-01T00:00:00Z",
+        "last": "2026-01-01T01:00:00Z",
+    }
+
+
 def test_default_generation_id_includes_source_fingerprints(tmp_path: Path):
     first = write_generation(
         tmp_path / "first", (),
