@@ -45,3 +45,45 @@ def test_duplicate_rejected():
  o = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, 'duplicate': True})
  with pytest.raises(ValueError):
   canonicalize(o, EligibilityResult(True, details={'decision_id': 'd1'}))
+
+
+def test_id_uses_only_approved_identity_fields():
+    o = obs()
+    ok = EligibilityResult(True, details={'decision_id': 'd1'})
+    first = canonicalize(o, ok)
+    changed = o.__class__(o.decision, o.evaluation, o.evidence,
+                          {**o.fields, 'irrelevant': 'changed'})
+    assert canonicalize(changed, ok).example_id == first.example_id
+    assert 'canonicalization_version' not in first.provenance.get('identity', {})
+
+
+def test_snapshot_is_bounded_and_fingerprints_are_phase_separated():
+    o = obs()
+    source = {'source_id': 's1', 'canonical_path': 'x', 'schema_fingerprint': 'sf',
+              'file_sha256': 'fh', 'snapshot_fingerprint': 'ss'}
+    fields = {**o.fields, 'source_fingerprint': source,
+              'audit': {**o.fields.get('audit', {}), 'phase9_fingerprint': 'p9'}}
+    d = o.decision.__class__(o.decision.decision_id, o.decision.analysis_snapshot_timestamp,
+        o.decision.decision_completed_timestamp, source_run_id=o.decision.source_run_id,
+        requested_symbol=o.decision.requested_symbol, resolved_symbol=o.decision.resolved_symbol,
+        analysis_profile=o.decision.analysis_profile, analysis_timeframe=o.decision.analysis_timeframe,
+        action=o.decision.action, fields={**o.decision.fields, 'snapshot_json': {
+            'quote': {'bid': 1, 'ask': 2, 'spread_points': 3}, 'point': .1, 'digits': 2,
+            'features': {'M5': {'return_over_bars': 1, 'candle_dump': ['x'] * 100}},
+            'account': {'balance': 999}, 'rendered_context': 'drop me'}})
+    joined = o.__class__(d, o.evaluation, o.evidence, fields)
+    result = canonicalize(joined, EligibilityResult(True, details={'decision_id': 'd1'}))
+    snapshot = result.market['snapshot']
+    assert snapshot['quote']['bid'] == 1
+    assert 'account' not in snapshot and 'rendered_context' not in snapshot
+    assert result.provenance['source']['snapshot_fingerprint'] == 'ss'
+    assert result.provenance['phase9']['phase9_fingerprint'] == 'p9'
+
+
+def test_evidence_duplicates_and_overlap_fail_closed():
+    o = obs()
+    evidence = o.evidence.__class__('COMPLETE', 'USED', ('K1', 'K1'), (),
+                                    {'available_knowledge_ids': ['K1'], 'context_hash': 'ctx'})
+    bad = o.__class__(o.decision, o.evaluation, evidence, o.fields)
+    with pytest.raises(ValueError):
+        canonicalize(bad, EligibilityResult(True, details={'decision_id': 'd1'}))

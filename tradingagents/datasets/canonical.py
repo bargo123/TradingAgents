@@ -3,15 +3,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import fields, is_dataclass
 from typing import Any
 
 from .models import (
-    CANONICALIZATION_VERSION,
     EXAMPLE_SCHEMA_VERSION,
     CanonicalExampleV1,
+    DatasetExclusionReason,
     JoinedObservation,
 )
 
@@ -55,6 +56,30 @@ def _reject(value: Any, key: str = "") -> None:
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(_plain(value), sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
+def _snapshot(value: Any, symbol: str, timestamp: Any) -> dict[str, Any]:
+    """Project only bounded market facts; arbitrary source payloads are excluded."""
+    if not isinstance(value, Mapping):
+        raise ValueError("snapshot must be a mapping")
+    out: dict[str, Any] = {"symbol": symbol, "timestamp": timestamp}
+    for key in ("point", "digits"):
+        if isinstance(value.get(key), (int, float)) and not isinstance(value[key], bool) and math.isfinite(float(value[key])):
+            out[key] = value[key]
+    quote = value.get("quote")
+    if isinstance(quote, Mapping):
+        out["quote"] = {k: quote[k] for k in ("bid", "ask", "spread", "spread_points") if isinstance(quote.get(k), (int, float)) and not isinstance(quote[k], bool) and math.isfinite(float(quote[k]))}
+    features = value.get("features")
+    if isinstance(features, Mapping):
+        projected = {}
+        for tf, section in list(features.items())[:8]:
+            if not isinstance(section, Mapping):
+                continue
+            vals = {str(k): v for k, v in list(section.items())[:32] if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))}
+            if vals:
+                projected[str(tf)[:32]] = vals
+        if projected:
+            out["features"] = projected
+    return out
+
 def _pair(result: Any, eligibility: Any | None) -> tuple[JoinedObservation, Any]:
     if eligibility is None and isinstance(result, (tuple, list)) and len(result) == 2:
         result, eligibility = result
@@ -84,9 +109,9 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     policy = record.get("trust_policy_version", "")
     if not dfp or not basis or not horizon or not policy:
         raise ValueError("canonical identity/provenance incomplete")
-    identity = {"decision_id": d.decision_id, "basis": basis, "horizon_seconds": horizon, "source_decision_fingerprint": dfp, "policy_version": policy, "canonicalization_version": CANONICALIZATION_VERSION}
+    identity = {"decision_id": d.decision_id, "basis": basis, "horizon_seconds": horizon, "source_decision_fingerprint": dfp, "policy_version": policy}
     example_id = "ex_" + _digest(identity)
-    snapshot = _get(d, "fields", {}).get("snapshot_json") or record.get("market_state") or {}
+    snapshot = _snapshot(_get(d, "fields", {}).get("snapshot_json") or record.get("market_state") or {}, d.resolved_symbol, d.analysis_snapshot_timestamp)
     # Keep Phase 9 bounded: IDs/status/hash only; never rendered evidence text.
     used = tuple(_get(evidence, "refs_used", ()) or ())
     rejected = tuple(_get(evidence, "refs_rejected", ()) or ())
@@ -94,11 +119,20 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     knowledge_ids = tuple(audit.get("available_knowledge_ids", ef.get("available_knowledge_ids", ())))
     phase8_ids = tuple(audit.get("available_experience_ids", ef.get("available_experience_ids", ()))) + tuple(audit.get("available_statistics_ids", ef.get("available_statistics_ids", ())))
     context_hash = audit.get("context_hash") or _get(evidence, "fields", {}).get("context_hash")
+    all_ids = knowledge_ids + phase8_ids
+    for name, ids in (("available", all_ids), ("used", used), ("rejected", rejected)):
+        if len(ids) != len(set(ids)) or any(not isinstance(x, str) or not x or len(x) > 256 for x in ids):
+            raise ValueError(f"invalid evidence {name} IDs")
+    if set(used) & set(rejected) or not set(used) | set(rejected) <= set(all_ids):
+        raise ValueError("inconsistent evidence partition")
     decision = {"decision_id": d.decision_id, "source_run_id": d.source_run_id, "requested_symbol": d.requested_symbol, "resolved_symbol": d.resolved_symbol, "analysis_profile": d.analysis_profile, "analysis_timeframe": d.analysis_timeframe, "action": d.action, "analysis_snapshot_timestamp": d.analysis_snapshot_timestamp, "decision_completed_timestamp": d.decision_completed_timestamp, "evaluation_basis": basis, "horizon_seconds": horizon, "source_decision_fingerprint": dfp}
     outcome = {name: _get(ev, name, _get(ev, "fields", {}).get(name)) for name in _OUTCOME_FIELDS}
     outcome = {k: v for k, v in outcome.items() if v is not None}
     trust = {"tier": record.get("trust"), "policy_version": policy, "experience_schema_version": record.get("experience_schema_version"), "feature_schema_version": record.get("feature_schema_version"), "feature_extractor_version": record.get("feature_extractor_version")}
-    provenance = {"source_decision_fingerprint": dfp, "source_evaluation_fingerprint": _get(ev, "fields", {}).get("source_evaluation_fingerprint"), "source": jf.get("source_fingerprint"), "closed_rejection_reasons": tuple(_get(eligibility, "reasons", ())), "context_hash": context_hash, "knowledge": {"ids": knowledge_ids, "used": tuple(x for x in used if x in knowledge_ids), "generation_id": audit.get("knowledge_generation_id", ef.get("knowledge_generation_id"))}, "phase8": {"ids": phase8_ids, "used": tuple(x for x in used if x in phase8_ids), "generation_id": audit.get("experience_generation_id", ef.get("experience_generation_id"))}, "phase9": {"used": used, "rejected": rejected, "audit_status": audit.get("evidence_audit_status"), "context_integrity": audit.get("context_integrity"), "available_knowledge_ids": knowledge_ids, "available_phase8_ids": phase8_ids}, "raw_result_fingerprint": _digest(raw)}
+    reasons = tuple(_get(eligibility, "reasons", ()))
+    if any((x.value if isinstance(x, DatasetExclusionReason) else str(x)) not in {r.value for r in DatasetExclusionReason} for x in reasons):
+        raise ValueError("unknown exclusion reason")
+    provenance = {"source_decision_fingerprint": dfp, "source_evaluation_fingerprint": _get(ev, "fields", {}).get("source_evaluation_fingerprint"), "source": jf.get("source_fingerprint"), "phase8_record_provenance": record.get("provenance"), "phase8_source_evaluation_fingerprints": record.get("source_evaluation_fingerprints"), "closed_rejection_reasons": reasons, "context_hash": context_hash, "knowledge": {"ids": knowledge_ids, "used": tuple(x for x in used if x in knowledge_ids), "generation_id": audit.get("knowledge_generation_id", ef.get("knowledge_generation_id"))}, "phase8": {"ids": phase8_ids, "used": tuple(x for x in used if x in phase8_ids), "generation_id": audit.get("experience_generation_id", ef.get("experience_generation_id")), "source_decision_fingerprint": record.get("source_decision_fingerprint")}, "phase9": {"used": used, "rejected": rejected, "audit_status": audit.get("evidence_audit_status"), "context_integrity": audit.get("context_integrity"), "available_knowledge_ids": knowledge_ids, "available_phase8_ids": phase8_ids, "source_fingerprint": audit.get("source_fingerprint"), "phase9_fingerprint": audit.get("phase9_fingerprint")}, "raw_result_fingerprint": _digest(raw)}
     research = {"phase9": provenance["phase9"]}
     return CanonicalExampleV1(example_id, decision, {"snapshot": snapshot}, research, outcome, trust, provenance, EXAMPLE_SCHEMA_VERSION)
 
