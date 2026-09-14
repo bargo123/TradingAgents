@@ -143,6 +143,20 @@ def _bounded(value: Any, limit: int = 2048) -> Any:
     return str(value)[:limit]
 
 
+def _reject_oversized_collections(value: Any, limit: int = 100) -> None:
+    """Reject collection values before the legacy diagnostic bounding pass."""
+    if isinstance(value, (list, tuple)):
+        if len(value) > limit:
+            raise SourceReadError("Phase 9 array metadata exceeds bound")
+        for item in value:
+            _reject_oversized_collections(item, limit)
+    elif isinstance(value, dict):
+        if len(value) > limit:
+            raise SourceReadError("Phase 9 object metadata exceeds bound")
+        for item in value.values():
+            _reject_oversized_collections(item, limit)
+
+
 def _normalize_row(item: dict[str, Any]) -> dict[str, Any]:
     for key, value in tuple(item.items()):
         if value is not None and (
@@ -181,6 +195,7 @@ def _decode_array(value: Any) -> list[Any]:
             raise SourceReadError("invalid Phase 9 array metadata") from exc
     if not isinstance(decoded, list):
         raise SourceReadError("Phase 9 array metadata must be a JSON array")
+    _reject_oversized_collections(decoded)
     return _bounded(decoded, 500)
 
 
@@ -195,6 +210,7 @@ def _decode_mapping(value: Any) -> dict[str, Any]:
             raise SourceReadError("invalid Phase 9 object metadata") from exc
     if not isinstance(decoded, dict):
         raise SourceReadError("Phase 9 object metadata must be a JSON object")
+    _reject_oversized_collections(decoded)
     return _bounded(decoded, 500)
 
 

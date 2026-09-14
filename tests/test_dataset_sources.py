@@ -173,6 +173,16 @@ def test_phase9_array_fields_decode_to_bounded_arrays():
     assert _decode_array('["telemetry-a", "node-a"]') == ["telemetry-a", "node-a"]
 
 
+def test_phase9_array_fields_reject_oversized_arrays_before_bounding():
+    with pytest.raises(SourceReadError, match="array metadata exceeds bound"):
+        _decode_array(json.dumps(list(range(101))))
+
+
+def test_phase9_mapping_fields_reject_oversized_mappings_before_bounding():
+    with pytest.raises(SourceReadError, match="object metadata exceeds bound"):
+        _decode_mapping(json.dumps({f"key-{i}": i for i in range(101)}))
+
+
 def test_phase9_object_fields_reject_non_object_json():
     with pytest.raises(SourceReadError, match="JSON object"):
         _decode_mapping("[1, 2]")

@@ -81,6 +81,8 @@ def _snapshot(value: Any, symbol: str, timestamp: Any) -> dict[str, Any]:
             raise ValueError("snapshot feature sections exceed bound")
         projected = {}
         for tf, section in list(features.items())[:8]:
+            if not isinstance(tf, str) or not tf or len(tf) > 32:
+                raise ValueError("snapshot timeframe key exceeds bound")
             if not isinstance(section, Mapping):
                 raise ValueError("snapshot feature section must be a mapping")
             if len(section) > 32:
@@ -181,7 +183,7 @@ def _phase9_metadata(audit: Mapping[str, Any], fallback: Mapping[str, Any]) -> d
     for name in ("selected_counts", "dropped_counts"):
         if name in data:
             data[name] = _phase9_counts(name, data[name])
-    for name in ("integration_status", "bundle_status", "evidence_audit_status", "context_integrity", "evidence_use_status"):
+    for name in ("integration_status", "integration", "bundle_status", "evidence_audit_status", "context_integrity", "evidence_use_status"):
         if name in data and data[name] is not None:
             data[name] = _bounded_phase9_text(name, data[name])
     return data

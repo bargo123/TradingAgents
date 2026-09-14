@@ -281,11 +281,37 @@ def test_non_mapping_snapshot_feature_section_fails_closed():
                      EligibilityResult(True, details={"decision_id": "d1"}))
 
 
+def test_snapshot_rejects_oversized_timeframe_key_before_bounding():
+    o = obs()
+    snapshot = {**o.decision.fields["snapshot_json"],
+                "features": {"M" * 33: {"return_over_bars": 1.0}}}
+    d = o.decision.__class__(
+        o.decision.decision_id,
+        o.decision.analysis_snapshot_timestamp,
+        o.decision.decision_completed_timestamp,
+        source_run_id=o.decision.source_run_id,
+        requested_symbol=o.decision.requested_symbol,
+        resolved_symbol=o.decision.resolved_symbol,
+        analysis_profile=o.decision.analysis_profile,
+        analysis_timeframe=o.decision.analysis_timeframe,
+        action=o.decision.action,
+        fields={**o.decision.fields, "snapshot_json": snapshot},
+    )
+    with pytest.raises(ValueError, match="timeframe"):
+        canonicalize(o.__class__(d, o.evaluation, o.evidence, o.fields),
+                     EligibilityResult(True, details={"decision_id": "d1"}))
+
+
 def test_phase9_metadata_types_and_bounds_fail_closed():
     o = obs()
     audit = {**o.fields["audit"], "selected_counts": [1, 2]}
     bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})
     with pytest.raises(ValueError, match="selected_counts"):
+        canonicalize(bad, EligibilityResult(True, details={"decision_id": "d1"}))
+
+    audit = {**o.fields["audit"], "integration": []}
+    bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})
+    with pytest.raises(ValueError, match="integration"):
         canonicalize(bad, EligibilityResult(True, details={"decision_id": "d1"}))
 
     audit = {**o.fields["audit"], "unapproved_runtime_detail": "must not leak"}
