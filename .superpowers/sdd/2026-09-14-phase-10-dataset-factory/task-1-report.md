@@ -79,3 +79,36 @@ pytest -q tests/test_dataset_models.py
 git diff --check
 passed (no whitespace errors)
 ```
+
+## Round 4 review fix
+
+`SplitAssignment.__post_init__` now validates that `split` is a string before
+checking membership in the closed split vocabulary. Unhashable invalid values
+such as lists and dictionaries therefore raise deterministic `ValueError`s
+instead of incidental `TypeError`s. Added a parametrized regression test for
+both values.
+
+TDD verification command/output before the implementation change:
+
+```text
+pytest -q tests/test_dataset_models.py -k round4_unhashable_split_values_raise_value_error
+2 failed, 11 deselected
+TypeError: unhashable type: 'list'
+TypeError: unhashable type: 'dict'
+```
+
+Verification command/output after the implementation change:
+
+```text
+pytest -q tests/test_dataset_models.py -k round4_unhashable_split_values_raise_value_error
+2 passed, 11 deselected
+
+pytest -q tests/test_dataset_models.py
+13 passed
+
+ruff check tradingagents/datasets tests/test_dataset_models.py
+All checks passed!
+
+git diff --check
+passed (no whitespace errors)
+```

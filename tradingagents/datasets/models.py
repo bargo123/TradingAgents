@@ -381,7 +381,7 @@ class SplitAssignment(Contract):
     def __post_init__(self):
         _validate_id(self.example_id, "example_id")
         _validate_id(self.group_id, "group_id")
-        if self.split not in {"train", "validation", "test"}:
+        if not isinstance(self.split, str) or self.split not in {"train", "validation", "test"}:
             raise ValueError("unsupported split")
 
 

@@ -166,3 +166,9 @@ def test_round3_invalid_collection_types_are_value_errors():
         ValidationReport(True, warnings=None)
     with pytest.raises(ValueError):
         SplitAssignment("e", "train", None)
+
+
+@pytest.mark.parametrize("invalid_split", [[], {}])
+def test_round4_unhashable_split_values_raise_value_error(invalid_split):
+    with pytest.raises(ValueError):
+        SplitAssignment("e", invalid_split, "g")
