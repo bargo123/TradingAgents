@@ -123,13 +123,45 @@ def _write_phase8(root: Path, pairs: tuple[Any, ...]) -> None:
             db.execute("INSERT INTO experience_source_aliases VALUES (?,?,?,?,?,?,?)", ("fixture", d.decision_id, fp, eid, "CURRENT", _ts(day), "OK"))
             ev = {**dict(e.fields), "evaluation_basis": e.evaluation_basis, "horizon_seconds": e.horizon_seconds, "evaluation_status": e.evaluation_status}
             db.execute("INSERT INTO experience_outcome_snapshots VALUES (?,?,?,?,?,?,?)", (eid, e.evaluation_basis, e.horizon_seconds, efp, json.dumps(ev), json.dumps({"evaluation_fingerprint": efp, "source_decision_id": d.decision_id}), _ts(day, 350)))
-            db.execute("INSERT INTO experience_feature_projections VALUES (?,?,?)", (eid, "experience-features.v1", json.dumps({"features": _features()})))
+            db.execute(
+                "INSERT INTO experience_feature_projections VALUES (?,?,?)",
+                (
+                    eid,
+                    "experience-features.v1",
+                    json.dumps(
+                        {
+                            "version": "phase8-feature-extractor.v1",
+                            "features": _features(),
+                        }
+                    ),
+                ),
+            )
         db.commit()
     finally:
         db.close()
 
 
 def _write_phase9(path: Path, pairs: tuple[Any, ...]) -> None:
+    # Keep fixture audits aligned with the production Phase 9 graph-integrity
+    # contract.  These are bounded metadata fingerprints, never report text.
+    node_context_hashes = {
+        node: f"fixture-{index:02d}-context-hash"
+        for index, node in enumerate(
+            (
+                "Market Analyst",
+                "News Analyst",
+                "Bull Researcher",
+                "Bear Researcher",
+                "Research Manager",
+                "Trader",
+                "Aggressive Analyst",
+                "Conservative Analyst",
+                "Neutral Analyst",
+                "Portfolio Manager",
+            ),
+            start=1,
+        )
+    }
     db = sqlite3.connect(path)
     try:
         _table(db, "evidence_usage_audit", list(_AUDIT_FIELDS))
@@ -137,7 +169,7 @@ def _write_phase9(path: Path, pairs: tuple[Any, ...]) -> None:
             if d.decision_id == "future-1":
                 continue
             v = dict.fromkeys(_AUDIT_FIELDS)
-            v.update({"decision_id": d.decision_id, "source_run_id": d.source_run_id, "as_of": d.decision_completed_timestamp.isoformat(), "rendered_context": "bounded", "rendered_context_hash": "hash", "knowledge_generation_id": "kg", "experience_generation_id": "eg", "knowledge_query": "order flow imbalance", "integration_status": "INJECTED", "bundle_status": "COMPLETE", "evidence_use_status": "USED", "available_knowledge_ids": '["K1"]', "available_experience_ids": "[]", "available_statistics_ids": "[]", "evidence_refs_used": '["K1"]', "evidence_refs_rejected": "[]", "query_policy_version": "phase9.query.v1", "source_status": '{"knowledge":"COMPLETE","experience":"COMPLETE"}', "diagnostics": "{}", "source_errors": "{}", "retrieval_count": "1", "retrieval_latency_seconds": ".1", "builder_latency_seconds": ".1", "selected_counts": '{"knowledge":1,"experience":0,"statistics":0}', "dropped_counts": "{}", "telemetry_references": "[]", "node_context_hashes": "{}", "missing_nodes": "[]", "provider": "fixture", "model": "fixture", "audit_schema_version": "phase9.audit.v1", "evidence_audit_status": "VALID", "query_normalization_fingerprint": "query", "knowledge_query_fingerprint": "query-fp"})
+            v.update({"decision_id": d.decision_id, "source_run_id": d.source_run_id, "as_of": d.decision_completed_timestamp.isoformat(), "rendered_context": "bounded", "rendered_context_hash": "hash", "knowledge_generation_id": "kg", "experience_generation_id": "eg", "knowledge_query": "order flow imbalance", "integration_status": "INJECTED", "bundle_status": "COMPLETE", "evidence_use_status": "USED", "available_knowledge_ids": '["K1"]', "available_experience_ids": "[]", "available_statistics_ids": "[]", "evidence_refs_used": '["K1"]', "evidence_refs_rejected": "[]", "query_policy_version": "phase9.query.v1", "source_status": '{"knowledge":"COMPLETE","experience":"COMPLETE"}', "diagnostics": "{}", "source_errors": "{}", "retrieval_count": "1", "retrieval_latency_seconds": ".1", "builder_latency_seconds": ".1", "selected_counts": '{"knowledge":1,"experience":0,"statistics":0}', "dropped_counts": "{}", "telemetry_references": "[]", "node_context_hashes": json.dumps(node_context_hashes, sort_keys=True), "missing_nodes": "[]", "provider": "fixture", "model": "fixture", "audit_schema_version": "phase9.audit.v1", "evidence_audit_status": "VALID", "query_normalization_fingerprint": "query", "knowledge_query_fingerprint": "query-fp"})
             db.execute(f'INSERT INTO evidence_usage_audit VALUES ({",".join("?" for _ in _AUDIT_FIELDS)})', tuple(v[key] for key in _AUDIT_FIELDS))
         db.commit()
     finally:
