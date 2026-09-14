@@ -97,9 +97,27 @@ def test_evidence_partition_must_account_for_every_available_reference():
         'COMPLETE', 'USED', ('K1',), (),
         {'available_knowledge_ids': ['K1', 'K2'], 'context_hash': 'ctx'},
     )
-    bad = o.__class__(o.decision, o.evaluation, evidence, o.fields)
+    bad = o.__class__(
+        o.decision,
+        o.evaluation,
+        evidence,
+        {**o.fields, "audit": {**o.fields["audit"], "available_knowledge_ids": ["K1", "K2"]}},
+    )
     with pytest.raises(ValueError, match="evidence partition"):
         canonicalize(bad, EligibilityResult(True, details={'decision_id': 'd1'}))
+
+
+def test_conflicting_authoritative_and_fallback_available_ids_fail_closed():
+    o = obs()
+    evidence = o.evidence.__class__(
+        "COMPLETE", "USED", ("K1", "E1", "S1"), (),
+        {"available_knowledge_ids": ["K2"], "context_hash": "ctx"},
+    )
+    with pytest.raises(ValueError, match="available.*IDs"):
+        canonicalize(
+            o.__class__(o.decision, o.evaluation, evidence, o.fields),
+            EligibilityResult(True, details={'decision_id': 'd1'}),
+        )
 
 
 def test_rejection_reason_is_preserved_in_canonical_provenance():
@@ -231,6 +249,17 @@ def test_phase_source_fingerprints_survive_join_and_canonical_projection():
     assert result.provenance["phase56"]["source_id"] == "p56"
     assert result.provenance["phase8"]["source_fingerprint"]["source_id"] == "p8"
     assert result.provenance["phase9"]["source_fingerprint"]["source_id"] == "p9"
+
+
+@pytest.mark.parametrize("phase", ["phase56", "phase8", "phase9"])
+def test_phase_labeled_source_fingerprint_requires_complete_contract(phase):
+    o = obs()
+    fields = {**o.fields, "source_fingerprints": {phase: {"source_id": phase}}}
+    with pytest.raises(ValueError, match=f"invalid {phase} source fingerprint"):
+        canonicalize(
+            o.__class__(o.decision, o.evaluation, o.evidence, fields),
+            EligibilityResult(True, details={'decision_id': 'd1'}),
+        )
 
 
 def test_non_mapping_snapshot_feature_section_fails_closed():

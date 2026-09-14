@@ -199,7 +199,7 @@ def _decode_mapping(value: Any) -> dict[str, Any]:
 
 
 def _decode_phase8_object(value: Any) -> dict[str, Any]:
-    """Decode a Phase 8 JSON object without coercing other JSON types."""
+    """Decode a bounded Phase 8 JSON object without silent truncation."""
     if isinstance(value, dict):
         decoded = value
     else:
@@ -209,7 +209,38 @@ def _decode_phase8_object(value: Any) -> dict[str, Any]:
             raise SourceReadError("invalid Phase 8 JSON object") from exc
     if not isinstance(decoded, dict):
         raise SourceReadError("Phase 8 JSON object must be a JSON object")
-    return _bounded(decoded, 500)
+    _validate_phase8_value(decoded)
+    return decoded
+
+
+def _validate_phase8_value(value: Any) -> None:
+    """Validate JSON values before any adapter bounding can occur.
+
+    Phase 8 JSON columns contain source facts.  Truncating a serialized object
+    before decoding would turn an invalid/oversized source into a different,
+    apparently valid object.  Reject the original value instead.
+    """
+    if isinstance(value, str):
+        if len(value) > 500:
+            raise SourceReadError("Phase 8 JSON object contains oversized value")
+        return
+    if value is None or isinstance(value, (int, float, bool)):
+        return
+    if isinstance(value, list):
+        if len(value) > 100:
+            raise SourceReadError("Phase 8 JSON object contains oversized array")
+        for item in value:
+            _validate_phase8_value(item)
+        return
+    if isinstance(value, dict):
+        if len(value) > 100:
+            raise SourceReadError("Phase 8 JSON object contains oversized mapping")
+        for key, item in value.items():
+            if not isinstance(key, str) or len(key) > 128:
+                raise SourceReadError("Phase 8 JSON object contains oversized key")
+            _validate_phase8_value(item)
+        return
+    raise SourceReadError("Phase 8 JSON object contains unsupported value")
 
 
 def _decode_phase8_fingerprints(value: Any) -> dict[str, str]:
@@ -227,10 +258,15 @@ def _decode_phase8_fingerprints(value: Any) -> dict[str, str]:
     return decoded
 
 
-def _related(db, experience_id: str, table: str, query: str) -> list[dict[str, Any]]:
+def _related(
+    db, experience_id: str, table: str, query: str, raw_json_keys: frozenset[str] = frozenset()
+) -> list[dict[str, Any]]:
     names = [x[0] for x in db.execute(f'SELECT * FROM "{table}" LIMIT 0').description]
     return [
-        {k: _bounded(v) for k, v in zip(names, row, strict=True)}
+        {
+            k: v if k in raw_json_keys else _bounded(v)
+            for k, v in zip(names, row, strict=True)
+        }
         for row in db.execute(query, (experience_id,))
     ]
 
@@ -439,13 +475,16 @@ class ReadonlyExperienceSource(_Readonly):
                 names = [
                     x[0] for x in db.execute("SELECT * FROM experience_records LIMIT 0").description
                 ]
-                item = {k: _bounded(v) for k, v in zip(names, row, strict=True)}
                 json_keys = (
                     "market_state_json",
                     "decision_evidence_json",
                     "provenance_json",
                     "source_evaluation_fingerprints_json",
                 )
+                item = {
+                    k: v if k in json_keys else _bounded(v)
+                    for k, v in zip(names, row, strict=True)
+                }
                 for key in json_keys:
                     raw_json = item.pop(key)
                     name = key[:-5] if key.endswith("_json") else key
@@ -467,12 +506,14 @@ class ReadonlyExperienceSource(_Readonly):
                     experience_id,
                     "experience_feature_projections",
                     "SELECT * FROM experience_feature_projections WHERE experience_id=?",
+                    frozenset(("projection_json",)),
                 )
                 snapshots = _related(
                     db,
                     experience_id,
                     "experience_outcome_snapshots",
                     "SELECT * FROM experience_outcome_snapshots WHERE experience_id=? ORDER BY observed_at,fingerprint",
+                    frozenset(("evaluation_json", "provenance_json")),
                 )
                 for snapshot in snapshots:
                     snapshot["evaluation"] = _decode_phase8_object(snapshot.pop("evaluation_json"))

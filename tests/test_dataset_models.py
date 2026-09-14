@@ -95,11 +95,17 @@ def test_closed_statuses_and_reason_types():
 
 
 def test_nested_collections_are_immutable_and_report_collections_frozen():
-    evidence = EvidenceObservation(refs_used=["a"], refs_rejected=["b"], fields={"x": {"y": 1}})
+    evidence = EvidenceObservation(
+        refs_used=["a"],
+        refs_rejected=[{"ref": "b", "reason": "LOW_RELEVANCE"}],
+        fields={"x": {"y": 1}},
+    )
     with pytest.raises(TypeError):
         evidence.fields["x"]["y"] = 2
     with pytest.raises(TypeError):
         evidence.refs_used[0] = "c"
+    with pytest.raises(TypeError):
+        evidence.refs_rejected[0]["reason"] = "REDUNDANT"
     report = ValidationReport(True, errors=["e"], warnings=["w"])
     with pytest.raises(TypeError):
         report.errors[0] = "x"

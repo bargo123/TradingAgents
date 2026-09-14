@@ -184,6 +184,22 @@ def test_phase8_json_object_fields_reject_non_object_json(raw):
         _decode_phase8_object(raw)
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [json.dumps({"x" * 129: "value"}), json.dumps({"value": "x" * 2500})],
+)
+def test_phase8_json_object_rejects_oversized_members_before_bounding(raw):
+    with pytest.raises(SourceReadError, match="Phase 8 JSON object"):
+        _decode_phase8_object(raw)
+
+
+def test_phase8_fingerprint_decoder_rejects_oversized_fingerprint_before_bounding():
+    from tradingagents.datasets.sources import _decode_phase8_fingerprints
+
+    with pytest.raises(SourceReadError, match="evaluation fingerprints"):
+        _decode_phase8_fingerprints(json.dumps({"ANALYSIS_SNAPSHOT:300": "x" * 300}))
+
+
 def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
     path = tmp_path / "audit.sqlite3"
     columns = (

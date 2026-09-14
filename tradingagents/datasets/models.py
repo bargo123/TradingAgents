@@ -316,7 +316,7 @@ class EvidenceObservation(Contract):
                         "REDUNDANT",
                     }:
                         raise ValueError("refs_rejected has an unsupported reason")
-                    normalized.append({"ref": ref_id, "reason": reason})
+                    normalized.append(_freeze({"ref": ref_id, "reason": reason}))
                 else:
                     _validate_id(ref, name)
                     normalized.append(ref)
