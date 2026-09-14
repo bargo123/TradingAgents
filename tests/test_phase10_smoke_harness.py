@@ -48,6 +48,8 @@ def test_smoke_harness_reports_actual_source_fingerprints_for_empty_build(
     report = json.loads(capsys.readouterr().out)
     fingerprints = report["source_fingerprints"]
     assert report["status"] == "EMPTY_ELIGIBLE_SET"
+    assert report["reason_counts"]["DECISION_CONTEXT_INCOMPLETE"] > 0
+    assert report["reason_counts"]["NORMALIZATION_FAILED"] > 0
     assert set(fingerprints) == {"phase56", "phase8", "phase9"}
     assert fingerprints["phase56"]["canonical_path"] == str(artifacts["source"].resolve())
     assert fingerprints["phase8"]["canonical_path"] == str(

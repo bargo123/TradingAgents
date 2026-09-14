@@ -48,13 +48,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     payload = report.to_dict()
     manifest = payload.get("manifest") or {}
+    reason_counts = manifest.get("reason_counts")
+    if reason_counts is None:
+        reason_counts = (manifest.get("counts") or {}).get("reason_counts", {})
     bounded = {
         "status": report.status,
         "offline": True,
         "examples": manifest.get("examples", 0),
         "exclusions": manifest.get("exclusions", len(report.exclusions)),
         "split_status": manifest.get("split_status"),
-        "reason_counts": (manifest.get("counts") or {}).get("reason_counts", {}),
+        "reason_counts": reason_counts,
         "source_fingerprints": manifest.get("source_fingerprints", {}),
         "safety": manifest.get("safety", DatasetFactory.safety_counters()),
     }
