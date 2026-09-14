@@ -262,13 +262,30 @@ def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[Joined
         evidence = None
         if ar:
             row = ar[0]
+            # Phase 9's persisted audit schema records source component
+            # statuses rather than duplicating EvidenceContext's top-level
+            # flag.  A complete injected bundle with complete source
+            # components is the adapter-level representation of COMPLETE.
+            context_integrity = _get(row, "context_integrity")
+            if context_integrity is None:
+                source_status = _get(row, "source_status", {})
+                if (
+                    _get(row, "bundle_status") == "COMPLETE"
+                    and _get(row, "integration_status") == "INJECTED"
+                    and isinstance(source_status, Mapping)
+                    and source_status
+                    and all(str(value).upper() == "COMPLETE" for value in source_status.values())
+                ):
+                    context_integrity = "COMPLETE"
+            if context_integrity is None:
+                context_integrity = "INCOMPLETE"
             rejected = tuple(
                 {"ref": x.get("ref"), "reason": x.get("reason")}
                 if isinstance(x, Mapping) else x
                 for x in (_get(row, "evidence_refs_rejected", _get(row, "refs_rejected", ())) or ())
             )
             evidence = EvidenceObservation(
-                context_integrity=str(_get(row, "context_integrity", "INCOMPLETE")),
+                context_integrity=str(context_integrity),
                 evidence_use_status=str(_get(row, "evidence_use_status", "INCOMPLETE")),
                 refs_used=tuple(_get(row, "evidence_refs_used", _get(row, "refs_used", ())) or ()),
                 refs_rejected=rejected,
@@ -357,7 +374,9 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
         reasons.add(DatasetExclusionReason.TEMPORAL_INVALID)
     if str(f.get("normalization_status", "")).upper() != "NORMALIZED" or ("action" in f and str(f["action"]).upper() not in {"BUY", "SELL", "HOLD"}):
         reasons.add(DatasetExclusionReason.NORMALIZATION_FAILED)
-    required_audit = ("context_integrity", "evidence_use_status", "evidence_audit_status", "evidence_refs_used", "evidence_refs_rejected")
+    # ``context_integrity`` is derived by the adapter for the Phase 9 audit
+    # schema, which persists component source statuses instead of that field.
+    required_audit = ("evidence_use_status", "evidence_audit_status", "evidence_refs_used", "evidence_refs_rejected")
     if any(name not in audit for name in required_audit) or str(_get(audit, "evidence_audit_status", "")).upper() != "VALID":
         reasons.add(DatasetExclusionReason.CITATION_INVALID)
     if audit and all(name in audit for name in required_audit):

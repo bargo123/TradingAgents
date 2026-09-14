@@ -58,6 +58,11 @@ def _digest(value: Any) -> str:
 
 def _snapshot(value: Any, symbol: str, timestamp: Any) -> dict[str, Any]:
     """Project only bounded market facts; arbitrary source payloads are excluded."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("snapshot must be a mapping") from exc
     if not isinstance(value, Mapping):
         raise ValueError("snapshot must be a mapping")
     if len(value) > 64:

@@ -29,6 +29,13 @@ def main(argv: list[str] | None = None) -> int:
     if missing:
         print(json.dumps({"status": "SOURCE_MISSING", "paths": missing}, sort_keys=True))
         return 2
+    # Acceptance smoke is intentionally append-only: never reuse, delete, or
+    # overwrite a user's Phase 10 artifact root.  An empty pre-created
+    # directory is allowed; a published generation or any other state fails
+    # closed before source adapters are initialized.
+    if output.exists() and any(output.iterdir()):
+        print(json.dumps({"status": "OUTPUT_ROOT_NOT_FRESH", "path": str(output)}, sort_keys=True))
+        return 2
     try:
         report = DatasetFactory().build(DatasetConfig(sources, phase8, audit, output, allow_empty=True))
     except Exception as exc:  # visible, bounded harness failure
@@ -38,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     manifest = payload.get("manifest") or {}
     bounded = {
         "status": report.status,
+        "offline": True,
         "examples": manifest.get("examples", 0),
         "exclusions": manifest.get("exclusions", len(report.exclusions)),
         "split_status": manifest.get("split_status"),

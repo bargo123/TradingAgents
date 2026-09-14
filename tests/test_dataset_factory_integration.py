@@ -1,73 +1,83 @@
 from __future__ import annotations
 
 import json
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
-from tests.fixtures.dataset_factory import canonical, fingerprint, observations
-from tradingagents.datasets.eligibility import EligibilityResult
+from tests.fixtures.dataset_factory import make_real_fixtures
 from tradingagents.datasets.factory import DatasetFactory
-from tradingagents.datasets.models import DatasetConfig, DatasetExclusionReason
-from tradingagents.datasets.sources import SourceReadResult
+from tradingagents.datasets.models import DatasetConfig
+from tradingagents.datasets.writer import validate_generation
 
 
-def _install_fixture_readers(monkeypatch, tmp_path):
-    source = tmp_path / "source.db"
-    source.write_bytes(b"fixture-source")
-    phase8 = tmp_path / "phase8"
-    phase8.mkdir()
-    audit = tmp_path / "audit.db"
-    audit.write_bytes(b"fixture-audit")
-    rows = observations(source)
-    fps = {"phase56": fingerprint("phase56", source), "phase8": fingerprint("phase8", phase8), "phase9": fingerprint("phase9", audit)}
-
-    class Reader:
-        def __init__(self, path): self.path = Path(path)
-        def read(self):
-            if self.path == source:
-                return SourceReadResult(decisions=tuple(row.decision for row in rows), fingerprint=fps["phase56"])
-            return SourceReadResult(fingerprint=fps["phase8"] if self.path.name == "catalog.sqlite3" else fps["phase9"])
-
-    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyPhase56Source", Reader)
-    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyExperienceSource", Reader)
-    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyPhase9AuditSource", Reader)
-    monkeypatch.setattr("tradingagents.datasets.factory._bind_sqlite_marks", lambda result, digest: result)
-    monkeypatch.setattr("tradingagents.datasets.factory._source_inventory", lambda results, p8, p9: [{"kind": "phase56", "source_id": "fixture", "canonical_path": str(source), "file_sha256": "fixture", "snapshot_fingerprint": "fixture", "decision_ids": [], "decision_fingerprints": [], "decision_identities": []}])
-    monkeypatch.setattr("tradingagents.datasets.factory._fingerprint", lambda result, kind: fps[kind])
-    monkeypatch.setattr("tradingagents.datasets.factory._coalesce_fingerprints", lambda results: fps["phase56"].to_dict())
-    return source, phase8, audit, rows, fps
+def _build(root: Path, paths: tuple[Path, ...], output: Path):
+    return DatasetFactory().build(
+        DatasetConfig(
+            paths, root / "phase8", root / "phase9.sqlite3", output,
+            filters={"as_of": datetime(2026, 1, 20, tzinfo=timezone.utc)},
+        )
+    )
 
 
-def test_public_factory_end_to_end_is_deterministic_and_explicit(monkeypatch, tmp_path):
-    source, phase8, audit, rows, fps = _install_fixture_readers(monkeypatch, tmp_path)
-    outcomes = {row.decision.decision_id: row for row in rows}
-    def join(*_): return tuple(outcomes.values())
-    def classify(observation, _config):
-        ident = observation.decision.decision_id
-        if ident.startswith("valid"):
-            return EligibilityResult(True, ())
-        reason = {"tier-b": DatasetExclusionReason.UNTRUSTED_TIER, "tier-c": DatasetExclusionReason.UNTRUSTED_TIER, "incomplete": DatasetExclusionReason.DECISION_CONTEXT_INCOMPLETE, "unavailable": DatasetExclusionReason.OUTCOME_UNAVAILABLE, "future": DatasetExclusionReason.TEMPORAL_INVALID}[ident]
-        return EligibilityResult(False, (reason,), {"decision_id": ident})
-    monkeypatch.setattr("tradingagents.datasets.factory.join_observations", join)
-    monkeypatch.setattr("tradingagents.datasets.factory.classify_observation", classify)
-    monkeypatch.setattr("tradingagents.datasets.factory.canonicalize", lambda obs, elig: canonical(obs.decision.decision_id, fps, int(obs.decision.decision_id[-1]) if obs.decision.decision_id[-1].isdigit() else 0))
-    config = DatasetConfig((source,), phase8, audit, tmp_path / "out")
-    first = DatasetFactory().build(config)
-    assert first.status == "EMPTY_ELIGIBLE_SET" or first.manifest is not None
-    generation = next(p for p in config.output_root.iterdir() if p.is_dir() and (p / "manifest.json").exists())
-    first_bytes = {p.name: p.read_bytes() for p in generation.iterdir() if p.is_file()}
-    second_config = DatasetConfig((source,), phase8, audit, tmp_path / "out-reversed")
-    second = DatasetFactory().build(second_config)
-    assert second.manifest is not None
-    generation2 = next(p for p in second_config.output_root.iterdir() if p.is_dir() and (p / "manifest.json").exists())
-    assert {p.name: p.read_bytes() for p in generation2.iterdir() if p.is_file()} == first_bytes
-    payload = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
-    assert payload["safety"] == {"network_attempts": 0, "llm_calls": 0, "tool_calls": 0, "mt5_calls": 0}
-    reasons = payload["counts"]["reason_counts"]
-    assert reasons["UNTRUSTED_TIER"] == 2
-    assert reasons["DECISION_CONTEXT_INCOMPLETE"] == 1
-    assert reasons["OUTCOME_UNAVAILABLE"] == 1
-    assert reasons["TEMPORAL_INVALID"] == 1
+def _published(root: Path) -> Path:
+    return next(path for path in root.iterdir() if path.is_dir() and (path / "manifest.json").is_file())
 
 
-def test_fixture_rows_cover_duplicate_and_future_categories():
-    assert {row.decision.decision_id for row in observations(Path("fixture.db"))} >= {"future", "unavailable", "tier-b", "tier-c"}
+def test_public_factory_uses_real_adapters_end_to_end(tmp_path: Path) -> None:
+    artifacts = make_real_fixtures(tmp_path)
+    duplicate_source = tmp_path / "phase56-copy.sqlite3"
+    shutil.copyfile(artifacts["source"], duplicate_source)
+
+    first_output = tmp_path / "out-first"
+    first = _build(tmp_path, (duplicate_source, artifacts["source"]), first_output)
+    assert first.status == "PUBLISHED"
+    generation = _published(first_output)
+    assert validate_generation(generation).valid
+
+    manifest = json.loads((generation / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["safety"] == {
+        "network_attempts": 0,
+        "llm_calls": 0,
+        "tool_calls": 0,
+        "mt5_calls": 0,
+    }
+    assert manifest["examples"] == 8
+    assert manifest["split_status"] == "COMPLETE"
+    assert manifest["group_count"] == 8
+    reasons = manifest["counts"]["reason_counts"]
+    assert reasons["UNTRUSTED_TIER"] >= 2
+    assert reasons["DECISION_CONTEXT_INCOMPLETE"] >= 1
+    assert reasons["OUTCOME_INELIGIBLE"] >= 1
+    assert reasons["TEMPORAL_INVALID"] >= 1
+    assert reasons["DUPLICATE"] >= 1
+
+    rows = [json.loads(line) for line in (generation / "examples.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 8
+    assert all("prompt" not in json.dumps(row).lower() for row in rows)
+    assert all("reasoning" not in json.dumps(row).lower() for row in rows)
+    assert {row["provenance"]["phase56"]["source_id"] for row in rows}
+    assert {row["provenance"]["phase8"]["source_fingerprint"]["source_id"] for row in rows}
+    assert {row["provenance"]["phase9"]["source_fingerprint"]["source_id"] for row in rows}
+
+    # The factory sorts paths before reading, so reversing caller input cannot
+    # alter generation bytes (the duplicate copy is deterministically ignored).
+    second_output = tmp_path / "out-second"
+    second = _build(tmp_path, (artifacts["source"], duplicate_source), second_output)
+    assert second.status == "PUBLISHED"
+    generation2 = _published(second_output)
+    assert {
+        path.name: path.read_bytes() for path in generation.iterdir() if path.is_file()
+    } == {
+        path.name: path.read_bytes() for path in generation2.iterdir() if path.is_file()
+    }
+
+
+def test_fixture_covers_future_and_unavailable_without_fabricating_labels(tmp_path: Path) -> None:
+    artifacts = make_real_fixtures(tmp_path)
+    report = _build(tmp_path, (artifacts["source"],), tmp_path / "out")
+    excluded = {item.decision_id: {reason.value for reason in item.reasons} for item in report.exclusions}
+    assert "unavailable-1" in excluded and "OUTCOME_UNAVAILABLE" not in excluded["unavailable-1"]
+    assert "future-1" in excluded and "TEMPORAL_INVALID" in excluded["future-1"]
+    assert report.manifest is not None
+    assert report.manifest.safety["llm_calls"] == 0
