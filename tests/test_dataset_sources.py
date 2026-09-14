@@ -174,6 +174,23 @@ def test_phase9_array_fields_decode_to_bounded_arrays():
     assert _decode_array('["telemetry-a", "node-a"]') == ["telemetry-a", "node-a"]
 
 
+@pytest.mark.parametrize("raw", [0, False, "", "   "])
+def test_phase9_array_fields_reject_falsey_or_empty_non_json_values(raw):
+    with pytest.raises(SourceReadError, match="array metadata"):
+        _decode_array(raw)
+
+
+@pytest.mark.parametrize("raw", [0, False, "", "   "])
+def test_phase9_mapping_fields_reject_falsey_or_empty_non_json_values(raw):
+    with pytest.raises(SourceReadError, match="object metadata"):
+        _decode_mapping(raw)
+
+
+def test_phase9_nullable_metadata_values_have_explicit_empty_shapes():
+    assert _decode_array(None) == []
+    assert _decode_mapping(None) == {}
+
+
 def test_phase9_array_fields_reject_oversized_arrays_before_bounding():
     with pytest.raises(SourceReadError, match="array metadata exceeds bound"):
         _decode_array(json.dumps(list(range(101))))
@@ -280,6 +297,7 @@ def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
     values[columns.index("as_of")] = "2026-01-01T01:02:03Z"
     values[columns.index("telemetry_references")] = json.dumps(["telemetry-1"])
     values[columns.index("missing_nodes")] = json.dumps(["node-a", "node-b"])
+    values[columns.index("source_errors")] = json.dumps({"phase7": "unavailable"})
     values[columns.index("selected_counts")] = json.dumps({"knowledge": 2, "experience": 0, "statistics": 1})
     values[columns.index("dropped_counts")] = json.dumps({"knowledge": 0, "experience": 1, "statistics": 0})
     with sqlite3.connect(path) as db:
@@ -304,5 +322,7 @@ def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
     assert isinstance(audit["telemetry_references"], list)
     assert audit["missing_nodes"] == ["node-a", "node-b"]
     assert isinstance(audit["missing_nodes"], list)
+    assert audit["source_errors"] == {"phase7": "unavailable"}
+    assert isinstance(audit["source_errors"], dict)
     assert audit["selected_counts"] == {"knowledge": 2, "experience": 0, "statistics": 1}
     assert audit["dropped_counts"] == {"knowledge": 0, "experience": 1, "statistics": 0}

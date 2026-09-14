@@ -191,11 +191,19 @@ def _identity_row(item: dict[str, Any]) -> dict[str, Any]:
 def _decode_array(value: Any) -> list[Any]:
     if isinstance(value, (list, tuple)):
         decoded = list(value)
-    else:
+    elif value is None:
+        # Nullable audit columns represent an absent collection.  This is the
+        # only non-JSON scalar accepted by the adapter contract.
+        decoded = []
+    elif isinstance(value, str):
+        if not value.strip():
+            raise SourceReadError("invalid Phase 9 array metadata")
         try:
-            decoded = json.loads(value or "[]")
-        except (TypeError, json.JSONDecodeError) as exc:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
             raise SourceReadError("invalid Phase 9 array metadata") from exc
+    else:
+        raise SourceReadError("invalid Phase 9 array metadata")
     if not isinstance(decoded, list):
         raise SourceReadError("Phase 9 array metadata must be a JSON array")
     _reject_oversized_collections(decoded)
@@ -206,11 +214,19 @@ def _decode_mapping(value: Any) -> dict[str, Any]:
     """Decode JSON object columns without coercing them into empty arrays."""
     if isinstance(value, dict):
         decoded = value
-    else:
+    elif value is None:
+        # Nullable audit columns represent an absent mapping.  Empty strings
+        # and other falsey scalars are malformed source data, not nulls.
+        decoded = {}
+    elif isinstance(value, str):
+        if not value.strip():
+            raise SourceReadError("invalid Phase 9 object metadata")
         try:
-            decoded = json.loads(value or "{}")
-        except (TypeError, json.JSONDecodeError) as exc:
+            decoded = json.loads(value)
+        except json.JSONDecodeError as exc:
             raise SourceReadError("invalid Phase 9 object metadata") from exc
+    else:
+        raise SourceReadError("invalid Phase 9 object metadata")
     if not isinstance(decoded, dict):
         raise SourceReadError("Phase 9 object metadata must be a JSON object")
     _reject_oversized_collections(decoded)
@@ -590,7 +606,6 @@ class ReadonlyPhase9AuditSource(_Readonly):
                 "evidence_refs_rejected",
                 "telemetry_references",
                 "missing_nodes",
-                "source_errors",
             )
             mapping_keys = (
                 "selected_counts",
@@ -598,6 +613,7 @@ class ReadonlyPhase9AuditSource(_Readonly):
                 "source_status",
                 "diagnostics",
                 "node_context_hashes",
+                "source_errors",
             )
             raw_json_keys = frozenset(array_keys + mapping_keys)
             rows = []
