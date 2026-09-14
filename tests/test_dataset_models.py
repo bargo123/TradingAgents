@@ -5,10 +5,16 @@ import pytest
 
 from tradingagents.datasets.errors import DatasetConfigError
 from tradingagents.datasets.models import (
+    BuildReport,
     DatasetConfig,
+    DatasetExclusion,
     DatasetExclusionReason,
+    DatasetManifest,
+    EvaluationObservation,
+    EvidenceObservation,
     SourceFingerprint,
     SourceObservation,
+    ValidationReport,
 )
 
 
@@ -62,3 +68,41 @@ def test_immutable_mappings_and_json_determinism(tmp_path):
 def test_config_rejects_output_inside_source(tmp_path):
     with pytest.raises(DatasetConfigError):
         DatasetConfig((tmp_path / "src",), tmp_path / "p8", None, tmp_path / "src" / "out")
+
+
+def test_forbidden_keys_and_sensitive_values_are_rejected_recursively():
+    for payload in ({"nested": {"password": "x"}}, {"nested": ["private token: x"]}):
+        with pytest.raises(ValueError):
+            SourceObservation("d", datetime(2025, 1, 1, tzinfo=timezone.utc), fields=payload)
+
+
+def test_closed_statuses_and_reason_types():
+    with pytest.raises(ValueError):
+        EvaluationObservation("d", evaluation_status="BOGUS")
+    with pytest.raises(ValueError):
+        EvidenceObservation(context_integrity="BOGUS")
+    with pytest.raises(ValueError):
+        EvidenceObservation(evidence_use_status="BOGUS")
+    with pytest.raises(ValueError):
+        DatasetManifest("m", split_status="BOGUS")
+    with pytest.raises(ValueError):
+        BuildReport("BOGUS")
+    with pytest.raises(ValueError):
+        DatasetExclusion("d", reasons=("BOGUS",))
+
+
+def test_nested_collections_are_immutable_and_report_collections_frozen():
+    evidence = EvidenceObservation(refs_used=["a"], refs_rejected=["b"], fields={"x": {"y": 1}})
+    with pytest.raises(TypeError):
+        evidence.fields["x"]["y"] = 2
+    with pytest.raises(TypeError):
+        evidence.refs_used[0] = "c"
+    report = ValidationReport(True, errors=["e"], warnings=["w"])
+    with pytest.raises(TypeError):
+        report.errors[0] = "x"
+
+
+def test_insertion_order_does_not_change_serialization():
+    a = SourceObservation("d", datetime(2025, 1, 1, tzinfo=timezone.utc), fields={"a": 1, "b": 2})
+    b = SourceObservation("d", datetime(2025, 1, 1, tzinfo=timezone.utc), fields={"b": 2, "a": 1})
+    assert a.to_json() == b.to_json()

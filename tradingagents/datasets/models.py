@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -38,18 +39,14 @@ class DatasetExclusionReason(str, Enum):
     SOURCE_INTEGRITY_FAILED = "SOURCE_INTEGRITY_FAILED"
 
 
-_FORBIDDEN = {
-    "prompt",
-    "completion",
-    "reasoning",
-    "private_reasoning",
-    "tokens",
-    "credentials",
-    "api_key",
-}
+_SENSITIVE = re.compile(
+    r"(?:prompt|completion|reasoning|private[ _-]?reasoning|secret|password|credential|api[ _-]?key|token)",
+    re.I,
+)
 
 
 def _freeze(v):
+    _assert_safe(v)
     if isinstance(v, Mapping):
         return MappingProxyType(
             {str(k): _freeze(x) for k, x in sorted(v.items(), key=lambda i: str(i[0]))}
@@ -69,9 +66,27 @@ def _freeze(v):
     raise TypeError(f"value is not JSON-safe: {type(v).__name__}")
 
 
+def _assert_safe(v, key=""):
+    if key and _SENSITIVE.search(str(key)):
+        raise ValueError(f"forbidden field: {key}")
+    if isinstance(v, Mapping):
+        for k, child in v.items():
+            _assert_safe(child, str(k))
+    elif isinstance(v, (list, tuple)):
+        for child in v:
+            _assert_safe(child)
+    elif isinstance(v, str) and _SENSITIVE.search(v) and re.search(r"[:=]", v):
+        raise ValueError("forbidden sensitive value")
+
+
 def _validate_id(v, name="id"):
     if not isinstance(v, str) or not v.strip() or len(v) > 256:
         raise ValueError(f"{name} must be a bounded non-empty string")
+
+
+def _validate_optional_text(v, name):
+    if not isinstance(v, str) or len(v) > 256:
+        raise ValueError(f"{name} must be a bounded string")
 
 
 def _validate_dt(v, name):
@@ -87,7 +102,7 @@ def _validate_dt(v, name):
 def _clean(data):
     out = {}
     for k, v in data.items():
-        if k in _FORBIDDEN:
+        if _SENSITIVE.search(str(k)):
             raise ValueError(f"forbidden field: {k}")
         out[k] = v
     return out
@@ -145,8 +160,11 @@ class DatasetConfig(Contract):
         if not paths:
             raise DatasetConfigError("at least one source database is required")
         if (
-            not self.evaluation_basis
+            not isinstance(self.evaluation_basis, str)
+            or not self.evaluation_basis.strip()
             or len(self.evaluation_basis) > 64
+            or not isinstance(self.horizon_seconds, int)
+            or isinstance(self.horizon_seconds, bool)
             or self.horizon_seconds <= 0
         ):
             raise DatasetConfigError("invalid basis or horizon")
@@ -177,6 +195,7 @@ class SourceFingerprint(Contract):
             "snapshot_fingerprint",
         ):
             _validate_id(getattr(self, n), n)
+        _validate_id(self.contract_version, "contract_version")
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,6 +220,14 @@ class SourceObservation(Contract):
         if self.action not in {"BUY", "SELL", "HOLD"}:
             raise ValueError("unsupported action")
         object.__setattr__(self, "fields", _freeze(self.fields))
+        for n in (
+            "source_run_id",
+            "requested_symbol",
+            "resolved_symbol",
+            "analysis_profile",
+            "analysis_timeframe",
+        ):
+            _validate_optional_text(getattr(self, n), n)
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +241,20 @@ class EvaluationObservation(Contract):
 
     def __post_init__(self):
         _validate_id(self.decision_id, "decision_id")
+        if (
+            not isinstance(self.evaluation_basis, str)
+            or not self.evaluation_basis.strip()
+            or len(self.evaluation_basis) > 64
+        ):
+            raise ValueError("invalid evaluation basis")
+        if (
+            not isinstance(self.horizon_seconds, int)
+            or isinstance(self.horizon_seconds, bool)
+            or self.horizon_seconds <= 0
+        ):
+            raise ValueError("invalid horizon")
+        if self.evaluation_status not in {"PENDING", "COMPLETE", "DATA_UNAVAILABLE", "INELIGIBLE"}:
+            raise ValueError("unsupported evaluation status")
         object.__setattr__(self, "fields", _freeze(self.fields))
 
 
@@ -226,6 +267,16 @@ class EvidenceObservation(Contract):
     fields: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
+        if self.context_integrity not in {"COMPLETE", "INCOMPLETE", "UNAVAILABLE", "INVALID"}:
+            raise ValueError("unsupported context integrity")
+        if self.evidence_use_status not in {"USED", "NONE_RELEVANT", "INCOMPLETE", "INVALID"}:
+            raise ValueError("unsupported evidence status")
+        for name, refs in (("refs_used", self.refs_used), ("refs_rejected", self.refs_rejected)):
+            if not isinstance(refs, (list, tuple)):
+                raise ValueError(f"{name} must be a sequence")
+            for ref in refs:
+                _validate_id(ref, name)
+            object.__setattr__(self, name, tuple(refs))
         object.__setattr__(self, "fields", _freeze(self.fields))
 
 
@@ -267,6 +318,11 @@ class DatasetExclusion(Contract):
 
     def __post_init__(self):
         _validate_id(self.decision_id, "decision_id")
+        if not isinstance(self.reasons, (list, tuple)) or any(
+            not isinstance(r, DatasetExclusionReason) for r in self.reasons
+        ):
+            raise ValueError("reasons must contain DatasetExclusionReason values")
+        object.__setattr__(self, "reasons", tuple(self.reasons))
         object.__setattr__(self, "details", _freeze(self.details))
 
 
@@ -300,6 +356,8 @@ class DatasetManifest(Contract):
 
     def __post_init__(self):
         _validate_id(self.dataset_id, "dataset_id")
+        if self.split_status not in {"COMPLETE", "INSUFFICIENT_DATA", "FAILED"}:
+            raise ValueError("unsupported split status")
         object.__setattr__(self, "safety", _freeze(self.safety))
 
 
@@ -310,9 +368,19 @@ class BuildReport(Contract):
     exclusions: tuple[DatasetExclusion, ...] = ()
     errors: tuple[str, ...] = ()
 
+    def __post_init__(self):
+        if self.status not in {"COMPLETE", "EMPTY", "FAILED"}:
+            raise ValueError("unsupported build status")
+        object.__setattr__(self, "exclusions", tuple(self.exclusions))
+        object.__setattr__(self, "errors", tuple(self.errors))
+
 
 @dataclass(frozen=True, slots=True)
 class ValidationReport(Contract):
     valid: bool
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+
+    def __post_init__(self):
+        object.__setattr__(self, "errors", tuple(self.errors))
+        object.__setattr__(self, "warnings", tuple(self.warnings))

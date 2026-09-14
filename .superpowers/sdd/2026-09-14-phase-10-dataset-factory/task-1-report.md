@@ -31,3 +31,18 @@ implementation, the same tests passed.
 - `tradingagents/datasets/models.py`
 - `tradingagents/datasets/errors.py`
 - `tests/test_dataset_models.py`
+
+## Round 1 review fix
+
+Added recursive sensitive/no-CoT key and value rejection, closed status and
+reason validation, immutable nested references and report collections, and
+bounded type checks for source/config/split/report fields.
+
+Verification command/output:
+
+```text
+ruff check tradingagents/datasets tests/test_dataset_models.py
+All checks passed!
+pytest -q tests/test_dataset_models.py
+7 passed
+```
