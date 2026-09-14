@@ -14,6 +14,11 @@ from tradingagents.datasets.sources import (
     _decode_array,
     _stamp,
 )
+from tradingagents.experience.identity import (
+    source_decision_fingerprint,
+    source_evaluation_fingerprint,
+)
+from tradingagents.experience.source_reader import ReadonlySourceReader
 
 
 def test_phase56_read_is_query_only_and_converts_utc(tmp_path):
@@ -26,6 +31,19 @@ def test_phase56_read_is_query_only_and_converts_utc(tmp_path):
     assert result.query_only is True
     with pytest.raises(sqlite3.OperationalError):
         ReadonlyPhase56Source(path).connection_for_test().execute("CREATE TABLE x(a)")
+
+
+def test_phase56_public_adapter_carries_authoritative_source_fingerprints(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    result = ReadonlyPhase56Source(path).read()
+    snapshot = ReadonlySourceReader(path).read_snapshot()
+
+    assert result.decisions[0].fields["source_decision_fingerprint"] == source_decision_fingerprint(
+        snapshot.decisions[0]
+    )
+    assert result.evaluations[0].fields["source_evaluation_fingerprint"] == source_evaluation_fingerprint(
+        snapshot.evaluations[0]
+    )
 
 
 def test_phase56_detects_file_change(tmp_path):

@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from tradingagents.experience.identity import (
+    source_decision_fingerprint,
+    source_evaluation_fingerprint,
+)
 from tradingagents.experience.source_reader import (
     _DECISION_COLUMNS,
     _EVALUATION_COLUMNS,
@@ -126,6 +130,8 @@ def _stamp(value: Any) -> Any:
 
 
 def _bounded(value: Any, limit: int = 2048) -> Any:
+    if isinstance(value, datetime):
+        return value
     if isinstance(value, str):
         return value.replace("\r", " ").replace("\n", " ")[:limit]
     if isinstance(value, (int, float, bool)) or value is None:
@@ -276,8 +282,18 @@ class ReadonlyPhase56Source(_Readonly):
             cur = db.execute("SELECT * FROM shadow_decisions ORDER BY decision_id")
             names = [x[0] for x in cur.description]
             for row in cur:
-                item = {k: _bounded(v) for k, v in zip(names, row, strict=True)}
+                raw_item = dict(zip(names, row, strict=True))
+                _normalize_row(raw_item)
+                # Phase 5/6 does not persist the Phase 8 identity columns.  Derive
+                # them from the complete normalized source row before removing
+                # adapter-only identity fields below, matching the Phase 8
+                # importer contract exactly.
+                decision_fp = raw_item.get("source_decision_fingerprint") or source_decision_fingerprint(
+                    raw_item
+                )
+                item = {k: _bounded(v) for k, v in raw_item.items()}
                 _normalize_row(item)
+                item["source_decision_fingerprint"] = decision_fp
                 ts = _stamp(item.pop("analysis_snapshot_timestamp"))
                 completed = _stamp(item.pop("decision_completed_timestamp", None))
                 decisions.append(
@@ -300,8 +316,14 @@ class ReadonlyPhase56Source(_Readonly):
             )
             names = [x[0] for x in cur.description]
             for row in cur:
-                item = {k: _bounded(v) for k, v in zip(names, row, strict=True)}
+                raw_item = dict(zip(names, row, strict=True))
+                _normalize_row(raw_item)
+                evaluation_fp = raw_item.get(
+                    "source_evaluation_fingerprint"
+                ) or source_evaluation_fingerprint(raw_item)
+                item = {k: _bounded(v) for k, v in raw_item.items()}
                 _normalize_row(item)
+                item["source_evaluation_fingerprint"] = evaluation_fp
                 did, basis, horizon, status = (
                     item.pop("decision_id"),
                     item.pop("evaluation_basis"),

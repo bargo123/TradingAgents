@@ -68,3 +68,102 @@ def test_duplicate_decision_keys_are_excluded(tmp_path):
 def test_future_as_of_is_temporally_invalid(tmp_path):
     result = classify_observation(_joined(tmp_path), _config(tmp_path, as_of=datetime(2024, 1, 1, tzinfo=UTC)))
     assert DatasetExclusionReason.TEMPORAL_INVALID in result.reasons
+
+
+def test_normal_evaluation_lifecycle_timestamps_after_analysis_are_allowed(tmp_path):
+    observation = _joined(tmp_path)
+    evaluation = EvaluationObservation(
+        "d1",
+        "ANALYSIS_SNAPSHOT",
+        300,
+        "COMPLETE",
+        True,
+        {
+            "fingerprint": "efp",
+            "created_at": datetime(2025, 1, 1, 0, 2, tzinfo=UTC),
+            "evaluated_at": datetime(2025, 1, 1, 0, 6, tzinfo=UTC),
+            "recovered_from_unavailable_at": datetime(2025, 1, 1, 0, 7, tzinfo=UTC),
+            "entry_timestamp": datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
+            "observation_timestamp": datetime(2025, 1, 1, 0, 6, tzinfo=UTC),
+            "target_timestamp": datetime(2025, 1, 1, 0, 6, tzinfo=UTC),
+            "provenance": {"evaluation_fingerprint": "efp", "source_decision_id": "d1"},
+        },
+    )
+    observation = observation.__class__(observation.decision, evaluation, observation.evidence, observation.fields)
+    result = classify_observation(observation, _config(tmp_path))
+    assert result.eligible
+    assert DatasetExclusionReason.TEMPORAL_INVALID not in result.reasons
+
+
+def test_different_basis_or_horizon_evaluations_are_not_duplicates(tmp_path):
+    decision = _decision(
+        normalization_status="NORMALIZED",
+        decision_context_status="COMPLETE",
+        source_decision_fingerprint="dfp",
+        source_run_id="run1",
+        analysis_profile="p",
+        analysis_timeframe="1h",
+    )
+    eval_300 = EvaluationObservation(
+        "d1", "ANALYSIS_SNAPSHOT", 300, "COMPLETE", True,
+        {"source_evaluation_fingerprint": "efp300"},
+    )
+    eval_600 = EvaluationObservation(
+        "d1", "DECISION_REFERENCE", 600, "COMPLETE", True,
+        {"source_evaluation_fingerprint": "efp600"},
+    )
+    source = SourceReadResult(decisions=(decision,), evaluations=(eval_300, eval_600))
+    records = SourceReadResult(
+        records=(
+            {
+                "experience_id": "e1", "source_decision_id": "d1", "source_run_id": "run1",
+                "source_decision_fingerprint": "dfp", "trust": "TIER_A_HIGH_TRUST",
+                "source_evaluation_fingerprints": {
+                    "ANALYSIS_SNAPSHOT:300": "efp300", "DECISION_REFERENCE:600": "efp600",
+                },
+            },
+        )
+    )
+    joined = join_observations(source, records, SourceReadResult())
+    assert len(joined) == 1
+    assert not joined[0].fields["duplicate"]
+
+
+def test_identical_evaluation_key_is_duplicate(tmp_path):
+    decision = _decision(source_decision_fingerprint="dfp")
+    evaluations = tuple(
+        EvaluationObservation("d1", "ANALYSIS_SNAPSHOT", 300, "COMPLETE", True,
+                              {"source_evaluation_fingerprint": fp})
+        for fp in ("efp-a", "efp-b")
+    )
+    joined = join_observations(
+        SourceReadResult(decisions=(decision,), evaluations=evaluations),
+        SourceReadResult(), SourceReadResult(),
+    )
+    assert joined[0].fields["duplicate"]
+
+
+def test_phase8_snapshot_provenance_is_carried_to_source_evaluation(tmp_path):
+    decision = _decision(source_decision_fingerprint="dfp")
+    evaluation = EvaluationObservation(
+        "d1", "ANALYSIS_SNAPSHOT", 300, "COMPLETE", True,
+        {"source_evaluation_fingerprint": "efp"},
+    )
+    record = {
+        "source_decision_id": "d1",
+        "source_run_id": "run1",
+        "source_decision_fingerprint": "dfp",
+        "evaluation_snapshots": ({
+            "evaluation_basis": "ANALYSIS_SNAPSHOT",
+            "horizon_seconds": 300,
+            "fingerprint": "efp",
+            "provenance": {"evaluation_fingerprint": "efp"},
+        },),
+    }
+    joined = join_observations(
+        SourceReadResult(decisions=(decision,), evaluations=(evaluation,)),
+        SourceReadResult(records=(record,)),
+        SourceReadResult(),
+    )
+    assert joined[0].evaluation.fields["phase8_evaluation_fingerprint"] == "efp"
+    assert joined[0].evaluation.fields["provenance"]["source_decision_id"] == "d1"
