@@ -11,20 +11,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from tradingagents.experience.source_reader import (
+    _DECISION_COLUMNS,
+    _EVALUATION_COLUMNS,
+)
+
 from .errors import SourceIntegrityError, SourceReadError
 from .models import EvaluationObservation, SourceFingerprint, SourceObservation
 
-_DECISION_REQUIRED = {
-    "decision_id",
-    "source_run_id",
-    "requested_symbol",
-    "resolved_symbol",
-    "analysis_profile",
-    "analysis_timeframe",
-    "action",
-    "analysis_snapshot_timestamp",
-}
-_EVAL_REQUIRED = {"decision_id", "evaluation_basis", "horizon_seconds", "evaluation_status"}
+_DECISION_REQUIRED = set(_DECISION_COLUMNS)
+_EVAL_REQUIRED = set(_EVALUATION_COLUMNS)
 _AUDIT_TABLE = "evidence_usage_audit"
 _AUDIT_FIELDS = (
     "decision_id",
@@ -45,7 +41,42 @@ _AUDIT_FIELDS = (
     "selected_counts",
     "dropped_counts",
     "evidence_audit_status",
+    "query_normalization_fingerprint",
+    "knowledge_query_fingerprint",
 )
+_PHASE8_REQUIRED = {
+    "experience_records": {
+        "experience_id",
+        "source_decision_id",
+        "source_database_id",
+        "source_decision_fingerprint",
+        "symbol",
+        "analysis_snapshot_timestamp",
+        "trust",
+        "provenance_json",
+        "source_evaluation_fingerprints_json",
+    },
+    "experience_source_aliases": {
+        "source_database_id",
+        "source_decision_id",
+        "accepted_fingerprint",
+        "experience_id",
+        "state",
+        "observed_at",
+    },
+    "experience_outcome_snapshots": {
+        "experience_id",
+        "fingerprint",
+        "evaluation_json",
+        "provenance_json",
+        "observed_at",
+    },
+    "experience_feature_projections": {
+        "experience_id",
+        "feature_schema_version",
+        "projection_json",
+    },
+}
 
 
 def _sha(path: Path) -> str | None:
@@ -79,6 +110,13 @@ def _bounded(value: Any, limit: int = 2048) -> Any:
     if isinstance(value, dict):
         return {str(k)[:128]: _bounded(v, limit) for k, v in list(value.items())[:100]}
     return str(value)[:limit]
+
+
+def _normalize_row(item: dict[str, Any]) -> dict[str, Any]:
+    for key, value in tuple(item.items()):
+        if value is not None and (key.endswith("_at") or key.endswith("_timestamp")):
+            item[key] = _stamp(value)
+    return item
 
 
 def _related(db, experience_id: str, table: str, query: str) -> list[dict[str, Any]]:
@@ -201,6 +239,7 @@ class ReadonlyPhase56Source(_Readonly):
             names = [x[0] for x in cur.description]
             for row in cur:
                 item = {k: _bounded(v) for k, v in zip(names, row, strict=True)}
+                _normalize_row(item)
                 ts = _stamp(item.pop("analysis_snapshot_timestamp"))
                 completed = _stamp(item.pop("decision_completed_timestamp", None))
                 decisions.append(
@@ -224,6 +263,7 @@ class ReadonlyPhase56Source(_Readonly):
             names = [x[0] for x in cur.description]
             for row in cur:
                 item = {k: _bounded(v) for k, v in zip(names, row, strict=True)}
+                _normalize_row(item)
                 did, basis, horizon, status = (
                     item.pop("decision_id"),
                     item.pop("evaluation_basis"),
@@ -268,7 +308,10 @@ class ReadonlyExperienceSource(_Readonly):
                 "experience_feature_projections",
             }
             if not required <= tables.keys():
-                raise SourceSchemaIncompatibleError("schema drift: phase8 catalog")
+                raise SourceSchemaIncompatibleError("schema drift: phase8 catalog table")
+            for table, columns in _PHASE8_REQUIRED.items():
+                if not columns <= tables[table]:
+                    raise SourceSchemaIncompatibleError(f"schema drift: phase8 {table}")
             rows = []
             for row in db.execute(
                 "SELECT * FROM experience_records WHERE tombstoned=0 ORDER BY experience_id"
@@ -314,6 +357,11 @@ class ReadonlyExperienceSource(_Readonly):
                 item["accepted_aliases"] = aliases
                 item["feature_projections"] = projections
                 item["evaluation_snapshots"] = snapshots
+                _normalize_row(item)
+                for alias in aliases:
+                    _normalize_row(alias)
+                for snapshot in snapshots:
+                    _normalize_row(snapshot)
                 rows.append(item)
             self._check_after(marks)
             return SourceReadResult(
@@ -340,9 +388,10 @@ class ReadonlyPhase9AuditSource(_Readonly):
                 self._before_read_hook()
             tables = self._tables(db)
             if _AUDIT_TABLE not in tables:
+                self._check_after(marks)
                 unavailable = UnavailableObservation("phase9", reason="SCHEMA_UNAVAILABLE")
                 return SourceReadResult(audits=(), available=False, unavailable=unavailable)
-            missing = {"decision_id", "source_run_id"} - tables[_AUDIT_TABLE]
+            missing = set(_AUDIT_FIELDS) - tables[_AUDIT_TABLE]
             if missing:
                 raise SourceSchemaIncompatibleError("schema drift: phase9 audit")
             names = [

@@ -35,3 +35,26 @@ pytest -q tests/test_dataset_sources.py
 
 - `tradingagents/datasets/sources.py`
 - `tests/test_dataset_sources.py`
+
+## Round 1 review fix
+
+Adapters now validate the complete Phase 5/6 contract column sets from the
+existing source reader, every required Phase 8 table's columns, and the full
+structured Phase 9 audit fields. Phase 8 retained timestamps and observed-at
+provenance are normalized to UTC, and audit query/policy fingerprints are
+retained. Existing malformed schemas remain typed errors; missing optional
+audit files/tables remain typed unavailable observations with integrity checks
+on present files.
+
+Verification command/output:
+
+```text
+ruff check tradingagents/datasets/sources.py tests/test_dataset_sources.py
+All checks passed!
+
+pytest -q tests/test_dataset_sources.py tests/test_dataset_models.py
+21 passed
+
+git diff --check
+passed (warnings only for Git LF/CRLF conversion)
+```
