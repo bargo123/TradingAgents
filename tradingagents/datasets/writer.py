@@ -282,6 +282,31 @@ def _default_id(identity_digest: str) -> str:
     return "generation-" + identity_digest[:24]
 
 
+def _publish_without_overwrite(stage: Path, destination: Path) -> None:
+    """Atomically publish ``stage`` while refusing an existing destination.
+
+    ``os.replace`` is intentionally not used here: on Windows and POSIX it is
+    allowed to replace an existing path.  ``os.rename`` is an atomic directory
+    rename and has no-replace semantics for an existing published directory on
+    both supported platforms.  The destination check remains useful for the
+    common case, while the rename itself closes the check-then-publish race.
+    """
+    if os.path.lexists(destination):
+        raise GenerationExistsError(f"generation already exists: {destination.name}")
+    try:
+        os.rename(stage, destination)
+    except OSError as exc:
+        # Windows reports an existing target as FileExistsError.  POSIX may
+        # report a non-empty directory as ENOTEMPTY/EEXIST.  Translate either
+        # form only when the target is actually present; unrelated I/O errors
+        # must retain their original diagnostics and leave staging recoverable.
+        if os.path.lexists(destination):
+            raise GenerationExistsError(
+                f"generation already exists: {destination.name}"
+            ) from exc
+        raise
+
+
 def _validate_manifest_contract(manifest: Mapping[str, Any]) -> list[str]:
     """Validate publication and reproducibility fields not covered by rows."""
     errors: list[str] = []
@@ -406,7 +431,7 @@ def write_generation(
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     destination = root / generation_id
-    if destination.exists():
+    if os.path.lexists(destination):
         raise GenerationExistsError(f"generation already exists: {generation_id}")
     stage = root / f".staging-{generation_id}-{uuid.uuid4().hex}"
     stage.mkdir()
@@ -512,10 +537,7 @@ def write_generation(
                 + "\n"
             ).encode("utf-8")
         )
-        try:
-            os.replace(stage, destination)
-        except FileExistsError as exc:
-            raise GenerationExistsError(f"generation already exists: {generation_id}") from exc
+        _publish_without_overwrite(stage, destination)
         return destination
     except Exception:
         # Keep staging directories for recovery/diagnostics, never publish partial data.

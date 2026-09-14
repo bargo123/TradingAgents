@@ -104,6 +104,32 @@ def test_existing_generation_is_never_overwritten(tmp_path: Path):
     assert root.exists()
 
 
+def test_destination_race_never_overwrites_existing_generation(tmp_path: Path, monkeypatch):
+    """A destination created after the preflight check remains untouched."""
+    original_rename = writer_module.os.rename
+
+    def create_destination_then_rename(source, destination):
+        destination_path = Path(destination)
+        destination_path.mkdir()
+        (destination_path / "sentinel").write_text("existing", encoding="utf-8")
+        return original_rename(source, destination)
+
+    monkeypatch.setattr(writer_module.os, "rename", create_destination_then_rename)
+
+    with pytest.raises(GenerationExistsError):
+        write_generation(
+            tmp_path,
+            (example(),),
+            (),
+            SplitResult((), "INSUFFICIENT_DATA"),
+            dataset_id="raced",
+            source_fingerprints=FINGERPRINTS,
+            policy_versions=POLICIES,
+        )
+
+    assert (tmp_path / "raced" / "sentinel").read_text(encoding="utf-8") == "existing"
+
+
 def test_tampering_is_detected(tmp_path: Path):
     root = write_generation(
         tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"), dataset_id="tamper",
@@ -203,10 +229,10 @@ def test_repeated_builds_in_distinct_roots_have_identical_bytes(tmp_path: Path):
 
 
 def test_interrupted_publish_leaves_unpublished_staging(tmp_path: Path, monkeypatch):
-    def fail_replace(*_args, **_kwargs):
+    def fail_rename(*_args, **_kwargs):
         raise OSError("simulated interruption")
 
-    monkeypatch.setattr(writer_module.os, "replace", fail_replace)
+    monkeypatch.setattr(writer_module.os, "rename", fail_rename)
     with pytest.raises(OSError, match="simulated interruption"):
         write_generation(tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
                          dataset_id="interrupted", source_fingerprints=FINGERPRINTS,
