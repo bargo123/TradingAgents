@@ -76,7 +76,7 @@ def test_snapshot_is_bounded_and_fingerprints_are_phase_separated():
     snapshot = result.market['snapshot']
     assert snapshot['quote']['bid'] == 1
     assert 'account' not in snapshot and 'rendered_context' not in snapshot
-    assert result.provenance['source']['snapshot_fingerprint'] == 'ss'
+    assert result.provenance['phase56']['snapshot_fingerprint'] == 'ss'
     assert result.provenance['phase9']['phase9_fingerprint'] == 'p9'
 
 
@@ -87,3 +87,40 @@ def test_evidence_duplicates_and_overlap_fail_closed():
     bad = o.__class__(o.decision, o.evaluation, evidence, o.fields)
     with pytest.raises(ValueError):
         canonicalize(bad, EligibilityResult(True, details={'decision_id': 'd1'}))
+
+
+def test_design_fields_and_phase_labeled_provenance():
+    o = obs()
+    o = o.__class__(o.decision, o.evaluation, o.evidence,
+                    {**o.fields, 'source_fingerprint': {'source_id': 'p56', 'snapshot_fingerprint': 'f56'},
+                     'audit': {'phase9_fingerprint': 'f9', 'context_integrity': 'COMPLETE',
+                               'evidence_use_status': 'USED', 'evidence_refs_used': ['K1', 'E1', 'S1'],
+                               'evidence_refs_rejected': []}})
+    result = canonicalize(o, EligibilityResult(True, details={'decision_id': 'd1'}))
+    assert result.decision['normalization_status'] == 'NORMALIZED'
+    assert result.decision['decision_context_status'] == 'COMPLETE'
+    assert result.decision['raw_result_fingerprint'] == result.provenance['raw_result_fingerprint']
+    assert result.market['snapshot_fingerprint']
+    assert result.provenance['phase56']['source_id'] == 'p56'
+    assert result.provenance['phase8']['source_decision_fingerprint'] == 'dfp'
+    assert result.provenance['phase9']['phase9_fingerprint'] == 'f9'
+    assert result.research['context_integrity'] == 'COMPLETE'
+    assert result.research['evidence_use_status'] == 'USED'
+
+
+def test_oversized_snapshot_and_evidence_fail_closed():
+    o = obs()
+    huge = {f'feature_{i}': float(i) for i in range(100)}
+    snapshot = {'quote': {'bid': 1, 'ask': 2, 'spread_points': 3}, 'point': .1, 'digits': 2,
+                'features': {'M5': huge}}
+    d = o.decision.__class__(o.decision.decision_id, o.decision.analysis_snapshot_timestamp,
+        o.decision.decision_completed_timestamp, source_run_id=o.decision.source_run_id,
+        requested_symbol=o.decision.requested_symbol, resolved_symbol=o.decision.resolved_symbol,
+        analysis_profile=o.decision.analysis_profile, analysis_timeframe=o.decision.analysis_timeframe,
+        action=o.decision.action, fields={**o.decision.fields, 'snapshot_json': snapshot})
+    with pytest.raises(ValueError):
+        canonicalize(o.__class__(d, o.evaluation, o.evidence, o.fields), EligibilityResult(True, details={'decision_id': 'd1'}))
+    evidence = o.evidence.__class__('COMPLETE', 'USED', tuple(f'K{i}' for i in range(100)), (),
+                                    {'available_knowledge_ids': tuple(f'K{i}' for i in range(100)), 'context_hash': 'ctx'})
+    with pytest.raises(ValueError):
+        canonicalize(o.__class__(o.decision, o.evaluation, evidence, o.fields), EligibilityResult(True, details={'decision_id': 'd1'}))
