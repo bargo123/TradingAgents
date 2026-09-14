@@ -139,9 +139,22 @@ def _bounded(value: Any, limit: int = 2048) -> Any:
 
 def _normalize_row(item: dict[str, Any]) -> dict[str, Any]:
     for key, value in tuple(item.items()):
-        if value is not None and (key.endswith("_at") or key.endswith("_timestamp")):
+        if value is not None and (
+            key == "as_of" or key.endswith("_at") or key.endswith("_timestamp")
+        ):
             item[key] = _stamp(value)
     return item
+
+
+def _decode_array(value: Any) -> list[Any]:
+    if isinstance(value, (list, tuple)):
+        decoded = list(value)
+    else:
+        try:
+            decoded = json.loads(value or "[]")
+        except (TypeError, json.JSONDecodeError):
+            decoded = []
+    return _bounded(decoded if isinstance(decoded, list) else [], 500)
 
 
 def _related(db, experience_id: str, table: str, query: str) -> list[dict[str, Any]]:
@@ -440,16 +453,15 @@ class ReadonlyPhase9AuditSource(_Readonly):
                     "evidence_refs_rejected",
                     "selected_counts",
                     "dropped_counts",
+                    "telemetry_references",
+                    "missing_nodes",
                     "source_status",
                     "diagnostics",
                     "source_errors",
                     "node_context_hashes",
                 ):
                     if key in item:
-                        try:
-                            item[key] = json.loads(item[key] or "[]")
-                        except (TypeError, json.JSONDecodeError):
-                            item[key] = []
+                        item[key] = _decode_array(item[key])
                 _normalize_row(item)
                 rows.append(item)
             self._check_after(marks)

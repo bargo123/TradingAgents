@@ -10,6 +10,8 @@ from tradingagents.datasets.sources import (
     ReadonlyPhase9AuditSource,
     ReadonlyPhase56Source,
     SourceSchemaIncompatibleError,
+    _decode_array,
+    _stamp,
 )
 
 
@@ -72,3 +74,11 @@ def test_audit_retains_policy_fingerprints_and_rejects_incomplete_schema(tmp_pat
         db.execute("CREATE TABLE evidence_usage_audit (decision_id TEXT, source_run_id TEXT)")
     with pytest.raises(SourceSchemaIncompatibleError):
         ReadonlyPhase9AuditSource(path).read()
+
+
+def test_phase9_as_of_is_exact_utc_datetime():
+    assert _stamp("2026-01-01T00:00:00+00:00") == datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_phase9_array_fields_decode_to_bounded_arrays():
+    assert _decode_array('["telemetry-a", "node-a"]') == ["telemetry-a", "node-a"]

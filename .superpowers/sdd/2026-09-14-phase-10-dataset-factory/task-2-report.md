@@ -78,3 +78,22 @@ All checks passed!
 pytest -q tests/test_dataset_sources.py tests/test_dataset_models.py
 21 passed
 ```
+
+## Round 3 review fix
+
+Phase 9 `as_of` values are now explicitly normalized as UTC timestamps, and
+`telemetry_references`/`missing_nodes` are decoded as bounded JSON arrays.
+Regression assertions cover both behaviors.
+
+Verification command/output:
+
+```text
+ruff check tradingagents/datasets/sources.py tests/test_dataset_sources.py
+All checks passed!
+
+pytest -q tests/test_dataset_sources.py tests/test_dataset_models.py
+23 passed
+
+git diff --check
+passed (warnings only for Git LF/CRLF conversion)
+```
