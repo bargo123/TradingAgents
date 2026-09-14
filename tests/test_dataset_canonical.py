@@ -124,3 +124,37 @@ def test_oversized_snapshot_and_evidence_fail_closed():
                                     {'available_knowledge_ids': tuple(f'K{i}' for i in range(100)), 'context_hash': 'ctx'})
     with pytest.raises(ValueError):
         canonicalize(o.__class__(o.decision, o.evaluation, evidence, o.fields), EligibilityResult(True, details={'decision_id': 'd1'}))
+
+
+def test_exact_decision_contract_training_eligibility_and_research_metadata():
+    o = obs()
+    ev = o.evaluation.__class__(o.evaluation.decision_id, o.evaluation.evaluation_basis,
+        o.evaluation.horizon_seconds, o.evaluation.evaluation_status,
+        o.evaluation.source_context_eligible,
+        {**o.evaluation.fields, 'training_eligible': True, 'training_eligibility_reason': 'APPROVED'})
+    audit = {'context_integrity': 'COMPLETE', 'evidence_use_status': 'USED',
+             'evidence_refs_used': ['K1', 'E1', 'S1'], 'evidence_refs_rejected': [],
+             'bundle_status': 'COMPLETE', 'integration_status': 'ENABLED',
+             'selected_counts': {'knowledge': 1, 'experience': 1, 'statistics': 1},
+             'dropped_counts': {'knowledge': 0, 'experience': 0, 'statistics': 0},
+             'knowledge_query_fingerprint': 'qf', 'query_policy_version': 'qp',
+             'knowledge_generation_id': 'kg', 'experience_generation_id': 'eg'}
+    joined = o.__class__(o.decision, ev, o.evidence, {**o.fields, 'audit': audit})
+    result = canonicalize(joined, EligibilityResult(True, details={'decision_id': 'd1'}))
+    assert set(result.decision) == {'decision_id', 'source_run_id', 'requested_symbol', 'resolved_symbol',
+        'analysis_profile', 'analysis_timeframe', 'analysis_snapshot_timestamp',
+        'decision_completed_timestamp', 'action', 'normalization_status', 'decision_context_status',
+        'raw_result_fingerprint'}
+    assert result.outcome['training_eligible'] is True
+    assert result.outcome['training_eligibility_reason'] == 'APPROVED'
+    assert result.research['bundle_status'] == 'COMPLETE'
+    assert result.research['selected_counts']['knowledge'] == 1
+    assert result.research['knowledge_query_fingerprint'] == 'qf'
+
+
+def test_arbitrary_phase8_provenance_is_rejected():
+    o = obs()
+    bad = {**o.fields, 'experience': {**o.fields['experience'], 'provenance': {'notes': 'arbitrary prose'}}}
+    with pytest.raises(ValueError):
+        canonicalize(o.__class__(o.decision, o.evaluation, o.evidence, bad),
+                      EligibilityResult(True, details={'decision_id': 'd1'}))
