@@ -54,6 +54,64 @@ def test_zero_and_small_populations_are_explicitly_insufficient():
     assert assign_splits([example(i, i) for i in range(2)]).status == "INSUFFICIENT_DATA"
 
 
+@pytest.mark.parametrize("group_count", [3, 4])
+def test_populations_that_cannot_fill_all_partitions_are_insufficient(group_count):
+    result = assign_splits([example(i, i, run=f"r{i}") for i in range(group_count)])
+    assert result.status == "INSUFFICIENT_DATA"
+    assert result.assignments == ()
+
+
+def test_offset_timestamps_are_sorted_by_actual_utc_time():
+    rows = [
+        CanonicalExampleV1(
+            example_id="later",
+            decision={
+                "decision_id": "d2",
+                "source_run_id": "r2",
+                "analysis_snapshot_timestamp": "2026-01-01T01:00:00+01:00",
+            },
+            outcome={"evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 300},
+        ),
+        CanonicalExampleV1(
+            example_id="earlier",
+            decision={
+                "decision_id": "d1",
+                "source_run_id": "r1",
+                "analysis_snapshot_timestamp": "2026-01-01T00:30:00Z",
+            },
+            outcome={"evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 300},
+        ),
+        example(3, 3, run="r3"),
+        example(4, 4, run="r4"),
+        example(5, 5, run="r5"),
+    ]
+    result = assign_splits(rows)
+    assert result.status == "COMPLETE"
+    assert [a.example_id for a in result.assignments] == ["later", "e3", "e4", "e5", "earlier"]
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "not-a-timestamp",
+        "2026-01-01T00:00:00",
+        datetime(2026, 1, 1),
+    ],
+)
+def test_timestamp_must_be_valid_timezone_aware_utc_normalizable(timestamp):
+    row = CanonicalExampleV1(
+        example_id="bad",
+        decision={
+            "decision_id": "d-bad",
+            "source_run_id": "r-bad",
+            "analysis_snapshot_timestamp": timestamp,
+        },
+        outcome={"evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 300},
+    )
+    with pytest.raises(ValueError, match="timestamp"):
+        assign_splits([row])
+
+
 def test_validator_rejects_cross_split_groups_and_duplicate_keys():
     rows = [example(1, 1, run="same"), example(2, 2, run="same", horizon=900)]
     rows += [example(i, i, run=f"r{i}") for i in range(3, 7)]

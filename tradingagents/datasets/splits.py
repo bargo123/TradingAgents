@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from .models import CanonicalExampleV1, SplitAssignment
@@ -41,19 +41,27 @@ def _mapping_value(example: Any, section: str, name: str, default: Any = None) -
     return getattr(value, name, default)
 
 
-def _timestamp(example: Any) -> datetime | str:
+def _timestamp(example: Any) -> datetime:
     value = _mapping_value(example, "decision", "analysis_snapshot_timestamp")
     if value is None:
         raise ValueError("example is missing analysis_snapshot_timestamp")
-    if not isinstance(value, (datetime, str)):
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("analysis_snapshot_timestamp must be a valid ISO timestamp") from exc
+    else:
         raise ValueError("analysis_snapshot_timestamp must be datetime or ISO string")
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("analysis_snapshot_timestamp must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _timestamp_key(value: datetime) -> datetime:
+    """Return a comparable UTC timestamp, rejecting ambiguous input."""
     return value
-
-
-def _timestamp_key(value: datetime | str) -> str:
-    # ISO UTC strings sort chronologically after canonicalization. Datetimes are
-    # normalized to their ISO representation without mutating the source row.
-    return value.isoformat() if isinstance(value, datetime) else value
 
 
 def _group_id(example: Any) -> str:
@@ -88,7 +96,8 @@ def assign_splits(examples: Iterable[CanonicalExampleV1]) -> SplitResult:
     therefore returns an explicit insufficient status with no fabricated rows.
     """
     rows = sorted(examples, key=_sort_key)
-    if len({_group_id(row) for row in rows}) < 3:
+    group_count = len({_group_id(row) for row in rows})
+    if group_count < 3:
         return SplitResult((), SPLIT_STATUS_INSUFFICIENT_DATA)
 
     grouped: dict[str, list[Any]] = {}
@@ -99,6 +108,8 @@ def assign_splits(examples: Iterable[CanonicalExampleV1]) -> SplitResult:
         key=lambda item: (_sort_key(item[1][0]), item[0]),
     )
     counts = _allocation(len(groups))
+    if any(count == 0 for count in counts):
+        return SplitResult((), SPLIT_STATUS_INSUFFICIENT_DATA)
     group_split: dict[str, str] = {}
     offset = 0
     for split, count in zip(_SPLITS, counts, strict=True):
