@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 from scripts.phase10_dataset_smoke import main
@@ -38,3 +40,14 @@ def test_smoke_harness_refuses_existing_artifact_root(capsys, tmp_path: Path) ->
     report = json.loads(capsys.readouterr().out)
     assert report["status"] == "OUTPUT_ROOT_NOT_FRESH"
     assert (output / "catalog.sqlite3").read_bytes() == b"user-data"
+
+
+def test_smoke_script_supports_direct_invocation() -> None:
+    result = subprocess.run(
+        [sys.executable, "scripts/phase10_dataset_smoke.py", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "Phase 10 dataset smoke" in result.stdout

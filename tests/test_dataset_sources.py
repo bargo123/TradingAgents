@@ -38,6 +38,34 @@ def test_phase56_read_is_query_only_and_converts_utc(tmp_path):
         ReadonlyPhase56Source(path).connection_for_test().execute("CREATE TABLE x(a)")
 
 
+def test_phase56_retains_null_action_and_large_snapshot_for_eligibility(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    snapshot = {
+        "symbol": "EURUSD",
+        "point": 0.00001,
+        "digits": 5,
+        "quote": {"bid": 1.1, "ask": 1.1001, "spread_points": 10},
+        "features": {"M5": {"return_over_bars": 0.1}},
+        "diagnostic_padding": "x" * 5000,
+    }
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "UPDATE shadow_decisions SET action=NULL, snapshot_json=?, trader_summary=?",
+            (json.dumps(snapshot), "private reasoning output"),
+        )
+        db.commit()
+
+    result = ReadonlyPhase56Source(path).read()
+    decision = result.decisions[0]
+    assert decision.action is None
+    assert decision.fields["snapshot_json"]["quote"]["bid"] == 1.1
+    assert decision.fields["snapshot_json"]["features"]["M5"]["return_over_bars"] == 0.1
+    assert len(decision.fields["snapshot_json"]["diagnostic_padding"]) <= 2048
+    assert decision.fields["source_decision_fingerprint"]
+    assert "trader_summary" not in decision.fields
+    assert decision.fields["source_prose_diagnostics"]["trader_summary"]["present"] is True
+
+
 def test_phase56_public_adapter_carries_authoritative_source_fingerprints(tmp_path):
     path = create_source_db(tmp_path / "source.db")
     result = ReadonlyPhase56Source(path).read()

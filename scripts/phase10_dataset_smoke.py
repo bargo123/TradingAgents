@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
+
+if __package__ in {None, ""}:
+    # Direct invocation otherwise sets sys.path to ``scripts`` only.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tradingagents.datasets.factory import DatasetFactory
 from tradingagents.datasets.models import DatasetConfig

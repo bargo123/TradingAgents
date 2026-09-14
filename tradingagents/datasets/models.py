@@ -217,7 +217,10 @@ class SourceObservation(Contract):
     resolved_symbol: str = ""
     analysis_profile: str = ""
     analysis_timeframe: str = ""
-    action: str = "HOLD"
+    # Source adapters must preserve an absent action as ``None``.  A missing
+    # or malformed source recommendation is an auditable candidate for the
+    # eligibility classifier, not a fabricated HOLD label.
+    action: str | None = None
     fields: Mapping[str, Any] = field(default_factory=dict)
     fingerprint: SourceFingerprint | None = None
 
@@ -226,7 +229,9 @@ class SourceObservation(Contract):
         _validate_dt(self.analysis_snapshot_timestamp, "analysis_snapshot_timestamp")
         if self.decision_completed_timestamp is not None:
             _validate_dt(self.decision_completed_timestamp, "decision_completed_timestamp")
-        if not isinstance(self.action, str) or self.action not in {"BUY", "SELL", "HOLD"}:
+        if self.action is not None and (
+            not isinstance(self.action, str) or self.action not in {"BUY", "SELL", "HOLD"}
+        ):
             raise ValueError("unsupported action")
         _require_mapping(self.fields, "fields")
         object.__setattr__(self, "fields", _freeze(self.fields))

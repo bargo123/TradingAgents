@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -81,3 +82,28 @@ def test_fixture_covers_future_and_unavailable_without_fabricating_labels(tmp_pa
     assert "future-1" in excluded and "TEMPORAL_INVALID" in excluded["future-1"]
     assert report.manifest is not None
     assert report.manifest.safety["llm_calls"] == 0
+
+
+def test_null_action_large_snapshot_is_normalization_exclusion_not_source_failure(
+    tmp_path: Path,
+) -> None:
+    artifacts = make_real_fixtures(tmp_path)
+    snapshot = {
+        "symbol": "EURUSD",
+        "point": 0.00001,
+        "digits": 5,
+        "quote": {"bid": 1.1, "ask": 1.1001, "spread_points": 10},
+        "features": {"M5": {"return_over_bars": 0.1}},
+        "diagnostic_padding": "x" * 5000,
+    }
+    with sqlite3.connect(artifacts["source"]) as db:
+        db.execute(
+            "UPDATE shadow_decisions SET action=NULL, snapshot_json=?",
+            (json.dumps(snapshot),),
+        )
+        db.commit()
+
+    report = _build(tmp_path, (artifacts["source"],), tmp_path / "out")
+    reasons = {reason.value for item in report.exclusions for reason in item.reasons}
+    assert "NORMALIZATION_FAILED" in reasons
+    assert "SOURCE_INTEGRITY_FAILED" not in reasons

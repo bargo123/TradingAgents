@@ -372,7 +372,7 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
         and (analysis > cutoff or completed > cutoff or (reference and reference > cutoff))
     ):
         reasons.add(DatasetExclusionReason.TEMPORAL_INVALID)
-    if str(f.get("normalization_status", "")).upper() != "NORMALIZED" or ("action" in f and str(f["action"]).upper() not in {"BUY", "SELL", "HOLD"}):
+    if str(f.get("normalization_status", "")).upper() != "NORMALIZED" or d.action not in {"BUY", "SELL", "HOLD"}:
         reasons.add(DatasetExclusionReason.NORMALIZATION_FAILED)
     # ``context_integrity`` is derived by the adapter for the Phase 9 audit
     # schema, which persists component source statuses instead of that field.

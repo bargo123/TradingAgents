@@ -25,6 +25,16 @@ from .models import EvaluationObservation, SourceFingerprint, SourceObservation
 
 _DECISION_REQUIRED = set(_DECISION_COLUMNS)
 _EVAL_REQUIRED = set(_EVALUATION_COLUMNS)
+_DECISION_PROSE_FIELDS = frozenset(
+    {
+        "raw_portfolio_manager_result",
+        "trader_summary",
+        "portfolio_manager_summary",
+        "bull_summary",
+        "bear_summary",
+        "normalization_error",
+    }
+)
 _AUDIT_TABLE = "evidence_usage_audit"
 _AUDIT_FIELDS = (
     "decision_id",
@@ -141,6 +151,28 @@ def _bounded(value: Any, limit: int = 2048) -> Any:
     if isinstance(value, dict):
         return {str(k)[:128]: _bounded(v, limit) for k, v in list(value.items())[:100]}
     return str(value)[:limit]
+
+
+def _snapshot_value(value: Any) -> tuple[Any, str | None]:
+    """Decode a source snapshot before bounding it for canonical projection."""
+    if value is None:
+        return None, None
+    raw = value
+    if isinstance(raw, (bytes, bytearray)):
+        try:
+            raw = bytes(raw).decode("utf-8")
+        except UnicodeDecodeError:
+            return _bounded(bytes(raw)), "INVALID_UTF8"
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            return _bounded(raw), "INVALID_JSON"
+    if not isinstance(raw, dict):
+        return _bounded(raw), "INVALID_SHAPE"
+    # Parse first: generic diagnostics may be clipped, while canonical
+    # quote/point/digits/features remain available for bounded projection.
+    return _bounded(raw), None
 
 
 def _reject_oversized_collections(value: Any, limit: int = 100) -> None:
@@ -424,11 +456,30 @@ class ReadonlyPhase56Source(_Readonly):
                 # adapter-only identity fields below, matching the Phase 8
                 # importer contract exactly.
                 decision_fp = source_decision_fingerprint(_identity_row(raw_item))
-                item = {k: _bounded(v) for k, v in raw_item.items()}
+                snapshot_value, snapshot_diagnostic = _snapshot_value(raw_item.get("snapshot_json"))
+                item = {
+                    k: (snapshot_value if k == "snapshot_json" else _bounded(v))
+                    for k, v in raw_item.items()
+                    if k not in _DECISION_PROSE_FIELDS
+                }
                 _normalize_row(item)
                 item["source_decision_fingerprint"] = decision_fp
+                if snapshot_diagnostic:
+                    item["snapshot_json_diagnostic"] = snapshot_diagnostic
+                prose_diagnostics = {
+                    key: {
+                        "present": raw_item.get(key) is not None,
+                        "chars": len(raw_item[key]) if isinstance(raw_item.get(key), str) else 0,
+                    }
+                    for key in sorted(_DECISION_PROSE_FIELDS)
+                }
+                item["source_prose_diagnostics"] = prose_diagnostics
                 ts = _stamp(item.pop("analysis_snapshot_timestamp"))
                 completed = _stamp(item.pop("decision_completed_timestamp", None))
+                raw_action = item.pop("action", None)
+                action = raw_action if raw_action in {"BUY", "SELL", "HOLD"} else None
+                if raw_action not in (None, "BUY", "SELL", "HOLD"):
+                    item["source_action"] = _bounded(raw_action)
                 decisions.append(
                     SourceObservation(
                         item.pop("decision_id"),
@@ -440,7 +491,7 @@ class ReadonlyPhase56Source(_Readonly):
                         resolved_symbol=str(item.pop("resolved_symbol", "")),
                         analysis_profile=str(item.pop("analysis_profile", "")),
                         analysis_timeframe=str(item.pop("analysis_timeframe", "")),
-                        action=str(item.pop("action", "HOLD")),
+                        action=action,
                     )
                 )
             evaluations = []
