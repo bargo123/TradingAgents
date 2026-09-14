@@ -26,7 +26,12 @@ from .sources import (
     SourceReadResult,
 )
 from .splits import assign_splits
-from .writer import GenerationExistsError, write_generation
+from .writer import (
+    GenerationExistsError,
+    GenerationValidationError,
+    validate_generation,
+    write_generation,
+)
 
 _SAFETY = {"network_attempts": 0, "llm_calls": 0, "tool_calls": 0, "mt5_calls": 0}
 
@@ -78,6 +83,155 @@ def _coalesce_fingerprints(results: list[SourceReadResult]) -> dict[str, Any]:
     ).to_dict()
 
 
+def _config_metadata(config: DatasetConfig) -> dict[str, Any]:
+    """Return only configuration that changes dataset meaning or identity."""
+    return {
+        "filters": json.loads(json.dumps(dict(config.filters), sort_keys=True, default=str)),
+        "evaluation_basis": config.evaluation_basis,
+        "horizon_seconds": config.horizon_seconds,
+        "allow_empty": config.allow_empty,
+    }
+
+
+def _source_inventory(
+    results: list[SourceReadResult], phase8: SourceReadResult, phase9: SourceReadResult
+) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    for kind, result in (("phase56", item) for item in results):
+        fingerprint = _fingerprint(result, kind)
+        decisions = getattr(result, "decisions", ())
+        inventory.append({
+            "kind": kind,
+            "canonical_path": fingerprint["canonical_path"],
+            "source_id": fingerprint["source_id"],
+            "file_sha256": fingerprint["file_sha256"],
+            "snapshot_fingerprint": fingerprint["snapshot_fingerprint"],
+            "decision_ids": sorted(
+                str(item.decision_id) for item in decisions
+                if getattr(item, "decision_id", None)
+            ),
+            "decision_fingerprints": sorted(
+                str(item.fields.get("source_decision_fingerprint"))
+                for item in decisions
+                if getattr(item, "fields", {}).get("source_decision_fingerprint")
+            ),
+            "decision_identities": sorted(
+                (
+                    {"decision_id": str(item.decision_id),
+                     "fingerprint": str(item.fields.get("source_decision_fingerprint"))}
+                    for item in decisions
+                    if getattr(item, "decision_id", None)
+                    and getattr(item, "fields", {}).get("source_decision_fingerprint")
+                ),
+                key=lambda item: (item["decision_id"], item["fingerprint"]),
+            ),
+        })
+    for kind, result in (("phase8", phase8), ("phase9", phase9)):
+        fingerprint = _fingerprint(result, kind)
+        inventory.append({
+            "kind": kind,
+            "canonical_path": fingerprint["canonical_path"],
+            "source_id": fingerprint["source_id"],
+            "file_sha256": fingerprint["file_sha256"],
+            "snapshot_fingerprint": fingerprint["snapshot_fingerprint"],
+        })
+    return sorted(inventory, key=lambda item: (item["kind"], item["canonical_path"]))
+
+
+def _prior_inventory(output_root: Path, config_metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    """Read prior published factory metadata without trusting it as valid data."""
+    candidates: list[tuple[str, list[dict[str, Any]]]] = []
+    if not output_root.is_dir():
+        return []
+    for candidate in sorted(output_root.iterdir(), key=lambda item: item.name):
+        manifest_path = candidate / "manifest.json"
+        if not candidate.is_dir() or not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            metadata = manifest.get("metadata", {})
+            if metadata.get("factory_config") != config_metadata:
+                continue
+            inventory = metadata.get("source_inventory")
+            if isinstance(inventory, list):
+                candidates.append((candidate.name, inventory))
+        except (OSError, ValueError, TypeError):
+            continue
+    return candidates[-1][1] if candidates else []
+
+
+def _inventory_diagnostics(
+    current: list[dict[str, Any]], previous: list[dict[str, Any]]
+) -> dict[str, list[str]]:
+    diagnostics = {
+        "changed_sources": [], "removed_sources": [], "removed_rows": [],
+        "added_rows": [], "changed_rows": [],
+    }
+    current_by_path = {item["canonical_path"]: item for item in current}
+    previous_by_path = {item["canonical_path"]: item for item in previous}
+    for path, prior in previous_by_path.items():
+        now = current_by_path.get(path)
+        if now is None:
+            diagnostics["removed_sources"].append(path)
+            continue
+        identity_fields = ("source_id", "file_sha256", "snapshot_fingerprint")
+        if any(now.get(field) != prior.get(field) for field in identity_fields):
+            diagnostics["changed_sources"].append(path)
+        prior_rows = set(prior.get("decision_ids", ()))
+        current_rows = set(now.get("decision_ids", ()))
+        diagnostics["removed_rows"].extend(f"{path}:{row}" for row in sorted(prior_rows - current_rows))
+        diagnostics["added_rows"].extend(f"{path}:{row}" for row in sorted(current_rows - prior_rows))
+        prior_identity = {
+            item.get("decision_id"): item.get("fingerprint")
+            for item in prior.get("decision_identities", ())
+            if isinstance(item, dict)
+        }
+        current_identity = {
+            item.get("decision_id"): item.get("fingerprint")
+            for item in now.get("decision_identities", ())
+            if isinstance(item, dict)
+        }
+        diagnostics["changed_rows"].extend(
+            f"{path}:{row}" for row in sorted(
+                key for key in prior_identity.keys() & current_identity.keys()
+                if prior_identity[key] != current_identity[key]
+            )
+        )
+    return {key: sorted(set(value)) for key, value in diagnostics.items()}
+
+
+def _source_error_exclusion(path: Path, exc: Exception) -> DatasetExclusion:
+    return DatasetExclusion(
+        f"source:{hashlib.sha256(str(path).encode()).hexdigest()[:24]}",
+        (DatasetExclusionReason.SOURCE_INTEGRITY_FAILED,),
+        {"source_path": str(path), "error_type": type(exc).__name__},
+    )
+
+
+def _bind_sqlite_marks(result: SourceReadResult, marks_digest: str) -> SourceReadResult:
+    """Bind the adapter result to both the SQLite main file and WAL marks."""
+    fingerprint = getattr(result, "fingerprint", None)
+    if fingerprint is None:
+        return result
+    decision_fingerprints = sorted(
+        str(item.fields.get("source_decision_fingerprint"))
+        for item in getattr(result, "decisions", ())
+        if getattr(item, "fields", {}).get("source_decision_fingerprint")
+    )
+    snapshot = hashlib.sha256(json.dumps({
+        "adapter": fingerprint.snapshot_fingerprint,
+        "sqlite_marks": marks_digest,
+        "decision_fingerprints": decision_fingerprints,
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    bound = replace(
+        fingerprint,
+        source_id=f"{fingerprint.source_id}-{marks_digest[:16]}",
+        file_sha256=marks_digest,
+        snapshot_fingerprint=snapshot,
+    )
+    return replace(result, fingerprint=bound)
+
+
 class DatasetFactory:
     """Build a generation without importing any trading/runtime components."""
 
@@ -91,7 +245,8 @@ class DatasetFactory:
 
         errors: list[str] = []
         diagnostics: dict[str, list[str]] = {
-            "broken_sources": [], "duplicate_sources": [], "removed_sources": []
+            "broken_sources": [], "duplicate_sources": [], "removed_sources": [],
+            "changed_sources": [], "removed_rows": [], "added_rows": [], "changed_rows": [],
         }
 
         # These catalog/audit reads are deliberately performed once per build.
@@ -111,29 +266,48 @@ class DatasetFactory:
             errors.append(f"phase9: {type(exc).__name__}")
 
         source_results = []
+        source_exclusions: list[DatasetExclusion] = []
         seen_bytes: set[str] = set()
         for path in sorted(config.source_db_paths, key=lambda item: str(item).casefold()):
             try:
-                file_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+                marks = []
+                for marked_path in (path, Path(str(path) + "-wal")):
+                    if marked_path.is_file():
+                        marks.append(hashlib.sha256(marked_path.read_bytes()).hexdigest())
+                    else:
+                        marks.append("missing")
+                file_hash = hashlib.sha256(json.dumps(marks).encode()).hexdigest()
             except OSError as exc:
                 diagnostics["broken_sources"].append(str(path))
                 errors.append(f"{path}: {type(exc).__name__}")
+                source_exclusions.append(_source_error_exclusion(path, exc))
                 continue
             if file_hash in seen_bytes:
                 diagnostics["duplicate_sources"].append(str(path))
+                source_exclusions.append(
+                    DatasetExclusion(
+                        f"source:{hashlib.sha256(str(path).encode()).hexdigest()[:24]}",
+                        (DatasetExclusionReason.DUPLICATE,),
+                        {"source_path": str(path)},
+                    )
+                )
                 continue
             seen_bytes.add(file_hash)
             try:
-                source_results.append(ReadonlyPhase56Source(path).read())
+                source_results.append(_bind_sqlite_marks(
+                    ReadonlyPhase56Source(path).read(), file_hash
+                ))
             except SourceReadError as exc:
                 diagnostics["broken_sources"].append(str(path))
                 errors.append(f"{path}: {type(exc).__name__}")
+                source_exclusions.append(_source_error_exclusion(path, exc))
             except Exception as exc:
                 diagnostics["broken_sources"].append(str(path))
                 errors.append(f"{path}: {type(exc).__name__}")
+                source_exclusions.append(_source_error_exclusion(path, exc))
 
         examples = []
-        exclusions: list[DatasetExclusion] = []
+        exclusions: list[DatasetExclusion] = list(source_exclusions)
         seen_keys: set[tuple[str, str, int]] = set()
         for result in source_results:
             try:
@@ -145,8 +319,12 @@ class DatasetFactory:
                 eligibility = classify_observation(observation, config)
                 decision_id = observation.decision.decision_id
                 evaluation = observation.evaluation
+                decision_fingerprint = str(
+                    getattr(observation.decision, "fields", {}).get("source_decision_fingerprint")
+                    or decision_id
+                )
                 key = (
-                    decision_id,
+                    decision_fingerprint,
                     str(getattr(evaluation, "evaluation_basis", config.evaluation_basis)),
                     int(getattr(evaluation, "horizon_seconds", config.horizon_seconds)),
                 )
@@ -177,6 +355,10 @@ class DatasetFactory:
             "phase8": _fingerprint(phase8, "phase8"),
             "phase9": _fingerprint(phase9, "phase9"),
         }
+        inventory = _source_inventory(source_results, phase8, phase9)
+        diagnostics.update(_inventory_diagnostics(inventory, _prior_inventory(
+            config.output_root, _config_metadata(config)
+        )))
         if len(source_results) > 1:
             # The writer has one phase56 fingerprint slot. Preserve each
             # source's decision identity while binding rows to the set-level
@@ -195,7 +377,12 @@ class DatasetFactory:
                 for row in examples
             ]
         split_result = assign_splits(examples)
-        metadata = {"diagnostics": diagnostics, "safety": _SAFETY}
+        metadata = {
+            "factory_config": _config_metadata(config),
+            "source_inventory": inventory,
+            "diagnostics": diagnostics,
+            "safety": _SAFETY,
+        }
         try:
             destination = write_generation(
                 config.output_root,
@@ -213,7 +400,19 @@ class DatasetFactory:
                 if candidate.is_dir() and (candidate / "manifest.json").is_file():
                     try:
                         item = json.loads((candidate / "manifest.json").read_text(encoding="utf-8"))
-                        if item.get("source_fingerprints") == fingerprints:
+                        if (
+                            item.get("source_fingerprints") == fingerprints
+                            and item.get("metadata", {}).get("factory_config")
+                            == _config_metadata(config)
+                            and item.get("metadata", {}).get("source_inventory") == inventory
+                            and item.get("metadata", {}).get("diagnostics") == diagnostics
+                        ):
+                            validation = validate_generation(candidate)
+                            if not validation.valid:
+                                raise GenerationValidationError(
+                                    "existing generation failed validation: "
+                                    + "; ".join(validation.errors[:3])
+                                )
                             matches.append(candidate)
                     except (OSError, ValueError):
                         continue
