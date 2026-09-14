@@ -22,7 +22,7 @@ import re
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from tradingagents.forex.evidence_context import EvidenceReferenceRejection
 
@@ -265,15 +265,26 @@ class ForexPortfolioDecision(PortfolioDecision):
     )
     evidence_use_status: Literal["USED", "NONE_RELEVANT", "UNAVAILABLE", "DISABLED"] = Field(
         default="NONE_RELEVANT",
-        description="Transient Phase 9 evidence-use status for the final forex decision.",
+        description=(
+            "Transient Phase 9 evidence-use status for the final forex decision. "
+            "When evidence is injected, every supplied reference must be accounted "
+            "for exactly once as used or rejected."
+        ),
     )
     evidence_refs_used: list[str] = Field(
         default_factory=list,
-        description="Transient Phase 9 display IDs materially used by the final decision.",
+        description=(
+            "Transient Phase 9 display IDs materially used by the final decision. "
+            "Do not include an ID that is listed as rejected."
+        ),
     )
     evidence_refs_rejected: list[EvidenceReferenceRejection] = Field(
         default_factory=list,
-        description="Transient Phase 9 evidence display IDs rejected with a closed reason.",
+        description=(
+            "Transient Phase 9 evidence display IDs rejected with a closed reason. "
+            "When injected evidence is not relevant, list every supplied ID not "
+            "used exactly once with an allowed rejection reason."
+        ),
     )
     time_horizon: str | None = Field(
         default=None,
@@ -289,6 +300,28 @@ class ForexPortfolioDecision(PortfolioDecision):
         if value != "INTRADAY":
             raise ValueError("forex analysis_profile must be exactly INTRADAY")
         return value
+
+    @model_validator(mode="after")
+    def _validate_evidence_reference_status(self):
+        """Reject contradictory evidence status/reference combinations early."""
+
+        used = set(self.evidence_refs_used)
+        rejected = {item.ref for item in self.evidence_refs_rejected}
+        if len(used) != len(self.evidence_refs_used) or len(rejected) != len(self.evidence_refs_rejected):
+            raise ValueError("evidence references must be listed at most once")
+        if self.evidence_use_status == "NONE_RELEVANT" and used:
+            raise ValueError(
+                "NONE_RELEVANT decisions must leave evidence_refs_used empty"
+            )
+        if self.evidence_use_status in {"DISABLED", "UNAVAILABLE"} and (used or rejected):
+            raise ValueError(
+                "DISABLED/UNAVAILABLE decisions must not include evidence references"
+            )
+        if used & rejected:
+            raise ValueError(
+                "an evidence reference cannot be both used and rejected"
+            )
+        return self
 
     @field_validator("time_horizon")
     @classmethod

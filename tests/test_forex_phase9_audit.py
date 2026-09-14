@@ -138,9 +138,48 @@ def test_injected_valid_refs_are_used():
     assert result.evidence_audit_status == "VALID"
 
 
-def test_injected_without_relevant_refs_is_none_relevant():
+def test_injected_none_relevant_with_all_refs_rejected_is_valid():
     result = validate_evidence_references(
         _context_with_items(),
+        {
+            "rating": "Hold",
+            "evidence_use_status": "NONE_RELEVANT",
+            "evidence_refs_used": [],
+            "evidence_refs_rejected": [
+                {"ref": "K1", "reason": "LOW_RELEVANCE"},
+                {"ref": "E2", "reason": "LOW_RELEVANCE"},
+                {"ref": "S1", "reason": "DIAGNOSTIC_ONLY"},
+            ],
+        },
+        runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
+    )
+
+    assert result.evidence_use_status is EvidenceUseStatus.NONE_RELEVANT
+    assert result.evidence_refs_used == ()
+    assert [item.ref for item in result.evidence_refs_rejected] == ["K1", "E2", "S1"]
+    assert result.evidence_audit_status == "VALID"
+
+
+def test_injected_used_requires_every_available_ref_accounted_for():
+    result = validate_evidence_references(
+        _context_with_items(),
+        {
+            "rating": "Buy",
+            "evidence_use_status": "USED",
+            "evidence_refs_used": ["K1"],
+            "evidence_refs_rejected": [],
+        },
+        runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
+    )
+
+    assert result.evidence_use_status is EvidenceUseStatus.USED
+    assert result.evidence_refs_used == ("K1",)
+    assert result.evidence_audit_status == "INVALID_REFERENCE"
+
+
+def test_injected_without_relevant_refs_is_none_relevant():
+    result = validate_evidence_references(
+        EvidenceContext(integration_status=EvidenceIntegrationStatus.INJECTED),
         {"rating": "Hold", "evidence_use_status": "NONE_RELEVANT", "evidence_refs_used": []},
         runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
     )
@@ -148,6 +187,33 @@ def test_injected_without_relevant_refs_is_none_relevant():
     assert result.evidence_use_status is EvidenceUseStatus.NONE_RELEVANT
     assert result.evidence_refs_used == ()
     assert result.evidence_refs_rejected == ()
+
+
+def test_injected_none_relevant_requires_rejection_for_each_available_ref():
+    """Injected evidence must be accounted for even when none is relevant."""
+
+    context = EvidenceContext(
+        integration_status=EvidenceIntegrationStatus.INJECTED,
+        knowledge_items=(
+            CanonicalEvidenceItem("K1", "KNOWLEDGE", "k-auth-1", "first", "rule", 0.9, {}),
+            CanonicalEvidenceItem("K2", "KNOWLEDGE", "k-auth-2", "second", "rule", 0.8, {}),
+        ),
+    )
+    result = validate_evidence_references(
+        context,
+        {
+            "rating": "Hold",
+            "evidence_use_status": "NONE_RELEVANT",
+            "evidence_refs_used": [],
+            "evidence_refs_rejected": [],
+        },
+        runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
+    )
+
+    assert result.evidence_use_status is EvidenceUseStatus.NONE_RELEVANT
+    assert result.evidence_refs_used == ()
+    assert result.evidence_refs_rejected == ()
+    assert result.evidence_audit_status == "INVALID_REFERENCE"
 
 
 def test_disabled_runtime_overrides_model_status():
@@ -258,16 +324,16 @@ def test_scalar_reference_containers_are_rejected_without_retaining_refs():
     assert result.evidence_audit_status == "INVALID_REFERENCE"
 
 
-def test_injected_none_relevant_with_valid_citations_is_coerced_to_used():
+def test_injected_none_relevant_with_used_refs_fails_closed():
     result = validate_evidence_references(
         _context_with_items(),
         {"evidence_use_status": "NONE_RELEVANT", "evidence_refs_used": ["K1"]},
         runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
     )
 
-    assert result.evidence_use_status is EvidenceUseStatus.USED
-    assert result.evidence_refs_used == ("K1",)
-    assert result.evidence_audit_status == "VALID"
+    assert result.evidence_use_status is EvidenceUseStatus.NONE_RELEVANT
+    assert result.evidence_refs_used == ()
+    assert result.evidence_audit_status == "INVALID_REFERENCE"
 
 
 def test_unknown_rejection_reason_is_closed_before_unknown_ref_filtering():

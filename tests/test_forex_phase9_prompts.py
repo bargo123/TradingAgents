@@ -255,6 +255,8 @@ def test_final_pm_evidence_use_instruction_is_bounded_and_pm_only():
     instruction = render_final_pm_evidence_instruction()
     assert instruction.startswith("Evidence audit rules for the final decision:")
     assert "Use only evidence IDs present in the supplied SUPPORTING EVIDENCE block." in instruction
+    assert "Account for every supplied evidence ID exactly once" in instruction
+    assert "evidence_refs_rejected" in instruction
     assert "Do not provide chain-of-thought or hidden reasoning." in instruction
 
     for factory, kwargs in _forex_factories():

@@ -399,8 +399,10 @@ def validate_evidence_references(
 ) -> EvidenceReferenceValidation:
     """Validate final-decision evidence IDs against one immutable context.
 
-    The function only returns audit metadata. It never mutates ``raw_result``
-    and never participates in action/rating normalization.
+    For an injected context, valid used and rejected IDs must form a complete,
+    disjoint partition of the available display IDs.  The function only
+    returns audit metadata: it never mutates ``raw_result`` and never
+    participates in action/rating normalization.
     """
     if not isinstance(context, EvidenceContext):
         raise TypeError("context must be an EvidenceContext")
@@ -422,9 +424,11 @@ def validate_evidence_references(
         if ref not in seen_used:
             valid_used.append(ref)
             seen_used.add(ref)
+        else:
+            invalid = True
 
     valid_rejected: list[EvidenceReferenceRejection] = []
-    seen_rejected: set[tuple[str, EvidenceReferenceRejectionReason]] = set()
+    seen_rejected: set[str] = set()
     for raw_rejection in rejected_values:
         if isinstance(raw_rejection, EvidenceReferenceRejection):
             ref_value = raw_rejection.ref
@@ -443,10 +447,11 @@ def validate_evidence_references(
         if ref is None or ref not in available:
             invalid = True
             continue
-        key = (ref, reason)
-        if key not in seen_rejected:
+        if ref not in seen_rejected:
             valid_rejected.append(EvidenceReferenceRejection(ref=ref, reason=reason))
-            seen_rejected.add(key)
+            seen_rejected.add(ref)
+        else:
+            invalid = True
 
     model_status = raw_result.get("evidence_use_status", EvidenceUseStatus.NONE_RELEVANT)
     try:
@@ -462,12 +467,35 @@ def validate_evidence_references(
     elif runtime is EvidenceIntegrationStatus.FALLBACK:
         status = EvidenceUseStatus.USED if valid_used else EvidenceUseStatus.UNAVAILABLE
         valid_rejected = valid_rejected if status is EvidenceUseStatus.USED else []
-    elif model_status is EvidenceUseStatus.USED:
-        status = EvidenceUseStatus.USED
-    elif model_status is EvidenceUseStatus.NONE_RELEVANT:
-        status = EvidenceUseStatus.USED if valid_used else EvidenceUseStatus.NONE_RELEVANT
     else:
-        status = EvidenceUseStatus.USED if valid_used else EvidenceUseStatus.NONE_RELEVANT
+        # An injected context has a closed accounting contract: every
+        # available display ID is represented exactly once as either used or
+        # explicitly rejected.  NONE_RELEVANT is not a license to omit the
+        # supplied IDs, and it may never carry used references.
+        rejected_refs = {item.ref for item in valid_rejected}
+        used_refs = set(valid_used)
+        if model_status is EvidenceUseStatus.NONE_RELEVANT:
+            if valid_used:
+                invalid = True
+                valid_used = []
+                used_refs = set()
+            if rejected_refs != available:
+                invalid = True
+            status = EvidenceUseStatus.NONE_RELEVANT
+        elif model_status is EvidenceUseStatus.USED:
+            if used_refs & rejected_refs or used_refs | rejected_refs != available:
+                invalid = True
+            status = EvidenceUseStatus.USED
+        else:
+            # DISABLED/UNAVAILABLE (and unknown values coerced above) are
+            # contradictory once evidence is injected.  Treat them as a
+            # non-relevant claim, but keep the same explicit accounting rule.
+            if valid_used:
+                invalid = True
+                valid_used = []
+            if rejected_refs != available:
+                invalid = True
+            status = EvidenceUseStatus.NONE_RELEVANT
 
     return EvidenceReferenceValidation(
         evidence_use_status=status,

@@ -424,9 +424,12 @@ metadata is equivalent to:
 Initial bounded rejection reasons are `CONFLICTS_WITH_CURRENT_STATE`,
 `LOW_RELEVANCE`, `INSUFFICIENT_SAMPLE`, `DIAGNOSTIC_ONLY`, and `REDUNDANT`.
 The reason vocabulary is versioned. `NONE_RELEVANT` with empty references is
-valid when the model uses none of the available evidence; no citation is
-forced merely because evidence exists. Hidden reasoning and free-form
-citations are never required.
+valid only when no evidence IDs were injected. When an injected context has
+available IDs, the final result must keep `evidence_refs_used` empty and list
+every available ID exactly once in `evidence_refs_rejected` with a closed
+reason. No citation is forced merely because evidence exists, but every
+injected item must receive an explicit disposition. Hidden reasoning and
+free-form citations are never required.
 
 After final synthesis, validate every used and rejected ID against the exact
 injected `EvidenceContext`. Unknown or malformed IDs are removed/rejected and
@@ -579,7 +582,9 @@ BUY/SELL/HOLD decision, final evidence-reference validation, and an append-only
 Phase 9 audit. It must record `as_of`, context hash, exact bounded rendered
 context, Phase 7/8 generations, Knowledge/Experience references, citation
  status, action, provider/model, and LLM/tool telemetry. `NONE_RELEVANT` with no
- references is valid; fake references are forbidden. Tier C remains diagnostic
+ references is valid only when the injected context has no available IDs; with
+ available IDs, each one must be explicitly rejected with a closed reason.
+ Fake references are forbidden. Tier C remains diagnostic
  only and must not be weakened to force an Experience hit. A real result with
  Knowledge evidence present, zero Experience trading evidence, and Tier C
  diagnostics present is valid.

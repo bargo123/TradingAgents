@@ -85,6 +85,42 @@ def test_forex_portfolio_schema_closes_rejection_reason_contract():
         )
 
 
+def test_forex_portfolio_schema_rejects_used_refs_with_none_relevant_status():
+    from tradingagents.agents.schemas import ForexPortfolioDecision
+
+    with pytest.raises(ValueError, match="NONE_RELEVANT"):
+        ForexPortfolioDecision.model_validate(
+            {
+                "rating": "Hold",
+                "executive_summary": "Remain flat.",
+                "investment_thesis": "Evidence is not relevant.",
+                "evidence_use_status": "NONE_RELEVANT",
+                "evidence_refs_used": ["K1"],
+            }
+        )
+
+
+def test_forex_portfolio_schema_accepts_none_relevant_with_explicit_rejections():
+    from tradingagents.agents.schemas import ForexPortfolioDecision
+
+    decision = ForexPortfolioDecision.model_validate(
+        {
+            "rating": "Hold",
+            "executive_summary": "Remain flat.",
+            "investment_thesis": "The supplied evidence is not relevant.",
+            "evidence_use_status": "NONE_RELEVANT",
+            "evidence_refs_used": [],
+            "evidence_refs_rejected": [
+                {"ref": "K1", "reason": "LOW_RELEVANCE"},
+                {"ref": "K2", "reason": "LOW_RELEVANCE"},
+            ],
+        }
+    )
+
+    assert decision.evidence_use_status == "NONE_RELEVANT"
+    assert [item.ref for item in decision.evidence_refs_rejected] == ["K1", "K2"]
+
+
 def test_nested_mappings_are_immutable():
     context = EvidenceContext(diagnostics={"nested": {"x": [1], "queue": deque([2, 3])}})
     with pytest.raises(TypeError):
