@@ -152,6 +152,25 @@ def _normalize_row(item: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _identity_row(item: dict[str, Any]) -> dict[str, Any]:
+    """Return the normalized source facts used to derive a row identity.
+
+    Identity columns are adapter outputs, not source facts.  Excluding them
+    prevents a stale or forged value persisted by an upstream source from
+    changing the authoritative identity we derive here.
+    """
+    return {
+        key: value
+        for key, value in item.items()
+        if key
+        not in {
+            "source_decision_fingerprint",
+            "source_evaluation_fingerprint",
+            "fingerprint",
+        }
+    }
+
+
 def _decode_array(value: Any) -> list[Any]:
     if isinstance(value, (list, tuple)):
         decoded = list(value)
@@ -288,9 +307,7 @@ class ReadonlyPhase56Source(_Readonly):
                 # them from the complete normalized source row before removing
                 # adapter-only identity fields below, matching the Phase 8
                 # importer contract exactly.
-                decision_fp = raw_item.get("source_decision_fingerprint") or source_decision_fingerprint(
-                    raw_item
-                )
+                decision_fp = source_decision_fingerprint(_identity_row(raw_item))
                 item = {k: _bounded(v) for k, v in raw_item.items()}
                 _normalize_row(item)
                 item["source_decision_fingerprint"] = decision_fp
@@ -318,9 +335,7 @@ class ReadonlyPhase56Source(_Readonly):
             for row in cur:
                 raw_item = dict(zip(names, row, strict=True))
                 _normalize_row(raw_item)
-                evaluation_fp = raw_item.get(
-                    "source_evaluation_fingerprint"
-                ) or source_evaluation_fingerprint(raw_item)
+                evaluation_fp = source_evaluation_fingerprint(_identity_row(raw_item))
                 item = {k: _bounded(v) for k, v in raw_item.items()}
                 _normalize_row(item)
                 item["source_evaluation_fingerprint"] = evaluation_fp

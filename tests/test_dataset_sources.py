@@ -5,11 +5,13 @@ from datetime import datetime, timezone
 import pytest
 
 from tests.fixtures.experience_source_db import create_source_db
+from tradingagents.datasets.eligibility import join_observations
 from tradingagents.datasets.errors import SourceIntegrityError, SourceReadError
 from tradingagents.datasets.sources import (
     ReadonlyExperienceSource,
     ReadonlyPhase9AuditSource,
     ReadonlyPhase56Source,
+    SourceReadResult,
     SourceSchemaIncompatibleError,
     _decode_array,
     _stamp,
@@ -44,6 +46,72 @@ def test_phase56_public_adapter_carries_authoritative_source_fingerprints(tmp_pa
     assert result.evaluations[0].fields["source_evaluation_fingerprint"] == source_evaluation_fingerprint(
         snapshot.evaluations[0]
     )
+
+
+def test_phase56_recomputes_fingerprints_when_input_identity_columns_are_bad(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE shadow_decisions ADD COLUMN source_decision_fingerprint TEXT")
+        db.execute("ALTER TABLE shadow_decision_evaluations ADD COLUMN source_evaluation_fingerprint TEXT")
+        db.execute("UPDATE shadow_decisions SET source_decision_fingerprint='BAD'")
+        db.execute("UPDATE shadow_decision_evaluations SET source_evaluation_fingerprint='BAD'")
+        db.commit()
+
+    result = ReadonlyPhase56Source(path).read()
+    snapshot = ReadonlySourceReader(path).read_snapshot()
+    expected_decision_row = {
+        key: value
+        for key, value in snapshot.decisions[0].items()
+        if key != "source_decision_fingerprint"
+    }
+    expected_evaluation_row = {
+        key: value
+        for key, value in snapshot.evaluations[0].items()
+        if key != "source_evaluation_fingerprint"
+    }
+
+    assert result.decisions[0].fields["source_decision_fingerprint"] == source_decision_fingerprint(
+        expected_decision_row
+    )
+    assert result.evaluations[0].fields["source_evaluation_fingerprint"] == source_evaluation_fingerprint(
+        expected_evaluation_row
+    )
+    assert result.decisions[0].fields["source_decision_fingerprint"] != "BAD"
+    assert result.evaluations[0].fields["source_evaluation_fingerprint"] != "BAD"
+
+
+def test_phase56_authoritative_identity_keeps_phase8_join_matching(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    with sqlite3.connect(path) as db:
+        db.execute("ALTER TABLE shadow_decisions ADD COLUMN source_decision_fingerprint TEXT")
+        db.execute("ALTER TABLE shadow_decision_evaluations ADD COLUMN source_evaluation_fingerprint TEXT")
+        db.execute("UPDATE shadow_decisions SET source_decision_fingerprint='BAD'")
+        db.execute("UPDATE shadow_decision_evaluations SET source_evaluation_fingerprint='BAD'")
+        db.commit()
+
+    result = ReadonlyPhase56Source(path).read()
+    snapshot = ReadonlySourceReader(path).read_snapshot()
+    expected_decision_fp = source_decision_fingerprint(
+        {key: value for key, value in snapshot.decisions[0].items() if key != "source_decision_fingerprint"}
+    )
+    expected_evaluation_fp = source_evaluation_fingerprint(
+        {
+            key: value
+            for key, value in snapshot.evaluations[0].items()
+            if key != "source_evaluation_fingerprint"
+        }
+    )
+    record = {
+        "source_decision_id": "d1",
+        "source_run_id": "run1",
+        "source_decision_fingerprint": expected_decision_fp,
+        "source_evaluation_fingerprints": {"ANALYSIS_SNAPSHOT:300": expected_evaluation_fp},
+    }
+
+    joined = join_observations(result, SourceReadResult(records=(record,)), SourceReadResult())
+
+    assert joined[0].fields["experience"] == record
+    assert joined[0].evaluation.fields["source_evaluation_fingerprint"] == expected_evaluation_fp
 
 
 def test_phase56_detects_file_change(tmp_path):

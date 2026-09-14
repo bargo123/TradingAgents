@@ -326,7 +326,10 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
     cutoff = _dt(_get(config, "filters", {}).get("as_of"))
     if completed is None or completed < analysis or (
         reference_raw not in (None, "") and reference is None
-    ) or (reference is not None and reference < analysis) or (
+    ) or (
+        reference is not None
+        and (reference < analysis or (completed is not None and reference < completed))
+    ) or (
         cutoff
         and (analysis > cutoff or completed > cutoff or (reference and reference > cutoff))
     ):

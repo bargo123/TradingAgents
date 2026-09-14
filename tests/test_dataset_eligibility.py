@@ -70,6 +70,67 @@ def test_future_as_of_is_temporally_invalid(tmp_path):
     assert DatasetExclusionReason.TEMPORAL_INVALID in result.reasons
 
 
+def test_broker_reference_between_analysis_and_completion_is_temporally_invalid(tmp_path):
+    result = classify_observation(
+        _joined(
+            tmp_path,
+            decision_fields={
+                "normalization_status": "NORMALIZED",
+                "decision_context_status": "COMPLETE",
+                "source_decision_fingerprint": "dfp",
+                "source_run_id": "run1",
+                "analysis_profile": "p",
+                "analysis_timeframe": "1h",
+                "decision_reference_timestamp": datetime(2025, 1, 1, 0, 0, 30, tzinfo=UTC),
+                "decision_reference_status": "INVALID_TEMPORAL",
+            },
+        ),
+        _config(tmp_path),
+    )
+    assert DatasetExclusionReason.TEMPORAL_INVALID in result.reasons
+
+
+def test_broker_reference_after_completion_is_allowed(tmp_path):
+    result = classify_observation(
+        _joined(
+            tmp_path,
+            decision_fields={
+                "normalization_status": "NORMALIZED",
+                "decision_context_status": "COMPLETE",
+                "source_decision_fingerprint": "dfp",
+                "source_run_id": "run1",
+                "analysis_profile": "p",
+                "analysis_timeframe": "1h",
+                "decision_reference_timestamp": datetime(2025, 1, 1, 0, 1, 30, tzinfo=UTC),
+                "decision_reference_status": "AVAILABLE",
+            },
+        ),
+        _config(tmp_path),
+    )
+    assert result.eligible
+
+
+def test_explicit_unavailable_broker_reference_remains_allowed(tmp_path):
+    result = classify_observation(
+        _joined(
+            tmp_path,
+            decision_fields={
+                "normalization_status": "NORMALIZED",
+                "decision_context_status": "COMPLETE",
+                "source_decision_fingerprint": "dfp",
+                "source_run_id": "run1",
+                "analysis_profile": "p",
+                "analysis_timeframe": "1h",
+                "decision_reference_timestamp": None,
+                "decision_reference_status": "UNAVAILABLE",
+            },
+        ),
+        _config(tmp_path),
+    )
+    assert result.eligible
+    assert DatasetExclusionReason.TEMPORAL_INVALID not in result.reasons
+
+
 def test_normal_evaluation_lifecycle_timestamps_after_analysis_are_allowed(tmp_path):
     observation = _joined(tmp_path)
     evaluation = EvaluationObservation(
