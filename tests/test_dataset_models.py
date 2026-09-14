@@ -6,12 +6,14 @@ import pytest
 from tradingagents.datasets.errors import DatasetConfigError
 from tradingagents.datasets.models import (
     BuildReport,
+    CanonicalExampleV1,
     DatasetConfig,
     DatasetExclusion,
     DatasetExclusionReason,
     DatasetManifest,
     EvaluationObservation,
     EvidenceObservation,
+    JoinedObservation,
     SourceFingerprint,
     SourceObservation,
     ValidationReport,
@@ -106,3 +108,33 @@ def test_insertion_order_does_not_change_serialization():
     a = SourceObservation("d", datetime(2025, 1, 1, tzinfo=timezone.utc), fields={"a": 1, "b": 2})
     b = SourceObservation("d", datetime(2025, 1, 1, tzinfo=timezone.utc), fields={"b": 2, "a": 1})
     assert a.to_json() == b.to_json()
+
+
+def test_round2_sensitive_variants_and_deterministic_type_errors():
+    for value in ("chain-of-thought", "chain_of_thought", "cot", "secret-value"):
+        with pytest.raises(ValueError):
+            SourceObservation("d", datetime(2025, 1, 1, tzinfo=timezone.utc), fields={"x": value})
+    for kwargs in ({"evaluation_status": None}, {"source_context_eligible": "yes"}):
+        with pytest.raises(ValueError):
+            EvaluationObservation("d", **kwargs)
+    with pytest.raises(ValueError):
+        DatasetManifest("m", split_status=None)
+
+
+def test_round2_vocabulary_deep_freeze_and_types():
+    for status in ("PUBLISHED", "EMPTY_ELIGIBLE_SET", "FAILED"):
+        DatasetManifest("m", split_status="INSUFFICIENT_DATA")
+        BuildReport(status)
+    report = BuildReport("PUBLISHED", errors=["e"], exclusions=[DatasetExclusion("d")])
+    with pytest.raises(TypeError):
+        report.exclusions[0] = DatasetExclusion("x")
+    with pytest.raises(TypeError):
+        report.errors[0] = "x"
+    with pytest.raises(ValueError):
+        DatasetConfig(("src",), "p8", None, "out", allow_empty="yes")
+    with pytest.raises(ValueError):
+        DatasetManifest("m", examples="1")
+    with pytest.raises(ValueError):
+        JoinedObservation(decision="bad")
+    with pytest.raises(ValueError):
+        CanonicalExampleV1("x", decision=[])

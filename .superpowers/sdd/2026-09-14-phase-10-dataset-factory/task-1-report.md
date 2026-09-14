@@ -46,3 +46,19 @@ All checks passed!
 pytest -q tests/test_dataset_models.py
 7 passed
 ```
+
+## Round 2 review fix
+
+Expanded sensitive-key/value rejection to chain-of-thought, chain_of_thought,
+COT, and secret variants; added deterministic closed-status/type validation,
+manifest/build vocabulary, deep-frozen report collections, and comprehensive
+bounded count, safety, mapping, boolean, component, and message checks.
+
+Verification command/output:
+
+```text
+ruff check tradingagents/datasets tests/test_dataset_models.py
+All checks passed!
+pytest -q tests/test_dataset_models.py
+9 passed
+```

@@ -40,7 +40,7 @@ class DatasetExclusionReason(str, Enum):
 
 
 _SENSITIVE = re.compile(
-    r"(?:prompt|completion|reasoning|private[ _-]?reasoning|secret|password|credential|api[ _-]?key|token)",
+    r"(?:prompt|completion|reasoning|chain[ _-]?of[ _-]?thought|\bcot\b|private[ _-]?reasoning|secret|password|credential|api[ _-]?key|token)",
     re.I,
 )
 
@@ -75,7 +75,7 @@ def _assert_safe(v, key=""):
     elif isinstance(v, (list, tuple)):
         for child in v:
             _assert_safe(child)
-    elif isinstance(v, str) and _SENSITIVE.search(v) and re.search(r"[:=]", v):
+    elif isinstance(v, str) and _SENSITIVE.search(v):
         raise ValueError("forbidden sensitive value")
 
 
@@ -157,6 +157,10 @@ class DatasetConfig(Contract):
         out = Path(self.output_root).resolve()
         object.__setattr__(self, "output_root", out)
         object.__setattr__(self, "filters", _freeze(self.filters))
+        if not isinstance(self.filters, Mapping):
+            raise DatasetConfigError("filters must be a mapping")
+        if not isinstance(self.allow_empty, bool):
+            raise DatasetConfigError("allow_empty must be bool")
         if not paths:
             raise DatasetConfigError("at least one source database is required")
         if (
@@ -217,7 +221,7 @@ class SourceObservation(Contract):
         _validate_dt(self.analysis_snapshot_timestamp, "analysis_snapshot_timestamp")
         if self.decision_completed_timestamp is not None:
             _validate_dt(self.decision_completed_timestamp, "decision_completed_timestamp")
-        if self.action not in {"BUY", "SELL", "HOLD"}:
+        if not isinstance(self.action, str) or self.action not in {"BUY", "SELL", "HOLD"}:
             raise ValueError("unsupported action")
         object.__setattr__(self, "fields", _freeze(self.fields))
         for n in (
@@ -253,7 +257,14 @@ class EvaluationObservation(Contract):
             or self.horizon_seconds <= 0
         ):
             raise ValueError("invalid horizon")
-        if self.evaluation_status not in {"PENDING", "COMPLETE", "DATA_UNAVAILABLE", "INELIGIBLE"}:
+        if not isinstance(self.source_context_eligible, bool):
+            raise ValueError("source_context_eligible must be bool")
+        if not isinstance(self.evaluation_status, str) or self.evaluation_status not in {
+            "PENDING",
+            "COMPLETE",
+            "DATA_UNAVAILABLE",
+            "INELIGIBLE",
+        }:
             raise ValueError("unsupported evaluation status")
         object.__setattr__(self, "fields", _freeze(self.fields))
 
@@ -267,9 +278,19 @@ class EvidenceObservation(Contract):
     fields: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.context_integrity not in {"COMPLETE", "INCOMPLETE", "UNAVAILABLE", "INVALID"}:
+        if not isinstance(self.context_integrity, str) or self.context_integrity not in {
+            "COMPLETE",
+            "INCOMPLETE",
+            "UNAVAILABLE",
+            "INVALID",
+        }:
             raise ValueError("unsupported context integrity")
-        if self.evidence_use_status not in {"USED", "NONE_RELEVANT", "INCOMPLETE", "INVALID"}:
+        if not isinstance(self.evidence_use_status, str) or self.evidence_use_status not in {
+            "USED",
+            "NONE_RELEVANT",
+            "INCOMPLETE",
+            "INVALID",
+        }:
             raise ValueError("unsupported evidence status")
         for name, refs in (("refs_used", self.refs_used), ("refs_rejected", self.refs_rejected)):
             if not isinstance(refs, (list, tuple)):
@@ -288,6 +309,12 @@ class JoinedObservation(Contract):
     fields: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
+        if not isinstance(self.decision, SourceObservation):
+            raise ValueError("decision must be SourceObservation")
+        if self.evaluation is not None and not isinstance(self.evaluation, EvaluationObservation):
+            raise ValueError("evaluation must be EvaluationObservation")
+        if self.evidence is not None and not isinstance(self.evidence, EvidenceObservation):
+            raise ValueError("evidence must be EvidenceObservation")
         object.__setattr__(self, "fields", _freeze(self.fields))
 
 
@@ -304,6 +331,15 @@ class CanonicalExampleV1(Contract):
 
     def __post_init__(self):
         _validate_id(self.example_id, "example_id")
+        for name in ("decision", "market", "research", "outcome", "trust", "provenance"):
+            if not isinstance(getattr(self, name), Mapping):
+                raise ValueError(f"{name} must be a mapping")
+        if (
+            not isinstance(self.schema_version, str)
+            or not self.schema_version.strip()
+            or len(self.schema_version) > 64
+        ):
+            raise ValueError("invalid schema version")
         [
             object.__setattr__(self, n, _freeze(getattr(self, n)))
             for n in ("decision", "market", "research", "outcome", "trust", "provenance")
@@ -353,12 +389,31 @@ class DatasetManifest(Contract):
             "mt5_calls": 0,
         }
     )
+    status: str = "EMPTY_ELIGIBLE_SET"
 
     def __post_init__(self):
         _validate_id(self.dataset_id, "dataset_id")
-        if self.split_status not in {"COMPLETE", "INSUFFICIENT_DATA", "FAILED"}:
+        if not isinstance(self.status, str) or self.status not in {
+            "PUBLISHED",
+            "EMPTY_ELIGIBLE_SET",
+            "FAILED",
+        }:
+            raise ValueError("unsupported manifest status")
+        if not isinstance(self.split_status, str) or self.split_status not in {
+            "COMPLETE",
+            "INSUFFICIENT_DATA",
+            "FAILED",
+        }:
             raise ValueError("unsupported split status")
+        for name, value in (("examples", self.examples), ("exclusions", self.exclusions)):
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
         object.__setattr__(self, "safety", _freeze(self.safety))
+        if not isinstance(self.safety, Mapping):
+            raise ValueError("safety must be a mapping")
+        for name, value in self.safety.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"safety.{name} must be a non-negative integer")
 
 
 @dataclass(frozen=True, slots=True)
@@ -369,10 +424,20 @@ class BuildReport(Contract):
     errors: tuple[str, ...] = ()
 
     def __post_init__(self):
-        if self.status not in {"COMPLETE", "EMPTY", "FAILED"}:
+        if not isinstance(self.status, str) or self.status not in {
+            "PUBLISHED",
+            "EMPTY_ELIGIBLE_SET",
+            "FAILED",
+        }:
             raise ValueError("unsupported build status")
+        if self.manifest is not None and not isinstance(self.manifest, DatasetManifest):
+            raise ValueError("manifest must be DatasetManifest")
         object.__setattr__(self, "exclusions", tuple(self.exclusions))
         object.__setattr__(self, "errors", tuple(self.errors))
+        if any(not isinstance(x, DatasetExclusion) for x in self.exclusions):
+            raise ValueError("exclusions must contain DatasetExclusion values")
+        if any(not isinstance(x, str) or len(x) > 256 for x in self.errors):
+            raise ValueError("errors must contain bounded strings")
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,5 +447,9 @@ class ValidationReport(Contract):
     warnings: tuple[str, ...] = ()
 
     def __post_init__(self):
+        if not isinstance(self.valid, bool):
+            raise ValueError("valid must be bool")
         object.__setattr__(self, "errors", tuple(self.errors))
         object.__setattr__(self, "warnings", tuple(self.warnings))
+        if any(not isinstance(x, str) or len(x) > 256 for x in self.errors + self.warnings):
+            raise ValueError("report messages must contain bounded strings")
