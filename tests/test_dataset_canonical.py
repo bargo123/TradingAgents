@@ -91,6 +91,37 @@ def test_evidence_duplicates_and_overlap_fail_closed():
         canonicalize(bad, EligibilityResult(True, details={'decision_id': 'd1'}))
 
 
+def test_evidence_partition_must_account_for_every_available_reference():
+    o = obs()
+    evidence = o.evidence.__class__(
+        'COMPLETE', 'USED', ('K1',), (),
+        {'available_knowledge_ids': ['K1', 'K2'], 'context_hash': 'ctx'},
+    )
+    bad = o.__class__(o.decision, o.evaluation, evidence, o.fields)
+    with pytest.raises(ValueError, match="evidence partition"):
+        canonicalize(bad, EligibilityResult(True, details={'decision_id': 'd1'}))
+
+
+def test_rejection_reason_is_preserved_in_canonical_provenance():
+    o = obs()
+    evidence = o.evidence.__class__(
+        'COMPLETE', 'NONE_RELEVANT', (),
+        ({'ref': 'K1', 'reason': 'LOW_RELEVANCE'},),
+        {'available_knowledge_ids': ['K1'], 'context_hash': 'ctx'},
+    )
+    fields = {**o.fields, 'audit': {**o.fields['audit'],
+        'available_knowledge_ids': ['K1'], 'evidence_refs_used': [],
+        'available_experience_ids': [], 'available_statistics_ids': [],
+        'evidence_refs_rejected': [{'ref': 'K1', 'reason': 'LOW_RELEVANCE'}]}}
+    result = canonicalize(
+        o.__class__(o.decision, o.evaluation, evidence, fields),
+        EligibilityResult(True, details={'decision_id': 'd1'}),
+    )
+    assert result.provenance['phase9']['rejected'] == (
+        {'ref': 'K1', 'reason': 'LOW_RELEVANCE'},
+    )
+
+
 def test_design_fields_and_phase_labeled_provenance():
     o = obs()
     o = o.__class__(o.decision, o.evaluation, o.evidence,
@@ -154,6 +185,27 @@ def test_exact_decision_contract_training_eligibility_and_research_metadata():
     assert result.research['knowledge_query_fingerprint'] == 'qf'
 
 
+def test_phase8_provenance_values_and_evaluation_fingerprints_are_bounded():
+    o = obs()
+    bad_record = {**o.fields['experience'],
+                  'source_evaluation_fingerprints': {'ANALYSIS_SNAPSHOT:300': ['bad']}}
+    with pytest.raises(ValueError, match="evaluation fingerprint"):
+        canonicalize(
+            o.__class__(o.decision, o.evaluation, o.evidence,
+                        {**o.fields, 'experience': bad_record}),
+            EligibilityResult(True, details={'decision_id': 'd1'}),
+        )
+
+    bad_record = {**o.fields['experience'],
+                  'provenance': {'source_decision_id': {'arbitrary': 'object'}}}
+    with pytest.raises(ValueError, match="Phase 8 provenance"):
+        canonicalize(
+            o.__class__(o.decision, o.evaluation, o.evidence,
+                        {**o.fields, 'experience': bad_record}),
+            EligibilityResult(True, details={'decision_id': 'd1'}),
+        )
+
+
 def test_arbitrary_phase8_provenance_is_rejected():
     o = obs()
     bad = {**o.fields, 'experience': {**o.fields['experience'], 'provenance': {'notes': 'arbitrary prose'}}}
@@ -206,6 +258,14 @@ def test_phase9_metadata_types_and_bounds_fail_closed():
     bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})
     with pytest.raises(ValueError, match="selected_counts"):
         canonicalize(bad, EligibilityResult(True, details={"decision_id": "d1"}))
+
+    audit = {**o.fields["audit"], "unapproved_runtime_detail": "must not leak"}
+    result = canonicalize(
+        o.__class__(o.decision, o.evaluation, o.evidence,
+                    {**o.fields, "audit": audit}),
+        EligibilityResult(True, details={"decision_id": "d1"}),
+    )
+    assert "unapproved_runtime_detail" not in result.provenance["phase9"]
 
     audit = {**o.fields["audit"], "selected_counts": {"knowledge": 1, "unknown": 2}}
     bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})

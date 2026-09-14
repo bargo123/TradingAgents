@@ -281,7 +281,7 @@ class EvidenceObservation(Contract):
     context_integrity: str = "COMPLETE"
     evidence_use_status: str = "NONE_RELEVANT"
     refs_used: tuple[str, ...] = ()
-    refs_rejected: tuple[str, ...] = ()
+    refs_rejected: tuple[Any, ...] = ()
     fields: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -302,9 +302,25 @@ class EvidenceObservation(Contract):
         for name, refs in (("refs_used", self.refs_used), ("refs_rejected", self.refs_rejected)):
             if not isinstance(refs, (list, tuple)):
                 raise ValueError(f"{name} must be a sequence")
+            normalized = []
             for ref in refs:
-                _validate_id(ref, name)
-            object.__setattr__(self, name, tuple(refs))
+                if name == "refs_rejected" and isinstance(ref, Mapping):
+                    ref_id = ref.get("ref")
+                    reason = ref.get("reason")
+                    _validate_id(ref_id, name)
+                    if not isinstance(reason, str) or reason not in {
+                        "CONFLICTS_WITH_CURRENT_STATE",
+                        "LOW_RELEVANCE",
+                        "INSUFFICIENT_SAMPLE",
+                        "DIAGNOSTIC_ONLY",
+                        "REDUNDANT",
+                    }:
+                        raise ValueError("refs_rejected has an unsupported reason")
+                    normalized.append({"ref": ref_id, "reason": reason})
+                else:
+                    _validate_id(ref, name)
+                    normalized.append(ref)
+            object.__setattr__(self, name, tuple(normalized))
         _require_mapping(self.fields, "fields")
         object.__setattr__(self, "fields", _freeze(self.fields))
 

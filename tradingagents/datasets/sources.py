@@ -198,6 +198,35 @@ def _decode_mapping(value: Any) -> dict[str, Any]:
     return _bounded(decoded, 500)
 
 
+def _decode_phase8_object(value: Any) -> dict[str, Any]:
+    """Decode a Phase 8 JSON object without coercing other JSON types."""
+    if isinstance(value, dict):
+        decoded = value
+    else:
+        try:
+            decoded = json.loads(value or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise SourceReadError("invalid Phase 8 JSON object") from exc
+    if not isinstance(decoded, dict):
+        raise SourceReadError("Phase 8 JSON object must be a JSON object")
+    return _bounded(decoded, 500)
+
+
+def _decode_phase8_fingerprints(value: Any) -> dict[str, str]:
+    decoded = _decode_phase8_object(value)
+    if len(decoded) > 64 or any(
+        not isinstance(key, str)
+        or not key
+        or len(key) > 128
+        or not isinstance(fingerprint, str)
+        or not fingerprint
+        or len(fingerprint) > 256
+        for key, fingerprint in decoded.items()
+    ):
+        raise SourceReadError("invalid Phase 8 evaluation fingerprints")
+    return decoded
+
+
 def _related(db, experience_id: str, table: str, query: str) -> list[dict[str, Any]]:
     names = [x[0] for x in db.execute(f'SELECT * FROM "{table}" LIMIT 0').description]
     return [
@@ -418,8 +447,12 @@ class ReadonlyExperienceSource(_Readonly):
                     "source_evaluation_fingerprints_json",
                 )
                 for key in json_keys:
-                    item[key[:-5] if key.endswith("_json") else key] = json.loads(
-                        item.pop(key) or "{}"
+                    raw_json = item.pop(key)
+                    name = key[:-5] if key.endswith("_json") else key
+                    item[name] = (
+                        _decode_phase8_fingerprints(raw_json)
+                        if key == "source_evaluation_fingerprints_json"
+                        else _decode_phase8_object(raw_json)
                     )
                 experience_id = item["experience_id"]
 
@@ -442,10 +475,10 @@ class ReadonlyExperienceSource(_Readonly):
                     "SELECT * FROM experience_outcome_snapshots WHERE experience_id=? ORDER BY observed_at,fingerprint",
                 )
                 for snapshot in snapshots:
-                    snapshot["evaluation"] = json.loads(snapshot.pop("evaluation_json") or "{}")
-                    snapshot["provenance"] = json.loads(snapshot.pop("provenance_json") or "{}")
+                    snapshot["evaluation"] = _decode_phase8_object(snapshot.pop("evaluation_json"))
+                    snapshot["provenance"] = _decode_phase8_object(snapshot.pop("provenance_json"))
                 for projection in projections:
-                    projection["projection"] = json.loads(projection.pop("projection_json") or "{}")
+                    projection["projection"] = _decode_phase8_object(projection.pop("projection_json"))
                 item["accepted_aliases"] = aliases
                 item["feature_projections"] = projections
                 item["evaluation_snapshots"] = snapshots
@@ -541,4 +574,5 @@ __all__ = [
     "SourceDatabaseUnavailableError",
     "SourceSchemaIncompatibleError",
     "SourceSnapshotChangedError",
+    "_decode_phase8_object",
 ]

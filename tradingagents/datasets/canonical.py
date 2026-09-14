@@ -118,6 +118,28 @@ _PHASE9_TEXT_FIELDS = frozenset({
     "experience_generation_id",
     "phase9_fingerprint",
 })
+_PHASE9_STATUS_FIELDS = frozenset({
+    "integration_status", "integration", "bundle_status",
+    "evidence_audit_status", "context_integrity", "evidence_use_status",
+})
+_PHASE9_ALLOWED_FIELDS = _PHASE9_TEXT_FIELDS | _PHASE9_STATUS_FIELDS | frozenset({
+    "selected_counts", "dropped_counts",
+})
+_PHASE8_PROVENANCE_FIELDS = frozenset({
+    "source_decision_id", "decision_id", "source_decision_fingerprint",
+    "source_snapshot_fingerprint", "evaluation_fingerprint",
+    "source_evaluation_fingerprint", "experience_id", "source_database_id",
+    "schema_version", "experience_schema_version", "feature_schema_version",
+    "feature_extractor_version", "trust_policy_version",
+})
+_SOURCE_FINGERPRINT_FIELDS = frozenset({
+    "source_id", "canonical_path", "schema_fingerprint", "file_sha256",
+    "snapshot_fingerprint", "contract_version",
+})
+_REJECTION_REASONS = frozenset({
+    "CONFLICTS_WITH_CURRENT_STATE", "LOW_RELEVANCE", "INSUFFICIENT_SAMPLE",
+    "DIAGNOSTIC_ONLY", "REDUNDANT",
+})
 
 
 def _bounded_phase9_text(name: str, value: Any) -> Any:
@@ -145,8 +167,14 @@ def _phase9_counts(name: str, value: Any) -> dict[str, int]:
 
 def _phase9_metadata(audit: Mapping[str, Any], fallback: Mapping[str, Any]) -> dict[str, Any]:
     """Project only bounded, typed audit metadata into the canonical row."""
-    data = dict(fallback)
-    data.update({key: value for key, value in audit.items() if value is not None})
+    data = {
+        key: value for key, value in fallback.items()
+        if key in _PHASE9_ALLOWED_FIELDS and value is not None
+    }
+    data.update({
+        key: value for key, value in audit.items()
+        if key in _PHASE9_ALLOWED_FIELDS and value is not None
+    })
     for name in _PHASE9_TEXT_FIELDS:
         if name in data:
             data[name] = _bounded_phase9_text(name, data[name])
@@ -157,6 +185,62 @@ def _phase9_metadata(audit: Mapping[str, Any], fallback: Mapping[str, Any]) -> d
         if name in data and data[name] is not None:
             data[name] = _bounded_phase9_text(name, data[name])
     return data
+
+
+def _source_fingerprint(name: str, value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or len(value) > len(_SOURCE_FINGERPRINT_FIELDS):
+        raise ValueError(f"invalid {name} source fingerprint")
+    if set(value) - _SOURCE_FINGERPRINT_FIELDS:
+        raise ValueError(f"invalid {name} source fingerprint fields")
+    result = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str) or not item or len(item) > 512:
+            raise ValueError(f"invalid {name} source fingerprint value")
+        result[key] = item
+    return result
+
+
+def _phase8_provenance(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping) or len(value) > len(_PHASE8_PROVENANCE_FIELDS):
+        raise ValueError("invalid Phase 8 provenance")
+    if set(value) - _PHASE8_PROVENANCE_FIELDS:
+        raise ValueError("unapproved Phase 8 provenance field")
+    output = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str) or not item or len(item) > 512:
+            raise ValueError("invalid Phase 8 provenance value")
+        output[key] = item
+    return output
+
+
+def _phase8_evaluation_fingerprints(value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping) or len(value) > 64:
+        raise ValueError("invalid Phase 8 evaluation fingerprint mapping")
+    output = {}
+    for key, item in value.items():
+        if (
+            not isinstance(key, str) or not key or len(key) > 128
+            or not isinstance(item, str) or not item or len(item) > 256
+        ):
+            raise ValueError("invalid Phase 8 evaluation fingerprint")
+        output[key] = item
+    return output
+
+
+def _rejection(value: Any) -> tuple[str, dict[str, str]]:
+    if not isinstance(value, Mapping):
+        raise ValueError("evidence rejection must include a reason")
+    ref = value.get("ref")
+    reason = value.get("reason")
+    if not isinstance(ref, str) or not ref or len(ref) > 256:
+        raise ValueError("invalid evidence rejection reference")
+    if hasattr(reason, "value"):
+        reason = reason.value
+    if not isinstance(reason, str) or reason not in _REJECTION_REASONS:
+        raise ValueError("invalid evidence rejection reason")
+    return ref, {"ref": ref, "reason": reason}
 
 def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampleV1:
     """Convert one eligible joined observation into a deterministic JSON contract."""
@@ -181,7 +265,10 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     snapshot = _snapshot(_get(d, "fields", {}).get("snapshot_json") or record.get("market_state") or {}, d.resolved_symbol, d.analysis_snapshot_timestamp)
     # Keep Phase 9 bounded: IDs/status/hash only; never rendered evidence text.
     used = tuple(_get(evidence, "refs_used", ()) or ())
-    rejected = tuple(_get(evidence, "refs_rejected", ()) or ())
+    rejected_entries = tuple(_get(evidence, "refs_rejected", ()) or ())
+    rejected_pairs = tuple(_rejection(entry) for entry in rejected_entries)
+    rejected = tuple(ref for ref, _ in rejected_pairs)
+    rejected_records = tuple(record for _, record in rejected_pairs)
     ef = dict(_get(evidence, "fields", {}) or {})
     knowledge_ids = tuple(audit.get("available_knowledge_ids", ef.get("available_knowledge_ids", ())))
     phase8_ids = tuple(audit.get("available_experience_ids", ef.get("available_experience_ids", ()))) + tuple(audit.get("available_statistics_ids", ef.get("available_statistics_ids", ())))
@@ -190,7 +277,7 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     for name, ids in (("available", all_ids), ("used", used), ("rejected", rejected)):
         if len(ids) > 64 or len(ids) != len(set(ids)) or any(not isinstance(x, str) or not x or len(x) > 256 for x in ids):
             raise ValueError(f"invalid evidence {name} IDs")
-    if set(used) & set(rejected) or not set(used) | set(rejected) <= set(all_ids):
+    if set(used) & set(rejected) or set(used) | set(rejected) != set(all_ids):
         raise ValueError("inconsistent evidence partition")
     decision = {"decision_id": d.decision_id, "source_run_id": d.source_run_id, "requested_symbol": d.requested_symbol, "resolved_symbol": d.resolved_symbol, "analysis_profile": d.analysis_profile, "analysis_timeframe": d.analysis_timeframe, "action": d.action, "normalization_status": _get(d, "fields", {}).get("normalization_status"), "decision_context_status": _get(d, "fields", {}).get("decision_context_status"), "analysis_snapshot_timestamp": d.analysis_snapshot_timestamp, "decision_completed_timestamp": d.decision_completed_timestamp, "raw_result_fingerprint": _digest(raw)}
     outcome = {name: _get(ev, name, _get(ev, "fields", {}).get(name)) for name in _OUTCOME_FIELDS}
@@ -201,12 +288,15 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     if any((x.value if isinstance(x, DatasetExclusionReason) else str(x)) not in {r.value for r in DatasetExclusionReason} for x in reasons):
         raise ValueError("unknown exclusion reason")
     phase8_prov = record.get("provenance") or {}
-    allowed_prov = {"source_decision_id", "decision_id", "source_decision_fingerprint", "evaluation_fingerprint", "source_evaluation_fingerprint", "experience_id", "source_database_id", "schema_version", "feature_schema_version", "feature_extractor_version", "trust_policy_version"}
-    if any(k not in allowed_prov for k in phase8_prov):
-        raise ValueError("unapproved Phase 8 provenance field")
+    phase8_prov = _phase8_provenance(phase8_prov)
+    phase8_eval_fps = _phase8_evaluation_fingerprints(record.get("source_evaluation_fingerprints") or {})
     phase9_audit = _phase9_metadata(audit, ef)
-    phase56_fingerprint = source_fingerprints.get("phase56") or jf.get("source_fingerprint")
-    provenance = {"phase56": phase56_fingerprint, "source_decision_fingerprint": dfp, "source_evaluation_fingerprint": _get(ev, "fields", {}).get("source_evaluation_fingerprint"), "phase8_record_provenance": {k: phase8_prov[k] for k in phase8_prov}, "phase8_source_evaluation_fingerprints": record.get("source_evaluation_fingerprints"), "closed_rejection_reasons": reasons, "context_hash": context_hash, "knowledge": {"ids": knowledge_ids, "used": tuple(x for x in used if x in knowledge_ids), "generation_id": phase9_audit.get("knowledge_generation_id", ef.get("knowledge_generation_id"))}, "phase8": {"ids": phase8_ids, "used": tuple(x for x in used if x in phase8_ids), "generation_id": phase9_audit.get("experience_generation_id", ef.get("experience_generation_id")), "source_decision_fingerprint": record.get("source_decision_fingerprint"), "source_fingerprint": source_fingerprints.get("phase8")}, "phase9": {"used": used, "rejected": rejected, "audit_status": phase9_audit.get("evidence_audit_status"), "context_integrity": phase9_audit.get("context_integrity"), "available_knowledge_ids": knowledge_ids, "available_phase8_ids": phase8_ids, "source_fingerprint": source_fingerprints.get("phase9"), "phase9_fingerprint": phase9_audit.get("phase9_fingerprint") or source_fingerprints.get("phase9", {}).get("snapshot_fingerprint") if isinstance(source_fingerprints.get("phase9"), Mapping) else phase9_audit.get("phase9_fingerprint"), "rendered_context_hash": phase9_audit.get("rendered_context_hash"), "query_normalization_fingerprint": phase9_audit.get("query_normalization_fingerprint")}, "raw_result_fingerprint": _digest(raw)}
+    phase56_fingerprint = _source_fingerprint(
+        "phase56", source_fingerprints.get("phase56") or jf.get("source_fingerprint")
+    )
+    phase8_fingerprint = _source_fingerprint("phase8", source_fingerprints.get("phase8"))
+    phase9_fingerprint = _source_fingerprint("phase9", source_fingerprints.get("phase9"))
+    provenance = {"phase56": phase56_fingerprint, "source_decision_fingerprint": dfp, "source_evaluation_fingerprint": _get(ev, "fields", {}).get("source_evaluation_fingerprint"), "phase8_record_provenance": phase8_prov, "phase8_source_evaluation_fingerprints": phase8_eval_fps, "closed_rejection_reasons": reasons, "context_hash": context_hash, "knowledge": {"ids": knowledge_ids, "used": tuple(x for x in used if x in knowledge_ids), "generation_id": phase9_audit.get("knowledge_generation_id", ef.get("knowledge_generation_id"))}, "phase8": {"ids": phase8_ids, "used": tuple(x for x in used if x in phase8_ids), "generation_id": phase9_audit.get("experience_generation_id", ef.get("experience_generation_id")), "source_decision_fingerprint": record.get("source_decision_fingerprint"), "source_fingerprint": phase8_fingerprint}, "phase9": {"used": used, "rejected": rejected_records, "audit_status": phase9_audit.get("evidence_audit_status"), "context_integrity": phase9_audit.get("context_integrity"), "available_knowledge_ids": knowledge_ids, "available_phase8_ids": phase8_ids, "source_fingerprint": phase9_fingerprint, "phase9_fingerprint": phase9_audit.get("phase9_fingerprint") or (phase9_fingerprint or {}).get("snapshot_fingerprint"), "rendered_context_hash": phase9_audit.get("rendered_context_hash"), "query_normalization_fingerprint": phase9_audit.get("query_normalization_fingerprint")}, "raw_result_fingerprint": _digest(raw)}
     market = {"snapshot": snapshot, "snapshot_fingerprint": record.get("snapshot_fingerprint") or record.get("market_state_fingerprint") or (phase56_fingerprint or {}).get("snapshot_fingerprint")}
     research = {"context_integrity": _get(evidence, "context_integrity"), "evidence_use_status": _get(evidence, "evidence_use_status"), "refs_used": used, "refs_rejected": rejected, "bundle_status": phase9_audit.get("bundle_status"), "integration_status": phase9_audit.get("integration_status", phase9_audit.get("integration")), "selected_counts": phase9_audit.get("selected_counts", {}), "dropped_counts": phase9_audit.get("dropped_counts", {}), "knowledge_query_fingerprint": phase9_audit.get("knowledge_query_fingerprint"), "query_policy_version": phase9_audit.get("query_policy_version"), "knowledge_generation_id": phase9_audit.get("knowledge_generation_id"), "experience_generation_id": phase9_audit.get("experience_generation_id"), "phase9": provenance["phase9"]}
     return CanonicalExampleV1(example_id, decision, market, research, outcome, trust, provenance, EXAMPLE_SCHEMA_VERSION)

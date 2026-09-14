@@ -262,7 +262,11 @@ def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[Joined
         evidence = None
         if ar:
             row = ar[0]
-            rejected = tuple(x.get("ref", "") if isinstance(x, Mapping) else x for x in (_get(row, "evidence_refs_rejected", _get(row, "refs_rejected", ())) or ()))
+            rejected = tuple(
+                {"ref": x.get("ref"), "reason": x.get("reason")}
+                if isinstance(x, Mapping) else x
+                for x in (_get(row, "evidence_refs_rejected", _get(row, "refs_rejected", ())) or ())
+            )
             evidence = EvidenceObservation(
                 context_integrity=str(_get(row, "context_integrity", "INCOMPLETE")),
                 evidence_use_status=str(_get(row, "evidence_use_status", "INCOMPLETE")),
@@ -359,8 +363,10 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
     if audit and all(name in audit for name in required_audit):
         available = set(_get(audit, "available_knowledge_ids", ()) or ()) | set(_get(audit, "available_experience_ids", ()) or ()) | set(_get(audit, "available_statistics_ids", ()) or ())
         used = set(_get(audit, "evidence_refs_used", ()) or ())
-        rejected = set(_get(audit, "evidence_refs_rejected", ()) or ())
-        rejected = {str(x.get("ref")) if isinstance(x, Mapping) else str(x) for x in rejected}
+        rejected = {
+            str(x.get("ref")) if isinstance(x, Mapping) else str(x)
+            for x in (_get(audit, "evidence_refs_rejected", ()) or ())
+        }
         if used & rejected or used | rejected != {str(x) for x in available}:
             reasons.add(DatasetExclusionReason.CITATION_INVALID)
     if not audit or str(_get(observation.evidence, "context_integrity", "")).upper() != "COMPLETE":

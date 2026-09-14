@@ -15,6 +15,7 @@ from tradingagents.datasets.sources import (
     SourceSchemaIncompatibleError,
     _decode_array,
     _decode_mapping,
+    _decode_phase8_object,
     _stamp,
 )
 from tradingagents.experience.identity import (
@@ -175,6 +176,12 @@ def test_phase9_array_fields_decode_to_bounded_arrays():
 def test_phase9_object_fields_reject_non_object_json():
     with pytest.raises(SourceReadError, match="JSON object"):
         _decode_mapping("[1, 2]")
+
+
+@pytest.mark.parametrize("raw", ["[1, 2]", '"scalar"', '1', 'null'])
+def test_phase8_json_object_fields_reject_non_object_json(raw):
+    with pytest.raises(SourceReadError, match="Phase 8 JSON object"):
+        _decode_phase8_object(raw)
 
 
 def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
