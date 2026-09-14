@@ -61,6 +61,7 @@ def _manifest(path: Path) -> DatasetManifest:
         exclusions=int(data.get("exclusions", 0)),
         split_status=str(data.get("split_status", "INSUFFICIENT_DATA")),
         safety=data.get("safety", _SAFETY),
+        source_fingerprints=data.get("source_fingerprints", {}),
         status=str(data.get("status", "EMPTY_ELIGIBLE_SET")),
     )
 

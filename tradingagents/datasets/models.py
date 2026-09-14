@@ -22,6 +22,15 @@ ELIGIBILITY_POLICY_VERSION = "phase10.eligibility.v1"
 CANONICALIZATION_VERSION = "phase10.canonicalization.v1"
 SPLIT_POLICY_VERSION = "phase10.split.v1"
 SOURCE_ADAPTER_VERSION = "phase10.source-adapter.v1"
+_SOURCE_FINGERPRINT_PHASES = {"phase56", "phase8", "phase9"}
+_SOURCE_FINGERPRINT_FIELDS = {
+    "source_id",
+    "canonical_path",
+    "schema_fingerprint",
+    "file_sha256",
+    "snapshot_fingerprint",
+    "contract_version",
+}
 
 
 class DatasetExclusionReason(str, Enum):
@@ -420,6 +429,10 @@ class DatasetManifest(Contract):
             "mt5_calls": 0,
         }
     )
+    # The manifest is the public BuildReport projection used by offline
+    # callers.  Keep the immutable source identities here as well as in the
+    # on-disk writer manifest, including when no candidate is eligible.
+    source_fingerprints: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
     status: str = "EMPTY_ELIGIBLE_SET"
 
     def __post_init__(self):
@@ -445,6 +458,19 @@ class DatasetManifest(Contract):
         for name, value in self.safety.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"safety.{name} must be a non-negative integer")
+        if not isinstance(self.source_fingerprints, Mapping):
+            raise ValueError("source_fingerprints must be a mapping")
+        if self.source_fingerprints and set(self.source_fingerprints) != _SOURCE_FINGERPRINT_PHASES:
+            raise ValueError("source_fingerprints must contain phase56, phase8, phase9")
+        for phase, fingerprint in self.source_fingerprints.items():
+            if not isinstance(phase, str) or phase not in _SOURCE_FINGERPRINT_PHASES:
+                raise ValueError("unsupported source fingerprint phase")
+            if not isinstance(fingerprint, Mapping) or set(fingerprint) != _SOURCE_FINGERPRINT_FIELDS:
+                raise ValueError(f"invalid {phase} source fingerprint")
+            for name, value in fingerprint.items():
+                if not isinstance(value, str) or not value or len(value) > 512:
+                    raise ValueError(f"invalid {phase} source fingerprint value: {name}")
+        object.__setattr__(self, "source_fingerprints", _freeze(self.source_fingerprints))
 
 
 @dataclass(frozen=True, slots=True)
