@@ -97,3 +97,28 @@ pytest -q tests/test_dataset_sources.py tests/test_dataset_models.py
 git diff --check
 passed (warnings only for Git LF/CRLF conversion)
 ```
+
+## Round 4 review fix
+
+Added a public-path integration regression using a tiny real SQLite
+`evidence_usage_audit` fixture. The test invokes
+`ReadonlyPhase9AuditSource.read()` and verifies that `as_of` is returned as a
+UTC-aware `datetime`, while `telemetry_references` and `missing_nodes` are
+bounded structured arrays. Existing private-helper unit tests remain in place.
+
+TDD evidence: a temporary removal of the round-3 normalization caused the
+public regression to fail on the raw string timestamp; restoring the existing
+implementation made it pass.
+
+Verification command/output:
+
+```text
+pytest -q tests/test_dataset_sources.py tests/test_dataset_models.py
+24 passed
+
+ruff check tradingagents/datasets/sources.py tests/test_dataset_sources.py
+All checks passed!
+
+git diff --check
+passed (warnings only for Git LF/CRLF conversion)
+```

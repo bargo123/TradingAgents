@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timezone
 
@@ -82,3 +83,71 @@ def test_phase9_as_of_is_exact_utc_datetime():
 
 def test_phase9_array_fields_decode_to_bounded_arrays():
     assert _decode_array('["telemetry-a", "node-a"]') == ["telemetry-a", "node-a"]
+
+
+def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
+    path = tmp_path / "audit.sqlite3"
+    columns = (
+        "decision_id",
+        "source_run_id",
+        "as_of",
+        "rendered_context",
+        "rendered_context_hash",
+        "knowledge_generation_id",
+        "experience_generation_id",
+        "knowledge_query",
+        "integration_status",
+        "bundle_status",
+        "evidence_use_status",
+        "available_knowledge_ids",
+        "available_experience_ids",
+        "available_statistics_ids",
+        "evidence_refs_used",
+        "evidence_refs_rejected",
+        "query_policy_version",
+        "source_status",
+        "diagnostics",
+        "source_errors",
+        "retrieval_count",
+        "retrieval_latency_seconds",
+        "builder_latency_seconds",
+        "selected_counts",
+        "dropped_counts",
+        "telemetry_references",
+        "node_context_hashes",
+        "missing_nodes",
+        "provider",
+        "model",
+        "audit_schema_version",
+        "evidence_audit_status",
+        "query_normalization_fingerprint",
+        "knowledge_query_fingerprint",
+    )
+    values = [None] * len(columns)
+    values[columns.index("decision_id")] = "decision-1"
+    values[columns.index("source_run_id")] = "run-1"
+    values[columns.index("as_of")] = "2026-01-01T01:02:03Z"
+    values[columns.index("telemetry_references")] = json.dumps(["telemetry-1"])
+    values[columns.index("missing_nodes")] = json.dumps(["node-a", "node-b"])
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE evidence_usage_audit ("
+            + ", ".join(f'"{column}" TEXT' for column in columns)
+            + ")"
+        )
+        placeholders = ", ".join("?" for _ in columns)
+        db.execute(
+            'INSERT INTO evidence_usage_audit ("' + '", "'.join(columns) + f'") VALUES ({placeholders})',
+            values,
+        )
+
+    result = ReadonlyPhase9AuditSource(path).read()
+    assert result.available is True
+    assert len(result.audits) == 1
+    audit = result.audits[0]
+    assert audit["as_of"] == datetime(2026, 1, 1, 1, 2, 3, tzinfo=timezone.utc)
+    assert isinstance(audit["as_of"], datetime)
+    assert audit["telemetry_references"] == ["telemetry-1"]
+    assert isinstance(audit["telemetry_references"], list)
+    assert audit["missing_nodes"] == ["node-a", "node-b"]
+    assert isinstance(audit["missing_nodes"], list)
