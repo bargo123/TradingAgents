@@ -22,6 +22,7 @@ from .models import (
     SPLIT_POLICY_VERSION,
     CanonicalExampleV1,
     DatasetExclusion,
+    DatasetExclusionReason,
     SplitAssignment,
 )
 from .splits import SplitResult, validate_split_assignments
@@ -38,6 +39,8 @@ _POLICY_DEFAULTS = {
     "split_policy_version": SPLIT_POLICY_VERSION,
     "source_adapter_version": SOURCE_ADAPTER_VERSION,
 }
+_EXCLUSION_FIELDS = {"decision_id", "reasons", "details"}
+_MAX_JSONL_ROW_BYTES = 256 * 1024
 _FORBIDDEN = re.compile(
     r"prompt|completion|reasoning|chain[ _-]?of[ _-]?thought|\bcot\b|secret|password|credential|api[ _-]?key|token",
     re.I,
@@ -115,6 +118,8 @@ def _validated_policies(value: Mapping[str, str] | None) -> dict[str, str]:
     if value is not None:
         if not isinstance(value, Mapping):
             raise GenerationValidationError("policy_versions must be a mapping")
+        if set(value) != set(_POLICY_DEFAULTS):
+            raise GenerationValidationError("unsupported policy key set")
         result.update(value)
     for name in _POLICY_DEFAULTS:
         if not isinstance(result.get(name), str) or not result[name]:
@@ -134,6 +139,23 @@ def _canonical_row(value: Any) -> CanonicalExampleV1:
     if row.schema_version != EXAMPLE_SCHEMA_VERSION:
         raise GenerationValidationError("unsupported example schema version")
     return row
+
+
+def _exclusion_row(value: Any) -> DatasetExclusion:
+    """Parse the closed exclusion contract from its JSON representation."""
+    if not isinstance(value, Mapping) or set(value) != _EXCLUSION_FIELDS:
+        raise GenerationValidationError("excluded row schema invalid")
+    reasons = value.get("reasons")
+    if not isinstance(reasons, list):
+        raise GenerationValidationError("excluded row reasons must be a list")
+    try:
+        return DatasetExclusion(
+            decision_id=value.get("decision_id"),
+            reasons=tuple(DatasetExclusionReason(item) for item in reasons),
+            details=value.get("details"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise GenerationValidationError(f"excluded row schema invalid: {exc}") from exc
 
 
 def _example_key(row: CanonicalExampleV1) -> tuple[str, str, str, int, str]:
@@ -165,7 +187,13 @@ def _provenance_fingerprints(row: CanonicalExampleV1) -> dict[str, Any]:
 
 
 def _write_jsonl(path: Path, rows: Iterable[Any]) -> dict[str, Any]:
-    data = b"".join(_line(row) for row in rows)
+    lines = []
+    for row in rows:
+        line = _line(row)
+        if len(line) > _MAX_JSONL_ROW_BYTES:
+            raise GenerationValidationError("JSONL row exceeds bound")
+        lines.append(line)
+    data = b"".join(lines)
     path.write_bytes(data)
     return {
         "sha256": hashlib.sha256(data).hexdigest(),
@@ -207,6 +235,10 @@ def write_generation(
     generation_id = dataset_id or _default_id(rows, excluded)
     fingerprints = _validated_fingerprints(source_fingerprints)
     policies = _validated_policies(policy_versions)
+    if metadata is not None:
+        if not isinstance(metadata, Mapping):
+            raise GenerationValidationError("metadata must be a mapping")
+        _safe(metadata)
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     destination = root / generation_id
@@ -218,6 +250,9 @@ def write_generation(
         assignment_items = tuple(
             split_result.assignments if isinstance(split_result, SplitResult) else split_result
         )
+        for item in excluded:
+            if not isinstance(item, DatasetExclusion):
+                raise GenerationValidationError("excluded rows must use DatasetExclusion")
         split_status = (
             split_result.status
             if isinstance(split_result, SplitResult)
@@ -317,6 +352,7 @@ def write_generation(
         }
         if metadata:
             manifest["metadata"] = _plain(metadata)
+        _safe(manifest)
         (stage / "manifest.json").write_bytes(
             (
                 json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -393,6 +429,9 @@ def validate_generation(path: str | Path):
             for line in (root / name).read_text(encoding="utf-8").splitlines():
                 if not line:
                     continue
+                if len(line.encode("utf-8")) + 1 > _MAX_JSONL_ROW_BYTES:
+                    errors.append(f"JSON row exceeds bound: {name}")
+                    continue
                 try:
                     value = json.loads(line)
                     _safe(value)
@@ -417,6 +456,36 @@ def validate_generation(path: str | Path):
             errors.append("duplicate or invalid example IDs")
         if manifest.get("examples") != len(rows):
             errors.append("example count mismatch")
+        excluded_rows = read_rows("excluded.jsonl")
+        exclusions: list[DatasetExclusion] = []
+        for value in excluded_rows:
+            try:
+                exclusions.append(_exclusion_row(value))
+            except GenerationValidationError as exc:
+                errors.append(f"excluded.jsonl: {exc}")
+        if manifest.get("exclusions") != len(exclusions):
+            errors.append("exclusion count mismatch")
+        actual_reason_counts = Counter(
+            reason.value for item in exclusions for reason in item.reasons
+        )
+        counts = manifest.get("counts")
+        if not isinstance(counts, Mapping):
+            errors.append("manifest counts must be a mapping")
+        else:
+            if counts.get("examples") != len(rows):
+                errors.append("manifest counts mismatch: examples")
+            if counts.get("exclusions") != len(exclusions):
+                errors.append("manifest counts mismatch: exclusions")
+            if counts.get("reason_counts") != dict(sorted(actual_reason_counts.items())):
+                errors.append("manifest counts mismatch: reason_counts")
+        candidate_summary = manifest.get("candidate_summary")
+        expected_candidates = {
+            "candidates": len(rows) + len(exclusions),
+            "eligible": len(rows),
+            "excluded": len(exclusions),
+        }
+        if candidate_summary != expected_candidates:
+            errors.append("candidate summary mismatch")
         example_by_id = {item.example_id: item for item in rows}
         # Source fingerprints are part of the trust boundary: a generation
         # cannot claim one source while its canonical rows identify another.
@@ -446,7 +515,9 @@ def validate_generation(path: str | Path):
                     errors.append(f"{split} row differs from examples: {item_id}")
                 group_id = _group_id_for_row(split_row)
                 partition_assignments.append(SplitAssignment(item_id, split, group_id))
-        if len(seen) != sum(manifest.get("split_counts", {}).values()):
+        actual_split_counts = dict(sorted(Counter(seen.values()).items()))
+        manifest_split_counts = manifest.get("split_counts")
+        if manifest_split_counts != actual_split_counts:
             errors.append("split count mismatch")
         try:
             status = manifest.get("split_status", "INSUFFICIENT_DATA")
@@ -461,6 +532,15 @@ def validate_generation(path: str | Path):
         ):
             if manifest.get(field) != dict(sorted(expected.items())):
                 errors.append(f"manifest summary mismatch: {field}")
+        expected_evaluation_counts = Counter(
+            f"{row.outcome.get('evaluation_basis', '')}:{row.outcome.get('horizon_seconds', '')}"
+            for row in rows
+        )
+        if manifest.get("evaluation_counts") != dict(sorted(expected_evaluation_counts.items())):
+            errors.append("manifest summary mismatch: evaluation_counts")
+        expected_group_count = len({item.group_id for item in partition_assignments})
+        if manifest.get("group_count") != expected_group_count:
+            errors.append("manifest summary mismatch: group_count")
     except Exception as exc:
         errors.append(str(exc))
     return ValidationReport(not errors, tuple(errors))

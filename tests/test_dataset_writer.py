@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from tradingagents.datasets.models import (
 from tradingagents.datasets.splits import SPLIT_STATUS_COMPLETE, SplitAssignment, SplitResult
 from tradingagents.datasets.writer import (
     GenerationExistsError,
+    GenerationValidationError,
     validate_generation,
     write_generation,
 )
@@ -211,3 +213,78 @@ def test_interrupted_publish_leaves_unpublished_staging(tmp_path: Path, monkeypa
                          policy_versions=POLICIES)
     assert not (tmp_path / "interrupted").exists()
     assert list(tmp_path.glob(".staging-interrupted-*"))
+
+
+def test_sensitive_manifest_metadata_is_rejected_before_publish(tmp_path: Path):
+    with pytest.raises(GenerationValidationError, match="forbidden"):
+        write_generation(
+            tmp_path,
+            (example(),),
+            (),
+            SplitResult((), "INSUFFICIENT_DATA"),
+            dataset_id="sensitive-metadata",
+            source_fingerprints=FINGERPRINTS,
+            policy_versions=POLICIES,
+            metadata={"nested": {"private_reasoning": "must not persist"}},
+        )
+    assert not (tmp_path / "sensitive-metadata").exists()
+
+
+def test_unknown_policy_keys_are_rejected_during_write(tmp_path: Path):
+    with pytest.raises(GenerationValidationError, match="unsupported policy key"):
+        write_generation(
+            tmp_path,
+            (example(),),
+            (),
+            SplitResult((), "INSUFFICIENT_DATA"),
+            dataset_id="unknown-policy",
+            source_fingerprints=FINGERPRINTS,
+            policy_versions={**POLICIES, "future_policy": "v2"},
+        )
+
+
+def test_validate_generation_validates_exclusion_schema_after_hash_refresh(tmp_path: Path):
+    root = write_generation(
+        tmp_path,
+        (),
+        (DatasetExclusion("d1", (DatasetExclusionReason.OUTCOME_UNAVAILABLE,)),),
+        SplitResult((), "INSUFFICIENT_DATA"),
+        dataset_id="bad-exclusion",
+        source_fingerprints=FINGERPRINTS,
+        policy_versions=POLICIES,
+    )
+    path = root / "excluded.jsonl"
+    row = json.loads(path.read_text(encoding="utf-8"))
+    row["reasons"] = ["NOT_A_CLOSED_REASON"]
+    data = (json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    path.write_bytes(data)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["excluded.jsonl"] = {
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "size": len(data),
+        "count": 1,
+    }
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
+    report = validate_generation(root)
+    assert not report.valid
+    assert any("excluded.jsonl" in error and "schema invalid" in error for error in report.errors)
+
+
+def test_validate_generation_cross_checks_exact_split_counts(tmp_path: Path):
+    root = write_generation(
+        tmp_path,
+        (example(),),
+        (),
+        SplitResult((), "INSUFFICIENT_DATA"),
+        dataset_id="bad-split-counts",
+        source_fingerprints=FINGERPRINTS,
+        policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["split_counts"] = {"train": 0}
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8", newline="\n")
+    report = validate_generation(root)
+    assert not report.valid
+    assert any("split count mismatch" in error for error in report.errors)
