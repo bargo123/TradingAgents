@@ -230,6 +230,58 @@ def test_sensitive_manifest_metadata_is_rejected_before_publish(tmp_path: Path):
     assert not (tmp_path / "sensitive-metadata").exists()
 
 
+def test_validate_generation_rejects_nonzero_safety_counter(tmp_path: Path):
+    root = write_generation(
+        tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["safety"]["network_attempts"] = 1
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any("safety" in error for error in report.errors)
+
+
+def test_default_generation_id_includes_source_fingerprints(tmp_path: Path):
+    first = write_generation(
+        tmp_path / "first", (),
+        (DatasetExclusion("ex-1", (DatasetExclusionReason.OUTCOME_UNAVAILABLE,)),),
+        SplitResult((), "INSUFFICIENT_DATA"),
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+    changed = {phase: dict(value) for phase, value in FINGERPRINTS.items()}
+    changed["phase56"]["file_sha256"] = "changed-file-sha"
+    second = write_generation(
+        tmp_path / "second", (),
+        (DatasetExclusion("ex-1", (DatasetExclusionReason.OUTCOME_UNAVAILABLE,)),),
+        SplitResult((), "INSUFFICIENT_DATA"),
+        source_fingerprints=changed, policy_versions=POLICIES,
+    )
+
+    assert first.name != second.name
+
+
+def test_default_generation_id_includes_split_inputs(tmp_path: Path):
+    first = write_generation(
+        tmp_path / "first", (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+    second = write_generation(
+        tmp_path / "second", (example(),), (),
+        SplitResult((SplitAssignment("ex-1", "train", "run:run-1"),), "COMPLETE"),
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+
+    assert first.name != second.name
+
+
 def test_unknown_policy_keys_are_rejected_during_write(tmp_path: Path):
     with pytest.raises(GenerationValidationError, match="unsupported policy key"):
         write_generation(

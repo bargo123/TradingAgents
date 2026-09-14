@@ -39,6 +39,7 @@ _POLICY_DEFAULTS = {
     "split_policy_version": SPLIT_POLICY_VERSION,
     "source_adapter_version": SOURCE_ADAPTER_VERSION,
 }
+_GENERATION_IDENTITY_VERSION = "phase10.generation-identity.v1"
 _EXCLUSION_FIELDS = {"decision_id", "reasons", "details"}
 _MAX_JSONL_ROW_BYTES = 256 * 1024
 _FORBIDDEN = re.compile(
@@ -209,7 +210,56 @@ def _assignment_map(split_result: SplitResult | Iterable[SplitAssignment]) -> di
     return {item.example_id: item.split for item in assignments}
 
 
-def _default_id(examples: tuple[Any, ...], exclusions: tuple[Any, ...]) -> str:
+def _generation_identity(
+    examples: tuple[Any, ...],
+    exclusions: tuple[Any, ...],
+    assignments: tuple[SplitAssignment, ...],
+    split_status: str,
+    fingerprints: Mapping[str, Any],
+    policies: Mapping[str, str],
+    metadata: Mapping[str, Any] | None,
+) -> str:
+    """Return the reproducibility digest for one complete generation input."""
+    payload = {
+        "identity_version": _GENERATION_IDENTITY_VERSION,
+        "schema_versions": {
+            "dataset": DATASET_SCHEMA_VERSION,
+            "example": EXAMPLE_SCHEMA_VERSION,
+        },
+        "examples": examples,
+        "excluded": exclusions,
+        "split": {
+            "status": split_status,
+            "assignments": tuple(
+                sorted(assignments, key=lambda item: (item.example_id, item.split, item.group_id))
+            ),
+        },
+        "source_fingerprints": fingerprints,
+        "policy_versions": policies,
+        "metadata": metadata or {},
+    }
+    payload_json = json.dumps(_plain(payload), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload_json.encode()).hexdigest()
+
+
+def _default_id(identity_digest: str) -> str:
+    """Derive a stable generation directory name from all build inputs."""
+    return "generation-" + identity_digest[:24]
+
+
+def _manifest_schema_versions() -> dict[str, str]:
+    return {
+        "dataset_schema_version": DATASET_SCHEMA_VERSION,
+        "example_schema_version": EXAMPLE_SCHEMA_VERSION,
+        "canonicalization_version": CANONICALIZATION_VERSION,
+        "eligibility_policy_version": ELIGIBILITY_POLICY_VERSION,
+        "split_policy_version": SPLIT_POLICY_VERSION,
+        "source_adapter_version": SOURCE_ADAPTER_VERSION,
+    }
+
+
+def _legacy_default_id(examples: tuple[Any, ...], exclusions: tuple[Any, ...]) -> str:
+    """Deprecated compatibility helper for callers that imported this private name."""
     payload = json.dumps(
         _plain({"examples": examples, "excluded": exclusions}),
         sort_keys=True,
@@ -232,13 +282,29 @@ def write_generation(
     """Stage and atomically publish one generation; never overwrite a generation."""
     rows = tuple(sorted(examples, key=lambda row: row.example_id))
     excluded = tuple(sorted(exclusions, key=lambda row: row.decision_id))
-    generation_id = dataset_id or _default_id(rows, excluded)
     fingerprints = _validated_fingerprints(source_fingerprints)
     policies = _validated_policies(policy_versions)
     if metadata is not None:
         if not isinstance(metadata, Mapping):
             raise GenerationValidationError("metadata must be a mapping")
         _safe(metadata)
+    assignment_items = tuple(
+        split_result.assignments if isinstance(split_result, SplitResult) else split_result
+    )
+    split_status = (
+        split_result.status
+        if isinstance(split_result, SplitResult)
+        else ("COMPLETE" if assignment_items else "INSUFFICIENT_DATA")
+    )
+    for item in excluded:
+        if not isinstance(item, DatasetExclusion):
+            raise GenerationValidationError("excluded rows must use DatasetExclusion")
+    split_contract = SplitResult(assignment_items, split_status)
+    validate_split_assignments(split_contract, rows)
+    identity_digest = _generation_identity(
+        rows, excluded, assignment_items, split_status, fingerprints, policies, metadata,
+    )
+    generation_id = dataset_id or _default_id(identity_digest)
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     destination = root / generation_id
@@ -247,19 +313,6 @@ def write_generation(
     stage = root / f".staging-{generation_id}-{uuid.uuid4().hex}"
     stage.mkdir()
     try:
-        assignment_items = tuple(
-            split_result.assignments if isinstance(split_result, SplitResult) else split_result
-        )
-        for item in excluded:
-            if not isinstance(item, DatasetExclusion):
-                raise GenerationValidationError("excluded rows must use DatasetExclusion")
-        split_status = (
-            split_result.status
-            if isinstance(split_result, SplitResult)
-            else ("COMPLETE" if assignment_items else "INSUFFICIENT_DATA")
-        )
-        split_contract = SplitResult(assignment_items, split_status)
-        validate_split_assignments(split_contract, rows)
         assignments = {}
         for assignment in assignment_items:
             if assignment.example_id in assignments:
@@ -305,6 +358,11 @@ def write_generation(
         candidate_count = len(rows) + len(excluded)
         manifest = {
             "dataset_id": generation_id,
+            "generation_id_mode": "EXPLICIT" if dataset_id else "CONTENT_DERIVED",
+            "generation_identity": {
+                "version": _GENERATION_IDENTITY_VERSION,
+                "sha256": identity_digest,
+            },
             "schema_version": DATASET_SCHEMA_VERSION,
             "dataset_schema_version": DATASET_SCHEMA_VERSION,
             "example_schema_version": EXAMPLE_SCHEMA_VERSION,
@@ -345,6 +403,7 @@ def write_generation(
             "policy_versions": policies,
             "reproducibility": {
                 "writer_version": "phase10.writer.v1",
+                "generation_identity_version": _GENERATION_IDENTITY_VERSION,
                 "serialization": "json-sort-keys-compact-utf8-newline",
             },
             "safety": {"network_attempts": 0, "llm_calls": 0, "tool_calls": 0, "mt5_calls": 0},
@@ -402,6 +461,14 @@ def validate_generation(path: str | Path):
         for name, expected in expected_versions.items():
             if manifest.get(name) != expected:
                 errors.append(f"manifest version mismatch: {name}")
+        expected_safety = {
+            "network_attempts": 0,
+            "llm_calls": 0,
+            "tool_calls": 0,
+            "mt5_calls": 0,
+        }
+        if manifest.get("safety") != expected_safety:
+            errors.append("manifest safety counters must be exactly zero")
         try:
             fingerprints = _validated_fingerprints(manifest.get("source_fingerprints"))
             manifest_policies = manifest.get("policy_versions")
@@ -541,6 +608,28 @@ def validate_generation(path: str | Path):
         expected_group_count = len({item.group_id for item in partition_assignments})
         if manifest.get("group_count") != expected_group_count:
             errors.append("manifest summary mismatch: group_count")
+        identity = manifest.get("generation_identity")
+        if not isinstance(identity, Mapping):
+            errors.append("manifest generation identity is missing")
+        elif identity.get("version") != _GENERATION_IDENTITY_VERSION:
+            errors.append("manifest generation identity version mismatch")
+        elif fingerprints and manifest_policies:
+            expected_identity = _generation_identity(
+                tuple(sorted(rows, key=lambda row: row.example_id)),
+                tuple(sorted(exclusions, key=lambda row: row.decision_id)),
+                tuple(partition_assignments),
+                manifest.get("split_status", "INSUFFICIENT_DATA"),
+                fingerprints,
+                _validated_policies(manifest_policies),
+                manifest.get("metadata") or {},
+            )
+            if identity.get("sha256") != expected_identity:
+                errors.append("manifest generation identity mismatch")
+            if (
+                manifest.get("generation_id_mode") == "CONTENT_DERIVED"
+                and manifest.get("dataset_id") != _default_id(expected_identity)
+            ):
+                errors.append("content-derived dataset ID mismatch")
     except Exception as exc:
         errors.append(str(exc))
     return ValidationReport(not errors, tuple(errors))
