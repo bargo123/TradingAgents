@@ -62,6 +62,29 @@ def test_closed_status_and_rejection_enums():
         EvidenceReferenceRejection(ref="x", reason="NOPE")
 
 
+def test_forex_portfolio_schema_closes_rejection_reason_contract():
+    """The generated PM schema must match the runtime's closed reason enum."""
+    from tradingagents.agents.schemas import ForexPortfolioDecision
+
+    reason_schema = ForexPortfolioDecision.model_json_schema()["$defs"][
+        "EvidenceReferenceRejection"
+    ]["properties"]["reason"]
+
+    assert reason_schema["$ref"].endswith("EvidenceReferenceRejectionReason")
+    assert "anyOf" not in reason_schema
+    with pytest.raises(ValueError):
+        ForexPortfolioDecision.model_validate(
+            {
+                "rating": "Hold",
+                "executive_summary": "Remain flat.",
+                "investment_thesis": "Evidence is balanced.",
+                "evidence_refs_rejected": [
+                    {"ref": "K1", "reason": "free-form explanation"}
+                ],
+            }
+        )
+
+
 def test_nested_mappings_are_immutable():
     context = EvidenceContext(diagnostics={"nested": {"x": [1], "queue": deque([2, 3])}})
     with pytest.raises(TypeError):

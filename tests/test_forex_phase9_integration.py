@@ -32,6 +32,7 @@ from tradingagents.forex.evidence_runtime import (
     ReadonlyEvidenceRuntimeConfiguration,
     ReadonlyExperienceCatalog,
     ReadonlyKnowledgeCatalog,
+    _bounded_diagnostic,
     _close_orchestrator,
     _validate_child_orchestrator,
     approved_readonly_component,
@@ -462,6 +463,16 @@ def test_child_rejects_unapproved_or_writer_factory_without_query():
     assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
     assert context.diagnostics["integration"]["code"] == "ORCHESTRATOR_FAILURE"
     assert service.active_evidence_workers == 0
+
+
+def test_worker_failure_diagnostic_keeps_code_and_safe_exception_type():
+    diagnostic = _bounded_diagnostic(
+        "ORCHESTRATOR_FAILURE", RuntimeError("provider response contained prompt text")
+    )
+
+    assert diagnostic["code"] == "ORCHESTRATOR_FAILURE"
+    assert diagnostic["error_type"] == "RuntimeError"
+    assert "provider response" in diagnostic["message"]
 
 
 def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):

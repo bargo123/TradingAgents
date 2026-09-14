@@ -31,6 +31,7 @@ from tradingagents.agents.utils.structured import (
     bind_structured,
     invoke_structured_only,
     invoke_structured_or_freetext,
+    structured_failure_category,
 )
 from tradingagents.forex.profile import build_forex_profile_context
 
@@ -164,7 +165,9 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
                 }
                 final_trade_decision = "FOREX_PORTFOLIO_MANAGER_FAILED"
                 normalization_status = "FAILED"
-                normalization_error = str(exc)
+                normalization_error = (
+                    f"{exc} (cause_type={structured_failure_category(exc)})"
+                )
         else:
             final_trade_decision = invoke_structured_or_freetext(
                 structured_llm,

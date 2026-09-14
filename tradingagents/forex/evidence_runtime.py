@@ -348,7 +348,12 @@ class ReadonlyExperienceCatalog(_ReadonlySQLite):
 
 def _bounded_diagnostic(code: str, detail: Any = "") -> dict[str, str]:
     message = " ".join(str(detail).replace("\r", " ").replace("\n", " ").split())[:500]
-    return {"code": str(code)[:100], "message": message}
+    diagnostic = {"code": str(code)[:100], "message": message}
+    if isinstance(detail, BaseException):
+        # Preserve a safe failure category for the parent smoke report without
+        # copying provider messages that could contain request text.
+        diagnostic["error_type"] = type(detail).__name__
+    return diagnostic
 
 
 def _trust_tier(value: Any) -> TrustTier | None:

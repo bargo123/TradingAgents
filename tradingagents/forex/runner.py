@@ -478,6 +478,9 @@ class ForexShadowRunner:
                 "integration": {
                     "code": code,
                     "message": str(detail).replace("\r", " ").replace("\n", " ")[:500],
+                    "error_type": type(detail).__name__
+                    if isinstance(detail, BaseException)
+                    else None,
                 }
             },
             rendered_context=rendered_context,
@@ -643,6 +646,15 @@ class ForexShadowRunner:
                     evidence_context = self._fallback_evidence_context(snapshot, exc, code=code)
                 analysis_telemetry["evidence_retrieval_latency_seconds"] = time.perf_counter() - started_retrieval
                 analysis_telemetry["evidence_retrieval_count"] = getattr(service, "retrieval_count", 1)
+                integration_diagnostic = evidence_context.diagnostics.get("integration")
+                if isinstance(integration_diagnostic, Mapping):
+                    # Only type/code metadata crosses into replay telemetry;
+                    # provider exception text remains in the in-memory context
+                    # and is never persisted as a prompt/completion artifact.
+                    analysis_telemetry["evidence_integration_diagnostic"] = {
+                        "code": str(integration_diagnostic.get("code", ""))[:100],
+                        "error_type": str(integration_diagnostic.get("error_type", ""))[:100],
+                    }
             context_hash = self._evidence_hash(evidence_context)
             config_for_graph["forex_evidence_enabled"] = effective_evidence_enabled
             config_for_graph["forex_evidence_context_hash"] = context_hash

@@ -115,7 +115,10 @@ def _assert_json_schema_wire(call: dict, schema_name: str) -> None:
     assert call["max_tokens"] == 1024
     assert "tools" not in call
     assert "tool_choice" not in call
-    assert (call.get("extra_body") or {}).get("think") is not True
+    # Graph-created deep clients carry their normal thinking default.  A
+    # schema-constrained forex call must override that at the request boundary
+    # so Ollama receives an explicit non-thinking request.
+    assert call.get("think") is False
 
 
 @pytest.mark.unit
@@ -151,6 +154,19 @@ def test_ollama_forex_portfolio_manager_uses_json_schema_and_parses() -> None:
 
     assert result["normalization_status"] == "NORMALIZED"
     assert "**Rating**: Hold" in result["final_trade_decision"]
+    assert len(calls) == 1
+    _assert_json_schema_wire(calls[0], ForexPortfolioDecision.__name__)
+
+
+@pytest.mark.unit
+def test_graph_created_deep_ollama_portfolio_manager_overrides_thinking() -> None:
+    """A graph deep client carries think=true until the PM binding overrides it."""
+
+    calls: list[dict] = []
+    llm = _ollama(_VALID_RESPONSES, calls)
+    result = create_portfolio_manager(llm)(_forex_state())
+
+    assert result["normalization_status"] == "NORMALIZED"
     assert len(calls) == 1
     _assert_json_schema_wire(calls[0], ForexPortfolioDecision.__name__)
 

@@ -222,6 +222,14 @@ def test_forex_portfolio_manager_fails_closed_without_structured_output():
     assert len(llm.prompts) == 1
 
 
+def test_forex_portfolio_manager_retains_safe_structured_failure_category():
+    llm = _PromptCaptureLLM(RuntimeError("provider rejected schema"))
+    result = create_portfolio_manager(llm)(_forex_state())
+
+    assert "cause_type=RuntimeError" in result["normalization_error"]
+    assert "provider rejected schema" not in result["normalization_error"]
+
+
 def test_forex_downstream_prompts_remove_stock_specific_sections():
     factories = [
         create_bull_researcher,

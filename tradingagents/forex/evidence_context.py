@@ -282,7 +282,10 @@ class CanonicalEvidenceItem:
 @dataclass(frozen=True, slots=True)
 class EvidenceReferenceRejection:
     ref: str
-    reason: EvidenceReferenceRejectionReason | str
+    # Rejection reasons are deliberately closed.  The generated forex
+    # Portfolio Manager schema must not advertise arbitrary strings that the
+    # dataclass immediately rejects in ``__post_init__``.
+    reason: EvidenceReferenceRejectionReason
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "reason", EvidenceReferenceRejectionReason(self.reason))

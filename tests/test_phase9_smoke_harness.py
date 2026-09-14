@@ -17,6 +17,7 @@ from scripts.phase9_evidence_smoke import (
     SmokeAcceptanceError,
     _append_audit,
     _configured_ollama_models,
+    _local_runner_config,
     _run_fake_ab,
     _validate_smoke_result,
     build_report,
@@ -38,6 +39,23 @@ def test_smoke_uses_local_ollama_model_defaults_and_env_overrides(monkeypatch):
     monkeypatch.setenv("TRADINGAGENTS_QUICK_THINK_LLM", "local-quick")
     monkeypatch.setenv("TRADINGAGENTS_DEEP_THINK_LLM", "local-deep")
     assert _configured_ollama_models() == ("local-quick", "local-deep")
+
+
+def test_smoke_runner_config_pins_local_evidence_deadline_and_roots(tmp_path: Path):
+    config = _local_runner_config(
+        knowledge_root=tmp_path / "p7",
+        experience_root=tmp_path / "p8",
+        model_path=tmp_path / "model",
+        quick_model="qwen3.5:2b",
+        deep_model="qwen3.5:4b",
+    )
+
+    assert config["forex_evidence_timeout_seconds"] == pytest.approx(30.0)
+    assert config["forex_evidence_artifact_roots"] == {
+        "knowledge": str(tmp_path / "p7"),
+        "experience": str(tmp_path / "p8"),
+        "knowledge_embedding_model_path": str(tmp_path / "model"),
+    }
 
 
 def test_smoke_rejects_bare_qwen_provider_label(monkeypatch):
@@ -441,6 +459,27 @@ def test_local_orchestrator_marks_all_readers_and_embedder_read_only(monkeypatch
         # unit test builds the factory in-process, so explicitly close that
         # process-scoped patch to avoid leaking network hooks into later tests.
         orchestrator._phase9_network_guard.__exit__(None, None, None)
+
+    # The real smoke path passes the graph/runner configuration mapping, whose
+    # artifact roots are nested under ``forex_evidence_artifact_roots``.  The
+    # child factory must accept that shape just as it accepts the serialized
+    # runtime envelope used by the deterministic evidence gate.
+    nested_orchestrator = smoke.build_local_orchestrator(
+        {
+            "forex_evidence_artifact_roots": {
+                "knowledge": str(tmp_path / "p7"),
+                "experience": str(tmp_path / "p8"),
+                "knowledge_embedding_model_path": str(model),
+            },
+            "forex_evidence_timeout_seconds": 30.0,
+            "pinned_phase7_generation_id": "p7",
+            "pinned_phase8_generation_id": "p8",
+        }
+    )
+    try:
+        assert nested_orchestrator is not None
+    finally:
+        nested_orchestrator._phase9_network_guard.__exit__(None, None, None)
 
 
 def test_smoke_appends_one_metadata_only_audit_outside_source(tmp_path: Path):

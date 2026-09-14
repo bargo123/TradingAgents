@@ -327,6 +327,7 @@ class EvidenceReplayReport:
     rendered_character_count: int = 0
     context_hash_valid: bool = False
     source_status: Mapping[str, Any] = None
+    evidence_integration_diagnostic: Mapping[str, Any] | None = None
     baseline_normalization_status: str = "UNKNOWN"
     baseline_normalization_error: str | None = None
     rendered_context: str = ""
@@ -576,9 +577,17 @@ def _context_metrics(result: Any) -> dict[str, Any]:
     context = _result_value(result, "evidence_context")
     if context is None:
         normalization = str(_result_value(result, "normalization_status", "UNKNOWN"))
-        return {"context": None, "hash": None, "hash_valid": False, "rendered": "", "rendered_characters": 0, "bundle": "EMPTY", "integration": "DISABLED", "knowledge": 0, "experience": 0, "statistics": 0, "statistics_status": None, "normalization": normalization, "normalization_error": _result_value(result, "normalization_error"), "context_integrity": str(_result_value(result, "context_integrity", {}).get("status", "UNKNOWN")) if isinstance(_result_value(result, "context_integrity", {}), Mapping) else "UNKNOWN", "available": (), "used": (), "rejected": (), "use_status": "DISABLED", "citation": "NOT_RECORDED", "source_status": {}, "loopback": 0, "external": 0, "knowledge_query": None, "knowledge_query_fingerprint": None, "query_policy_version": None, "query_normalization_fingerprint": None}
+        return {"context": None, "hash": None, "hash_valid": False, "rendered": "", "rendered_characters": 0, "bundle": "EMPTY", "integration": "DISABLED", "knowledge": 0, "experience": 0, "statistics": 0, "statistics_status": None, "normalization": normalization, "normalization_error": _result_value(result, "normalization_error"), "context_integrity": str(_result_value(result, "context_integrity", {}).get("status", "UNKNOWN")) if isinstance(_result_value(result, "context_integrity", {}), Mapping) else "UNKNOWN", "available": (), "used": (), "rejected": (), "use_status": "DISABLED", "citation": "NOT_RECORDED", "source_status": {}, "loopback": 0, "external": 0, "knowledge_query": None, "knowledge_query_fingerprint": None, "query_policy_version": None, "query_normalization_fingerprint": None, "integration_diagnostic": None}
     diagnostics = _context_value(context, "diagnostics", {})
     source_status = diagnostics.get("source_status", {}) if isinstance(diagnostics, Mapping) else {}
+    integration_diagnostic = diagnostics.get("integration") if isinstance(diagnostics, Mapping) else None
+    if isinstance(integration_diagnostic, Mapping):
+        integration_diagnostic = {
+            "code": str(integration_diagnostic.get("code", ""))[:100],
+            "error_type": str(integration_diagnostic.get("error_type", ""))[:100],
+        }
+    else:
+        integration_diagnostic = None
     raw_result = _result_value(result, "raw_portfolio_manager_result", {})
     available = tuple(
         str(getattr(item, "display_id", ""))
@@ -621,6 +630,7 @@ def _context_metrics(result: Any) -> dict[str, Any]:
         "use_status": str(validation.evidence_use_status),
         "citation": str(validation.evidence_audit_status),
         "source_status": source_status,
+        "integration_diagnostic": integration_diagnostic,
         "loopback": int(network.get("loopback_connection_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
         "external": int(network.get("external_network_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
         "knowledge_query": _context_value(context, "knowledge_query"),
@@ -808,6 +818,7 @@ class SavedSnapshotReplay:
             rendered_character_count=evidence_metrics["rendered_characters"],
             context_hash_valid=evidence_metrics["hash_valid"],
             source_status=evidence_metrics["source_status"],
+            evidence_integration_diagnostic=evidence_metrics["integration_diagnostic"],
             baseline_normalization_status=baseline_metrics["normalization"],
             baseline_normalization_error=baseline_metrics["normalization_error"],
             rendered_context=evidence_metrics["rendered"],

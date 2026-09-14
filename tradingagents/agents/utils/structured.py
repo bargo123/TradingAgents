@@ -35,6 +35,19 @@ class StructuredOutputRequiredError(RuntimeError):
     """Raised when a structured-output binding is required but unavailable."""
 
 
+def structured_failure_category(exc: BaseException) -> str:
+    """Return a safe type-only category for a structured-output failure.
+
+    The underlying provider exception is chained for local diagnostics, but
+    its message can contain request details.  Callers that persist a failure
+    should expose only this bounded category, never the provider text or model
+    output.
+    """
+
+    cause = exc.__cause__
+    return type(cause if cause is not None else exc).__name__
+
+
 def invoke_structured_only(
     structured_llm: Any | None,
     prompt: Any,
@@ -131,6 +144,11 @@ def bind_forex_ollama_structured(
         agent_name,
         method="json_schema",
         reasoning_effort="none",
+        # A forex deep client may be constructed with its normal thinking
+        # default (``think=true``).  Ollama's JSON-schema path is reliable
+        # only when the structured request explicitly disables thinking; the
+        # per-binding override leaves ordinary deep analysis unchanged.
+        extra_body={"think": False},
     )
 
 

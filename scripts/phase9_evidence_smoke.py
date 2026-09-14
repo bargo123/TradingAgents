@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.experience.config import (
     FEATURE_EXTRACTOR_VERSION,
     FEATURE_SCHEMA_VERSION,
@@ -591,6 +592,40 @@ def _uses_saved_snapshot() -> bool:
     return True
 
 
+def _local_runner_config(
+    *,
+    knowledge_root: Path,
+    experience_root: Path,
+    model_path: Path,
+    quick_model: str,
+    deep_model: str,
+) -> dict[str, Any]:
+    """Build the runner configuration used by the acceptance replay.
+
+    Keep the worker deadline and every read-only artifact path explicit at the
+    smoke boundary.  Relying on a separately imported default allowed an
+    older launcher to silently retain the ten-second deadline after the local
+    Phase 9 runtime was changed to thirty seconds.
+    """
+
+    return {
+        "forex_evidence_enabled": True,
+        "forex_evidence_timeout_seconds": float(
+            DEFAULT_CONFIG.get("forex_evidence_timeout_seconds", 30.0)
+        ),
+        "forex_evidence_artifact_roots": {
+            "knowledge": str(knowledge_root),
+            "experience": str(experience_root),
+            "knowledge_embedding_model_path": str(model_path),
+        },
+        "evidence_orchestrator_factory": build_local_orchestrator,
+        "llm_provider": "ollama",
+        "backend_url": "http://127.0.0.1:11434/v1",
+        "quick_think_llm": quick_model,
+        "deep_think_llm": deep_model,
+    }
+
+
 @approved_readonly_factory
 def build_local_orchestrator(config: Any = None) -> Any:
     """Top-level child factory for the local read-only evidence query."""
@@ -605,6 +640,15 @@ def build_local_orchestrator(config: Any = None) -> Any:
     from tradingagents.knowledge.vector_index import VectorIndexReader
 
     roots = config.roots() if hasattr(config, "roots") else dict(config or {})
+    # The normal child envelope carries a flat ``artifact_roots`` mapping,
+    # while callers that construct the graph/runner directly may pass the
+    # runner's nested configuration unchanged.  Normalize both at this seam
+    # so the worker always opens exactly the configured read-only artifacts.
+    nested_roots = roots.get("forex_evidence_artifact_roots") or roots.get(
+        "evidence_artifact_roots"
+    )
+    if isinstance(nested_roots, Mapping):
+        roots = dict(nested_roots)
     # The evidence worker is a separate process; install the same guard in
     # that process so an external request cannot escape the parent boundary.
     child_guard = OfflineNetworkGuard()
@@ -689,7 +733,16 @@ def run_smoke(
             else:
                 if runner is None:
                     from tradingagents.forex.runner import ForexShadowRunner
-                    runner = ForexShadowRunner(store=type("NoopStore", (), {})(), config={"forex_evidence_enabled": True, "forex_evidence_artifact_roots": {"knowledge": str(knowledge_root), "experience": str(experience_root), "knowledge_embedding_model_path": str(model_path)}, "evidence_orchestrator_factory": build_local_orchestrator, "llm_provider": "ollama", "backend_url": "http://127.0.0.1:11434/v1", "quick_think_llm": quick_model, "deep_think_llm": deep_model})
+                    runner = ForexShadowRunner(
+                        store=type("NoopStore", (), {})(),
+                        config=_local_runner_config(
+                            knowledge_root=knowledge_root,
+                            experience_root=experience_root,
+                            model_path=model_path,
+                            quick_model=quick_model,
+                            deep_model=deep_model,
+                        ),
+                    )
                 replay_result = SavedSnapshotReplay(runner=runner, generation_provider=(generation7, phase8.generation_id)).run(snapshot, snapshot_bytes=snapshot_bytes, config=config)
     except Exception as exc:
         # Keep reports diagnostic-only; arbitrary exception text may contain
