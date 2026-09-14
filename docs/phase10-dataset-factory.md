@@ -48,8 +48,11 @@ schema_version
 
 The `decision` section retains the normalized action and bounded decision
 metadata. `market` retains the analyzed quote/snapshot fields. `research`
-retains normal visible reports and Phase 9 evidence metadata (status, bundle /
-integration, selected counts and audit references) without private reasoning.
+retains only bounded Phase 9 evidence/context metadata and recomputed eligibility
+facts (for example status, bundle/integration, selected counts, audit references,
+context hash, and gate outcomes). It does not copy visible agent report prose or
+raw research payloads. Prompts, completions, reasoning/CoT, and token material
+are never stored.
 `outcome` retains evaluation basis/horizon, analysis and decision-reference
 timestamps/quotes, statuses, directional BUY and SELL counterfactuals, HOLD
 opportunity-cost semantics, and cost-aware MFE/MAE when supplied by Phase 5.
