@@ -137,6 +137,18 @@ def _evaluation_metadata(evaluation: Any) -> dict[str, Any]:
     }
 
 
+def _source_fingerprint(result: Any) -> dict[str, Any] | None:
+    """Expose an adapter's fingerprint without collapsing source domains."""
+    fingerprint = _get(result, "fingerprint")
+    if fingerprint is None:
+        return None
+    if hasattr(fingerprint, "to_dict"):
+        fingerprint = fingerprint.to_dict()
+    if not isinstance(fingerprint, Mapping):
+        raise ValueError("source fingerprint must be a mapping")
+    return dict(fingerprint)
+
+
 def _evaluation_contract(value: Any) -> Any:
     if isinstance(value, Mapping):
         return _with_evaluation_fingerprint(
@@ -268,6 +280,11 @@ def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[Joined
             "experience": record,
             "audit": (ar[0] if ar else None),
             "source_fingerprint": source_fp,
+            "source_fingerprints": {
+                "phase56": _source_fingerprint(phase56),
+                "phase8": _source_fingerprint(experience),
+                "phase9": _source_fingerprint(audit),
+            },
             # Different basis/horizon rows are distinct outcomes.  Only
             # identical decision/basis/horizon rows are duplicate evidence.
             "duplicate": duplicate_non_evaluation or bool(duplicate_evaluation_keys),

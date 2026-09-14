@@ -4,14 +4,16 @@ from datetime import datetime, timezone
 import pytest
 
 from tradingagents.datasets.canonical import canonicalize
-from tradingagents.datasets.eligibility import EligibilityResult
+from tradingagents.datasets.eligibility import EligibilityResult, join_observations
 from tradingagents.datasets.models import (
  DatasetExclusionReason,
  EvaluationObservation,
  EvidenceObservation,
  JoinedObservation,
+ SourceFingerprint,
  SourceObservation,
 )
+from tradingagents.datasets.sources import SourceReadResult
 
 UTC = timezone.utc
 
@@ -158,3 +160,54 @@ def test_arbitrary_phase8_provenance_is_rejected():
     with pytest.raises(ValueError):
         canonicalize(o.__class__(o.decision, o.evaluation, o.evidence, bad),
                       EligibilityResult(True, details={'decision_id': 'd1'}))
+
+
+def test_phase_source_fingerprints_survive_join_and_canonical_projection():
+    o = obs()
+    f56 = SourceFingerprint("p56", "phase56", "schema56", "file56", "snap56")
+    f8 = SourceFingerprint("p8", "phase8", "schema8", "file8", "snap8")
+    f9 = SourceFingerprint("p9", "phase9", "schema9", "file9", "snap9")
+    phase56 = SourceReadResult(decisions=(o.decision,), evaluations=(o.evaluation,), fingerprint=f56)
+    phase8 = SourceReadResult(records=({**o.fields["experience"],
+                                        "source_decision_id": "d1",
+                                        "source_run_id": "r1",
+                                        "source_decision_fingerprint": "dfp"},), fingerprint=f8)
+    phase9 = SourceReadResult(audits=(o.fields["audit"],), fingerprint=f9)
+    joined = join_observations(phase56, phase8, phase9)[0]
+    assert joined.fields["source_fingerprints"]["phase8"]["source_id"] == "p8"
+    result = canonicalize(joined, EligibilityResult(True, details={"decision_id": "d1"}))
+    assert result.provenance["phase56"]["source_id"] == "p56"
+    assert result.provenance["phase8"]["source_fingerprint"]["source_id"] == "p8"
+    assert result.provenance["phase9"]["source_fingerprint"]["source_id"] == "p9"
+
+
+def test_non_mapping_snapshot_feature_section_fails_closed():
+    o = obs()
+    d = o.decision.__class__(
+        o.decision.decision_id,
+        o.decision.analysis_snapshot_timestamp,
+        o.decision.decision_completed_timestamp,
+        source_run_id=o.decision.source_run_id,
+        requested_symbol=o.decision.requested_symbol,
+        resolved_symbol=o.decision.resolved_symbol,
+        analysis_profile=o.decision.analysis_profile,
+        analysis_timeframe=o.decision.analysis_timeframe,
+        action=o.decision.action,
+        fields={**o.decision.fields, "snapshot_json": {"features": {"M5": ["bad"]}}},
+    )
+    with pytest.raises(ValueError, match="feature section"):
+        canonicalize(o.__class__(d, o.evaluation, o.evidence, o.fields),
+                     EligibilityResult(True, details={"decision_id": "d1"}))
+
+
+def test_phase9_metadata_types_and_bounds_fail_closed():
+    o = obs()
+    audit = {**o.fields["audit"], "selected_counts": [1, 2]}
+    bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})
+    with pytest.raises(ValueError, match="selected_counts"):
+        canonicalize(bad, EligibilityResult(True, details={"decision_id": "d1"}))
+
+    audit = {**o.fields["audit"], "selected_counts": {"knowledge": 1, "unknown": 2}}
+    bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})
+    with pytest.raises(ValueError, match="selected_counts"):
+        canonicalize(bad, EligibilityResult(True, details={"decision_id": "d1"}))

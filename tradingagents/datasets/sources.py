@@ -177,9 +177,25 @@ def _decode_array(value: Any) -> list[Any]:
     else:
         try:
             decoded = json.loads(value or "[]")
-        except (TypeError, json.JSONDecodeError):
-            decoded = []
-    return _bounded(decoded if isinstance(decoded, list) else [], 500)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise SourceReadError("invalid Phase 9 array metadata") from exc
+    if not isinstance(decoded, list):
+        raise SourceReadError("Phase 9 array metadata must be a JSON array")
+    return _bounded(decoded, 500)
+
+
+def _decode_mapping(value: Any) -> dict[str, Any]:
+    """Decode JSON object columns without coercing them into empty arrays."""
+    if isinstance(value, dict):
+        decoded = value
+    else:
+        try:
+            decoded = json.loads(value or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise SourceReadError("invalid Phase 9 object metadata") from exc
+    if not isinstance(decoded, dict):
+        raise SourceReadError("Phase 9 object metadata must be a JSON object")
+    return _bounded(decoded, 500)
 
 
 def _related(db, experience_id: str, table: str, query: str) -> list[dict[str, Any]]:
@@ -395,12 +411,13 @@ class ReadonlyExperienceSource(_Readonly):
                     x[0] for x in db.execute("SELECT * FROM experience_records LIMIT 0").description
                 ]
                 item = {k: _bounded(v) for k, v in zip(names, row, strict=True)}
-                for key in (
+                json_keys = (
                     "market_state_json",
                     "decision_evidence_json",
                     "provenance_json",
                     "source_evaluation_fingerprints_json",
-                ):
+                )
+                for key in json_keys:
                     item[key[:-5] if key.endswith("_json") else key] = json.loads(
                         item.pop(key) or "{}"
                     )
@@ -481,24 +498,29 @@ class ReadonlyPhase9AuditSource(_Readonly):
                     for k, v in zip(names, row, strict=True)
                     if k in _AUDIT_FIELDS
                 }
-                for key in (
-                    "knowledge_query",
+                array_keys = (
                     "available_knowledge_ids",
                     "available_experience_ids",
                     "available_statistics_ids",
                     "evidence_refs_used",
                     "evidence_refs_rejected",
-                    "selected_counts",
-                    "dropped_counts",
                     "telemetry_references",
                     "missing_nodes",
-                    "source_status",
-                    "diagnostics",
                     "source_errors",
-                    "node_context_hashes",
-                ):
+                )
+                for key in array_keys:
                     if key in item:
                         item[key] = _decode_array(item[key])
+                mapping_keys = (
+                    "selected_counts",
+                    "dropped_counts",
+                    "source_status",
+                    "diagnostics",
+                    "node_context_hashes",
+                )
+                for key in mapping_keys:
+                    if key in item:
+                        item[key] = _decode_mapping(item[key])
                 _normalize_row(item)
                 rows.append(item)
             self._check_after(marks)

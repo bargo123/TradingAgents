@@ -14,6 +14,7 @@ from tradingagents.datasets.sources import (
     SourceReadResult,
     SourceSchemaIncompatibleError,
     _decode_array,
+    _decode_mapping,
     _stamp,
 )
 from tradingagents.experience.identity import (
@@ -171,6 +172,11 @@ def test_phase9_array_fields_decode_to_bounded_arrays():
     assert _decode_array('["telemetry-a", "node-a"]') == ["telemetry-a", "node-a"]
 
 
+def test_phase9_object_fields_reject_non_object_json():
+    with pytest.raises(SourceReadError, match="JSON object"):
+        _decode_mapping("[1, 2]")
+
+
 def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
     path = tmp_path / "audit.sqlite3"
     columns = (
@@ -215,6 +221,8 @@ def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
     values[columns.index("as_of")] = "2026-01-01T01:02:03Z"
     values[columns.index("telemetry_references")] = json.dumps(["telemetry-1"])
     values[columns.index("missing_nodes")] = json.dumps(["node-a", "node-b"])
+    values[columns.index("selected_counts")] = json.dumps({"knowledge": 2, "experience": 0, "statistics": 1})
+    values[columns.index("dropped_counts")] = json.dumps({"knowledge": 0, "experience": 1, "statistics": 0})
     with sqlite3.connect(path) as db:
         db.execute(
             "CREATE TABLE evidence_usage_audit ("
@@ -237,3 +245,5 @@ def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
     assert isinstance(audit["telemetry_references"], list)
     assert audit["missing_nodes"] == ["node-a", "node-b"]
     assert isinstance(audit["missing_nodes"], list)
+    assert audit["selected_counts"] == {"knowledge": 2, "experience": 0, "statistics": 1}
+    assert audit["dropped_counts"] == {"knowledge": 0, "experience": 1, "statistics": 0}
