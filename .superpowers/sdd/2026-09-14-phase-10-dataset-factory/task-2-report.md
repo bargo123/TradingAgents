@@ -1,0 +1,37 @@
+# Phase 10 Task 2 report
+
+## Scope
+
+Added read-only adapters for Phase 5/6 SQLite decisions/evaluations, Phase 8
+experience catalogs, and Phase 9 evidence audit databases. Readers use SQLite
+`mode=ro` and `PRAGMA query_only=ON`, verify required schemas, convert UTC
+timestamps exactly, bound retained scalar/JSON fields, derive deterministic
+source fingerprints, and compare main-file/WAL hashes before and after reads.
+Missing optional Phase 9 audit data returns a typed unavailable observation.
+
+No source writer, network, LLM, MT5, or execution API is imported or called.
+
+## TDD evidence
+
+The focused source tests were written first and failed during collection with
+`ModuleNotFoundError: tradingagents.datasets.sources`. After implementation:
+
+```text
+pytest -q tests/test_dataset_sources.py
+4 passed
+```
+
+## Verification
+
+```text
+ruff check tradingagents/datasets/sources.py tests/test_dataset_sources.py
+All checks passed!
+
+pytest -q tests/test_dataset_sources.py
+4 passed
+```
+
+## Files
+
+- `tradingagents/datasets/sources.py`
+- `tests/test_dataset_sources.py`
