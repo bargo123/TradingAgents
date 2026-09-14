@@ -62,6 +62,7 @@ knowledge = "tradingagents.knowledge.cli:main"
 forex-shadow = "cli.forex_shadow:main"
 forex-evaluate = "cli.forex_evaluate:main"
 forex-watch = "cli.forex_watch:main"
+dataset-factory = "tradingagents.datasets.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*"]
