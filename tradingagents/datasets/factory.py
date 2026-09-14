@@ -248,6 +248,7 @@ class DatasetFactory:
             "broken_sources": [], "duplicate_sources": [], "removed_sources": [],
             "changed_sources": [], "removed_rows": [], "added_rows": [], "changed_rows": [],
         }
+        source_exclusions: list[DatasetExclusion] = []
 
         # These catalog/audit reads are deliberately performed once per build.
         try:
@@ -255,6 +256,9 @@ class DatasetFactory:
         except Exception as exc:  # isolate a broken optional source
             phase8 = _empty_result("phase8", type(exc).__name__)
             errors.append(f"phase8: {type(exc).__name__}")
+            source_exclusions.append(
+                _source_error_exclusion(config.phase8_root / "catalog.sqlite3", exc)
+            )
         try:
             phase9 = (
                 ReadonlyPhase9AuditSource(config.phase9_audit_path).read()
@@ -264,9 +268,12 @@ class DatasetFactory:
         except Exception as exc:
             phase9 = _empty_result("phase9", type(exc).__name__)
             errors.append(f"phase9: {type(exc).__name__}")
+            if config.phase9_audit_path is not None:
+                source_exclusions.append(
+                    _source_error_exclusion(config.phase9_audit_path, exc)
+                )
 
         source_results = []
-        source_exclusions: list[DatasetExclusion] = []
         seen_bytes: set[str] = set()
         for path in sorted(config.source_db_paths, key=lambda item: str(item).casefold()):
             try:

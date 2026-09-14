@@ -113,7 +113,7 @@ def test_factory_records_changed_and_removed_source_rows(tmp_path, monkeypatch):
         }
     }), encoding="utf-8")
     current_decision = SourceObservation(
-        "removed-row", datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "new-row", datetime(2026, 1, 1, tzinfo=timezone.utc),
         fields={"source_decision_fingerprint": "new-decision-fingerprint"},
     )
 
@@ -137,7 +137,13 @@ def test_factory_records_changed_and_removed_source_rows(tmp_path, monkeypatch):
     # Source deltas are retained in bounded manifest metadata for the next run.
     assert "removed-row" in str(metadata)
     assert str(source.resolve()) in metadata["diagnostics"]["changed_sources"]
-    assert f"{source.resolve()}:removed-row" in metadata["diagnostics"]["changed_rows"]
+    assert metadata["diagnostics"]["removed_rows"] == [
+        f"{source.resolve()}:removed-row"
+    ]
+    assert metadata["diagnostics"]["added_rows"] == [
+        f"{source.resolve()}:new-row"
+    ]
+    assert metadata["diagnostics"]["changed_rows"] == []
 
 
 def test_factory_revalidates_existing_generation_before_reuse(tmp_path, monkeypatch):
@@ -178,6 +184,114 @@ def test_factory_revalidates_existing_generation_before_reuse(tmp_path, monkeypa
         assert "tampered" in str(exc)
     else:
         raise AssertionError("invalid existing generation was reused")
+
+
+def test_factory_reuses_unchanged_generation_only_after_validation(tmp_path, monkeypatch):
+    source = tmp_path / "source.db"
+    source.write_bytes(b"source")
+    config = DatasetConfig((source,), tmp_path / "phase8", None, tmp_path / "out")
+    config.phase8_root.mkdir()
+    fp56 = _fingerprint("phase56", source)
+    fp8 = _fingerprint("phase8", config.phase8_root / "catalog.sqlite3")
+    prior = config.output_root / "generation-existing"
+    prior.mkdir(parents=True)
+
+    class Reader:
+        def __init__(self, path): self.path = Path(path)
+        def read(self):
+            return SourceReadResult(
+                fingerprint=fp56 if self.path == source else fp8
+            )
+
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyPhase56Source", Reader)
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyExperienceSource", Reader)
+    monkeypatch.setattr("tradingagents.datasets.factory._bind_sqlite_marks", lambda result, digest: result)
+    monkeypatch.setattr("tradingagents.datasets.factory.join_observations", lambda *_: ())
+    monkeypatch.setattr("tradingagents.datasets.factory.assign_splits", lambda rows: type("S", (), {"assignments": (), "status": "INSUFFICIENT_DATA"})())
+    monkeypatch.setattr("tradingagents.datasets.factory._source_inventory", lambda *_: [])
+    monkeypatch.setattr("tradingagents.datasets.factory._manifest", lambda path: DatasetManifest(path.name))
+
+    first_write = {}
+
+    def publish_once(root, examples, exclusions, split_result, **kwargs):
+        first_write.update(kwargs)
+        (prior / "manifest.json").write_text(json.dumps({
+            "dataset_id": prior.name,
+            "examples": 0,
+            "exclusions": 0,
+            "split_status": "INSUFFICIENT_DATA",
+            "status": "EMPTY_ELIGIBLE_SET",
+            "source_fingerprints": kwargs["source_fingerprints"],
+            "metadata": kwargs["metadata"],
+        }), encoding="utf-8")
+        return prior
+
+    monkeypatch.setattr("tradingagents.datasets.factory.write_generation", publish_once)
+    first = DatasetFactory().build(config)
+    assert first.status == "EMPTY_ELIGIBLE_SET"
+    assert first_write
+
+    validation_calls = []
+    monkeypatch.setattr("tradingagents.datasets.factory.write_generation", lambda *a, **kw: (_ for _ in ()).throw(__import__("tradingagents.datasets.writer", fromlist=["GenerationExistsError"]).GenerationExistsError()))
+    monkeypatch.setattr(
+        "tradingagents.datasets.factory.validate_generation",
+        lambda path: (validation_calls.append(path) or type("R", (), {"valid": True, "errors": ()})()),
+    )
+
+    second = DatasetFactory().build(config)
+    assert second.status == "EMPTY_ELIGIBLE_SET"
+    assert validation_calls == [prior]
+
+
+def test_factory_records_phase8_and_phase9_read_failures_as_exclusions(tmp_path, monkeypatch):
+    source = tmp_path / "source.db"
+    source.write_bytes(b"source")
+    phase8 = tmp_path / "phase8"
+    phase8.mkdir()
+    audit = tmp_path / "audit.db"
+    audit.write_bytes(b"audit")
+    config = DatasetConfig((source,), phase8, audit, tmp_path / "out")
+
+    class Phase56Reader:
+        def __init__(self, path): self.path = Path(path)
+        def read(self): return SourceReadResult(fingerprint=_fingerprint("phase56", source))
+
+    class BrokenPhase8:
+        def __init__(self, path): self.path = Path(path)
+        def read(self): raise SourceReadError("phase8 schema drift")
+
+    class BrokenPhase9:
+        def __init__(self, path): self.path = Path(path)
+        def read(self): raise SourceReadError("phase9 schema drift")
+
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyPhase56Source", Phase56Reader)
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyExperienceSource", BrokenPhase8)
+    monkeypatch.setattr("tradingagents.datasets.factory.ReadonlyPhase9AuditSource", BrokenPhase9)
+    monkeypatch.setattr("tradingagents.datasets.factory.join_observations", lambda *_: ())
+    monkeypatch.setattr("tradingagents.datasets.factory.assign_splits", lambda rows: type("S", (), {"assignments": (), "status": "INSUFFICIENT_DATA"})())
+    monkeypatch.setattr("tradingagents.datasets.factory._manifest", lambda path: DatasetManifest(path.name))
+    captured = {}
+    monkeypatch.setattr(
+        "tradingagents.datasets.factory.write_generation",
+        lambda *a, **kw: (captured.update({"exclusions": a[2]}) or config.output_root),
+    )
+
+    report = DatasetFactory().build(config)
+
+    integrity = [
+        item for item in report.exclusions
+        if item.reasons == (DatasetExclusionReason.SOURCE_INTEGRITY_FAILED,)
+    ]
+    assert {item.details["source_path"] for item in integrity} == {
+        str((phase8 / "catalog.sqlite3").resolve()), str(audit.resolve())
+    }
+    published = captured["exclusions"]
+    assert {
+        item.details["source_path"] for item in published
+        if item.reasons == (DatasetExclusionReason.SOURCE_INTEGRITY_FAILED,)
+    } == {
+        str((phase8 / "catalog.sqlite3").resolve()), str(audit.resolve())
+    }
 
 
 def test_factory_generation_identity_includes_sqlite_wal_mark(tmp_path, monkeypatch):
