@@ -1,0 +1,70 @@
+from datetime import datetime, timezone
+
+from tradingagents.datasets.eligibility import (
+    EligibilityResult,
+    classify_observation,
+    join_observations,
+)
+from tradingagents.datasets.models import (
+    DatasetConfig,
+    DatasetExclusionReason,
+    EvaluationObservation,
+    SourceFingerprint,
+    SourceObservation,
+)
+from tradingagents.datasets.sources import SourceReadResult
+
+UTC = timezone.utc
+
+
+def _config(tmp_path, **filters):
+    return DatasetConfig((tmp_path / "source.sqlite",), tmp_path / "experience", None, tmp_path / "out", filters=filters)
+
+
+def _decision(**fields):
+    return SourceObservation(
+        "d1", datetime(2025, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, 0, 1, tzinfo=UTC),
+        source_run_id="run1", requested_symbol="EURUSD", resolved_symbol="EURUSD",
+        action="BUY", fields=fields,
+    )
+
+
+def _joined(tmp_path, **overrides):
+    decision = _decision(**overrides.pop("decision_fields", {
+        "normalization_status": "NORMALIZED", "decision_context_status": "COMPLETE",
+        "source_decision_fingerprint": "dfp", "source_run_id": "run1",
+        "analysis_profile": "p", "analysis_timeframe": "1h",
+    }))
+    ident = {"source_run_id": "run1", "source_decision_fingerprint": "dfp", "fingerprint": "efp", "provenance": {"evaluation_fingerprint": "efp", "source_decision_id": "d1"}}
+    result = SourceReadResult(decisions=(decision,), evaluations=(EvaluationObservation("d1", "ANALYSIS_SNAPSHOT", 300, "COMPLETE", True, ident),), fingerprint=SourceFingerprint("src", "source", "schema", "file", "snapshot"))
+    features = {tf: dict.fromkeys(("return_over_bars", "range_pct", "close_position", "average_true_range"), 1.0) | {"direction": "UP"} for tf in ("M1", "M5", "M15", "H1")}
+    snapshot = {"quote": {"bid": 1.0, "ask": 1.1, "spread_points": 1.0}, "point": 0.0001, "digits": 5, "features": features}
+    records = ({"experience_id": "e1", "source_decision_id": "d1", "source_run_id": "run1", "source_decision_fingerprint": "dfp", "trust": "TIER_A_HIGH_TRUST", "experience_schema_version": "phase8.experience.v1", "feature_schema_version": "v1", "feature_extractor_version": "v1", "trust_policy_version": "v1", "snapshot_json": snapshot, "source_evaluation_fingerprints": {"ANALYSIS_SNAPSHOT:300": "efp"}, "provenance": {"source_decision_fingerprint": "dfp"}},)
+    audit = ({"decision_id": "d1", "source_run_id": "run1", "context_integrity": "COMPLETE", "bundle_status": "COMPLETE", "evidence_audit_status": "VALID", "evidence_use_status": "NONE_RELEVANT", "evidence_refs_used": [], "evidence_refs_rejected": []},)
+    return join_observations(result, SourceReadResult(records=records), SourceReadResult(audits=audit))[0]
+
+
+def test_valid_tier_a_complete_observation_is_eligible(tmp_path):
+    result = classify_observation(_joined(tmp_path), _config(tmp_path))
+    assert isinstance(result, EligibilityResult)
+    assert result.eligible
+    assert result.reasons == ()
+
+
+def test_all_applicable_reasons_are_deterministically_ordered(tmp_path):
+    observation = _joined(tmp_path, decision_fields={"normalization_status": "BAD", "decision_context_status": "INCOMPLETE", "action": "BAD", "source_decision_fingerprint": "wrong"})
+    result = classify_observation(observation, _config(tmp_path))
+    assert result.reasons == tuple(sorted(result.reasons, key=lambda r: tuple(DatasetExclusionReason).index(r)))
+    assert {DatasetExclusionReason.UNTRUSTED_TIER, DatasetExclusionReason.DECISION_CONTEXT_INCOMPLETE, DatasetExclusionReason.NORMALIZATION_FAILED, DatasetExclusionReason.PROVENANCE_INCOMPLETE} <= set(result.reasons)
+
+
+def test_duplicate_decision_keys_are_excluded(tmp_path):
+    d = _decision()
+    source = SourceReadResult(decisions=(d, d), evaluations=())
+    joined = join_observations(source, SourceReadResult(), SourceReadResult())
+    assert all(DatasetExclusionReason.DUPLICATE in classify_observation(x, _config(tmp_path)).reasons for x in joined)
+
+
+def test_future_as_of_is_temporally_invalid(tmp_path):
+    result = classify_observation(_joined(tmp_path), _config(tmp_path, as_of=datetime(2024, 1, 1, tzinfo=UTC)))
+    assert DatasetExclusionReason.TEMPORAL_INVALID in result.reasons
