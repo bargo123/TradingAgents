@@ -40,6 +40,13 @@ _POLICY_DEFAULTS = {
     "source_adapter_version": SOURCE_ADAPTER_VERSION,
 }
 _GENERATION_IDENTITY_VERSION = "phase10.generation-identity.v1"
+_MANIFEST_STATUSES = {"PUBLISHED", "EMPTY_ELIGIBLE_SET"}
+_SPLIT_STATUSES = {"COMPLETE", "INSUFFICIENT_DATA"}
+_GENERATION_ID_MODES = {"EXPLICIT", "CONTENT_DERIVED"}
+_REPRODUCIBILITY_FIELDS = {
+    "writer_version", "generation_identity_version", "serialization",
+}
+_SAFETY_FIELDS = {"network_attempts", "llm_calls", "tool_calls", "mt5_calls"}
 _EXCLUSION_FIELDS = {"decision_id", "reasons", "details"}
 _MAX_JSONL_ROW_BYTES = 256 * 1024
 _FORBIDDEN = re.compile(
@@ -245,6 +252,69 @@ def _generation_identity(
 def _default_id(identity_digest: str) -> str:
     """Derive a stable generation directory name from all build inputs."""
     return "generation-" + identity_digest[:24]
+
+
+def _validate_manifest_contract(manifest: Mapping[str, Any]) -> list[str]:
+    """Validate publication and reproducibility fields not covered by rows."""
+    errors: list[str] = []
+    status = manifest.get("status")
+    if status not in _MANIFEST_STATUSES:
+        errors.append("manifest status is not a closed published status")
+    split_status = manifest.get("split_status")
+    if split_status not in _SPLIT_STATUSES:
+        errors.append("manifest split_status is not a closed status")
+    mode = manifest.get("generation_id_mode")
+    if mode not in _GENERATION_ID_MODES:
+        errors.append("manifest generation_id_mode is invalid")
+
+    reproducibility = manifest.get("reproducibility")
+    if not isinstance(reproducibility, Mapping) or set(reproducibility) != _REPRODUCIBILITY_FIELDS:
+        errors.append("manifest reproducibility is incomplete")
+    else:
+        for name, value in reproducibility.items():
+            if not isinstance(value, str) or not value or len(value) > 256:
+                errors.append(f"manifest reproducibility field is invalid: {name}")
+
+    time_range = manifest.get("time_range")
+    if not isinstance(time_range, Mapping) or set(time_range) != {"first", "last"}:
+        errors.append("manifest time_range must contain first and last")
+    else:
+        parsed: dict[str, datetime | None] = {}
+        for name in ("first", "last"):
+            value = time_range[name]
+            if value is None:
+                parsed[name] = None
+                continue
+            if not isinstance(value, str) or len(value) > 64:
+                errors.append(f"manifest time_range.{name} must be an ISO UTC timestamp")
+                continue
+            try:
+                stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                errors.append(f"manifest time_range.{name} must be an ISO UTC timestamp")
+                continue
+            offset = stamp.utcoffset()
+            if stamp.tzinfo is None or offset is None or offset.total_seconds() != 0:
+                errors.append(f"manifest time_range.{name} must be timezone-aware UTC")
+                continue
+            parsed[name] = stamp
+        if (parsed.get("first") is None) != (parsed.get("last") is None):
+            errors.append("manifest time_range first and last must be both null or timestamps")
+        if (
+            parsed.get("first") is not None
+            and parsed.get("last") is not None
+            and parsed["first"] > parsed["last"]
+        ):
+            errors.append("manifest time_range is not chronological")
+
+    safety = manifest.get("safety")
+    if not isinstance(safety, Mapping) or set(safety) != _SAFETY_FIELDS:
+        errors.append("manifest safety counters must contain exactly the required fields")
+    else:
+        for name, value in safety.items():
+            if type(value) is not int or value != 0:
+                errors.append(f"manifest safety.{name} must be exactly integer zero")
+    return errors
 
 
 def _manifest_schema_versions() -> dict[str, str]:
@@ -461,14 +531,7 @@ def validate_generation(path: str | Path):
         for name, expected in expected_versions.items():
             if manifest.get(name) != expected:
                 errors.append(f"manifest version mismatch: {name}")
-        expected_safety = {
-            "network_attempts": 0,
-            "llm_calls": 0,
-            "tool_calls": 0,
-            "mt5_calls": 0,
-        }
-        if manifest.get("safety") != expected_safety:
-            errors.append("manifest safety counters must be exactly zero")
+        errors.extend(_validate_manifest_contract(manifest))
         try:
             fingerprints = _validated_fingerprints(manifest.get("source_fingerprints"))
             manifest_policies = manifest.get("policy_versions")

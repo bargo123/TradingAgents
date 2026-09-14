@@ -249,6 +249,71 @@ def test_validate_generation_rejects_nonzero_safety_counter(tmp_path: Path):
     assert any("safety" in error for error in report.errors)
 
 
+@pytest.mark.parametrize("value", [False, 0.0])
+def test_validate_generation_rejects_non_integer_zero_safety_counter(
+    tmp_path: Path, value,
+):
+    root = write_generation(
+        tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["safety"]["network_attempts"] = value
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any("safety" in error for error in report.errors)
+
+
+def test_validate_generation_requires_exact_safety_counter_keys(tmp_path: Path):
+    root = write_generation(
+        tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["safety"]["mt5_calls"]
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any("safety" in error for error in report.errors)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("status", "UNKNOWN"),
+        ("generation_id_mode", "UNKNOWN"),
+        ("reproducibility", None),
+        ("time_range", {"first": "2026-01-02T00:00:00", "last": None}),
+    ],
+)
+def test_validate_generation_rejects_invalid_manifest_contract_fields(
+    tmp_path: Path, field, value,
+):
+    root = write_generation(
+        tmp_path, (example(),), (), SplitResult((), "INSUFFICIENT_DATA"),
+        source_fingerprints=FINGERPRINTS, policy_versions=POLICIES,
+    )
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest[field] = value
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+
+    report = validate_generation(root)
+
+    assert not report.valid
+    assert any(field.replace("_", " ") in error or field in error for error in report.errors)
+
+
 def test_default_generation_id_includes_source_fingerprints(tmp_path: Path):
     first = write_generation(
         tmp_path / "first", (),
