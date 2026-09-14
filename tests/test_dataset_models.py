@@ -16,6 +16,7 @@ from tradingagents.datasets.models import (
     JoinedObservation,
     SourceFingerprint,
     SourceObservation,
+    SplitAssignment,
     ValidationReport,
 )
 
@@ -138,3 +139,30 @@ def test_round2_vocabulary_deep_freeze_and_types():
         JoinedObservation(decision="bad")
     with pytest.raises(ValueError):
         CanonicalExampleV1("x", decision=[])
+
+
+def test_round3_mapping_fields_reject_sequences():
+    ts = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    cases = [
+        lambda: SourceObservation("d", ts, fields=[]),
+        lambda: EvaluationObservation("d", fields=[]),
+        lambda: EvidenceObservation(fields=[]),
+        lambda: JoinedObservation(SourceObservation("d", ts), fields=[]),
+        lambda: DatasetExclusion("d", details=[]),
+    ]
+    for make in cases:
+        with pytest.raises(ValueError):
+            make()
+
+
+def test_round3_invalid_collection_types_are_value_errors():
+    with pytest.raises(ValueError):
+        BuildReport("FAILED", errors=None)
+    with pytest.raises(ValueError):
+        BuildReport("FAILED", exclusions=None)
+    with pytest.raises(ValueError):
+        ValidationReport(True, errors=None)
+    with pytest.raises(ValueError):
+        ValidationReport(True, warnings=None)
+    with pytest.raises(ValueError):
+        SplitAssignment("e", "train", None)

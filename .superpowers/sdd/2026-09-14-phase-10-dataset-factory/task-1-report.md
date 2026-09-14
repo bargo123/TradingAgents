@@ -62,3 +62,20 @@ All checks passed!
 pytest -q tests/test_dataset_models.py
 9 passed
 ```
+
+## Round 3 review fix
+
+Mapping-typed fields now reject sequences explicitly; invalid report
+collections, split identifiers, and component types raise clear `ValueError`s;
+collection defaults and nested report structures are validated and frozen.
+
+Verification command/output:
+
+```text
+ruff check tradingagents/datasets tests/test_dataset_models.py
+All checks passed!
+pytest -q tests/test_dataset_models.py
+11 passed
+git diff --check
+passed (no whitespace errors)
+```

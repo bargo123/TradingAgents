@@ -89,6 +89,11 @@ def _validate_optional_text(v, name):
         raise ValueError(f"{name} must be a bounded string")
 
 
+def _require_mapping(v, name):
+    if not isinstance(v, Mapping):
+        raise ValueError(f"{name} must be a mapping")
+
+
 def _validate_dt(v, name):
     if (
         not isinstance(v, datetime)
@@ -156,9 +161,9 @@ class DatasetConfig(Contract):
         )
         out = Path(self.output_root).resolve()
         object.__setattr__(self, "output_root", out)
-        object.__setattr__(self, "filters", _freeze(self.filters))
         if not isinstance(self.filters, Mapping):
             raise DatasetConfigError("filters must be a mapping")
+        object.__setattr__(self, "filters", _freeze(self.filters))
         if not isinstance(self.allow_empty, bool):
             raise DatasetConfigError("allow_empty must be bool")
         if not paths:
@@ -223,6 +228,7 @@ class SourceObservation(Contract):
             _validate_dt(self.decision_completed_timestamp, "decision_completed_timestamp")
         if not isinstance(self.action, str) or self.action not in {"BUY", "SELL", "HOLD"}:
             raise ValueError("unsupported action")
+        _require_mapping(self.fields, "fields")
         object.__setattr__(self, "fields", _freeze(self.fields))
         for n in (
             "source_run_id",
@@ -266,6 +272,7 @@ class EvaluationObservation(Contract):
             "INELIGIBLE",
         }:
             raise ValueError("unsupported evaluation status")
+        _require_mapping(self.fields, "fields")
         object.__setattr__(self, "fields", _freeze(self.fields))
 
 
@@ -298,6 +305,7 @@ class EvidenceObservation(Contract):
             for ref in refs:
                 _validate_id(ref, name)
             object.__setattr__(self, name, tuple(refs))
+        _require_mapping(self.fields, "fields")
         object.__setattr__(self, "fields", _freeze(self.fields))
 
 
@@ -315,6 +323,7 @@ class JoinedObservation(Contract):
             raise ValueError("evaluation must be EvaluationObservation")
         if self.evidence is not None and not isinstance(self.evidence, EvidenceObservation):
             raise ValueError("evidence must be EvidenceObservation")
+        _require_mapping(self.fields, "fields")
         object.__setattr__(self, "fields", _freeze(self.fields))
 
 
@@ -359,6 +368,7 @@ class DatasetExclusion(Contract):
         ):
             raise ValueError("reasons must contain DatasetExclusionReason values")
         object.__setattr__(self, "reasons", tuple(self.reasons))
+        _require_mapping(self.details, "details")
         object.__setattr__(self, "details", _freeze(self.details))
 
 
@@ -432,6 +442,10 @@ class BuildReport(Contract):
             raise ValueError("unsupported build status")
         if self.manifest is not None and not isinstance(self.manifest, DatasetManifest):
             raise ValueError("manifest must be DatasetManifest")
+        if not isinstance(self.exclusions, (list, tuple)) or not isinstance(
+            self.errors, (list, tuple)
+        ):
+            raise ValueError("report collections must be sequences")
         object.__setattr__(self, "exclusions", tuple(self.exclusions))
         object.__setattr__(self, "errors", tuple(self.errors))
         if any(not isinstance(x, DatasetExclusion) for x in self.exclusions):
@@ -449,6 +463,10 @@ class ValidationReport(Contract):
     def __post_init__(self):
         if not isinstance(self.valid, bool):
             raise ValueError("valid must be bool")
+        if not isinstance(self.errors, (list, tuple)) or not isinstance(
+            self.warnings, (list, tuple)
+        ):
+            raise ValueError("report collections must be sequences")
         object.__setattr__(self, "errors", tuple(self.errors))
         object.__setattr__(self, "warnings", tuple(self.warnings))
         if any(not isinstance(x, str) or len(x) > 256 for x in self.errors + self.warnings):
