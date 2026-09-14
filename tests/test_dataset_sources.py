@@ -8,6 +8,7 @@ from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.datasets.eligibility import join_observations
 from tradingagents.datasets.errors import SourceIntegrityError, SourceReadError
 from tradingagents.datasets.sources import (
+    _AUDIT_FIELDS,
     ReadonlyExperienceSource,
     ReadonlyPhase9AuditSource,
     ReadonlyPhase56Source,
@@ -176,6 +177,31 @@ def test_phase9_array_fields_decode_to_bounded_arrays():
 def test_phase9_array_fields_reject_oversized_arrays_before_bounding():
     with pytest.raises(SourceReadError, match="array metadata exceeds bound"):
         _decode_array(json.dumps(list(range(101))))
+
+
+def test_phase9_public_adapter_rejects_oversized_array_strings_before_bounding(tmp_path):
+    path = tmp_path / "audit.sqlite3"
+    columns = tuple(_AUDIT_FIELDS)
+    values = dict.fromkeys(columns)
+    values["decision_id"] = "decision-1"
+    values["source_run_id"] = "run-1"
+    values["available_knowledge_ids"] = json.dumps(["x" * 501])
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE evidence_usage_audit ("
+            + ", ".join(f'"{column}" TEXT' for column in columns)
+            + ")"
+        )
+        db.execute(
+            'INSERT INTO evidence_usage_audit ("'
+            + '", "'.join(columns)
+            + '") VALUES ('
+            + ", ".join("?" for _ in columns)
+            + ")",
+            [values[column] for column in columns],
+        )
+    with pytest.raises(SourceReadError, match="string metadata exceeds bound"):
+        ReadonlyPhase9AuditSource(path).read()
 
 
 def test_phase9_mapping_fields_reject_oversized_mappings_before_bounding():

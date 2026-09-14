@@ -185,7 +185,7 @@ def test_exact_decision_contract_training_eligibility_and_research_metadata():
         {**o.evaluation.fields, 'training_eligible': True, 'training_eligibility_reason': 'APPROVED'})
     audit = {'context_integrity': 'COMPLETE', 'evidence_use_status': 'USED',
              'evidence_refs_used': ['K1', 'E1', 'S1'], 'evidence_refs_rejected': [],
-             'bundle_status': 'COMPLETE', 'integration_status': 'ENABLED',
+             'bundle_status': 'COMPLETE', 'integration_status': 'INJECTED',
              'selected_counts': {'knowledge': 1, 'experience': 1, 'statistics': 1},
              'dropped_counts': {'knowledge': 0, 'experience': 0, 'statistics': 0},
              'knowledge_query_fingerprint': 'qf', 'query_policy_version': 'qp',
@@ -307,6 +307,25 @@ def test_phase9_metadata_types_and_bounds_fail_closed():
     audit = {**o.fields["audit"], "selected_counts": [1, 2]}
     bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})
     with pytest.raises(ValueError, match="selected_counts"):
+        canonicalize(bad, EligibilityResult(True, details={"decision_id": "d1"}))
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "integration_status",
+        "integration",
+        "bundle_status",
+        "evidence_audit_status",
+        "context_integrity",
+        "evidence_use_status",
+    ),
+)
+def test_phase9_metadata_rejects_unknown_status_values(field):
+    o = obs()
+    audit = {**o.fields["audit"], field: "UNKNOWN_STATUS"}
+    bad = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, "audit": audit})
+    with pytest.raises(ValueError, match=field):
         canonicalize(bad, EligibilityResult(True, details={"decision_id": "d1"}))
 
     audit = {**o.fields["audit"], "integration": []}

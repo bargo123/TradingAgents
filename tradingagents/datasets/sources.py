@@ -145,7 +145,10 @@ def _bounded(value: Any, limit: int = 2048) -> Any:
 
 def _reject_oversized_collections(value: Any, limit: int = 100) -> None:
     """Reject collection values before the legacy diagnostic bounding pass."""
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, str):
+        if len(value) > 500:
+            raise SourceReadError("Phase 9 string metadata exceeds bound")
+    elif isinstance(value, (list, tuple)):
         if len(value) > limit:
             raise SourceReadError("Phase 9 array metadata exceeds bound")
         for item in value:
@@ -579,35 +582,36 @@ class ReadonlyPhase9AuditSource(_Readonly):
             names = [
                 x[0] for x in db.execute(f'SELECT * FROM "{_AUDIT_TABLE}" LIMIT 0').description
             ]
+            array_keys = (
+                "available_knowledge_ids",
+                "available_experience_ids",
+                "available_statistics_ids",
+                "evidence_refs_used",
+                "evidence_refs_rejected",
+                "telemetry_references",
+                "missing_nodes",
+                "source_errors",
+            )
+            mapping_keys = (
+                "selected_counts",
+                "dropped_counts",
+                "source_status",
+                "diagnostics",
+                "node_context_hashes",
+            )
+            raw_json_keys = frozenset(array_keys + mapping_keys)
             rows = []
             for row in db.execute(
                 f'SELECT * FROM "{_AUDIT_TABLE}" ORDER BY decision_id,source_run_id'
             ):
                 item = {
-                    k: _bounded(v, 500)
+                    k: v if k in raw_json_keys else _bounded(v, 500)
                     for k, v in zip(names, row, strict=True)
                     if k in _AUDIT_FIELDS
                 }
-                array_keys = (
-                    "available_knowledge_ids",
-                    "available_experience_ids",
-                    "available_statistics_ids",
-                    "evidence_refs_used",
-                    "evidence_refs_rejected",
-                    "telemetry_references",
-                    "missing_nodes",
-                    "source_errors",
-                )
                 for key in array_keys:
                     if key in item:
                         item[key] = _decode_array(item[key])
-                mapping_keys = (
-                    "selected_counts",
-                    "dropped_counts",
-                    "source_status",
-                    "diagnostics",
-                    "node_context_hashes",
-                )
                 for key in mapping_keys:
                     if key in item:
                         item[key] = _decode_mapping(item[key])

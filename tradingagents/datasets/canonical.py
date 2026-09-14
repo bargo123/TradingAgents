@@ -124,6 +124,14 @@ _PHASE9_STATUS_FIELDS = frozenset({
     "integration_status", "integration", "bundle_status",
     "evidence_audit_status", "context_integrity", "evidence_use_status",
 })
+_PHASE9_STATUS_VALUES = {
+    "integration_status": frozenset({"DISABLED", "INJECTED", "FALLBACK"}),
+    "integration": frozenset({"DISABLED", "INJECTED", "FALLBACK"}),
+    "bundle_status": frozenset({"COMPLETE", "PARTIAL", "EMPTY", "FAILED"}),
+    "evidence_audit_status": frozenset({"VALID", "INVALID_REFERENCE", "NOT_RECORDED", "WRITE_FAILED"}),
+    "context_integrity": frozenset({"COMPLETE", "INCOMPLETE", "UNAVAILABLE", "INVALID"}),
+    "evidence_use_status": frozenset({"USED", "NONE_RELEVANT", "UNAVAILABLE", "DISABLED"}),
+}
 _PHASE9_ALLOWED_FIELDS = _PHASE9_TEXT_FIELDS | _PHASE9_STATUS_FIELDS | frozenset({
     "selected_counts", "dropped_counts",
 })
@@ -183,9 +191,11 @@ def _phase9_metadata(audit: Mapping[str, Any], fallback: Mapping[str, Any]) -> d
     for name in ("selected_counts", "dropped_counts"):
         if name in data:
             data[name] = _phase9_counts(name, data[name])
-    for name in ("integration_status", "integration", "bundle_status", "evidence_audit_status", "context_integrity", "evidence_use_status"):
+    for name in _PHASE9_STATUS_VALUES:
         if name in data and data[name] is not None:
             data[name] = _bounded_phase9_text(name, data[name])
+            if data[name] not in _PHASE9_STATUS_VALUES[name]:
+                raise ValueError(f"invalid Phase 9 {name}")
     return data
 
 
