@@ -80,6 +80,38 @@ git diff --check
 passed (no whitespace errors)
 ```
 
+## Round 5 review fix
+
+`SplitAssignment.__post_init__` now uses tuple membership for the closed split
+vocabulary. This preserves the round-4 non-string guard while avoiding hashing
+an otherwise valid `str` subclass that sets `__hash__ = None`; invalid values
+therefore raise the contract's deterministic `ValueError`. Added a regression
+test for that unhashable string subclass.
+
+TDD verification command/output before the implementation change:
+
+```text
+pytest -q tests/test_dataset_models.py -k round5_unhashable_string_split_value_raise_value_error
+1 failed, 13 deselected
+TypeError: unhashable type: '_UnhashableString'
+```
+
+Verification command/output after the implementation change:
+
+```text
+pytest -q tests/test_dataset_models.py -k round5_unhashable_string_split_value_raise_value_error
+1 passed, 13 deselected
+
+pytest -q tests/test_dataset_models.py
+14 passed
+
+ruff check tradingagents/datasets tests/test_dataset_models.py
+All checks passed!
+
+git diff --check
+passed (whitespace warnings only from Git's LF/CRLF conversion; no diff errors)
+```
+
 ## Round 4 review fix
 
 `SplitAssignment.__post_init__` now validates that `split` is a string before

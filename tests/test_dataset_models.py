@@ -172,3 +172,12 @@ def test_round3_invalid_collection_types_are_value_errors():
 def test_round4_unhashable_split_values_raise_value_error(invalid_split):
     with pytest.raises(ValueError):
         SplitAssignment("e", invalid_split, "g")
+
+
+class _UnhashableString(str):
+    __hash__ = None
+
+
+def test_round5_unhashable_string_split_value_raise_value_error():
+    with pytest.raises(ValueError):
+        SplitAssignment("e", _UnhashableString("other"), "g")
