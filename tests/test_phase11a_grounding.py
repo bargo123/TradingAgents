@@ -92,3 +92,29 @@ def test_quality_rejects_excessive_verbatim_overlap():
         QualityPolicy(max_overlap_ratio=0.8).validate(candidate, p).reason
         == "VERBATIM_OVERLAP_EXCESSIVE"
     )
+
+
+def test_grounding_rejects_claim_not_supported_by_block_text():
+    from tradingagents.distillation.models import SourceBlock, SourcePacket, SourceRef
+
+    ref = SourceRef("doc", "book.pdf", "hash", "r1", "gen")
+    p = SourcePacket("p", (SourceBlock(ref, "Liquidity is available market depth."),))
+    candidate = SimpleNamespace(
+        source_refs=["r1"], claims=[SimpleNamespace(source_refs=["r1"], claim="The moon is made of cheese.")]
+    )
+    assert GroundingValidator().validate(candidate, p).reason == "UNSUPPORTED_CLAIM"
+
+
+def test_grounding_rejects_clear_contradictory_claims():
+    from tradingagents.distillation.models import SourceBlock, SourcePacket, SourceRef
+
+    ref = SourceRef("doc", "book.pdf", "hash", "r1", "gen")
+    p = SourcePacket("p", (SourceBlock(ref, "Liquidity is available market depth."),))
+    candidate = SimpleNamespace(
+        source_refs=["r1"],
+        claims=[
+            SimpleNamespace(source_refs=["r1"], claim="Liquidity is available market depth."),
+            SimpleNamespace(source_refs=["r1"], claim="Liquidity is not available market depth."),
+        ],
+    )
+    assert GroundingValidator().validate(candidate, p).reason == "CONTRADICTION"

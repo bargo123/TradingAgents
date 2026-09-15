@@ -465,7 +465,14 @@ def validate_generation(path: str | Path):
         expected_refs = {
             _json(ref).decode("utf-8").rstrip("\n")
             for row in parsed["examples.jsonl"]
-            for ref in row.get("source_refs", ())
+            for ref in (
+                list(row.get("source_refs", ()))
+                + [
+                    ref
+                    for claim in row.get("claims", ())
+                    for ref in claim.source_refs
+                ]
+            )
         }
         actual_refs = {_json(ref).decode("utf-8").rstrip("\n") for ref in source_index_rows}
         if expected_refs != actual_refs:
@@ -547,7 +554,15 @@ def _source_index(examples: list[Any]) -> list[dict[str, Any]]:
     rows: dict[str, dict[str, Any]] = {}
     for example in examples:
         value = _plain(example)
-        for ref in value.get("source_refs", []) if isinstance(value, Mapping) else []:
+        refs = list(value.get("source_refs", [])) if isinstance(value, Mapping) else []
+        if isinstance(value, Mapping):
+            refs.extend(
+                ref
+                for claim in value.get("claims", [])
+                if isinstance(claim, Mapping)
+                for ref in claim.get("source_refs", claim.get("refs", []))
+            )
+        for ref in refs:
             if not isinstance(ref, Mapping):
                 continue
             key = "|".join(

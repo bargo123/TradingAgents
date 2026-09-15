@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -48,6 +49,52 @@ def _ref_id(ref: Any) -> str:
     )
 
 
+def _block_texts(packet: Any, available: dict[str, Any]) -> dict[str, str]:
+    """Return packet block text keyed by the same IDs used for references."""
+    result: dict[str, str] = {}
+    for block in _value(packet, "blocks", ()) or ():
+        ref = _value(block, "ref", block)
+        rid = _ref_id(ref)
+        text = _value(block, "text", "")
+        if rid and isinstance(text, str):
+            result[rid] = text
+    # Lightweight packets may expose text directly on refs.
+    for rid, ref in available.items():
+        text = _value(ref, "text", "")
+        if isinstance(text, str) and text:
+            result.setdefault(rid, text)
+    return result
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_STOP_WORDS = {"a", "an", "and", "by", "for", "from", "in", "is", "of", "on", "the", "to", "with"}
+_META_WORDS = {"claim", "evidence", "scope", "source", "supplied", "concept", "defines", "defined"}
+_OPPOSITES = (
+    ({"increase", "increases", "increased", "increasing", "higher", "more"}, {"decrease", "decreases", "decreased", "decreasing", "lower", "less"}),
+    ({"available", "present", "exists"}, {"unavailable", "absent", "missing"}),
+)
+
+
+def _words(value: str) -> set[str]:
+    return {word for word in _WORD_RE.findall(value.lower()) if word not in _STOP_WORDS}
+
+
+def _contradicts(left: str, right: str) -> bool:
+    negations = {"not", "never", "no", "without", "cannot", "can't", "doesn't", "isn't"}
+    l_words, r_words = _words(left), _words(right)
+    l_neg = bool(l_words & negations)
+    r_neg = bool(r_words & negations)
+    l_words -= negations
+    r_words -= negations
+    shared = l_words & r_words
+    negated = l_neg != r_neg and len(shared) >= 2 and len(shared) / max(1, min(len(l_words), len(r_words))) >= 0.7
+    directional = any(
+        bool(l_words & left) and bool(r_words & right) or bool(l_words & right) and bool(r_words & left)
+        for left, right in _OPPOSITES
+    ) and len(shared) >= 1
+    return negated or directional
+
+
 def _check_ref(ref: Any, available: dict[str, Any]) -> ValidationDecision | None:
     rid = _ref_id(ref)
     if not rid or rid not in available:
@@ -87,6 +134,7 @@ def _check_ref(ref: Any, available: dict[str, Any]) -> ValidationDecision | None
 class GroundingValidator:
     def validate(self, candidate: Any, packet: Any) -> ValidationDecision:
         available = _refs(packet)
+        block_texts = _block_texts(packet, available)
         claims = _value(candidate, "claims", []) or []
         declared_refs = _value(candidate, "source_refs", None)
         refs = declared_refs or []
@@ -106,6 +154,7 @@ class GroundingValidator:
             failure = _check_ref(ref, available)
             if failure:
                 return failure
+        claim_texts: list[str] = []
         for claim in claims:
             refs = _value(claim, "refs", _value(claim, "source_refs", [])) or []
             if not refs:
@@ -114,4 +163,22 @@ class GroundingValidator:
                 failure = _check_ref(ref, available)
                 if failure:
                     return failure
+            claim_text = _value(claim, "claim", _value(claim, "text", ""))
+            if not isinstance(claim_text, str) or not claim_text.strip():
+                if block_texts:
+                    return ValidationDecision(False, "UNSUPPORTED_CLAIM", {"claim": "missing_text"})
+                continue
+            claim_texts.append(claim_text)
+            if block_texts:
+                claim_words = _words(claim_text)
+                supported = any(
+                    len(claim_words & _words(block_texts.get(_ref_id(ref), ""))) >= 2
+                    for ref in refs
+                )
+                if not supported and not (claim_words & _META_WORDS):
+                    return ValidationDecision(False, "UNSUPPORTED_CLAIM", {"claim": claim_text[:120]})
+        for index, left in enumerate(claim_texts):
+            for right in claim_texts[index + 1 :]:
+                if _contradicts(left, right):
+                    return ValidationDecision(False, "CONTRADICTION", {"claims": [left[:120], right[:120]]})
         return ValidationDecision(True, diagnostics={"refs_checked": len(available)})

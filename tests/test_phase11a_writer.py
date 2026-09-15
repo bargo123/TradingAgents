@@ -91,6 +91,19 @@ def test_validation_binds_source_index_to_example_provenance(tmp_path: Path):
     assert not validate_generation(destination).valid
 
 
+def test_writer_source_index_includes_claim_only_references(tmp_path: Path):
+    rows = _examples()
+    from dataclasses import replace
+
+    from tradingagents.distillation.models import GroundingClaim
+
+    claim_ref = rows[1].source_refs[0]
+    row = replace(rows[0], claims=(GroundingClaim("The concept is defined by the source.", (claim_ref,)),))
+    destination = write_generation(tmp_path, [row], [], {}, metadata={})
+    index = json.loads((destination / "source_index.json").read_text(encoding="utf-8"))
+    assert {item["chunk_id"] for item in index} == {claim_ref.chunk_id, row.source_refs[0].chunk_id}
+
+
 def test_validation_returns_bounded_invalid_report_for_missing_file(tmp_path: Path):
     destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
     (destination / "examples.jsonl").unlink()

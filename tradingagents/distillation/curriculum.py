@@ -27,7 +27,7 @@ def _read_rows(path: Path, expected_source_type: str = "BOOK_KNOWLEDGE") -> tupl
             row = json.loads(line)
             if not isinstance(row, dict):
                 raise ValueError("row must be an object")
-            if row.get("source_type", expected_source_type) != expected_source_type:
+            if "source_type" not in row or row.get("source_type") != expected_source_type:
                 raise ValueError("source type is not BOOK_KNOWLEDGE")
             rows.append(row)
     except (OSError, ValueError, json.JSONDecodeError) as exc:

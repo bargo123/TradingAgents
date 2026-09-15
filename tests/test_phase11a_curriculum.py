@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from tests.fixtures.phase11a_knowledge import fixture_source, grounded_candidate
 from tradingagents.distillation.curriculum import (
     KnowledgeDatasetBinding,
@@ -70,3 +72,19 @@ def test_knowledge_training_source_is_iterable_without_test_rows(tmp_path):
         "train": binding.train_rows,
         "validation": binding.validation_rows,
     }
+
+
+def test_curriculum_requires_explicit_book_knowledge_source_type(tmp_path):
+    source = fixture_source()
+    packet = next(iter(source.blocks()))
+    from tradingagents.distillation.models import SourcePacket
+
+    packet = SourcePacket("p", (packet,))
+    row = _coerce_candidate(grounded_candidate(packet), packet)
+    generation = write_generation(tmp_path, [row], [], {row.example_id: "train"}, metadata={})
+    path = generation / "train.jsonl"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value.pop("source_type")
+    path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+    with pytest.raises(KnowledgeGenerationInvalidError):
+        KnowledgeDatasetBinding.open(generation)
