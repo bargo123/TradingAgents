@@ -93,3 +93,26 @@ def test_multi_source_examples_share_their_complete_provenance_group():
     splitter = GroupedSplitter(min_groups=3)
     assert splitter._group(left) == splitter._group(reordered)
     assert splitter._group(left) != splitter._group(only_a)
+
+
+def test_splitter_keeps_each_partition_when_four_independent_groups_exist():
+    rows = examples()[:4]
+    assignments = GroupedSplitter().assign(rows)
+    assert set(assignments.values()) == {"train", "validation", "test"}
+
+
+def test_splitter_connects_single_and_multi_source_lessons_into_one_group():
+    from tradingagents.distillation.models import SourceRef
+
+    a = SourceRef("doc-a", "a.pdf", "ha", "ca", "gen", section="s")
+    b = SourceRef("doc-b", "b.pdf", "hb", "cb", "gen", section="s")
+    rows = [
+        {"example_id": "multi", "source_refs": (a, b)},
+        {"example_id": "single-a", "source_refs": (a,)},
+        {"example_id": "single-b", "source_refs": (b,)},
+    ]
+    assignments = GroupedSplitter(min_groups=1).assign(rows)
+    assert assignments["multi"] == assignments["single-a"] == assignments["single-b"]
+    assert not validate_no_group_leakage(
+        rows, {"multi": "train", "single-a": "validation", "single-b": "train"}
+    )

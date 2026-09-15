@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -86,5 +87,91 @@ def test_validation_binds_source_index_to_example_provenance(tmp_path: Path):
         index_path.read_bytes()
     ).hexdigest()
     manifest["files"]["source_index.json"]["bytes"] = index_path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert not validate_generation(destination).valid
+
+
+def test_validation_returns_bounded_invalid_report_for_missing_file(tmp_path: Path):
+    destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
+    (destination / "examples.jsonl").unlink()
+    report = validate_generation(destination)
+    assert not report.valid
+    assert any("missing file: examples.jsonl" in error for error in report.errors)
+
+
+def test_validation_rejects_malformed_exclusion_row(tmp_path: Path):
+    destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
+    path = destination / "excluded.jsonl"
+    path.write_text(json.dumps({"reason": "NOT_A_REASON"}) + "\n", encoding="utf-8")
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["excluded.jsonl"]["sha256"] = __import__("hashlib").sha256(
+        path.read_bytes()
+    ).hexdigest()
+    manifest["files"]["excluded.jsonl"]["bytes"] = path.stat().st_size
+    manifest["counts"]["exclusions"] = 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert not validate_generation(destination).valid
+
+
+def test_validation_rejects_private_exclusion_diagnostic(tmp_path: Path):
+    destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
+    path = destination / "excluded.jsonl"
+    path.write_text(
+        json.dumps({"reason": "TEACHER_FAILED", "diagnostic": "private reasoning trace"})
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["excluded.jsonl"]["sha256"] = __import__("hashlib").sha256(
+        path.read_bytes()
+    ).hexdigest()
+    manifest["files"]["excluded.jsonl"]["bytes"] = path.stat().st_size
+    manifest["counts"]["exclusions"] = 1
+    manifest["counts"]["excluded"] = 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert not validate_generation(destination).valid
+
+
+def test_writer_rejects_sensitive_manifest_metadata(tmp_path: Path):
+    with pytest.raises(ValueError, match="unsafe|sensitive"):
+        write_generation(
+            tmp_path,
+            _examples(),
+            [],
+            {},
+            metadata={"diagnostics": {"private_reasoning": "must not persist"}},
+        )
+
+
+def test_writer_rejects_fabricated_action_lesson(tmp_path: Path):
+    row = replace(_examples()[0], assistant="BUY EURUSD now")
+    with pytest.raises(ValueError, match="action|unsafe"):
+        write_generation(tmp_path, [row], [], {row.example_id: "train"}, metadata={})
+
+
+def test_validation_rejects_tampered_fabricated_action_even_with_new_hash(tmp_path: Path):
+    destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
+    path = destination / "examples.jsonl"
+    value = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    value["assistant"] = "SELL EURUSD now"
+    path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["examples.jsonl"]["sha256"] = __import__("hashlib").sha256(
+        path.read_bytes()
+    ).hexdigest()
+    manifest["files"]["examples.jsonl"]["bytes"] = path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert not validate_generation(destination).valid
+
+
+def test_validation_rejects_unknown_manifest_states(tmp_path: Path):
+    destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["status"] = "MAYBE"
+    manifest["split_status"] = "MAYBE"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert not validate_generation(destination).valid

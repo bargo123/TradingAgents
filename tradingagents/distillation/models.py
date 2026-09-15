@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
@@ -21,6 +22,10 @@ MAX_TEXT_CHARS = 20_000
 CONTENT_TYPES = frozenset({"PROSE", "EQUATION", "TABLE", "FIGURE_CAPTION", "DEFINITION", "REFERENCE", "LIST"})
 _SENSITIVE = re.compile(
     r"(prompt|completion|reasoning|chain.of.thought|secret|api[_ -]?key|password)", re.I
+)
+_PRIVATE_TEXT = re.compile(
+    r"(?:chain[._ -]?of[._ -]?thought|scratchpad|private[._ -]?reasoning|reasoning[._ -]?trace)",
+    re.I,
 )
 _UNSAFE = re.compile(r"(buy|sell|hold|pnl|profit|reward|entry|exit|future|outcome)", re.I)
 
@@ -105,7 +110,8 @@ def canonical_hash(value: Any) -> str:
 
 
 def _text(value: str, name: str = "text", maximum: int = MAX_TEXT_CHARS) -> str:
-    value = str(value)
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a string")
     if not value.strip():
         raise ValueError(f"{name} must be non-empty")
     if len(value) > maximum:
@@ -140,6 +146,8 @@ def _validate_safe(value: Any, path: str = "") -> None:
     elif is_dataclass(value):
         for item in fields(value):
             _validate_safe(getattr(value, item.name), f"{path}.{item.name}" if path else item.name)
+    elif isinstance(value, str) and _PRIVATE_TEXT.search(value):
+        raise ValueError(f"unsafe private text: {path}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,8 +167,23 @@ class SourceRef(SerializableModel):
     def __post_init__(self):
         for n in ("document_id", "source_filename", "source_hash", "chunk_id", "generation_id"):
             _text(getattr(self, n), n, 500)
-        if self.page is not None and int(self.page) < 1:
-            raise ValueError("page must be positive")
+        for name in ("page", "page_start", "page_end"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 1
+            ):
+                raise ValueError(f"{name} must be a positive integer")
+        if (
+            self.page_start is not None
+            and self.page_end is not None
+            and self.page_end < self.page_start
+        ):
+            raise ValueError("page range is reversed")
+        if self.page is not None:
+            if self.page_start is not None and self.page < self.page_start:
+                raise ValueError("page is outside page range")
+            if self.page_end is not None and self.page > self.page_end:
+                raise ValueError("page is outside page range")
         content_type = getattr(self.content_type, "value", self.content_type)
         content_type = str(content_type).upper()
         if content_type not in CONTENT_TYPES:
@@ -222,6 +245,8 @@ class GroundingClaim(SerializableModel):
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
         if not self.source_refs:
             raise ValueError("claim requires source_refs")
+        if not all(isinstance(ref, SourceRef) for ref in self.source_refs):
+            raise ValueError("claim source_refs must contain SourceRef values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +259,8 @@ class SourceBlock(SerializableModel):
     metadata: Mapping[str, Any] = None
 
     def __post_init__(self):
+        if not isinstance(self.ref, SourceRef):
+            raise ValueError("ref must be a SourceRef")
         _text(self.text)
         content_type = getattr(self.content_type, "value", self.content_type)
         content_type = str(content_type).upper()
@@ -256,6 +283,8 @@ class SourcePacket(SerializableModel):
         object.__setattr__(self, "blocks", tuple(self.blocks))
         if not self.blocks:
             raise ValueError("packet requires blocks")
+        if not all(isinstance(block, SourceBlock) for block in self.blocks):
+            raise ValueError("blocks must contain SourceBlock values")
 
     @property
     def refs(self):
@@ -277,10 +306,27 @@ class SourcePlan(SerializableModel):
     source_root: str = ""
 
     def __post_init__(self):
+        _text(self.generation_id, "generation_id", 500)
+        _text(self.request_fingerprint, "request_fingerprint", 500)
         object.__setattr__(self, "packets", tuple(self.packets))
+        if not all(isinstance(packet, SourcePacket) for packet in self.packets):
+            raise ValueError("packets must contain SourcePacket values")
         object.__setattr__(self, "diagnostics", tuple(dict(x) for x in self.diagnostics))
+        _validate_safe(self.diagnostics)
         object.__setattr__(self, "source_fingerprints", dict(self.source_fingerprints or {}))
-        object.__setattr__(self, "policy_versions", dict(self.policy_versions or {}))
+        policy_versions = dict(self.policy_versions or {})
+        policy_versions.setdefault("distillation", DISTILLATION_POLICY_VERSION)
+        policy_versions.setdefault("grounding", GROUNDING_POLICY_VERSION)
+        policy_versions.setdefault("split", SPLIT_POLICY_VERSION)
+        expected_policy_versions = {
+            "distillation": DISTILLATION_POLICY_VERSION,
+            "grounding": GROUNDING_POLICY_VERSION,
+            "split": SPLIT_POLICY_VERSION,
+        }
+        for key, expected in expected_policy_versions.items():
+            if policy_versions.get(key) != expected:
+                raise ValueError(f"unsupported {key} policy version")
+        object.__setattr__(self, "policy_versions", policy_versions)
         object.__setattr__(self, "source_root", str(self.source_root or ""))
 
 
@@ -296,8 +342,19 @@ class TeacherConfig(SerializableModel):
     policy_version: str = DISTILLATION_POLICY_VERSION
 
     def __post_init__(self):
-        if self.max_tokens < 1 or self.timeout_seconds <= 0:
+        for name in ("provider", "model", "version"):
+            if not isinstance(getattr(self, name), str) or len(getattr(self, name)) > 500:
+                raise ValueError(f"{name} must be a bounded string")
+        if isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float)) or not math.isfinite(self.temperature) or self.temperature < 0 or self.temperature > 2:
+            raise ValueError("temperature must be between 0 and 2")
+        if isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int) or self.max_tokens < 1 or self.max_tokens > 1_000_000:
+            raise ValueError("max_tokens must be a positive bounded integer")
+        if isinstance(self.timeout_seconds, bool) or not isinstance(self.timeout_seconds, (int, float)) or not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise ValueError("invalid teacher bounds")
+        if self.schema_version != CONTRACT_VERSION:
+            raise ValueError(f"unsupported schema_version: {self.schema_version}")
+        if self.policy_version != DISTILLATION_POLICY_VERSION:
+            raise ValueError(f"unsupported policy_version: {self.policy_version}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,6 +388,13 @@ class KnowledgeExample(SerializableModel):
         object.__setattr__(self, "difficulty", Difficulty(self.difficulty))
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
         object.__setattr__(self, "claims", tuple(self.claims))
+        if not self.source_refs:
+            raise ValueError("source_refs must be non-empty")
+        if not self.claims:
+            raise ValueError("claims must be non-empty")
+        object.__setattr__(self, "status", CandidateStatus(self.status))
+        if self.source_type != "BOOK_KNOWLEDGE":
+            raise ValueError("source_type must be BOOK_KNOWLEDGE")
         if self.contract_version != CONTRACT_VERSION:
             raise ValueError(f"unsupported contract_version: {self.contract_version}")
         object.__setattr__(self, "policy_versions", dict(self.policy_versions or {}))
@@ -422,8 +486,17 @@ class DistillationManifest(SerializableModel):
     contract_version: str = MANIFEST_VERSION
 
     def __post_init__(self):
+        _text(self.generation_id, "generation_id", 500)
+        _text(self.phase7_generation_id, "phase7_generation_id", 500)
+        if self.contract_version != MANIFEST_VERSION:
+            raise ValueError(f"unsupported manifest version: {self.contract_version}")
         object.__setattr__(self, "counts", dict(self.counts))
         object.__setattr__(self, "file_hashes", dict(self.file_hashes or {}))
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in self.counts.values()
+        ):
+            raise ValueError("manifest counts must be non-negative integers")
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,5 +506,9 @@ class ValidationReport(SerializableModel):
     counts: Mapping[str, int] = None
 
     def __post_init__(self):
+        if not isinstance(self.valid, bool):
+            raise ValueError("valid must be bool")
         object.__setattr__(self, "errors", tuple(self.errors))
         object.__setattr__(self, "counts", dict(self.counts or {}))
+        if any(not isinstance(error, str) for error in self.errors):
+            raise ValueError("validation errors must be strings")

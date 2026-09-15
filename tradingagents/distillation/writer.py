@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
@@ -23,6 +24,16 @@ FILES = (
     "source_index.json",
 )
 
+_FORBIDDEN_METADATA = re.compile(
+    r"(?:prompt|completion|reasoning|chain[._ -]?of[._ -]?thought|\bcot\b|scratchpad|secret|password|credential|api[._ -]?key|private[._ -]?key)",
+    re.IGNORECASE,
+)
+_FORBIDDEN_LESSON_FIELD = re.compile(
+    r"(?:buy|sell|hold|pnl|profit|reward|entry|exit|future|outcome|label)",
+    re.IGNORECASE,
+)
+_ACTION_TEXT = re.compile(r"\b(?:BUY|SELL|HOLD)\b", re.IGNORECASE)
+
 
 def _plain(value: Any) -> Any:
     if isinstance(value, Enum):
@@ -40,6 +51,38 @@ def _json(value: Any) -> bytes:
     return (
         json.dumps(_plain(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode("utf-8")
+
+
+def _validate_metadata(value: Any, path: str = "metadata") -> None:
+    """Reject private teacher material before it can reach a manifest."""
+
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}"
+            if _FORBIDDEN_METADATA.search(key_text):
+                raise ValueError(f"unsafe metadata field: {child_path}")
+            _validate_metadata(child, child_path)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        for index, child in enumerate(value):
+            _validate_metadata(child, f"{path}[{index}]")
+    elif isinstance(value, str) and _FORBIDDEN_METADATA.search(value):
+        raise ValueError(f"unsafe metadata value: {path}")
+
+
+def _validate_lesson_safety(row: Mapping[str, Any]) -> None:
+    if row.get("source_type", "BOOK_KNOWLEDGE") != "BOOK_KNOWLEDGE":
+        raise ValueError("source_type must be BOOK_KNOWLEDGE")
+    for key in row:
+        if _FORBIDDEN_METADATA.search(str(key)) or _FORBIDDEN_LESSON_FIELD.search(str(key)):
+            raise ValueError(f"unsafe lesson field: {key}")
+    for key in ("system", "user", "assistant", "system_instruction", "user_instruction", "assistant_target"):
+        value = row.get(key)
+        if isinstance(value, str):
+            if _ACTION_TEXT.search(value):
+                raise ValueError(f"unsafe action text in lesson field: {key}")
+            if _FORBIDDEN_METADATA.search(value):
+                raise ValueError(f"unsafe private text in lesson field: {key}")
 
 
 def _row_id(row: Any) -> str:
@@ -73,6 +116,11 @@ def write_generation(
     examples = _rows(examples)
     exclusions = _rows(exclusions)
     metadata = dict(metadata or {})
+    _validate_metadata(metadata)
+    for example in examples:
+        if isinstance(example, Mapping):
+            _validate_lesson_safety(example)
+    _validate_metadata(exclusions, "exclusions")
     # A Phase 7 root is an immutable input.  Refuse destinations that would
     # place generated artifacts in (or beneath) that root, even when the
     # directory does not exist yet.
@@ -107,6 +155,9 @@ def write_generation(
     destination = root / generation_id
     if destination.exists() or destination.is_symlink():
         raise FileExistsError(f"generation already exists: {generation_id}")
+    by_id = {_row_id(x): x for x in examples}
+    if len(by_id) != len(examples):
+        raise ValueError("duplicate example id")
     split_map: dict[str, str] = {}
     if isinstance(assignments, Mapping):
         split_map = {str(k): str(v) for k, v in assignments.items()}
@@ -116,7 +167,17 @@ def write_generation(
             item = _plain(item)
             if isinstance(item, Mapping):
                 split_map[str(item.get("example_id"))] = str(item.get("split"))
-    by_id = {_row_id(x): x for x in examples}
+    unknown_assignments = set(split_map) - set(by_id)
+    invalid_splits = set(split_map.values()) - {"train", "validation", "test"}
+    if unknown_assignments:
+        raise ValueError("split assignment references unknown example")
+    if invalid_splits:
+        raise ValueError("split assignment contains unsupported split")
+    if (
+        metadata.get("split_status", "COMPLETE" if split_map else "INSUFFICIENT_DATA") == "COMPLETE"
+        and set(split_map) != set(by_id)
+    ):
+        raise ValueError("complete split must assign every example exactly once")
     files_data: dict[str, bytes] = {
         "examples.jsonl": b"".join(_json(x) for x in examples),
         "excluded.jsonl": b"".join(_json(x) for x in exclusions),
@@ -144,12 +205,28 @@ def write_generation(
     topic_distribution = Counter(
         str(x.get("topic", "")) for x in examples if isinstance(x, Mapping)
     )
+    difficulty_distribution = Counter(
+        str(x.get("difficulty", "")) for x in examples if isinstance(x, Mapping)
+    )
+    source_documents = {
+        str(ref.get("document_id", ""))
+        for ref in source_index
+        if isinstance(ref, Mapping) and ref.get("document_id")
+    }
+    source_sections = {
+        (str(ref.get("document_id", "")), str(ref.get("section", "")))
+        for ref in source_index
+        if isinstance(ref, Mapping) and ref.get("document_id")
+    }
     metadata.setdefault("lesson_type_distribution", dict(sorted(lesson_distribution.items())))
     metadata.setdefault("topic_distribution", dict(sorted(topic_distribution.items())))
+    metadata.setdefault("difficulty_distribution", dict(sorted(difficulty_distribution.items())))
+    metadata.setdefault("candidate_count", len(examples) + len(exclusions))
     metadata.setdefault(
         "source_coverage",
         {
-            "documents": len({str(ref.get("document_id", "")) for ref in source_index if isinstance(ref, Mapping)}),
+            "documents": len(source_documents),
+            "sections": len(source_sections),
             "chunks": len(source_index) if isinstance(source_index, list) else 0,
         },
     )
@@ -205,43 +282,82 @@ def write_generation(
 
 def validate_generation(path: str | Path):
     """Validate hashes and required files without modifying the generation."""
-    root = Path(path)
+    root = Path(path).resolve()
     errors: list[str] = []
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     except Exception as exc:
         errors.append(f"manifest unreadable: {exc}")
         manifest = {}
+    if not isinstance(manifest, Mapping):
+        errors.append("manifest must be an object")
+        manifest = {}
     for name in FILES:
         if not (root / name).is_file():
             errors.append(f"missing file: {name}")
     expected_hashed = set(FILES) - {"manifest.json"}
-    if set(manifest.get("files", {})) != expected_hashed:
+    manifest_files = manifest.get("files", {})
+    if not isinstance(manifest_files, Mapping):
+        errors.append("manifest file metadata must be an object")
+        manifest_files = {}
+    if set(manifest_files) != expected_hashed:
         errors.append("manifest file hash set is incomplete")
     if manifest.get("schema_version") != "phase11a-manifest.v1":
         errors.append("unknown or incompatible manifest version")
     if manifest.get("generation_id") != root.name:
         errors.append("generation identity does not match directory")
-    for name, info in manifest.get("files", {}).items():
+    raw_counts = manifest.get("counts", {})
+    counts_for_status = raw_counts if isinstance(raw_counts, Mapping) else {}
+    example_count = counts_for_status.get("examples", 0)
+    status = manifest.get("status")
+    if status not in {"PUBLISHED", "EMPTY_ELIGIBLE_SET"}:
+        errors.append("unknown manifest status")
+    elif isinstance(example_count, bool) or not isinstance(example_count, int):
+        errors.append("manifest example count must be an integer")
+    elif status == "PUBLISHED" and example_count < 1:
+        errors.append("published generation must contain examples")
+    elif status == "EMPTY_ELIGIBLE_SET" and example_count != 0:
+        errors.append("empty generation must not contain examples")
+    split_status = manifest.get("split_status")
+    if split_status not in {"COMPLETE", "INSUFFICIENT_DATA"}:
+        errors.append("unknown split status")
+    try:
+        _validate_metadata(manifest.get("metadata", {}))
+    except ValueError as exc:
+        errors.append(str(exc))
+    for name, info in manifest_files.items():
+        if name not in expected_hashed:
+            errors.append(f"unexpected file metadata: {name}")
+            continue
         target = root / name
+        if not isinstance(info, Mapping):
+            errors.append(f"invalid file metadata: {name}")
+            continue
+        if not isinstance(info.get("sha256"), str) or len(info["sha256"]) != 64:
+            errors.append(f"invalid file hash metadata: {name}")
         if (
             target.is_file()
-            and isinstance(info, Mapping)
             and info.get("sha256") != _hash(target.read_bytes())
         ):
             errors.append(f"hash mismatch: {name}")
-        if target.is_file() and isinstance(info, Mapping) and info.get("bytes") != target.stat().st_size:
+        if target.is_file() and info.get("bytes") != target.stat().st_size:
             errors.append(f"byte size mismatch: {name}")
     try:
         # Validate the canonical rows when the contracts are available.  This
         # catches missing provenance rather than merely checking file hashes.
         from .models import GroundingClaim, KnowledgeExample, SourceRef
 
-        parsed = {}
-        source_index_rows = json.loads((root / "source_index.json").read_text(encoding="utf-8"))
-        if not isinstance(source_index_rows, list):
-            errors.append("source index must be a list")
-            source_index_rows = []
+        parsed: dict[str, list[dict[str, Any]]] = {}
+        source_index_rows: list[Mapping[str, Any]] = []
+        source_index_path = root / "source_index.json"
+        if source_index_path.is_file():
+            source_index_value = json.loads(source_index_path.read_text(encoding="utf-8"))
+            if not isinstance(source_index_value, list) or any(
+                not isinstance(row, Mapping) for row in source_index_value
+            ):
+                errors.append("source index must contain only objects")
+            else:
+                source_index_rows = list(source_index_value)
         for filename in (
             "examples.jsonl",
             "excluded.jsonl",
@@ -250,12 +366,35 @@ def validate_generation(path: str | Path):
             "test.jsonl",
         ):
             parsed[filename] = []
+            source_path = root / filename
+            if not source_path.is_file():
+                continue
             for _line_no, line in enumerate(
-                (root / filename).read_text(encoding="utf-8").splitlines(), 1
+                source_path.read_text(encoding="utf-8").splitlines(), 1
             ):
                 if line.strip():
                     row = json.loads(line)
+                    if not isinstance(row, Mapping):
+                        raise ValueError(f"{filename} row must be an object")
                     if filename == "excluded.jsonl":
+                        _validate_metadata(row, f"{filename}:{_line_no}")
+                        raw_refs = row.get("source_refs", ())
+                        if not isinstance(raw_refs, (list, tuple)) or any(
+                            not isinstance(ref, Mapping) for ref in raw_refs
+                        ):
+                            raise ValueError("exclusion source_refs must contain objects")
+                        refs = tuple(
+                            SourceRef.from_dict(ref) for ref in raw_refs
+                        )
+                        from .models import DatasetExclusion
+
+                        DatasetExclusion(
+                            reason=row.get("reason"),
+                            diagnostic=row.get("diagnostic", ""),
+                            packet_id=row.get("packet_id"),
+                            candidate_id=row.get("candidate_id"),
+                            source_refs=refs,
+                        )
                         parsed[filename].append(row)
                         continue
                     row["source_refs"] = tuple(
@@ -274,6 +413,7 @@ def validate_generation(path: str | Path):
                         else item
                         for item in row.get("claims", ())
                     )
+                    _validate_lesson_safety(row)
                     KnowledgeExample.from_dict(row)
                     parsed[filename].append(row)
         expected_refs = {
@@ -281,11 +421,7 @@ def validate_generation(path: str | Path):
             for row in parsed["examples.jsonl"]
             for ref in row.get("source_refs", ())
         }
-        actual_refs = {
-            _json(ref).decode("utf-8").rstrip("\n")
-            for ref in source_index_rows
-            if isinstance(ref, Mapping)
-        }
+        actual_refs = {_json(ref).decode("utf-8").rstrip("\n") for ref in source_index_rows}
         if expected_refs != actual_refs:
             errors.append("source index provenance mismatch")
         phase7_generation_id = manifest.get("phase7_generation_id")
@@ -295,11 +431,22 @@ def validate_generation(path: str | Path):
                     if getattr(ref, "generation_id", None) != phase7_generation_id:
                         errors.append("source reference generation mismatch")
                         break
+            for row in parsed["excluded.jsonl"]:
+                for ref in row.get("source_refs", ()):
+                    if isinstance(ref, Mapping) and ref.get("generation_id") != phase7_generation_id:
+                        errors.append("excluded source reference generation mismatch")
+                        break
         counts = manifest.get("counts", {})
+        if not isinstance(counts, Mapping):
+            raise ValueError("manifest counts must be an object")
         if counts.get("examples") != len(parsed["examples.jsonl"]):
             errors.append("example count mismatch")
         if counts.get("exclusions") != len(parsed["excluded.jsonl"]):
             errors.append("exclusion count mismatch")
+        if counts.get("accepted") != counts.get("examples"):
+            errors.append("accepted count mismatch")
+        if counts.get("excluded") != counts.get("exclusions"):
+            errors.append("excluded count mismatch")
         split_counts = manifest.get("split_counts", {})
         for name, split in (
             ("train.jsonl", "train"),
@@ -327,8 +474,8 @@ def validate_generation(path: str | Path):
             )
         ) != set(all_ids):
             errors.append("complete split does not cover all examples")
-    except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        errors.append(f"invalid example provenance: {exc}")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        errors.append(f"invalid generation rows: {exc}")
     try:
         from .models import ValidationReport
 
@@ -347,7 +494,10 @@ def _source_index(examples: list[Any]) -> list[dict[str, Any]]:
         for ref in value.get("source_refs", []) if isinstance(value, Mapping) else []:
             if not isinstance(ref, Mapping):
                 continue
-            key = str(ref.get("chunk_id", ref.get("ref_id", "")))
+            key = "|".join(
+                str(ref.get(field, ""))
+                for field in ("generation_id", "document_id", "chunk_id", "source_hash")
+            )
             if key:
                 rows[key] = dict(ref)
     return [rows[key] for key in sorted(rows)]

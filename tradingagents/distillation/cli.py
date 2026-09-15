@@ -57,6 +57,16 @@ def _write_json(path: Path, value: Any) -> None:
     path.write_text(canonical_json(value) + "\n", encoding="utf-8", newline="\n")
 
 
+def _ensure_outside(path: str | Path, source_root: str | Path) -> None:
+    destination = Path(path).resolve()
+    root = Path(source_root).resolve()
+    try:
+        destination.relative_to(root)
+    except ValueError:
+        return
+    raise ValueError("plan output must be outside the Phase 7 source root")
+
+
 def _load_plan(path: Path) -> SourcePlan:
     value = json.loads(path.read_text(encoding="utf-8"))
 
@@ -102,6 +112,7 @@ def main(argv=None) -> int:
 
             source = Phase7KnowledgeSource.open(args.phase7_root)
             value = SourcePacketPlanner.plan(source, tuple(args.topic), PlannerConfig())
+            _ensure_outside(args.output, args.phase7_root)
             _write_json(Path(args.output), value)
             _emit(
                 {"status": "PLANNED", "plan": str(Path(args.output)), "packets": len(value.packets)}
@@ -137,6 +148,7 @@ def main(argv=None) -> int:
             )
             return 0 if report.valid else 1
         manifest = json.loads((Path(args.generation) / "manifest.json").read_text(encoding="utf-8"))
+        metadata = manifest.get("metadata", {})
         _emit(
             {
                 "status": manifest.get("status", "INVALID"),
@@ -144,6 +156,10 @@ def main(argv=None) -> int:
                 "counts": manifest.get("counts", {}),
                 "split_counts": manifest.get("split_counts", {}),
                 "exclusion_reasons": manifest.get("exclusion_reasons", {}),
+                "lesson_type_distribution": metadata.get("lesson_type_distribution", {}),
+                "topic_distribution": metadata.get("topic_distribution", {}),
+                "difficulty_distribution": metadata.get("difficulty_distribution", {}),
+                "source_coverage": metadata.get("source_coverage", {}),
             }
         )
         return 0

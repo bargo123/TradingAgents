@@ -54,3 +54,19 @@ def test_curriculum_rejects_insufficient_split_status(tmp_path):
     except KnowledgeGenerationInvalidError:
         return
     raise AssertionError("expected insufficient split rejection")
+
+
+def test_knowledge_training_source_is_iterable_without_test_rows(tmp_path):
+    source = fixture_source()
+    packet = next(iter(source.blocks()))
+    from tradingagents.distillation.models import SourcePacket
+
+    packet = SourcePacket("p", (packet,))
+    row = _coerce_candidate(grounded_candidate(packet), packet)
+    generation = write_generation(tmp_path, [row], [], {row.example_id: "train"}, metadata={})
+    binding = KnowledgeDatasetBinding.open(generation)
+    assert tuple(binding.training_source) == binding.train_rows
+    assert binding.training_source.as_dataset() == {
+        "train": binding.train_rows,
+        "validation": binding.validation_rows,
+    }

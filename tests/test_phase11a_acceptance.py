@@ -8,6 +8,50 @@ from pathlib import Path
 from tests.fixtures.phase11a_knowledge import fixture_source, grounded_candidate
 
 
+def test_offline_fixture_covers_closed_lesson_types(tmp_path: Path) -> None:
+    from tradingagents.distillation.dedup import DedupIndex
+    from tradingagents.distillation.factory import DistillationFactory
+    from tradingagents.distillation.grounding import GroundingValidator
+    from tradingagents.distillation.planning import PlannerConfig, SourcePacketPlanner
+    from tradingagents.distillation.quality import QualityPolicy
+    from tradingagents.distillation.splits import GroupedSplitter
+    from tradingagents.distillation.teacher import FakeTeacher
+
+    lesson_types = (
+        "DEFINITION",
+        "MECHANISM",
+        "SCENARIO_APPLICATION",
+        "COMPARISON",
+        "EQUATION_INTERPRETATION",
+        "FAILURE_MODE",
+    )
+    plan = SourcePacketPlanner.plan(
+        fixture_source(),
+        (),
+        PlannerConfig(max_blocks=1, max_chars=2_000, max_estimated_tokens=400),
+    )
+
+    def response(packet):
+        index = len(teacher.calls)
+        lesson_type = lesson_types[index % len(lesson_types)]
+        return grounded_candidate(packet, lesson_type=lesson_type, topic=f"topic-{index}")
+
+    teacher = FakeTeacher(response)
+    report = DistillationFactory(
+        grounding=GroundingValidator(),
+        quality=QualityPolicy(max_lesson_chars=2_000),
+        dedup=DedupIndex(near_threshold=1.0),
+        splitter=GroupedSplitter(min_groups=1),
+    ).distill(plan, teacher, tmp_path)
+    manifest = json.loads((Path(report.generation) / "manifest.json").read_text(encoding="utf-8"))
+    distribution = manifest["metadata"]["lesson_type_distribution"]
+    assert report.accepted >= len(lesson_types)
+    assert set(lesson_types).issubset(distribution)
+    assert manifest["metadata"]["candidate_count"] == report.teacher_calls
+    assert manifest["metadata"]["difficulty_distribution"]
+    assert manifest["metadata"]["source_coverage"]["sections"] >= 1
+
+
 def test_offline_distillation_publishes_grounded_grouped_generation(tmp_path: Path) -> None:
     from tradingagents.distillation.dedup import DedupIndex
     from tradingagents.distillation.factory import DistillationFactory

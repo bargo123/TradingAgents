@@ -24,7 +24,14 @@ def _value(obj: Any, name: str, default: Any = None) -> Any:
 
 def _refs(packet: Any) -> dict[str, Any]:
     result = {}
-    for r in _value(packet, "refs", []) or []:
+    packet_refs = _value(packet, "refs", None)
+    if packet_refs is None:
+        packet_refs = [
+            _value(block, "ref", None)
+            for block in (_value(packet, "blocks", []) or [])
+            if _value(block, "ref", None) is not None
+        ]
+    for r in packet_refs or []:
         rid = (
             _value(r, "ref_id", None) or _value(r, "block_id", None) or _value(r, "chunk_id", None)
         )
@@ -49,7 +56,19 @@ def _check_ref(ref: Any, available: dict[str, Any]) -> ValidationDecision | None
     # String references are IDs only; structured references must carry the
     # provenance fields that identify the source generation unambiguously.
     if not isinstance(ref, str):
-        for field in ("document_id", "source_hash", "generation_id"):
+        for field in (
+            "document_id",
+            "source_filename",
+            "source_hash",
+            "chunk_id",
+            "generation_id",
+            "page",
+            "page_start",
+            "page_end",
+            "chapter",
+            "section",
+            "content_type",
+        ):
             expected_value = _value(expected, field, None)
             if expected_value is None:
                 continue
@@ -69,7 +88,12 @@ class GroundingValidator:
     def validate(self, candidate: Any, packet: Any) -> ValidationDecision:
         available = _refs(packet)
         claims = _value(candidate, "claims", []) or []
-        refs = _value(candidate, "source_refs", []) or []
+        declared_refs = _value(candidate, "source_refs", None)
+        refs = declared_refs or []
+        # Older lightweight validator fixtures use a claims-only namespace.
+        # Canonical Phase 11A examples always carry source_refs explicitly.
+        if not refs and (declared_refs is not None or isinstance(candidate, dict)):
+            return ValidationDecision(False, "GROUNDING_FAILED", {"reason": "missing_provenance"})
         if not refs:
             refs = [
                 ref

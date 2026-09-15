@@ -50,6 +50,43 @@ def test_factory_rejects_unknown_teacher_fields_instead_of_dropping_them(tmp_pat
     assert report.excluded >= 1
 
 
+def test_factory_rejects_non_deterministic_teacher_example_id(tmp_path: Path):
+    source = fixture_source()
+    plan = SourcePacketPlanner.plan(source, ("liquidity",), PlannerConfig(max_blocks=1))
+    candidate = grounded_candidate(plan.packets[0])
+    candidate["example_id"] = "teacher-random-id"
+    report = DistillationFactory().distill(plan, FakeTeacher(candidate), tmp_path)
+    assert report.accepted == 0
+    assert report.excluded >= 1
+
+
+def test_factory_assigns_stable_contract_id_when_teacher_omits_id(tmp_path: Path):
+    source = fixture_source()
+    plan = SourcePacketPlanner.plan(source, ("liquidity",), PlannerConfig(max_blocks=1))
+
+    def run(root: Path):
+        report = DistillationFactory().distill(
+            plan, FakeTeacher(grounded_candidate(plan.packets[0])), root
+        )
+        import json
+
+        return json.loads((report.generation / "examples.jsonl").read_text().splitlines()[0])[
+            "example_id"
+        ]
+
+    assert run(tmp_path / "a") == run(tmp_path / "b")
+
+
+def test_factory_rejects_teacher_fingerprint_override(tmp_path: Path):
+    source = fixture_source()
+    plan = SourcePacketPlanner.plan(source, ("liquidity",), PlannerConfig(max_blocks=1))
+    candidate = grounded_candidate(plan.packets[0])
+    candidate["source_fingerprints"] = {"catalog": "tampered"}
+    report = DistillationFactory().distill(plan, FakeTeacher(candidate), tmp_path)
+    assert report.accepted == 0
+    assert report.excluded >= 1
+
+
 def test_factory_preserves_and_binds_candidate_provenance_and_quality_metadata(tmp_path: Path):
     source = fixture_source()
     plan = SourcePacketPlanner.plan(source, ("liquidity",), PlannerConfig(max_blocks=1))

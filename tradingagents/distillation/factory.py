@@ -181,6 +181,33 @@ def _reason(value: Any, default: str) -> str:
     return str(getattr(reason, "value", reason))
 
 
+def _deterministic_example_id(example: KnowledgeExample) -> str:
+    """Derive the stable identity required by the Phase 11A contract.
+
+    The teacher may propose lesson prose, but it cannot choose a random
+    record identity.  Identity is intentionally independent of the answer so
+    regenerating the same lesson request remains addressable even when a
+    teacher paraphrases its response.
+    """
+
+    refs = sorted(canonical_json(ref) for ref in example.source_refs)
+    payload = {
+        "source_refs": refs,
+        "lesson_type": example.lesson_type.value,
+        "instruction": " ".join(example.user.split()).casefold(),
+        "contract_version": example.contract_version,
+        "policy_versions": dict(sorted(example.policy_versions.items())),
+    }
+    return hashlib.sha256(canonical_json(payload).encode()).hexdigest()
+
+
+def _explicit_candidate_id(value: Any) -> str | None:
+    if isinstance(value, Mapping):
+        return str(value["example_id"]) if "example_id" in value else None
+    value = getattr(value, "example_id", None)
+    return str(value) if value is not None else None
+
+
 class DistillationFactory:
     def __init__(self, *, grounding=None, quality=None, dedup=None, splitter=None):
         from .grounding import GroundingValidator
@@ -214,6 +241,7 @@ class DistillationFactory:
         excluded: list[DatasetExclusion] = []
         errors: list[str] = []
         calls = 0
+        seen_ids: set[str] = set()
         for packet in getattr(plan, "packets", plan):
             calls += 1
             packet_id = _get(packet, "packet_id")
@@ -230,7 +258,9 @@ class DistillationFactory:
                         )
                     )
                     continue
-                candidate = _coerce_candidate(_get(result, "candidate", result), packet)
+                raw_candidate = _get(result, "candidate", result)
+                explicit_id = _explicit_candidate_id(raw_candidate)
+                candidate = _coerce_candidate(raw_candidate, packet)
                 if self.grounding is not None:
                     report = self.grounding.validate(candidate, packet)
                     if not getattr(report, "accepted", bool(report)):
@@ -255,27 +285,47 @@ class DistillationFactory:
                             )
                         )
                         continue
-                duplicate_reason = self.dedup.check(candidate)
-                if duplicate_reason:
-                    excluded.append(
-                        DatasetExclusion(
-                            duplicate_reason, packet_id=packet_id, candidate_id=candidate.example_id
-                        )
-                    )
-                    continue
                 policy_versions = dict(_get(plan, "policy_versions", {}) or {})
                 policy_versions.setdefault("distillation", DISTILLATION_POLICY_VERSION)
                 policy_versions.setdefault("grounding", GROUNDING_POLICY_VERSION)
                 policy_versions.setdefault("split", SPLIT_POLICY_VERSION)
+                for key, value in candidate.policy_versions.items():
+                    if key in policy_versions and policy_versions[key] != value:
+                        raise ValueError(f"policy version override: {key}")
+                policy_versions.update(candidate.policy_versions)
                 fingerprints = dict(_get(plan, "source_fingerprints", {}) or {})
+                for key, value in candidate.source_fingerprints.items():
+                    if key in fingerprints and fingerprints[key] != value:
+                        raise ValueError(f"source fingerprint override: {key}")
                 fingerprints.update(candidate.source_fingerprints)
-                accepted.append(
-                    replace(
-                        candidate,
-                        policy_versions=policy_versions,
-                        source_fingerprints=fingerprints,
-                    )
+                candidate = replace(
+                    candidate,
+                    policy_versions=policy_versions,
+                    source_fingerprints=fingerprints,
                 )
+                expected_id = _deterministic_example_id(candidate)
+                if explicit_id is not None and explicit_id != expected_id:
+                    raise ValueError("example_id is not deterministically derived")
+                if expected_id in seen_ids:
+                    excluded.append(
+                        DatasetExclusion(
+                            "DUPLICATE",
+                            packet_id=packet_id,
+                            candidate_id=expected_id,
+                        )
+                    )
+                    continue
+                candidate = replace(candidate, example_id=expected_id)
+                duplicate_reason = self.dedup.check(candidate)
+                if duplicate_reason:
+                    excluded.append(
+                        DatasetExclusion(
+                            duplicate_reason, packet_id=packet_id, candidate_id=expected_id
+                        )
+                    )
+                    continue
+                seen_ids.add(expected_id)
+                accepted.append(candidate)
             except Exception as exc:
                 code = (
                     "SCHEMA_INVALID"
@@ -295,6 +345,7 @@ class DistillationFactory:
         metadata_out.setdefault("phase7_generation_id", _get(plan, "generation_id", ""))
         metadata_out.setdefault("source_root", _get(plan, "source_root", ""))
         metadata_out.setdefault("request_fingerprint", _get(plan, "request_fingerprint", ""))
+        metadata_out.setdefault("candidate_count", calls)
         metadata_out.setdefault("source_fingerprints", _get(plan, "source_fingerprints", {}))
         metadata_out.setdefault("policy_versions", _get(plan, "policy_versions", {
             "distillation": DISTILLATION_POLICY_VERSION,

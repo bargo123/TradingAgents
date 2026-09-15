@@ -65,6 +65,16 @@ class KnowledgeTrainingSource:
         yield from self._train
         yield from self._validation
 
+    def __iter__(self) -> Iterator[dict]:
+        """Expose only trainer-safe partitions to the existing Phase 11 API."""
+
+        return self.rows()
+
+    def as_dataset(self) -> dict[str, tuple[dict, ...]]:
+        """Return the explicit train/validation mapping accepted by the trainer."""
+
+        return {"train": self.train_rows, "validation": self.validation_rows}
+
 
 @dataclass(frozen=True, slots=True)
 class KnowledgeDatasetBinding:

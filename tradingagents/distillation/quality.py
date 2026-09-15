@@ -16,6 +16,10 @@ _SENSITIVE = (
     "api_key",
     "secret",
 )
+_PRIVATE_TEXT = re.compile(
+    r"(?:chain[._ -]?of[._ -]?thought|scratchpad|private[._ -]?reasoning|reasoning[._ -]?trace)",
+    re.I,
+)
 
 
 class QualityPolicy:
@@ -48,6 +52,7 @@ class QualityPolicy:
             str(_value(candidate, k, ""))
             for k in (
                 "instruction",
+                "topic",
                 "question",
                 "target",
                 "answer",
@@ -62,6 +67,8 @@ class QualityPolicy:
         if len(text) > self.max_lesson_chars:
             return ValidationDecision(False, "LESSON_TOO_LONG")
         if _ACTION.search(text):
+            return ValidationDecision(False, "UNSAFE_FUTURE_OUTCOME_INFERENCE")
+        if _PRIVATE_TEXT.search(text):
             return ValidationDecision(False, "UNSAFE_FUTURE_OUTCOME_INFERENCE")
         source_text = " ".join(
             str(getattr(b, "text", b.get("text", "") if isinstance(b, dict) else ""))

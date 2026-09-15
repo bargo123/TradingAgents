@@ -51,6 +51,11 @@ def test_grounding_rejects_structured_ref_missing_generation_provenance():
     )
 
 
+def test_canonical_mapping_requires_explicit_source_refs():
+    candidate = {"claims": [{"source_refs": ["r1"]}]}
+    assert GroundingValidator().validate(candidate, packet()).reason == "GROUNDING_FAILED"
+
+
 def test_dataset_exclusion_can_persist_source_refs():
     from tradingagents.distillation.models import DatasetExclusion, SourceRef
 
@@ -65,6 +70,10 @@ def test_quality_rejects_action_and_hidden_reasoning_fields():
     )
     assert (
         QualityPolicy().validate({"reasoning": "private"}, packet()).reason
+        == "UNSAFE_FUTURE_OUTCOME_INFERENCE"
+    )
+    assert (
+        QualityPolicy().validate({"topic": "BUY EURUSD"}, packet()).reason
         == "UNSAFE_FUTURE_OUTCOME_INFERENCE"
     )
 

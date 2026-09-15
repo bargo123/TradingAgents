@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from .models import TeacherConfig
+
 
 @dataclass(frozen=True)
 class TeacherResult:
@@ -35,11 +37,13 @@ class FakeTeacher:
         provider: str = "fake",
         model: str = "fixture",
         error: str | None = None,
+        config: TeacherConfig | None = None,
     ):
         self.responses = responses
         self.provider = provider
         self.model = model
         self.error = error
+        self.config = config or TeacherConfig(provider=provider, model=model)
         self.calls: list[Any] = []
 
     def generate(self, packet: Any, config: Any) -> TeacherResult:
@@ -63,6 +67,9 @@ class FakeTeacher:
 
 
 class UnconfiguredTeacher:
+    def __init__(self, config: TeacherConfig | None = None):
+        self.config = config or TeacherConfig()
+
     def generate(self, packet: Any, config: Any) -> TeacherResult:
         return TeacherResult(error_code="DISTILLATION_TEACHER_NOT_CONFIGURED")
 
@@ -74,4 +81,15 @@ def teacher_from_environment(environ: Mapping[str, str] | None = None) -> Teache
         return UnconfiguredTeacher()
     # Provider adapters are deliberately not instantiated implicitly. A caller
     # must inject one, preventing accidental network/model use during indexing.
-    return UnconfiguredTeacher()
+    try:
+        config = TeacherConfig(
+            provider=provider,
+            model=env.get("PHASE11A_TEACHER_MODEL", "").strip(),
+            version=env.get("PHASE11A_TEACHER_VERSION", "").strip(),
+            temperature=float(env.get("PHASE11A_TEACHER_TEMPERATURE", "0")),
+            max_tokens=int(env.get("PHASE11A_TEACHER_MAX_TOKENS", "1024")),
+            timeout_seconds=float(env.get("PHASE11A_TEACHER_TIMEOUT_SECONDS", "60")),
+        )
+    except (TypeError, ValueError):
+        return UnconfiguredTeacher()
+    return UnconfiguredTeacher(config)

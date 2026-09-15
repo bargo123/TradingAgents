@@ -19,3 +19,12 @@ def test_unconfigured_teacher_fails_closed():
 def test_fake_teacher_reports_bounded_failure():
     result = FakeTeacher(error="timeout").generate(object(), object())
     assert not result.ok and result.error_code == "TEACHER_FAILED"
+
+
+def test_fake_teacher_exposes_explicit_reproducibility_config():
+    from tradingagents.distillation.models import TeacherConfig
+
+    config = TeacherConfig(provider="fixture", model="teacher-v1", max_tokens=32)
+    teacher = FakeTeacher({"lesson": "grounded"}, config=config)
+    assert teacher.config == config
+    assert teacher.generate(object(), config).provider == "fake"

@@ -11,6 +11,7 @@ from tradingagents.distillation.models import (
     LessonType,
     SourceBlock,
     SourcePacket,
+    SourcePlan,
     SourceRef,
     canonical_hash,
     canonical_json,
@@ -126,3 +127,93 @@ def test_knowledge_example_persists_grounding_and_quality_reasons():
     assert data["grounding_status"] == "GROUNDED"
     assert data["quality_status"] == "ACCEPTED"
     assert data["quality_reasons"] == ["PARAPHRASE"]
+
+
+def test_contract_rejects_unknown_provenance_and_source_type():
+    with pytest.raises(ValueError, match="content_type"):
+        SourceRef("d", "book.pdf", "h", "c", "g", content_type="AUDIO")
+    with pytest.raises(ValueError, match="contract_version"):
+        KnowledgeExample(
+            "e",
+            LessonType.DEFINITION,
+            "OFI",
+            Difficulty.FOUNDATIONAL,
+            "sys",
+            "user",
+            "assistant",
+            (ref(),),
+            (GroundingClaim("OFI", (ref(),)),),
+            contract_version="phase11a-knowledge-example.v2",
+        )
+
+
+def test_knowledge_example_normalizes_status_and_requires_typed_refs():
+    ex = KnowledgeExample(
+        "e",
+        LessonType.DEFINITION,
+        "OFI",
+        Difficulty.FOUNDATIONAL,
+        "sys",
+        "user",
+        "assistant",
+        (ref(),),
+        (GroundingClaim("OFI", (ref(),)),),
+        status="ACCEPTED",
+        source_type="BOOK_KNOWLEDGE",
+    )
+    assert ex.status.value == "ACCEPTED"
+    with pytest.raises(ValueError, match="source_type"):
+        KnowledgeExample(
+            "e",
+            LessonType.DEFINITION,
+            "OFI",
+            Difficulty.FOUNDATIONAL,
+            "sys",
+            "user",
+            "assistant",
+            (ref(),),
+            (GroundingClaim("OFI", (ref(),)),),
+            source_type="TRADING_EXPERIENCE",
+        )
+
+
+def test_grounding_claim_rejects_untyped_refs():
+    with pytest.raises(ValueError, match="SourceRef"):
+        GroundingClaim("OFI", ("chunk-id",))
+
+
+def test_source_plan_rejects_private_diagnostics():
+    with pytest.raises(ValueError, match="unsafe private text"):
+        SourcePlan(
+            "g",
+            (),
+            "fingerprint",
+            diagnostics=({"diagnostic": "private reasoning trace"},),
+        )
+
+
+def test_knowledge_example_requires_nonempty_grounding_provenance():
+    with pytest.raises(ValueError, match="source_refs"):
+        KnowledgeExample(
+            "e",
+            LessonType.DEFINITION,
+            "OFI",
+            Difficulty.FOUNDATIONAL,
+            "sys",
+            "user",
+            "assistant",
+            (),
+            (GroundingClaim("OFI", (ref(),)),),
+        )
+    with pytest.raises(ValueError, match="claims"):
+        KnowledgeExample(
+            "e",
+            LessonType.DEFINITION,
+            "OFI",
+            Difficulty.FOUNDATIONAL,
+            "sys",
+            "user",
+            "assistant",
+            (ref(),),
+            (),
+        )
