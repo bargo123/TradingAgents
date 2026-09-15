@@ -301,6 +301,10 @@ class KnowledgeExample(SerializableModel):
     source_type: str = "BOOK_KNOWLEDGE"
     status: CandidateStatus = CandidateStatus.ACCEPTED
     contract_version: str = CONTRACT_VERSION
+    policy_versions: Mapping[str, str] = None
+    quality_status: str = "ACCEPTED"
+    source_fingerprints: Mapping[str, str] = None
+    split: str | None = None
 
     def __post_init__(self):
         _text(self.example_id, "example_id", 500)
@@ -312,6 +316,8 @@ class KnowledgeExample(SerializableModel):
         object.__setattr__(self, "difficulty", Difficulty(self.difficulty))
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
         object.__setattr__(self, "claims", tuple(self.claims))
+        object.__setattr__(self, "policy_versions", dict(self.policy_versions or {}))
+        object.__setattr__(self, "source_fingerprints", dict(self.source_fingerprints or {}))
         if not all(isinstance(ref, SourceRef) for ref in self.source_refs):
             raise ValueError("source_refs must contain SourceRef values")
         if not all(isinstance(claim, GroundingClaim) for claim in self.claims):
@@ -362,10 +368,12 @@ class DatasetExclusion(SerializableModel):
     diagnostic: str = ""
     packet_id: str | None = None
     candidate_id: str | None = None
+    source_refs: tuple[SourceRef, ...] = ()
 
     def __post_init__(self):
         object.__setattr__(self, "reason", ExclusionReason(self.reason))
         object.__setattr__(self, "diagnostic", str(self.diagnostic)[:1000])
+        object.__setattr__(self, "source_refs", tuple(self.source_refs))
 
 
 @dataclass(frozen=True, slots=True)

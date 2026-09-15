@@ -82,3 +82,26 @@ def test_nested_sensitive_and_action_fields_are_rejected():
         SourceBlock(ref(), "equation", metadata={"nested": [{"reasoning_trace": "x"}]})
     with pytest.raises(ValueError, match="unsafe field"):
         SourceBlock(ref(), "equation", metadata={"future_outcome": "x"})
+
+
+def test_knowledge_example_persists_policy_quality_split_and_fingerprints():
+    ex = KnowledgeExample(
+        "e",
+        LessonType.DEFINITION,
+        "OFI",
+        Difficulty.FOUNDATIONAL,
+        "sys",
+        "user",
+        "assistant",
+        (ref(),),
+        (GroundingClaim("OFI", (ref(),)),),
+        policy_versions={"grounding": "g1"},
+        quality_status="ACCEPTED",
+        source_fingerprints={"phase7": "fp"},
+        split="train",
+    )
+    data = ex.to_dict()
+    assert data["policy_versions"] == {"grounding": "g1"}
+    assert data["quality_status"] == "ACCEPTED"
+    assert data["source_fingerprints"] == {"phase7": "fp"}
+    assert data["split"] == "train"

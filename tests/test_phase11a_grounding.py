@@ -24,6 +24,13 @@ def test_grounding_accepts_chunk_id_and_string_references():
     )
 
 
+def test_dataset_exclusion_can_persist_source_refs():
+    from tradingagents.distillation.models import DatasetExclusion, SourceRef
+
+    value = DatasetExclusion("GROUNDING_FAILED", source_refs=(SourceRef("d", "f", "h", "c", "g"),))
+    assert value.to_dict()["source_refs"][0]["chunk_id"] == "c"
+
+
 def test_quality_rejects_action_and_hidden_reasoning_fields():
     assert (
         QualityPolicy().validate({"target": "BUY"}, packet()).reason
