@@ -45,6 +45,11 @@ class GroundingValidator:
     def validate(self, candidate: Any, packet: Any) -> ValidationDecision:
         available = _refs(packet)
         claims = _value(candidate, "claims", []) or []
+        refs = _value(candidate, "source_refs", []) or []
+        if not refs:
+            refs = [ref for claim in claims for ref in (_value(claim, "refs", _value(claim, "source_refs", [])) or [])]
+        if not refs or not claims:
+            return ValidationDecision(False, "GROUNDING_FAILED", {"reason": "missing_provenance"})
         for claim in claims:
             refs = _value(claim, "refs", _value(claim, "source_refs", [])) or []
             if not refs:
@@ -53,7 +58,11 @@ class GroundingValidator:
                 rid = _ref_id(ref)
                 if rid not in available:
                     return ValidationDecision(False, "GROUNDING_FAILED", {"ref_id": rid})
-        refs = _value(candidate, "source_refs", []) or []
-        if refs and any(_ref_id(r) not in available for r in refs):
+                expected = available[rid]
+                for field in ("document_id", "source_hash", "generation_id"):
+                    ref_value, expected_value = _value(ref, field), _value(expected, field)
+                    if ref_value is not None and expected_value is not None and ref_value != expected_value:
+                        return ValidationDecision(False, "SOURCE_PROVENANCE_INCOMPLETE", {"ref_id": rid, "field": field})
+        if any(_ref_id(r) not in available for r in refs):
             return ValidationDecision(False, "GROUNDING_FAILED", {"reason": "unknown_source_ref"})
         return ValidationDecision(True, diagnostics={"refs_checked": len(available)})

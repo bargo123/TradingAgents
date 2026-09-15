@@ -118,6 +118,9 @@ def validate_generation(path: str | Path):
     for name in FILES:
         if not (root / name).is_file():
             errors.append(f"missing file: {name}")
+    expected_hashed = set(FILES) - {"manifest.json"}
+    if set(manifest.get("files", {})) != expected_hashed:
+        errors.append("manifest file hash set is incomplete")
     if manifest.get("schema_version") != "phase11a-manifest.v1":
         errors.append("unknown or incompatible manifest version")
     if manifest.get("generation_id") != root.name:
@@ -130,9 +133,15 @@ def validate_generation(path: str | Path):
         # Validate the canonical rows when the contracts are available.  This
         # catches missing provenance rather than merely checking file hashes.
         from .models import GroundingClaim, KnowledgeExample, SourceRef
-        for _line_no, line in enumerate((root / "examples.jsonl").read_text(encoding="utf-8").splitlines(), 1):
+        parsed = {}
+        for filename in ("examples.jsonl", "excluded.jsonl", "train.jsonl", "validation.jsonl", "test.jsonl"):
+          parsed[filename] = []
+          for _line_no, line in enumerate((root / filename).read_text(encoding="utf-8").splitlines(), 1):
             if line.strip():
                 row = json.loads(line)
+                if filename == "excluded.jsonl":
+                    parsed[filename].append(row)
+                    continue
                 row["source_refs"] = tuple(SourceRef(**ref) if isinstance(ref, Mapping) else ref for ref in row.get("source_refs", ()))
                 row["claims"] = tuple(
                     GroundingClaim(
@@ -143,6 +152,13 @@ def validate_generation(path: str | Path):
                     for item in row.get("claims", ())
                 )
                 KnowledgeExample(**row)
+                parsed[filename].append(row)
+        counts = manifest.get("counts", {})
+        if counts.get("examples") != len(parsed["examples.jsonl"]): errors.append("example count mismatch")
+        if counts.get("exclusions") != len(parsed["excluded.jsonl"]): errors.append("exclusion count mismatch")
+        split_counts = manifest.get("split_counts", {})
+        for name, split in (("train.jsonl", "train"), ("validation.jsonl", "validation"), ("test.jsonl", "test")):
+            if split_counts.get(split, 0) != len(parsed[name]): errors.append(f"split count mismatch: {split}")
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         errors.append(f"invalid example provenance: {exc}")
     try:

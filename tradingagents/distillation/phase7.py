@@ -14,8 +14,9 @@ _CONTENT_TYPES = {"PROSE", "EQUATION", "TABLE", "FIGURE_CAPTION", "DEFINITION", 
 
 
 class Phase7KnowledgeSource:
-    def __init__(self, root: Path, catalog: KnowledgeCatalog, generation, docs):
+    def __init__(self, root: Path, catalog: KnowledgeCatalog, generation, docs, quarantined=()):
         self.root, self._catalog, self._generation, self._docs = root, catalog, generation, docs
+        self.quarantined_chunks = tuple(quarantined)
         self.generation_id = generation.generation_id
         self.source_fingerprints = {
             "catalog": _file_hash(root / "catalog.sqlite3"),
@@ -46,6 +47,7 @@ class Phase7KnowledgeSource:
         ):
             raise SourceGenerationInvalidError("Phase 7 active generation is incomplete")
         docs = []
+        quarantined = []
         for doc_id in catalog.current_document_ids():
             doc = catalog.get_document(doc_id)
             if doc is None:
@@ -59,10 +61,17 @@ class Phase7KnowledgeSource:
                 raise SourceGenerationInvalidError(
                     f"current Phase 7 document has no chunks: {doc_id}"
                 )
+            valid_chunks = []
             for chunk in chunks:
+                if not str(getattr(chunk, "text", "") or "").strip():
+                    quarantined.append({"document_id": doc_id, "chunk_id": chunk.chunk_id, "code": "EMPTY_CHUNK_TEXT"})
+                    continue
                 _validate_chunk(chunk, doc.source_hash, generation.generation_id)
-            docs.append((doc, chunks))
-        return cls(root, catalog, generation, tuple(docs))
+                valid_chunks.append(chunk)
+            if not valid_chunks:
+                raise SourceGenerationInvalidError(f"current Phase 7 document has no valid text chunks: {doc_id}")
+            docs.append((doc, tuple(valid_chunks)))
+        return cls(root, catalog, generation, tuple(docs), quarantined)
 
     def documents(self):
         return tuple(doc for doc, _ in self._docs)

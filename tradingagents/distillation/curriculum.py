@@ -93,10 +93,16 @@ class KnowledgeDatasetBinding:
             raise KnowledgeGenerationInvalidError(f"invalid manifest: {exc}") from exc
         if not isinstance(manifest, dict) or manifest.get("schema_version") != "phase11a-manifest.v1":
             raise KnowledgeGenerationInvalidError("incompatible manifest schema")
+        if manifest.get("split_status") != "COMPLETE":
+            raise KnowledgeGenerationInvalidError("knowledge split is not complete")
         generation_id = manifest.get("generation_id")
         if not isinstance(generation_id, str) or generation_id != root.name:
             raise KnowledgeGenerationInvalidError("generation identity does not match directory")
-        return cls(root, generation_id, manifest, hashlib.sha256(manifest_bytes).hexdigest())
+        binding = cls(root, generation_id, manifest, hashlib.sha256(manifest_bytes).hexdigest())
+        counts = manifest.get("split_counts", {})
+        if counts.get("train", 0) != len(binding.train_rows) or counts.get("validation", 0) != len(binding.validation_rows):
+            raise KnowledgeGenerationInvalidError("knowledge split counts do not match manifest")
+        return binding
 
     @property
     def train_rows(self) -> tuple[dict, ...]:

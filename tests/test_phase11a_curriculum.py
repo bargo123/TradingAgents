@@ -39,3 +39,12 @@ def test_curriculum_rejects_tampered_manifest(tmp_path):
         pass
     else:
         raise AssertionError("expected invalid generation")
+
+
+def test_curriculum_rejects_insufficient_split_status(tmp_path):
+    destination = write_generation(tmp_path, [], [], {}, metadata={"split_status": "INSUFFICIENT_DATA"})
+    try:
+        KnowledgeDatasetBinding.open(destination)
+    except KnowledgeGenerationInvalidError:
+        return
+    raise AssertionError("expected insufficient split rejection")

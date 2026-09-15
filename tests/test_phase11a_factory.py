@@ -23,3 +23,14 @@ def test_factory_does_not_fail_when_groups_are_insufficient(tmp_path: Path):
     plan = SourcePacketPlanner.plan(source, ("liquidity",), PlannerConfig(max_blocks=1))
     report = DistillationFactory(grounding=GroundingValidator(), quality=QualityPolicy()).distill(plan, FakeTeacher(lambda p: grounded_candidate(p)), tmp_path)
     assert report.generation.is_dir()
+
+
+def test_factory_defaults_to_mandatory_safety_validation(tmp_path: Path):
+    source = fixture_source()
+    plan = SourcePacketPlanner.plan(source, ("liquidity",), PlannerConfig(max_blocks=1))
+    candidate = grounded_candidate(plan.packets[0])
+    candidate["source_refs"] = []
+    candidate["claims"] = []
+    candidate["assistant_target"] = "BUY now"
+    report = DistillationFactory().distill(plan, FakeTeacher(candidate), tmp_path)
+    assert report.accepted == 0

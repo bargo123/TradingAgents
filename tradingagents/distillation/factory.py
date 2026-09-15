@@ -102,8 +102,10 @@ def _reason(value: Any, default: str) -> str:
 
 class DistillationFactory:
     def __init__(self, *, grounding=None, quality=None, dedup=None, splitter=None):
-        self.grounding = grounding
-        self.quality = quality
+        from .grounding import GroundingValidator
+        from .quality import QualityPolicy
+        self.grounding = grounding or GroundingValidator()
+        self.quality = quality or QualityPolicy()
         self.dedup = dedup or DedupIndex()
         self.splitter = splitter
 
@@ -150,6 +152,13 @@ class DistillationFactory:
                 errors.append(type(exc).__name__)
                 excluded.append(DatasetExclusion(code, packet_id=packet_id, diagnostic=type(exc).__name__))
         metadata_out = dict(metadata or {})
+        metadata_out.setdefault("phase7_generation_id", _get(plan, "generation_id", ""))
+        metadata_out.setdefault("request_fingerprint", _get(plan, "request_fingerprint", ""))
+        metadata_out.setdefault("source_fingerprints", _get(plan, "source_fingerprints", {}))
+        metadata_out.setdefault("llm_calls", calls)
+        metadata_out.setdefault("network_attempts", 0)
+        metadata_out.setdefault("mt5_calls", 0)
+        metadata_out.setdefault("safety", {"llm_calls": calls, "network_attempts": 0, "mt5_calls": 0, "tool_calls": 0})
         if self.splitter is None:
             from .splits import GroupedSplitter
             self.splitter = GroupedSplitter()

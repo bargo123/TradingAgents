@@ -43,3 +43,14 @@ def test_grouped_split_reports_insufficient_data():
         assert str(exc) == "INSUFFICIENT_DATA"
     else:
         raise AssertionError("expected insufficient-data failure")
+
+
+def test_grouped_split_uses_knowledge_example_source_refs():
+    from tradingagents.distillation.models import Difficulty, GroundingClaim, KnowledgeExample, LessonType, SourceRef
+
+    rows = []
+    for i in range(3):
+        ref = SourceRef(f"doc-{i}", "book.pdf", f"hash-{i}", f"chunk-{i}", "gen", chapter="ch", section=f"sec-{i}")
+        rows.append(KnowledgeExample(f"k-{i}", LessonType.DEFINITION, "topic", Difficulty.FOUNDATIONAL, "sys", "user", "answer", (ref,), (GroundingClaim("claim", (ref,)),)))
+    assignments = GroupedSplitter().assign(rows)
+    assert set(assignments.values()) == {"train", "validation", "test"}

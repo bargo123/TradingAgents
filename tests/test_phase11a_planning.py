@@ -8,3 +8,11 @@ def test_planning_is_deterministic_and_bounded():
     assert [p.packet_id for p in a.packets]==[p.packet_id for p in z.packets]
     assert a.request_fingerprint==z.request_fingerprint and all(len(p.text)<=1000 for p in a.packets)
 
+
+def test_planner_binds_source_fingerprints_and_structural_companions():
+    def b(i, t, typ):
+        return SourceBlock(SourceRef("d", "x.pdf", "h", f"c{i}", "g", section=f"s{i}"), t, content_type=typ, reading_order=i)
+    source=SimpleNamespace(generation_id="g", source_fingerprints={"catalog": "cat"}, blocks=lambda:(b(1,"table values", "TABLE"), b(2,"table caption", "FIGURE_CAPTION")))
+    plan=SourcePacketPlanner.plan(source, ("table",), PlannerConfig(max_blocks=2))
+    assert plan.packets and len(plan.packets[0].blocks) == 2
+    assert plan.to_dict().get("source_fingerprints") == {"catalog": "cat"}

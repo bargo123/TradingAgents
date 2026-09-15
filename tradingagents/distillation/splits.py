@@ -17,8 +17,8 @@ class GroupedSplitter:
             raise ValueError("INSUFFICIENT_DATA")
         ordered = sorted(groups, key=lambda g: hashlib.sha256(g.encode()).hexdigest())
         n = len(ordered)
-        cut1 = max(1, round(n * self.ratios[0]))
-        cut2 = max(cut1 + 1, round(n * (self.ratios[0] + self.ratios[1])))
+        cut1 = min(n - 2, max(1, round(n * self.ratios[0])))
+        cut2 = min(n - 1, max(cut1 + 1, round(n * (self.ratios[0] + self.ratios[1]))))
         group_splits = {
             g: ("train" if i < cut1 else "validation" if i < cut2 else "test")
             for i, g in enumerate(ordered)
@@ -36,6 +36,11 @@ class GroupedSplitter:
                 + "|"
                 + str(e.get("section", e.get("section_path", "")))
             )
+        refs = getattr(e, "source_refs", ())
+        if refs:
+            ref = refs[0]
+            section = getattr(ref, "section", None) or " / ".join(getattr(ref, "section_path", ()) or ())
+            return f"{getattr(ref, 'document_id', '')}|{getattr(ref, 'chapter', '')}|{section}"
         return (
             str(getattr(e, "document_id", ""))
             + "|"
