@@ -112,6 +112,22 @@ def _string_tuple(value: Sequence[str] | str | None, name: str) -> tuple[str, ..
     return result
 
 
+def _optional_string_tuple(value: Sequence[str] | str | None) -> tuple[str, ...]:
+    """Normalize optional table labels while ignoring empty parser cells.
+
+    Docling can emit empty labels for visually blank table columns.  Those
+    labels carry no semantic information, while the table body remains useful
+    and is retained unchanged.  Other contract fields continue to use the
+    strict ``_string_tuple`` validation above.
+    """
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = (value,)
+    return tuple(item for item in (str(item).strip() for item in value) if item)
+
+
 def _mapping(value: Mapping[str, Any] | None) -> dict[str, Any]:
     if value is None:
         return {}
@@ -264,9 +280,12 @@ class TableMetadata(SerializableModel):
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "headers", _string_tuple(self.headers, "headers"))
-        object.__setattr__(self, "units", _string_tuple(self.units, "units"))
-        object.__setattr__(self, "notes", _string_tuple(self.notes, "notes"))
+        # Some real Docling tables contain visually blank header/unit/note
+        # cells.  Drop only those empty labels; preserve all table body cells
+        # and their positional structure for downstream retrieval.
+        object.__setattr__(self, "headers", _optional_string_tuple(self.headers))
+        object.__setattr__(self, "units", _optional_string_tuple(self.units))
+        object.__setattr__(self, "notes", _optional_string_tuple(self.notes))
         cells: list[tuple[str, ...]] = []
         for row in self.cells or ():
             cells.append(tuple(str(item) for item in row))

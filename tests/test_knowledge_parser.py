@@ -418,6 +418,43 @@ def test_parser_preserves_equation_table_caption_and_locations(tmp_path):
     assert document.blocks[2].section_path == ("Results", "Prediction")
 
 
+def test_parser_tolerates_empty_docling_table_headers_without_losing_cells(tmp_path):
+    from tradingagents.knowledge.parser import normalize_parsed_document
+
+    resource = fixture_resource("paper.pdf", tmp_path)
+    payload = {
+        "metadata": {"title": "Docling table fixture"},
+        "blocks": [
+            {
+                "block_id": "table-with-empty-header",
+                "content_type": "TABLE",
+                "text": "Bid Ask 1.10 1.11",
+                "page_start": 2,
+                "table": {
+                    "caption": "Quotes",
+                    "headers": ["", "Ask"],
+                    "cells": [["1.10", "1.11"]],
+                },
+            }
+        ],
+    }
+
+    document = normalize_parsed_document(
+        payload,
+        resource,
+        parser_id="docling",
+        parser_version="2.126.0",
+        parser_config_hash="cfg",
+    )
+
+    table = document.blocks[0].table
+    assert table is not None
+    assert table.headers == ("Ask",)
+    assert table.cells == (("1.10", "1.11"),)
+    assert table.caption == "Quotes"
+    assert document.blocks[0].page_start == 2
+
+
 def test_docling_pdf_options_disable_ocr_and_image_only_text_is_not_ocr_generated(tmp_path):
     from tradingagents.knowledge.docling_parser import DoclingDocumentParser
     from tradingagents.knowledge.scanned import ScannedDetector
