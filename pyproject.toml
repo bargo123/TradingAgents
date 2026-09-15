@@ -74,6 +74,7 @@ forex-evaluate = "cli.forex_evaluate:main"
 forex-watch = "cli.forex_watch:main"
 dataset-factory = "tradingagents.datasets.cli:main"
 finetune = "tradingagents.finetuning.cli:main"
+knowledge-distill = "tradingagents.distillation.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*"]
