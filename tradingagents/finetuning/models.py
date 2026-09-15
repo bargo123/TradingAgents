@@ -149,9 +149,11 @@ class LoraConfig(Contract):
     )
 
     def __post_init__(self):
-        if not isinstance(self.r, int) or not 1 <= self.r <= 1024:
+        _bounded_int(self.r, "r", minimum=1)
+        _bounded_int(self.alpha, "alpha", minimum=1)
+        if self.r > 1024:
             raise ContractError("r out of bounds")
-        if not isinstance(self.alpha, int) or not 1 <= self.alpha <= 4096:
+        if self.alpha > 4096:
             raise ContractError("alpha out of bounds")
         if isinstance(self.dropout, bool) or not isinstance(self.dropout, (int, float)) or not math.isfinite(self.dropout) or not 0 <= self.dropout < 1:
             raise ContractError("dropout out of bounds")
@@ -215,6 +217,7 @@ class TrainingConfig(Contract):
             _bounded_text(self.base_model_revision, "base_model_revision")
             if self.base_model_revision.casefold() in _UNRESOLVED_REVISIONS:
                 raise ContractError("base_model_revision must be immutable")
+        _bounded_int(self.seed, "seed", minimum=0)
         _bounded_int(self.max_sequence_length, "max_sequence_length", minimum=1)
         if self.max_sequence_length > 1_000_000:
             raise ContractError("max_sequence_length out of bounds")

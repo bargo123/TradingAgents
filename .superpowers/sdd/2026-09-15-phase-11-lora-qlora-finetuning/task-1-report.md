@@ -30,3 +30,7 @@ dataset schema version.
 Numeric validation follow-up: integer fields reject booleans and wrong types,
 float fields reject non-finite values, and regression tests cover training
 configuration, dataset/prepared-manifest counts, and metrics.
+
+Final strict-integer follow-up: `TrainingConfig.seed` and `LoraConfig.r` /
+`alpha` now reject booleans and non-integer values, with focused regression
+tests.

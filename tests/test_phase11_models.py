@@ -95,3 +95,19 @@ def test_count_and_metric_numeric_fields_reject_invalid_types():
     ):
         with pytest.raises(ContractError):
             factory()
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: TrainingConfig(seed=True),
+        lambda: TrainingConfig(seed="42"),
+        lambda: LoraConfig(r=False),
+        lambda: LoraConfig(r=1.0),
+        lambda: LoraConfig(alpha=True),
+        lambda: LoraConfig(alpha="32"),
+    ],
+)
+def test_seed_and_lora_integer_fields_reject_bool_and_wrong_types(factory):
+    with pytest.raises(ContractError):
+        factory()
