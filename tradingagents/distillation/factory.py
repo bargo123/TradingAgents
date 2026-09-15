@@ -51,9 +51,11 @@ class DistillationFactory:
                     if not valid:
                         excluded.append(candidate)
                         continue
-                if self.dedup and not self.dedup.check(candidate):
-                    excluded.append(candidate)
-                    continue
+                if self.dedup:
+                    duplicate_reason = self.dedup.check(candidate)
+                    if duplicate_reason:
+                        excluded.append({"reason": duplicate_reason, "candidate": candidate})
+                        continue
                 accepted.append(candidate)
             except Exception as exc:
                 errors.append(type(exc).__name__)
