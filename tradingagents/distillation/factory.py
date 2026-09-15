@@ -9,6 +9,9 @@ from typing import Any
 
 from .dedup import DedupIndex
 from .models import (
+    DISTILLATION_POLICY_VERSION,
+    GROUNDING_POLICY_VERSION,
+    SPLIT_POLICY_VERSION,
     CandidateStatus,
     DatasetExclusion,
     Difficulty,
@@ -165,6 +168,8 @@ def _coerce_candidate(candidate: Any, packet: Any) -> KnowledgeExample:
         "contract_version",
         "policy_versions",
         "quality_status",
+        "grounding_status",
+        "quality_reasons",
         "source_fingerprints",
         "split",
     )
@@ -258,7 +263,19 @@ class DistillationFactory:
                         )
                     )
                     continue
-                accepted.append(candidate)
+                policy_versions = dict(_get(plan, "policy_versions", {}) or {})
+                policy_versions.setdefault("distillation", DISTILLATION_POLICY_VERSION)
+                policy_versions.setdefault("grounding", GROUNDING_POLICY_VERSION)
+                policy_versions.setdefault("split", SPLIT_POLICY_VERSION)
+                fingerprints = dict(_get(plan, "source_fingerprints", {}) or {})
+                fingerprints.update(candidate.source_fingerprints)
+                accepted.append(
+                    replace(
+                        candidate,
+                        policy_versions=policy_versions,
+                        source_fingerprints=fingerprints,
+                    )
+                )
             except Exception as exc:
                 code = (
                     "SCHEMA_INVALID"
@@ -276,8 +293,20 @@ class DistillationFactory:
                 )
         metadata_out = dict(metadata or {})
         metadata_out.setdefault("phase7_generation_id", _get(plan, "generation_id", ""))
+        metadata_out.setdefault("source_root", _get(plan, "source_root", ""))
         metadata_out.setdefault("request_fingerprint", _get(plan, "request_fingerprint", ""))
         metadata_out.setdefault("source_fingerprints", _get(plan, "source_fingerprints", {}))
+        metadata_out.setdefault("policy_versions", _get(plan, "policy_versions", {
+            "distillation": DISTILLATION_POLICY_VERSION,
+            "grounding": GROUNDING_POLICY_VERSION,
+            "split": SPLIT_POLICY_VERSION,
+        }))
+        teacher_config = getattr(teacher, "config", None)
+        metadata_out.setdefault("teacher", {
+            "provider": str(getattr(teacher, "provider", "")),
+            "model": str(getattr(teacher, "model", "")),
+            "config": teacher_config.to_dict() if hasattr(teacher_config, "to_dict") else {},
+        })
         metadata_out.setdefault("llm_calls", calls)
         metadata_out.setdefault("network_attempts", 0)
         metadata_out.setdefault("mt5_calls", 0)

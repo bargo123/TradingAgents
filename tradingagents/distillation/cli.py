@@ -89,6 +89,8 @@ def _load_plan(path: Path) -> SourcePlan:
         value.get("request_fingerprint", value.get("plan_fingerprint", "")),
         tuple(value.get("diagnostics", ())),
         value.get("source_fingerprints", value.get("phase7_fingerprints", {})),
+        value.get("policy_versions", {}),
+        value.get("source_root", ""),
     )
 
 

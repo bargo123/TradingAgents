@@ -264,11 +264,15 @@ class SourcePlan(SerializableModel):
     request_fingerprint: str
     diagnostics: tuple[Mapping[str, Any], ...] = ()
     source_fingerprints: Mapping[str, str] = None
+    policy_versions: Mapping[str, str] = None
+    source_root: str = ""
 
     def __post_init__(self):
         object.__setattr__(self, "packets", tuple(self.packets))
         object.__setattr__(self, "diagnostics", tuple(dict(x) for x in self.diagnostics))
         object.__setattr__(self, "source_fingerprints", dict(self.source_fingerprints or {}))
+        object.__setattr__(self, "policy_versions", dict(self.policy_versions or {}))
+        object.__setattr__(self, "source_root", str(self.source_root or ""))
 
 
 @dataclass(frozen=True, slots=True)

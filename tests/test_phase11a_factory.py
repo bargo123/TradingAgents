@@ -48,3 +48,24 @@ def test_factory_rejects_unknown_teacher_fields_instead_of_dropping_them(tmp_pat
     report = DistillationFactory().distill(plan, FakeTeacher(candidate), tmp_path)
     assert report.accepted == 0
     assert report.excluded >= 1
+
+
+def test_factory_preserves_and_binds_candidate_provenance_and_quality_metadata(tmp_path: Path):
+    source = fixture_source()
+    plan = SourcePacketPlanner.plan(source, ("liquidity",), PlannerConfig(max_blocks=1))
+    candidate = grounded_candidate(plan.packets[0])
+    candidate.update({
+        "grounding_status": "GROUNDED",
+        "quality_reasons": ("accepted_fixture",),
+    })
+    report = DistillationFactory().distill(plan, FakeTeacher(candidate), tmp_path)
+    assert report.accepted == 1
+    example = report.generation / "examples.jsonl"
+    import json
+
+    row = json.loads(example.read_text(encoding="utf-8").splitlines()[0])
+    assert row["grounding_status"] == "GROUNDED"
+    assert row["quality_reasons"] == ["accepted_fixture"]
+    assert row["source_fingerprints"]["catalog"] == "sha256:catalog-fixture"
+    assert row["source_fingerprints"]["generation"] == "sha256:generation-fixture"
+    assert row["policy_versions"]["distillation"]

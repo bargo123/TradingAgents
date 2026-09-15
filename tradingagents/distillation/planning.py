@@ -6,7 +6,14 @@ import hashlib
 import re
 from dataclasses import dataclass
 
-from .models import SourcePacket, SourcePlan, canonical_hash
+from .models import (
+    DISTILLATION_POLICY_VERSION,
+    GROUNDING_POLICY_VERSION,
+    SPLIT_POLICY_VERSION,
+    SourcePacket,
+    SourcePlan,
+    canonical_hash,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,18 +43,28 @@ class SourcePacketPlanner:
             else blocks
         )
         selected_ids = {id(b) for b in selected}
-        # Retain immediately adjacent table/caption and equation/definition companions.
-        selected = [
-            b
-            for i, b in enumerate(blocks)
-            if id(b) in selected_ids
-            or (
-                i
-                and id(blocks[i - 1]) in selected_ids
-                and str(b.content_type).upper()
-                in {"TABLE", "FIGURE_CAPTION", "EQUATION", "DEFINITION"}
-            )
-        ]
+        # Include both sides of an adjacent structural bundle.  This is limited
+        # to the same document/section so unrelated prose is never guessed in.
+        companion_types = {"TABLE", "FIGURE_CAPTION", "EQUATION", "DEFINITION"}
+        for i, block in enumerate(blocks):
+            if id(block) not in selected_ids:
+                continue
+            for j in (i - 1, i + 1):
+                if j < 0 or j >= len(blocks):
+                    continue
+                neighbor = blocks[j]
+                if (
+                    neighbor.ref.document_id == block.ref.document_id
+                    and neighbor.ref.section == block.ref.section
+                    and str(neighbor.content_type).upper() in companion_types
+                ):
+                    selected_ids.add(id(neighbor))
+        selected = [b for b in blocks if id(b) in selected_ids]
+        policy_versions = {
+            "distillation": DISTILLATION_POLICY_VERSION,
+            "grounding": GROUNDING_POLICY_VERSION,
+            "split": SPLIT_POLICY_VERSION,
+        }
         packets = []
         diagnostics = []
         i = 0
@@ -99,6 +116,9 @@ class SourcePacketPlanner:
                 "generation_id": source.generation_id,
                 "topics": terms,
                 "config": config,
+                "source_fingerprints": getattr(source, "source_fingerprints", {}),
+                "source_root": str(getattr(source, "root", "")),
+                "policy_versions": policy_versions,
                 "packets": [p.packet_id for p in packets],
             }
         )
@@ -108,6 +128,8 @@ class SourcePacketPlanner:
             fp,
             tuple(diagnostics),
             getattr(source, "source_fingerprints", {}),
+            policy_versions,
+            str(getattr(source, "root", "")),
         )
 
 
