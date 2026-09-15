@@ -54,6 +54,9 @@ class QualityPolicy:
                 "explanation",
                 "user",
                 "assistant",
+                "system_instruction",
+                "user_instruction",
+                "assistant_target",
             )
         )
         if len(text) > self.max_lesson_chars:

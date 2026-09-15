@@ -5,9 +5,11 @@ import hashlib
 import json
 import os
 import tempfile
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 FILES = ("manifest.json", "examples.jsonl", "excluded.jsonl", "train.jsonl", "validation.jsonl", "test.jsonl", "source_index.json")
 
@@ -70,9 +72,28 @@ def write_generation(output_root: str | Path, examples: Iterable[Any], exclusion
     }
     for name, split in (("train.jsonl", "train"), ("validation.jsonl", "validation"), ("test.jsonl", "test")):
         files_data[name] = b"".join(_json(by_id[key]) for key, value in sorted(split_map.items()) if value == split and key in by_id)
-    source_index = metadata.get("source_index", {})
+    source_index = metadata.get("source_index")
+    if source_index is None:
+        source_index = _source_index(examples)
     files_data["source_index.json"] = _json(source_index)
-    manifest = {"schema_version": "phase11a-manifest.v1", "generation_id": generation_id, "status": "PUBLISHED" if examples else "EMPTY", "counts": {"examples": len(examples), "excluded": len(exclusions)}, "source_fingerprints": metadata.get("source_fingerprints", {}), "policy_versions": metadata.get("policy_versions", {}), "metadata": metadata, "files": {name: {"sha256": _hash(data), "bytes": len(data)} for name, data in files_data.items()}}
+    reasons = Counter(str(x.get("reason", "")) for x in exclusions if isinstance(x, Mapping))
+    manifest = {
+        "schema_version": "phase11a-manifest.v1",
+        "generation_id": generation_id,
+        "status": "PUBLISHED" if examples else "EMPTY_ELIGIBLE_SET",
+        "counts": {"examples": len(examples), "accepted": len(examples), "exclusions": len(exclusions), "excluded": len(exclusions)},
+        "split_status": metadata.get("split_status", "COMPLETE" if split_map else "INSUFFICIENT_DATA"),
+        "split_counts": dict(Counter(split_map.values())),
+        "exclusion_reasons": dict(sorted(reasons.items())),
+        "source_fingerprints": metadata.get("source_fingerprints", {}),
+        "policy_versions": metadata.get("policy_versions", {}),
+        "metadata": metadata,
+        "files": {name: {"sha256": _hash(data), "bytes": len(data)} for name, data in files_data.items()},
+        "safety": metadata.get("safety", {"network_attempts": 0, "llm_calls": 0, "tool_calls": 0, "mt5_calls": 0}),
+    }
+    for name in ("phase7_generation_id", "teacher", "request_fingerprint", "safety", "llm_calls", "network_attempts", "mt5_calls", "tool_calls"):
+        if name in metadata:
+            manifest[name] = metadata[name]
     files_data["manifest.json"] = _json(manifest)
     staging = Path(tempfile.mkdtemp(prefix=f".staging-{generation_id}-", dir=str(root)))
     try:
@@ -97,10 +118,33 @@ def validate_generation(path: str | Path):
     for name in FILES:
         if not (root / name).is_file():
             errors.append(f"missing file: {name}")
+    if manifest.get("schema_version") != "phase11a-manifest.v1":
+        errors.append("unknown or incompatible manifest version")
+    if manifest.get("generation_id") != root.name:
+        errors.append("generation identity does not match directory")
     for name, info in manifest.get("files", {}).items():
         target = root / name
         if target.is_file() and isinstance(info, Mapping) and info.get("sha256") != _hash(target.read_bytes()):
             errors.append(f"hash mismatch: {name}")
+    try:
+        # Validate the canonical rows when the contracts are available.  This
+        # catches missing provenance rather than merely checking file hashes.
+        from .models import GroundingClaim, KnowledgeExample, SourceRef
+        for _line_no, line in enumerate((root / "examples.jsonl").read_text(encoding="utf-8").splitlines(), 1):
+            if line.strip():
+                row = json.loads(line)
+                row["source_refs"] = tuple(SourceRef(**ref) if isinstance(ref, Mapping) else ref for ref in row.get("source_refs", ()))
+                row["claims"] = tuple(
+                    GroundingClaim(
+                        claim=item.get("claim", ""),
+                        source_refs=tuple(SourceRef(**ref) if isinstance(ref, Mapping) else ref for ref in item.get("source_refs", item.get("refs", ()))),
+                    )
+                    if isinstance(item, Mapping) else item
+                    for item in row.get("claims", ())
+                )
+                KnowledgeExample(**row)
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        errors.append(f"invalid example provenance: {exc}")
     try:
         from .models import ValidationReport
         return ValidationReport(valid=not errors, errors=tuple(errors))
@@ -109,3 +153,16 @@ def validate_generation(path: str | Path):
 
 
 __all__ = ["write_generation", "validate_generation"]
+
+
+def _source_index(examples: list[Any]) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    for example in examples:
+        value = _plain(example)
+        for ref in value.get("source_refs", []) if isinstance(value, Mapping) else []:
+            if not isinstance(ref, Mapping):
+                continue
+            key = str(ref.get("chunk_id", ref.get("ref_id", "")))
+            if key:
+                rows[key] = dict(ref)
+    return [rows[key] for key in sorted(rows)]

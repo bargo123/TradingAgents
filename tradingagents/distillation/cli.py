@@ -1,36 +1,99 @@
-"""Standalone, machine-readable Phase 11A command line interface."""
+"""Standalone machine-readable Phase 11A knowledge-distillation CLI."""
 from __future__ import annotations
-import argparse, json
+
+import argparse
+import json
 from pathlib import Path
+from typing import Any
+
+from .models import SourceBlock, SourcePacket, SourcePlan, SourceRef, canonical_json
+from .phase7 import Phase7KnowledgeSource
+from .teacher import teacher_from_environment
 from .writer import validate_generation
 
-def _parser():
-    p = argparse.ArgumentParser(prog="knowledge-distill")
-    sub = p.add_subparsers(dest="command", required=True)
-    for name in ("plan", "distill", "validate", "inspect"):
-        q = sub.add_parser(name)
-        if name == "validate" or name == "inspect": q.add_argument("--generation", required=True)
-        else: q.add_argument("--output", required=True)
-        if name == "plan": q.add_argument("--phase7-root", required=True)
-        if name == "distill": q.add_argument("--plan", required=True)
-    return p
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="knowledge-distill")
+    commands = parser.add_subparsers(dest="command", required=True)
+    plan = commands.add_parser("plan", help="create a bounded plan from an existing Phase 7 generation")
+    plan.add_argument("--phase7-root", required=True)
+    plan.add_argument("--output", required=True)
+    plan.add_argument("--topic", action="append", default=[])
+    distill = commands.add_parser("distill", help="distill a plan with an explicitly configured teacher")
+    distill.add_argument("--plan", required=True)
+    distill.add_argument("--output-root", "--output", dest="output_root", required=True)
+    validate = commands.add_parser("validate")
+    validate.add_argument("--generation", required=True)
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("--generation", required=True)
+    return parser
+
+
+def _json_value(value: Any) -> Any:
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_value(v) for k, v in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_json_value(v) for v in value]
+    if hasattr(value, "value"):
+        return value.value
+    return value
+
+
+def _emit(payload: Any) -> None:
+    print(json.dumps(_json_value(payload), sort_keys=True, separators=(",", ":")))
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(canonical_json(value) + "\n", encoding="utf-8", newline="\n")
+
+
+def _load_plan(path: Path) -> SourcePlan:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    def ref(row):
+        return SourceRef(**row)
+    def block(row):
+        return SourceBlock(ref(row["ref"]), row["text"], row.get("content_type", "PROSE"), row.get("reading_order", 0), tuple(row.get("section_path", ())), row.get("metadata", {}))
+    packets = tuple(SourcePacket(row["packet_id"], tuple(block(item) for item in row["blocks"]), row.get("request_fingerprint", "")) for row in value.get("packets", ()))
+    return SourcePlan(value["generation_id"], packets, value["request_fingerprint"], tuple(value.get("diagnostics", ())))
+
 
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
-    if args.command == "validate":
-        report = validate_generation(args.generation)
-        payload = report if isinstance(report, dict) else {"valid": getattr(report, "ok", False), "errors": list(getattr(report, "errors", ())) }
-    elif args.command == "inspect":
-        manifest = Path(args.generation) / "manifest.json"
-        try: payload = json.loads(manifest.read_text(encoding="utf-8"))
-        except OSError as exc: payload = {"status": "INVALID", "error": str(exc)}
-        else: payload = {k: payload.get(k) for k in ("generation_id", "status", "counts", "source_fingerprints", "policy_versions")}
-    elif args.command == "plan":
-        payload = {"status": "PLAN_REQUIRES_EXPLICIT_SOURCE", "phase7_root": str(Path(args.phase7_root)), "output": str(Path(args.output))}
-    else:
-        payload = {"status": "DISTILLATION_TEACHER_NOT_CONFIGURED"}
-    print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
-    return 0 if payload.get("valid", payload.get("status") not in {"INVALID"}) else 1
+    try:
+        if args.command == "plan":
+            from .planning import PlannerConfig, SourcePacketPlanner
+            source = Phase7KnowledgeSource.open(args.phase7_root)
+            value = SourcePacketPlanner.plan(source, tuple(args.topic), PlannerConfig())
+            _write_json(Path(args.output), value)
+            _emit({"status": "PLANNED", "plan": str(Path(args.output)), "packets": len(value.packets)})
+            return 0
+        if args.command == "distill":
+            teacher = teacher_from_environment()
+            if teacher.__class__.__name__ == "UnconfiguredTeacher":
+                _emit({"status": "DISTILLATION_TEACHER_NOT_CONFIGURED"})
+                return 1
+            from .factory import DistillationFactory
+            report = DistillationFactory().distill(_load_plan(Path(args.plan)), teacher, args.output_root)
+            _emit({"status": "PUBLISHED", "generation": str(report.generation), "accepted": report.accepted, "excluded": report.excluded})
+            return 0
+        if args.command == "validate":
+            report = validate_generation(args.generation)
+            _emit({"status": "VALID" if report.valid else "INVALID", "valid": report.valid, "errors": list(report.errors)})
+            return 0 if report.valid else 1
+        manifest = json.loads((Path(args.generation) / "manifest.json").read_text(encoding="utf-8"))
+        _emit({"status": manifest.get("status", "INVALID"), "generation_id": manifest.get("generation_id"), "counts": manifest.get("counts", {}), "split_counts": manifest.get("split_counts", {}), "exclusion_reasons": manifest.get("exclusion_reasons", {})})
+        return 0
+    except Exception as exc:
+        _emit({"status": type(exc).__name__, "error": str(exc)[:512]})
+        return 1
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+__all__ = ["main"]
