@@ -45,8 +45,17 @@ def test_request_fingerprint_and_file_hash_are_deterministic(tmp_path: Path) -> 
 
 
 def test_package_import_does_not_load_optional_training_modules() -> None:
+    import subprocess
     import sys
-    import tradingagents.finetuning  # noqa: F401
 
-    assert "peft" not in sys.modules
-    assert "bitsandbytes" not in sys.modules
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import tradingagents.finetuning; print('peft' in sys.modules, 'bitsandbytes' in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert probe.stdout.strip() == "False False"

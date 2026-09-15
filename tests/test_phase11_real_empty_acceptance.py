@@ -51,3 +51,11 @@ def test_unavailable_real_generation_is_bounded_and_does_not_construct_models(mo
     assert result["status"] == "REAL_GENERATION_UNAVAILABLE"
     assert result["training_status"] == "NOT_RUN"
     assert result["training_attempted"] is False
+
+
+def test_wrong_generation_identity_fails_closed_without_training(tmp_path: Path) -> None:
+    path = tmp_path / "not-the-authoritative-generation"
+    path.mkdir()
+    result = run_real_empty_acceptance(path)
+    assert result["status"] == "PHASE10_INVALID"
+    assert result["training_attempted"] is False

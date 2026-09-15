@@ -16,6 +16,44 @@ def test_request_hash_and_environment_redaction_are_deterministic() -> None:
     assert env["redacted_variable_count"] == 1
 
 
+def test_environment_secret_values_are_not_persisted_even_under_safe_names() -> None:
+    env = redact_environment({"NORMAL_SETTING": "api_key=secret-value", "LANG": "en_US"})
+    assert "secret-value" not in json.dumps(env)
+    assert env["redacted_variable_count"] == 1
+
+
+def test_environment_versions_records_available_cuda_identity_without_importing_it(monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 2
+
+        @staticmethod
+        def get_device_name(index):
+            return f"Fake GPU {index}"
+
+    fake_torch = SimpleNamespace(
+        __version__="fake-torch",
+        version=SimpleNamespace(cuda="12.4"),
+        cuda=FakeCuda(),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    from tradingagents.finetuning.fingerprints import environment_versions
+
+    result = environment_versions()
+    assert result["cuda_available"] is True
+    assert result["cuda_version"] == "12.4"
+    assert result["gpu_count"] == 2
+    assert result["gpu_models"] == ["Fake GPU 0", "Fake GPU 1"]
+
+
 def test_publish_layout_hashes_and_create_only(tmp_path: Path) -> None:
     prepared = tmp_path / "train.sft.jsonl"
     prepared.write_text('{"example_id":"x"}\n', encoding="utf-8")
@@ -40,4 +78,41 @@ def test_tampering_is_detected(tmp_path: Path) -> None:
     run = publish_run(tmp_path / "runs", config={}, dataset={}, metrics={},
                       prepared={"x": source}, environment={"variables": {}})
     (run / "prepared" / "x").write_text("tampered", encoding="utf-8")
+    assert not validate_run_hashes(run)
+
+
+def test_hash_validation_rejects_path_traversal_in_tampered_manifest(tmp_path: Path) -> None:
+    source = tmp_path / "x"
+    source.write_text("safe", encoding="utf-8")
+    run = publish_run(
+        tmp_path / "runs",
+        config={},
+        dataset={},
+        metrics={},
+        prepared={"x": source},
+        environment={"variables": {}},
+    )
+    manifest_path = run / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["prepared_hashes"] = {"../../x": "anything"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert not validate_run_hashes(run)
+
+
+def test_hash_validation_rejects_unlisted_artifact_files(tmp_path: Path) -> None:
+    source = tmp_path / "x"
+    source.write_text("safe", encoding="utf-8")
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "weights").write_text("safe", encoding="utf-8")
+    run = publish_run(
+        tmp_path / "runs",
+        config={},
+        dataset={},
+        metrics={},
+        prepared={"x": source},
+        adapter=adapter,
+        environment={"variables": {}},
+    )
+    (run / "prepared" / "extra").write_text("unexpected", encoding="utf-8")
     assert not validate_run_hashes(run)

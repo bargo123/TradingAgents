@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from .errors import EmptyEligibleSetError, Phase10InvalidError
+from .errors import EmptyEligibleSetError, Phase10InvalidError, SequenceTooLongError
 from .models import Phase11Status, TrainingConfig, canonical_json
+from .provenance import BaseModelRevisionUnpinnedError, ProvenanceError
 
 _MAX_ITEMS = 32
 
@@ -29,6 +32,7 @@ def _parser() -> argparse.ArgumentParser:
     prepare.add_argument("--generation", required=True)
     prepare.add_argument("--output-root", required=True)
     prepare.add_argument("--base-model")
+    prepare.add_argument("--base-model-revision")
     prepare.add_argument("--tokenizer")
     prepare.add_argument("--template", choices=("native", "fallback-v1"), default="native")
     prepare.add_argument("--json", action="store_true")
@@ -36,6 +40,7 @@ def _parser() -> argparse.ArgumentParser:
     train = commands.add_parser("train", help="train an adapter from prepared SFT rows")
     train.add_argument("--prepared", required=True)
     train.add_argument("--base-model")
+    train.add_argument("--base-model-revision")
     train.add_argument("--config", metavar="JSON")
     train.add_argument("--output-root", required=True)
     train.add_argument("--json", action="store_true")
@@ -88,7 +93,11 @@ def _prepare(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         tokenizer_path = args.tokenizer or args.base_model
         if not tokenizer_path:
             return 1, _failure(Phase11Status.TOKENIZER_INVALID, "tokenizer or base model is required")
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_path,
+            revision=args.base_model_revision,
+            local_files_only=True,
+        )
         from .formatting import SFTFormatter
         from .preparation import prepare_generation
         from .tokenization import TokenizationPolicy
@@ -98,16 +107,26 @@ def _prepare(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         return 0, {"status": result.status, "output_root": str(result.output_root), "manifest": result.manifest}
     except (ImportError, ModuleNotFoundError) as exc:
         return 1, _failure(Phase11Status.TRAINING_DEPENDENCY_MISSING, f"optional dependency missing: {exc.name or 'transformers'}")
+    except SequenceTooLongError as exc:
+        return 1, _failure(Phase11Status.SEQUENCE_TOO_LONG, str(exc))
     except Exception as exc:
         return 1, _failure(Phase11Status.TOKENIZER_INVALID, f"preparation failed: {type(exc).__name__}")
 
 
-def _config(path: str, base_model: str) -> TrainingConfig:
+def _config(path: str, base_model: str, revision: str | None = None) -> TrainingConfig:
     value = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("config must be a JSON object")
     value = dict(value)
     value["base_model"] = base_model
+    if revision is not None:
+        value["base_model_revision"] = revision
+    from .models import LoraConfig, QloraConfig
+
+    if isinstance(value.get("lora"), dict):
+        value["lora"] = LoraConfig(**value["lora"])
+    if isinstance(value.get("qlora"), dict):
+        value["qlora"] = QloraConfig(**value["qlora"])
     return TrainingConfig(**value)
 
 
@@ -117,23 +136,74 @@ def _train(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     if not args.config:
         return 1, _failure(Phase11Status.TRAINING_FAILED, "explicit config is required")
     try:
-        config = _config(args.config, args.base_model)
+        config = _config(args.config, args.base_model, args.base_model_revision)
+        from .preparation import validate_prepared
+
+        prepared_root = Path(args.prepared).resolve()
+        folder = prepared_root / "prepared" if (prepared_root / "prepared").is_dir() else prepared_root
+        prepared_manifest = validate_prepared(folder)
+
         from transformers import AutoTokenizer
 
+        from .provenance import ModelProvenance
         from .tokenization import TokenizationPolicy
         from .training import train
 
-        tokenizer = AutoTokenizer.from_pretrained(args.base_model, local_files_only=True)
-        result = train(args.prepared, tokenizer_policy=TokenizationPolicy(tokenizer=tokenizer, max_length=config.max_sequence_length), config=config, output_dir=args.output_root)
-        payload = _failure(result.status, result.message)
-        if result.metrics is not None:
-            payload["metrics"] = result.metrics.to_dict()
-        if result.adapter_path is not None:
-            payload["adapter_path"] = str(result.adapter_path)
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.base_model,
+            revision=config.base_model_revision,
+            local_files_only=True,
+        )
+        policy = TokenizationPolicy(tokenizer=tokenizer, max_length=config.max_sequence_length)
+        provenance = ModelProvenance.inspect(
+            args.base_model,
+            revision=config.base_model_revision,
+            tokenizer_path=args.base_model,
+        )
+        resolved_config = config.to_dict()
+        resolved_config["model_provenance"] = provenance.to_dict()
+        adapter_tmp = Path(tempfile.mkdtemp(prefix="phase11-adapter-"))
+        try:
+            result = train(
+                args.prepared,
+                tokenizer_policy=policy,
+                config=config,
+                output_dir=adapter_tmp,
+                provenance=provenance,
+            )
+            payload = _failure(result.status, result.message)
+            if result.metrics is not None:
+                payload["metrics"] = result.metrics.to_dict()
+            if result.status == Phase11Status.COMPLETE:
+                from .artifacts import publish_run
+
+                run_path = publish_run(
+                    args.output_root,
+                    config=resolved_config,
+                    dataset=prepared_manifest,
+                    metrics=result.metrics.to_dict() if result.metrics else {},
+                    prepared={
+                        name: folder / name
+                        for name in ("manifest.json", "train.sft.jsonl", "validation.sft.jsonl")
+                    },
+                    adapter=adapter_tmp,
+                    request={
+                        "generation_id": prepared_manifest.get("generation_id"),
+                        "formatter_version": prepared_manifest.get("formatter_version"),
+                        "tokenization_policy_version": prepared_manifest.get("tokenization_policy_version"),
+                        "base_model": provenance.fingerprint,
+                        "config": resolved_config,
+                    },
+                )
+                payload["run_path"] = str(run_path)
+        finally:
+            shutil.rmtree(adapter_tmp, ignore_errors=True)
         return (0 if result.status == Phase11Status.COMPLETE else 1), payload
     except (ImportError, ModuleNotFoundError) as exc:
         return 1, _failure(Phase11Status.TRAINING_DEPENDENCY_MISSING, f"optional dependency missing: {exc.name or 'training stack'}")
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except BaseModelRevisionUnpinnedError as exc:
+        return 1, _failure(Phase11Status.BASE_MODEL_REVISION_UNPINNED, str(exc))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, ProvenanceError):
         return 1, _failure(Phase11Status.TRAINING_FAILED, "invalid training configuration or prepared data")
     except Exception as exc:
         return 1, _failure(Phase11Status.TRAINING_FAILED, f"training failed: {type(exc).__name__}")

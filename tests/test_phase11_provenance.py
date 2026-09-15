@@ -34,13 +34,33 @@ def test_local_provenance_fingerprint_is_stable_and_descriptive(tmp_path: Path) 
     assert first.weight_fingerprint
 
 
+def test_provenance_fingerprints_common_tokenizer_assets(tmp_path: Path) -> None:
+    from tradingagents.finetuning.provenance import ModelProvenance
+
+    model = _fixture(tmp_path / "model")
+    (model / "vocab.json").write_text('{"EURUSD": 1}', encoding="utf-8")
+    (model / "merges.txt").write_text("#version: 0.2\n", encoding="utf-8")
+    first = ModelProvenance.inspect(model, revision="local-snapshot", tokenizer_path=model)
+    (model / "vocab.json").write_text('{"EURUSD": 2}', encoding="utf-8")
+    second = ModelProvenance.inspect(model, revision="local-snapshot", tokenizer_path=model)
+
+    assert first.tokenizer_fingerprint != second.tokenizer_fingerprint
+
+
 @pytest.mark.parametrize("revision", ["latest", "main", "refs/heads/main"])
 def test_provenance_rejects_mutable_revision(tmp_path: Path, revision: str) -> None:
-    from tradingagents.finetuning.provenance import ModelProvenance, ProvenanceError
+    from tradingagents.finetuning.provenance import (
+        BaseModelRevisionUnpinnedError,
+        ModelProvenance,
+        ProvenanceError,
+    )
 
     model = _fixture(tmp_path / "model")
     with pytest.raises(ProvenanceError, match="immutable|unpinned"):
         ModelProvenance.inspect(model, revision=revision)
+    if revision == "latest":
+        with pytest.raises(BaseModelRevisionUnpinnedError):
+            ModelProvenance.inspect(model, revision=revision)
 
 
 def test_remote_model_requires_an_immutable_revision() -> None:

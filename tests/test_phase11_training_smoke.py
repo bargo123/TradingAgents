@@ -19,6 +19,7 @@ from tradingagents.finetuning.phase10 import Phase10Generation
 from tradingagents.finetuning.preparation import prepare_generation
 from tradingagents.finetuning.tokenization import TokenizationPolicy
 from tradingagents.finetuning.training import train
+from tradingagents.finetuning.validation import validate_run
 
 pytestmark = pytest.mark.smoke
 
@@ -44,7 +45,11 @@ def test_tiny_cpu_lora_smoke_is_offline_and_keeps_test_split_untouched(tmp_path:
     test_before = (generation_path / "test.jsonl").read_bytes()
 
     base = tiny_decoder_model(tokenizer)
+    base_path = tmp_path / "base-model"
+    tokenizer.save_pretrained(base_path)
+    base.save_pretrained(base_path, safe_serialization=True)
     config = TrainingConfig(
+        base_model=str(base_path),
         epochs=1,
         max_steps=2,
         batch_size=1,
@@ -94,10 +99,13 @@ def test_tiny_cpu_lora_smoke_is_offline_and_keeps_test_split_untouched(tmp_path:
         warnings.simplefilter("ignore", UserWarning)
         reloaded = PeftModel.from_pretrained(tiny_decoder_model(tokenizer), tmp_path / "adapter", is_trainable=False)
     assert any("lora_" in name.lower() for name, _ in reloaded.named_parameters())
+    resolved_config = config.to_dict()
+    assert result.provenance is not None
+    resolved_config["model_provenance"] = result.provenance.to_dict()
     run = publish_run(
         tmp_path / "runs",
         run_id="run-tiny-smoke",
-        config=config.to_dict(),
+        config=resolved_config,
         dataset=prepared_manifest,
         metrics=result.metrics.to_dict(),
         prepared={
@@ -110,3 +118,5 @@ def test_tiny_cpu_lora_smoke_is_offline_and_keeps_test_split_untouched(tmp_path:
     assert (run / "metrics.json").is_file()
     assert (run / "run_manifest.json").is_file()
     assert validate_run_hashes(run)
+    report = validate_run(run)
+    assert report.valid, report.errors

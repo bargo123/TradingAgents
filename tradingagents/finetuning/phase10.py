@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -113,7 +113,7 @@ class Phase10Generation:
         )
 
     @classmethod
-    def open(cls, path: str | Path) -> "Phase10Generation":
+    def open(cls, path: str | Path) -> Phase10Generation:
         root = Path(path).resolve()
         try:
             report = writer.validate_generation(root)

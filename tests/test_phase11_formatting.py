@@ -44,6 +44,8 @@ def test_target_rejects_extra_missing_and_bad_evidence() -> None:
         parse_target({"action": "JUMP", "evidence_refs": []})
     with pytest.raises(ContractError):
         parse_target({"action": "BUY", "evidence_refs": ["not safe!"]})
+    with pytest.raises(ContractError):
+        parse_target({"action": "HOLD", "evidence_refs": [], "evidence_refs_rejected": None})
 
 
 def test_sensitive_source_value_is_rejected() -> None:
@@ -51,3 +53,41 @@ def test_sensitive_source_value_is_rejected() -> None:
     bad["decision"] = {"action": "BUY", "api_key": "x"}
     with pytest.raises(ContractError):
         SFTFormatter().format(bad)
+
+
+def test_evidence_use_and_rejection_contract_is_preserved_when_present() -> None:
+    value = row()
+    value["research"] = {
+        "evidence_use_status": "NONE_RELEVANT",
+        "refs_used": [],
+        "refs_rejected": [{"ref": "K1", "reason": "LOW_RELEVANCE"}],
+        "tables": [{"id": "t1", "header": ["bid"], "caption": "quote", "rows": [["1.1"]]}],
+    }
+    assert json.loads(SFTFormatter().format(value).messages[-1]["content"]) == {
+        "action": "BUY",
+        "evidence_refs": [],
+        "evidence_refs_rejected": [{"ref": "K1", "reason": "LOW_RELEVANCE"}],
+        "evidence_use_status": "NONE_RELEVANT",
+    }
+    assert json.loads(SFTFormatter().format(value).messages[1]["content"])["research"]["tables"]
+
+
+def test_nested_outcome_fields_are_not_model_input() -> None:
+    value = row()
+    value["market"] = {"snapshot": {"symbol": "EURUSD", "future_pnl": 4}}
+    with pytest.raises(ContractError, match="future/outcome"):
+        SFTFormatter().format(value)
+
+
+def test_evidence_query_provenance_is_preserved() -> None:
+    value = row()
+    value["research"] = {
+        "evidence_refs_used": ["K1"],
+        "knowledge_query_fingerprint": "query-hash",
+        "query_policy_version": "policy-v1",
+        "knowledge_generation_id": "knowledge-generation",
+        "experience_generation_id": "experience-generation",
+    }
+    research = json.loads(SFTFormatter().format(value).messages[1]["content"])["research"]
+    assert research["knowledge_query_fingerprint"] == "query-hash"
+    assert research["query_policy_version"] == "policy-v1"

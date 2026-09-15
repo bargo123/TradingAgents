@@ -59,10 +59,16 @@ class LoraAttachment:
 
 
 def _requested(value: LoraConfig | Iterable[str]) -> tuple[str, ...]:
+    if isinstance(value, str):
+        raise TargetModuleMissingError("invalid target module configuration")
     modules = value.target_modules if isinstance(value, LoraConfig) else tuple(value)
-    result = tuple(str(item) for item in modules)
-    if not result or any(not item for item in result):
-        raise TargetModuleMissingError("missing requested target modules")
+    if (
+        not modules
+        or any(not isinstance(item, str) or not item for item in modules)
+        or len(set(modules)) != len(modules)
+    ):
+        raise TargetModuleMissingError("invalid target module configuration")
+    result = tuple(modules)
     return result
 
 
@@ -126,7 +132,13 @@ def _parameter_counts(model: Any) -> tuple[int, int, int]:
     return total, trainable, adapters
 
 
-def attach_lora(model: Any, config: LoraConfig | None = None) -> LoraAttachment:
+def attach_lora(
+    model: Any,
+    config: LoraConfig | None = None,
+    *,
+    base_model_name_or_path: str | None = None,
+    revision: str | None = None,
+) -> LoraAttachment:
     """Attach standard PEFT LoRA after fail-closed module inspection."""
 
     if model is None:
@@ -165,6 +177,19 @@ def attach_lora(model: Any, config: LoraConfig | None = None) -> LoraAttachment:
         attached = get_peft_model(model, peft_config)
     except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
         raise TargetModuleMissingError("unable to attach LoRA to model") from exc
+
+    # Programmatically constructed models do not have a model-card identity,
+    # so PEFT otherwise serializes an empty base-model binding.  Carry the
+    # operator-supplied immutable identity into the adapter config when one is
+    # available; validation can then bind the adapter to the exact snapshot.
+    if base_model_name_or_path or revision:
+        configs = getattr(attached, "peft_config", {})
+        if isinstance(configs, dict):
+            for value in configs.values():
+                if base_model_name_or_path:
+                    value.base_model_name_or_path = str(base_model_name_or_path)
+                if revision and hasattr(value, "revision"):
+                    value.revision = str(revision)
 
     total, trainable, adapters = _parameter_counts(attached)
     if not trainable or not adapters or trainable != adapters:

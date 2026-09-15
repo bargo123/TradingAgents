@@ -74,3 +74,104 @@ def test_reload_failure_is_reported(tmp_path, monkeypatch):
     monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
     monkeypatch.setattr(validation, "_reload_smoke", lambda *args: args[-1].append("PEFT adapter reload/forward failed"))
     assert not validation.validate_run(_run(tmp_path)).valid
+
+
+def test_malformed_prepared_manifest_is_bounded_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
+    run = _run(tmp_path)
+    prepared_manifest = run / "prepared" / "manifest.json"
+    value = json.loads(prepared_manifest.read_text(encoding="utf-8"))
+    value["files"] = []
+    prepared_manifest.write_text(json.dumps(value), encoding="utf-8")
+    report = validation.validate_run(run)
+    assert not report.valid
+    assert report.status.value == "ADAPTER_INVALID"
+
+
+def test_missing_adapter_directory_is_bounded_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
+    run = _run(tmp_path)
+    import shutil
+
+    shutil.rmtree(run / "adapter")
+    report = validation.validate_run(run)
+    assert not report.valid
+    assert report.status.value == "ADAPTER_INVALID"
+
+
+def test_malformed_resolved_config_is_bounded_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
+    run = _run(tmp_path)
+    (run / "resolved_config.json").write_text("[]", encoding="utf-8")
+    report = validation.validate_run(run)
+    assert not report.valid
+    assert report.status.value == "ADAPTER_INVALID"
+
+
+def test_run_manifest_requires_request_fingerprint(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
+    monkeypatch.setattr(validation, "_reload_smoke", lambda *args: None)
+    run = _run(tmp_path)
+    manifest_path = run / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("request_fingerprint", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    report = validation.validate_run(run)
+    assert not report.valid
+    assert any("request fingerprint" in error for error in report.errors)
+
+
+def test_run_manifest_requires_adapter_package_version(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
+    monkeypatch.setattr(validation, "_reload_smoke", lambda *args: None)
+    run = _run(tmp_path)
+    manifest_path = run / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("adapter_package_version", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    report = validation.validate_run(run)
+    assert not report.valid
+    assert any("adapter package version" in error for error in report.errors)
+
+
+def test_adapter_model_provenance_must_match_binding(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
+    monkeypatch.setattr(validation, "_reload_smoke", lambda *args: None)
+    run = _run(tmp_path)
+    config_path = run / "resolved_config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "base_model": str(tmp_path / "base"),
+                "model_provenance": {"base_model": str(tmp_path / "other")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = validation.validate_run(run)
+    assert not report.valid
+    assert any("provenance" in error for error in report.errors)
+
+
+def test_model_provenance_fingerprint_mismatch_is_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(validation, "_check_generation", lambda *args: None)
+    monkeypatch.setattr(validation, "_reload_smoke", lambda *args: None)
+    base = tmp_path / "base"
+    base.mkdir()
+    (base / "config.json").write_text(json.dumps({"architectures": ["TinyLM"]}), encoding="utf-8")
+    run = _run(tmp_path)
+    (run / "resolved_config.json").write_text(
+        json.dumps(
+            {
+                "base_model": str(base),
+                "model_provenance": {
+                    "base_model": str(base),
+                    "fingerprint": "0" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = validation.validate_run(run)
+    assert not report.valid
+    assert any("fingerprint" in error for error in report.errors)

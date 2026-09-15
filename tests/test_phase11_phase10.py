@@ -11,7 +11,6 @@ from tradingagents.datasets.writer import write_generation
 from tradingagents.finetuning.errors import EmptyEligibleSetError, Phase10InvalidError
 from tradingagents.finetuning.phase10 import Phase10Generation
 
-
 FP = {p: {"source_id": p, "canonical_path": f"/{p}", "schema_fingerprint": "s",
           "file_sha256": "f", "snapshot_fingerprint": "t", "contract_version": "v"}
       for p in ("phase56", "phase8", "phase9")}

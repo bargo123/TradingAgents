@@ -21,6 +21,9 @@ def test_defaults_and_frozen_json_serialization():
     assert cfg.lora.r == 16
     assert dataclasses.is_dataclass(cfg) and dataclasses.is_dataclass(LoraConfig())
     assert '"mode":"lora"' in cfg.to_json()
+    persisted = cfg.to_dict()
+    assert "base_model_revision" in persisted and persisted["base_model_revision"] is None
+    assert "max_steps" in persisted and persisted["max_steps"] is None
     assert canonical_hash({"b": 2, "a": 1}) == canonical_hash({"a": 1, "b": 2})
     with pytest.raises(dataclasses.FrozenInstanceError):
         cfg.mode = "qlora"
@@ -111,3 +114,62 @@ def test_count_and_metric_numeric_fields_reject_invalid_types():
 def test_seed_and_lora_integer_fields_reject_bool_and_wrong_types(factory):
     with pytest.raises(ContractError):
         factory()
+
+
+def test_sft_example_requires_assistant_target_to_match_structured_target():
+    from tradingagents.finetuning import SFTExample
+
+    with pytest.raises(ContractError, match="assistant target"):
+        SFTExample(
+            "mismatch",
+            "train",
+            (
+                {"role": "system", "content": "Use state."},
+                {"role": "user", "content": "{}"},
+                {"role": "assistant", "content": '{"action":"SELL","evidence_refs":[]}'},
+            ),
+            {"action": "BUY", "evidence_refs": []},
+        )
+
+
+def test_sft_example_requires_exact_canonical_three_messages():
+    from tradingagents.finetuning import SFTExample
+
+    with pytest.raises(ContractError, match="exactly three"):
+        SFTExample(
+            "too-many",
+            "train",
+            (
+                {"role": "system", "content": "Use state."},
+                {"role": "user", "content": "{}"},
+                {"role": "assistant", "content": '{"action":"BUY","evidence_refs":[]}'},
+                {"role": "assistant", "content": '{"action":"BUY","evidence_refs":[]}'},
+            ),
+            {"action": "BUY", "evidence_refs": []},
+        )
+
+
+def test_sft_example_rejects_unsorted_rejected_refs():
+    from tradingagents.finetuning import SFTExample
+
+    with pytest.raises(ContractError, match="rejected"):
+        SFTExample(
+            "unsorted",
+            "train",
+            (
+                {"role": "system", "content": "Use state."},
+                {"role": "user", "content": "{}"},
+                {
+                    "role": "assistant",
+                    "content": '{"action":"BUY","evidence_refs":[],"evidence_refs_rejected":[{"ref":"K2","reason":"LOW_RELEVANCE"},{"ref":"K1","reason":"LOW_RELEVANCE"}]}',
+                },
+            ),
+            {
+                "action": "BUY",
+                "evidence_refs": [],
+                "evidence_refs_rejected": [
+                    {"ref": "K2", "reason": "LOW_RELEVANCE"},
+                    {"ref": "K1", "reason": "LOW_RELEVANCE"},
+                ],
+            },
+        )

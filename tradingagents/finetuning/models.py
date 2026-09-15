@@ -38,6 +38,11 @@ _SENSITIVE = re.compile(
     r"(?:secret|password|credential|api[_ -]?key|access[_ -]?token|private[_ -]?key|prompt|completion|reasoning|chain[_ -]?of[_ -]?thought|\bcot\b|scratch)",
     re.I,
 )
+_EVIDENCE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
+_TARGET_STATUSES = {"USED", "NONE_RELEVANT", "UNAVAILABLE", "DISABLED", "INCOMPLETE", "INVALID"}
+_REJECTION_REASONS = {
+    "CONFLICTS_WITH_CURRENT_STATE", "LOW_RELEVANCE", "INSUFFICIENT_SAMPLE", "DIAGNOSTIC_ONLY", "REDUNDANT",
+}
 
 
 class Phase11Status(str, Enum):
@@ -133,6 +138,62 @@ class Contract:
         return canonical_json(self)
 
 
+def _validate_target(value: Mapping[str, Any]) -> None:
+    allowed = {"action", "evidence_refs", "evidence_use_status", "evidence_refs_rejected"}
+    required = {"action", "evidence_refs"}
+    if not required.issubset(value) or set(value) - allowed:
+        raise ContractError("target contains unsupported or missing fields")
+    if value.get("action") not in {"BUY", "SELL", "HOLD"}:
+        raise ContractError("target action must be BUY, SELL, or HOLD")
+    refs = value.get("evidence_refs")
+    if not isinstance(refs, (list, tuple)) or any(not isinstance(ref, str) or not _EVIDENCE_REF.fullmatch(ref) for ref in refs):
+        raise ContractError("target evidence references are invalid")
+    if list(refs) != sorted(set(refs)):
+        raise ContractError("target evidence references must be unique and sorted")
+    status = value.get("evidence_use_status")
+    if status is not None:
+        if not isinstance(status, str) or status not in _TARGET_STATUSES:
+            raise ContractError("target evidence_use_status is invalid")
+        if status == "NONE_RELEVANT" and refs:
+            raise ContractError("NONE_RELEVANT cannot contain used evidence")
+    rejected = value.get("evidence_refs_rejected")
+    if "evidence_refs_rejected" in value and rejected is None:
+        raise ContractError("target rejected evidence references are invalid")
+    if rejected is not None:
+        if not isinstance(rejected, (list, tuple)):
+            raise ContractError("target rejected evidence references are invalid")
+        seen: set[str] = set()
+        for item in rejected:
+            if not isinstance(item, Mapping) or set(item) != {"ref", "reason"}:
+                raise ContractError("target rejected evidence entries are invalid")
+            ref, reason = item["ref"], item["reason"]
+            if not isinstance(ref, str) or not _EVIDENCE_REF.fullmatch(ref) or ref in seen:
+                raise ContractError("target rejected evidence references are invalid")
+            if not isinstance(reason, str) or reason not in _REJECTION_REASONS:
+                raise ContractError("target rejected evidence reason is invalid")
+            seen.add(ref)
+        if [item["ref"] for item in rejected] != sorted(seen):
+            raise ContractError("target rejected evidence references must be sorted")
+        if set(refs) & seen:
+            raise ContractError("target evidence references cannot overlap")
+
+
+def _validate_assistant_target(messages: tuple[Mapping[str, Any], ...], target: Mapping[str, Any]) -> None:
+    """Ensure the visible assistant message is exactly the structured target."""
+    content = messages[-1].get("content")
+    if not isinstance(content, str):
+        raise ContractError("assistant target content is required")
+    try:
+        parsed = json.loads(content)
+    except (TypeError, ValueError) as exc:
+        raise ContractError("assistant target is not valid JSON") from exc
+    if not isinstance(parsed, Mapping):
+        raise ContractError("assistant target must be a JSON object")
+    _validate_target(parsed)
+    if canonical_json(parsed) != canonical_json(target):
+        raise ContractError("assistant target does not match structured target")
+
+
 @dataclass(frozen=True, slots=True)
 class LoraConfig(Contract):
     r: int = 16
@@ -161,6 +222,8 @@ class LoraConfig(Contract):
             not isinstance(x, str) or not x for x in self.target_modules
         ):
             raise ContractError("invalid target modules")
+        if len(set(self.target_modules)) != len(self.target_modules):
+            raise ContractError("target modules must be unique")
         object.__setattr__(self, "target_modules", tuple(self.target_modules))
 
 
@@ -174,9 +237,9 @@ class QloraConfig(Contract):
     def __post_init__(self):
         if not isinstance(self.load_in_4bit, bool) or not isinstance(self.double_quant, bool):
             raise ContractError("quantization flags must be bool")
-        if self.quant_type != "nf4":
+        if not isinstance(self.quant_type, str) or self.quant_type != "nf4":
             raise ContractError("only NF4 is supported")
-        if self.compute_dtype not in {"bfloat16", "float16"}:
+        if not isinstance(self.compute_dtype, str) or self.compute_dtype not in {"bfloat16", "float16"}:
             raise ContractError("unsupported compute dtype")
 
 
@@ -207,10 +270,12 @@ class TrainingConfig(Contract):
     version: str = TRAINING_POLICY_VERSION
 
     def __post_init__(self):
-        if self.mode not in {"lora", "qlora"}:
+        if not isinstance(self.mode, str) or self.mode not in {"lora", "qlora"}:
             raise ContractError("mode must be lora or qlora")
         if self.version != TRAINING_POLICY_VERSION:
             raise UnknownVersionError(self.version)
+        if not isinstance(self.base_model, str):
+            raise ContractError("base_model must be a string")
         if self.base_model:
             _bounded_text(self.base_model, "base_model")
         if self.base_model_revision is not None:
@@ -233,12 +298,25 @@ class TrainingConfig(Contract):
             isinstance(self.gradient_clipping, bool) or not isinstance(self.gradient_clipping, (int, float)) or not math.isfinite(self.gradient_clipping) or self.gradient_clipping <= 0):
             raise ContractError("optimizer bounds invalid")
         _bounded_int(self.logging_steps, "logging_steps", minimum=1)
-        if self.validation_interval not in {"epoch", "steps"}:
+        if not isinstance(self.optimizer, str) or self.optimizer not in {"adamw"}:
+            raise ContractError("unsupported optimizer")
+        if not isinstance(self.scheduler, str) or self.scheduler not in {"linear"}:
+            raise ContractError("unsupported scheduler")
+        if not isinstance(self.validation_interval, str) or self.validation_interval not in {"epoch", "steps"}:
             raise ContractError("logging/validation interval invalid")
-        if self.checkpoint_interval not in {"epoch", "steps", "never"}:
+        if not isinstance(self.checkpoint_interval, str) or self.checkpoint_interval not in {"epoch", "steps", "never"}:
             raise ContractError("checkpoint interval invalid")
+        if not isinstance(self.gradient_checkpointing, bool) or not isinstance(self.early_stopping, bool):
+            raise ContractError("checkpointing/early-stopping flags must be bool")
         if not isinstance(self.lora, LoraConfig) or not isinstance(self.qlora, QloraConfig):
             raise ContractError("invalid adapter config")
+
+    def to_dict(self) -> dict[str, Any]:
+        """Persist optional effective settings explicitly, including nulls."""
+        value = contract_to_dict(self)
+        value["base_model_revision"] = self.base_model_revision
+        value["max_steps"] = self.max_steps
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,16 +351,27 @@ class SFTExample(Contract):
 
     def __post_init__(self):
         _bounded_text(self.example_id, "example_id")
-        if self.split not in {"train", "validation"}:
+        if not isinstance(self.split, str) or self.split not in {"train", "validation"}:
             raise ContractError("invalid split")
-        if len(self.messages) < 2:
-            raise ContractError("at least two messages required")
         if self.version != SFT_FORMAT_VERSION:
             raise UnknownVersionError(self.version)
-        if not isinstance(self.messages, (tuple, list)) or any(not isinstance(x, Mapping) for x in self.messages):
+        if not isinstance(self.messages, (tuple, list)):
+            raise ContractError("messages must be a sequence")
+        if len(self.messages) != 3:
+            raise ContractError("exactly three SYSTEM, USER, and ASSISTANT messages are required")
+        if any(not isinstance(x, Mapping) for x in self.messages):
             raise ContractError("messages must be mappings")
         if not isinstance(self.target, Mapping):
             raise ContractError("target must be a mapping")
+        _validate_target(self.target)
+        roles = [message.get("role") for message in self.messages]
+        if roles != ["system", "user", "assistant"]:
+            raise ContractError("messages must be exactly SYSTEM/USER/ASSISTANT")
+        for message in self.messages:
+            content = message.get("content")
+            if not isinstance(content, str) or not content.strip() or len(content) > 256 * 1024:
+                raise ContractError("message content must be bounded non-empty text")
+        _validate_assistant_target(tuple(self.messages), self.target)
         _safe(self.messages)
         _safe(self.target)
         object.__setattr__(self, "messages", tuple(_freeze(x) for x in self.messages))
@@ -319,7 +408,7 @@ class RunManifest(Contract):
         if not isinstance(self.status, Phase11Status):
             try:
                 object.__setattr__(self, "status", Phase11Status(self.status))
-            except ValueError as exc:
+            except (TypeError, ValueError) as exc:
                 raise InvalidStatusError(str(self.status)) from exc
         if self.version != RUN_MANIFEST_VERSION:
             raise UnknownVersionError(self.version)
@@ -341,6 +430,9 @@ class Metrics(Contract):
     runtime_seconds: float = 0.0
     trainable_parameters: int = 0
     total_parameters: int = 0
+    validation_loss: float | None = None
+    throughput_tokens_per_second: float | None = None
+    peak_cuda_memory_bytes: int | None = None
     version: str = RUN_MANIFEST_VERSION
 
     def __post_init__(self):
@@ -348,6 +440,17 @@ class Metrics(Contract):
             raise UnknownVersionError(self.version)
         if self.loss is not None and (isinstance(self.loss, bool) or not isinstance(self.loss, (int, float)) or not math.isfinite(self.loss) or self.loss < 0):
             raise ContractError("loss out of bounds")
+        if self.validation_loss is not None and (
+            isinstance(self.validation_loss, bool)
+            or not isinstance(self.validation_loss, (int, float))
+            or not math.isfinite(self.validation_loss)
+            or self.validation_loss < 0
+        ):
+            raise ContractError("validation_loss out of bounds")
+        if self.throughput_tokens_per_second is not None:
+            _bounded_finite(self.throughput_tokens_per_second, "throughput_tokens_per_second")
+        if self.peak_cuda_memory_bytes is not None:
+            _bounded_int(self.peak_cuda_memory_bytes, "peak_cuda_memory_bytes")
         for name, value in (("steps", self.steps), ("examples", self.examples), ("tokens", self.tokens), ("trainable_parameters", self.trainable_parameters), ("total_parameters", self.total_parameters)):
             _bounded_int(value, name)
         _bounded_finite(self.epochs, "epochs")
@@ -366,7 +469,7 @@ class TrainingReport(Contract):
         if not isinstance(self.status, Phase11Status):
             try:
                 object.__setattr__(self, "status", Phase11Status(self.status))
-            except ValueError as exc:
+            except (TypeError, ValueError) as exc:
                 raise InvalidStatusError(str(self.status)) from exc
         if self.version != RUN_MANIFEST_VERSION:
             raise UnknownVersionError(self.version)

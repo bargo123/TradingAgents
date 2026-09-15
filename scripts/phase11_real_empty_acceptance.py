@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
+
+# Keep ``python scripts/phase11_real_empty_acceptance.py`` equivalent to the
+# installed/module entry point without importing any optional training stack.
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tradingagents.datasets.writer import validate_generation
 from tradingagents.finetuning.formatting import SFTFormatter
@@ -48,7 +54,24 @@ def run_real_empty_acceptance(generation_path: str | Path | None = None) -> dict
             "training_attempted": False,
             "message": "known real Phase 10 generation is unavailable",
         }
-    report = validate_generation(path)
+    if path.name != GENERATION_ID:
+        return {
+            "status": "PHASE10_INVALID",
+            "generation_id": path.name,
+            "training_status": "NOT_RUN",
+            "training_attempted": False,
+            "message": "generation identity does not match the authoritative generation",
+        }
+    try:
+        report = validate_generation(path)
+    except Exception as exc:
+        return {
+            "status": "PHASE10_INVALID",
+            "generation_id": path.name,
+            "training_status": "NOT_RUN",
+            "training_attempted": False,
+            "message": f"generation validation failed: {type(exc).__name__}",
+        }
     if not report.valid:
         return {
             "status": "PHASE10_INVALID",
@@ -57,7 +80,16 @@ def run_real_empty_acceptance(generation_path: str | Path | None = None) -> dict
             "training_attempted": False,
             "errors": list(report.errors)[:8],
         }
-    manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    try:
+        manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return {
+            "status": "PHASE10_INVALID",
+            "generation_id": path.name,
+            "training_status": "NOT_RUN",
+            "training_attempted": False,
+            "message": f"manifest read failed: {type(exc).__name__}",
+        }
     fingerprints = manifest.get("source_fingerprints")
     if not isinstance(fingerprints, dict) or set(fingerprints) != {"phase56", "phase8", "phase9"} or any(
         not isinstance(value, dict) or set(value) != _FINGERPRINT_FIELDS

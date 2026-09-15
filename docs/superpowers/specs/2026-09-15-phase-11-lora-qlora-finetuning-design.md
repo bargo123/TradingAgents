@@ -83,8 +83,9 @@ The initial versions are `phase11-sft-format.v1`,
 `phase11-adapter-package.v1`. Every persisted contract carries its version;
 unknown versions fail closed.
 
-`SFTExample` contains an `example_id`, source split, two or more chat messages
-(SYSTEM and USER), and one structured assistant target. The target is a
+`SFTExample` contains an `example_id`, source split, and the canonical three
+chat messages (SYSTEM, USER, and ASSISTANT) with one structured assistant
+target. The target is a
 strict closed projection of fields actually present in the Phase 10 canonical
 row: normalized `action`, `evidence_use_status`, used evidence references, and
 rejected references/reasons where present. No field is invented to fill a
@@ -137,9 +138,11 @@ Before encoding, the formatter validates every input with the actual tokenizer
 and reserves room for required special/template tokens. No provider may
 silently truncate. The effective maximum is
 `min(config.max_sequence_length, tokenizer.model_max_length)` after the
-template/tokenizer contract is applied. For BAAI/bge-small-en-v1.5 in the
-fixture/embedding-adjacent policy, inputs over 512 tokenizer tokens are split,
-never truncated.
+template/tokenizer contract is applied. Any configured tokenizer with a
+512-token capacity (including embedding-adjacent fixtures when one is used)
+must receive no more than 512 tokens; inputs over the actual capacity are
+split, never truncated. The Phase 11 trainer does not depend on the Phase 7
+BGE embedding model.
 
 Oversized prose, tables, or equation bundles are structurally reduced in this
 order: preserve current market state, target/action, and used evidence;

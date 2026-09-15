@@ -11,13 +11,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .errors import ContractError, SequenceTooLongError
+from .formatting import parse_target
 from .lora import (
     LoraAttachment,
+    TargetModuleMissingError,
     TrainingDependencyMissingError,
     attach_lora,
 )
 from .models import Metrics, Phase11Status, SFTExample, TrainingConfig
-from .provenance import ModelProvenance, ProvenanceError
+from .preparation import validate_prepared
+from .provenance import BaseModelRevisionUnpinnedError, ModelProvenance, ProvenanceError
+from .qlora import (
+    QloraCapabilityError,
+    check_qlora_capability,
+    load_qlora_model,
+    prepare_kbit_model,
+)
 from .tokenization import TokenizationPolicy, TokenizedExample, tokenize_example
 
 
@@ -50,18 +60,23 @@ class TrainingResult:
 def _as_example(value: Any, split: str) -> SFTExample:
     if isinstance(value, SFTExample):
         if value.split != split:
-            return SFTExample(value.example_id, split, value.messages, value.target, value.version)
+            raise ValueError("prepared row crosses split boundary")
         return value
     if not isinstance(value, Mapping):
         raise ValueError("prepared row must be a mapping or SFTExample")
     try:
-        return SFTExample(
-            str(value["example_id"]),
+        declared_split = value.get("split")
+        if declared_split is not None and declared_split != split:
+            raise ValueError("prepared row crosses split boundary")
+        item = SFTExample(
+            value["example_id"],
             split,
             tuple(value["messages"]),
             dict(value["target"]),
             value.get("version", "phase11-sft-format.v1"),
         )
+        parse_target(item.target)
+        return item
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("malformed prepared SFT row") from exc
 
@@ -76,24 +91,42 @@ def _read_jsonl(path: Path, split: str) -> list[SFTExample]:
     return rows
 
 
+def _validate_prepared_folder(folder: Path) -> dict[str, Any]:
+    """Compatibility wrapper around the public prepared-manifest validator."""
+    return validate_prepared(folder)
+
+
 def _dataset(prepared: Any) -> tuple[list[SFTExample], list[SFTExample]]:
     """Read only prepared train/validation data, never a test split."""
 
     if isinstance(prepared, (str, Path)):
         root = Path(prepared)
         folder = root / "prepared" if (root / "prepared").is_dir() else root
-        return _read_jsonl(folder / "train.sft.jsonl", "train"), _read_jsonl(folder / "validation.sft.jsonl", "validation")
+        manifest = _validate_prepared_folder(folder)
+        train = _read_jsonl(folder / "train.sft.jsonl", "train")
+        validation = _read_jsonl(folder / "validation.sft.jsonl", "validation")
+        if len(train) != manifest["train_count"] or len(validation) != manifest["validation_count"]:
+            raise ValueError("prepared counts do not match rows")
+        return train, validation
     output_root = getattr(prepared, "output_root", None)
     if output_root is not None:
         return _dataset(Path(output_root))
     if isinstance(prepared, Mapping):
+        unknown = set(prepared) - {"train", "validation"}
+        if unknown:
+            raise ValueError("prepared data contains unsupported/test split")
         train_rows = [_as_example(row, "train") for row in prepared.get("train", ())]
         validation_rows = [_as_example(row, "validation") for row in prepared.get("validation", ())]
         return train_rows, validation_rows
     if isinstance(prepared, tuple) and len(prepared) == 2:
         return ([_as_example(row, "train") for row in prepared[0]], [_as_example(row, "validation") for row in prepared[1]])
     if isinstance(prepared, Iterable) and not isinstance(prepared, (str, bytes)):
-        rows = [_as_example(row, getattr(row, "split", "train")) for row in prepared]
+        rows = []
+        for row in prepared:
+            declared = row.get("split") if isinstance(row, Mapping) else getattr(row, "split", "train")
+            if declared not in {"train", "validation"}:
+                raise ValueError("test or unknown split cannot be consumed")
+            rows.append(_as_example(row, declared))
         return [row for row in rows if row.split == "train"], [row for row in rows if row.split == "validation"]
     raise ValueError("prepared training data is required")
 
@@ -187,36 +220,99 @@ def train(
     resolved = config or TrainingConfig()
     if not isinstance(resolved, TrainingConfig):
         return _failed(Phase11Status.TRAINING_FAILED, "config must be TrainingConfig")
+    if model is None and not resolved.base_model:
+        return _failed(Phase11Status.BASE_MODEL_NOT_FOUND, "base model is required")
+    if resolved.mode == "qlora":
+        try:
+            check_qlora_capability(resolved.qlora)
+        except QloraCapabilityError as exc:
+            return _failed(exc.status, str(exc))
     torch, _peft, missing = _load_optional_stack()
     if missing:
         return _failed(Phase11Status.TRAINING_DEPENDENCY_MISSING, missing)
-    if tokenizer_policy is None:
+    if tokenizer_policy is None and model is not None:
         return _failed(Phase11Status.TOKENIZER_INVALID, "tokenizer policy is required")
 
     try:
         _set_seed(torch, resolved.seed)
         if provenance is None and resolved.base_model:
             candidate = Path(resolved.base_model).expanduser()
-            if candidate.is_dir():
-                try:
-                    provenance = ModelProvenance.inspect(
-                        candidate,
-                        revision=resolved.base_model_revision,
-                        tokenizer_path=candidate,
-                    )
-                except ProvenanceError as exc:
-                    return _failed(Phase11Status.BASE_MODEL_NOT_FOUND, str(exc))
-        encoded_train = _tokenize_rows(train_rows, tokenizer_policy)
-        encoded_validation = _tokenize_rows(validation_rows, tokenizer_policy)
+            try:
+                provenance = ModelProvenance.inspect(
+                    candidate,
+                    revision=resolved.base_model_revision,
+                    tokenizer_path=candidate if candidate.is_dir() else None,
+                )
+            except BaseModelRevisionUnpinnedError as exc:
+                return _failed(Phase11Status.BASE_MODEL_REVISION_UNPINNED, str(exc))
+            except ProvenanceError as exc:
+                return _failed(Phase11Status.BASE_MODEL_NOT_FOUND, str(exc))
         if model is None:
             if not resolved.base_model:
                 return _failed(Phase11Status.BASE_MODEL_NOT_FOUND, "base model is required")
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
-            model = AutoModelForCausalLM.from_pretrained(resolved.base_model, revision=resolved.base_model_revision, local_files_only=True)
-            tokenizer = AutoTokenizer.from_pretrained(resolved.base_model, revision=resolved.base_model_revision, local_files_only=True)
-            tokenizer_policy = TokenizationPolicy(tokenizer=tokenizer, max_length=resolved.max_sequence_length)
-        attachment = attach_lora(model, resolved.lora)
+            try:
+                if resolved.mode == "qlora":
+                    model = load_qlora_model(
+                        resolved.base_model,
+                        resolved.base_model_revision,
+                        resolved.qlora,
+                        torch,
+                    )
+                else:
+                    model = AutoModelForCausalLM.from_pretrained(
+                        resolved.base_model,
+                        revision=resolved.base_model_revision,
+                        local_files_only=True,
+                    )
+            except OSError as exc:
+                return _failed(Phase11Status.BASE_MODEL_NOT_FOUND, f"base model unavailable: {type(exc).__name__}")
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    resolved.base_model,
+                    revision=resolved.base_model_revision,
+                    local_files_only=True,
+                )
+            except OSError as exc:
+                return _failed(Phase11Status.TOKENIZER_INVALID, f"tokenizer unavailable: {type(exc).__name__}")
+            if tokenizer_policy is None:
+                tokenizer_policy = TokenizationPolicy(tokenizer=tokenizer, max_length=resolved.max_sequence_length)
+        if tokenizer_policy is None:
+            return _failed(Phase11Status.TOKENIZER_INVALID, "tokenizer policy is required")
+        try:
+            tokenizer_policy.load()
+        except ContractError as exc:
+            return _failed(Phase11Status.TOKENIZER_INVALID, str(exc))
+        try:
+            encoded_train = _tokenize_rows(train_rows, tokenizer_policy)
+            encoded_validation = _tokenize_rows(validation_rows, tokenizer_policy)
+        except SequenceTooLongError as exc:
+            return _failed(Phase11Status.SEQUENCE_TOO_LONG, str(exc))
+        except ContractError as exc:
+            return _failed(Phase11Status.TOKENIZER_INVALID, str(exc))
+        if resolved.gradient_checkpointing and getattr(model, "supports_gradient_checkpointing", False):
+            enable = getattr(model, "gradient_checkpointing_enable", None)
+            if callable(enable):
+                enable()
+                if hasattr(model, "config") and hasattr(model.config, "use_cache"):
+                    model.config.use_cache = False
+        if resolved.mode == "qlora":
+            if not any(
+                bool(getattr(model, marker, False))
+                for marker in ("is_loaded_in_4bit", "is_loaded_in_8bit", "quantization_method")
+            ):
+                return _failed(Phase11Status.QLORA_UNAVAILABLE, "QLORA_UNAVAILABLE: model is not quantized")
+            model = prepare_kbit_model(model)
+        try:
+            attachment = attach_lora(
+                model,
+                resolved.lora,
+                base_model_name_or_path=resolved.base_model or None,
+                revision=resolved.base_model_revision,
+            )
+        except TargetModuleMissingError as exc:
+            return _failed(Phase11Status.TARGET_MODULE_MISSING, str(exc))
         model = attachment.model
         parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
         if not parameters:
@@ -227,7 +323,17 @@ def train(
         total_steps = max(1, int(requested_steps))
         scheduler = _scheduler(torch, optimizer, total_steps, resolved.warmup_steps)
         model.train()
-        pad_id = int(getattr(tokenizer_policy.load(), "pad_token_id", 0) or 0)
+        tokenizer = tokenizer_policy.load()
+        pad_id = getattr(tokenizer, "pad_token_id", None)
+        if pad_id is None:
+            pad_id = getattr(tokenizer, "eos_token_id", None)
+        if pad_id is None:
+            pad_id = getattr(tokenizer, "bos_token_id", 0)
+        pad_id = int(pad_id or 0)
+        try:
+            device = next(model.parameters()).device
+        except (StopIteration, AttributeError, TypeError) as exc:
+            raise ValueError("model has no parameters") from exc
         losses: list[float] = []
         optimizer_steps = 0
         started = time.perf_counter()
@@ -236,6 +342,9 @@ def train(
             for start in range(0, len(encoded_train), resolved.batch_size):
                 batch_rows = encoded_train[start : start + resolved.batch_size]
                 input_ids, attention, labels = _batch(torch, batch_rows, pad_id)
+                input_ids = input_ids.to(device)
+                attention = attention.to(device)
+                labels = labels.to(device)
                 output = model(input_ids=input_ids, attention_mask=attention, labels=labels)
                 loss = _loss_from_output(torch, output, labels)
                 if not bool(torch.isfinite(loss).item()):
@@ -263,6 +372,10 @@ def train(
         else:
             adapter_path = None
         tokens = sum(len(row.input_ids) for row in encoded_train)
+        peak_cuda = None
+        if hasattr(torch, "cuda") and torch.cuda.is_available():
+            peak_cuda = int(torch.cuda.max_memory_allocated())
+        throughput = tokens / runtime if runtime > 0 else 0.0
         metrics = Metrics(
             loss=sum(losses) / len(losses) if losses else 0.0,
             steps=optimizer_steps,
@@ -272,10 +385,17 @@ def train(
             runtime_seconds=runtime,
             trainable_parameters=attachment.trainable_parameters,
             total_parameters=attachment.total_parameters,
+            validation_loss=val_loss,
+            throughput_tokens_per_second=throughput,
+            peak_cuda_memory_bytes=peak_cuda,
         )
         return TrainingResult(Phase11Status.COMPLETE, metrics, val_loss, adapter_path, attachment, provenance, optimizer_steps)
+    except QloraCapabilityError as exc:
+        return _failed(exc.status, str(exc))
     except TrainingDependencyMissingError as exc:
         return _failed(Phase11Status.TRAINING_DEPENDENCY_MISSING, str(exc))
+    except BaseModelRevisionUnpinnedError as exc:
+        return _failed(Phase11Status.BASE_MODEL_REVISION_UNPINNED, str(exc))
     except ProvenanceError as exc:
         return _failed(Phase11Status.BASE_MODEL_NOT_FOUND, str(exc))
     except (OSError, ValueError, TypeError, RuntimeError, AttributeError) as exc:
@@ -286,10 +406,17 @@ def _validation_loss(torch: Any, model: Any, rows: list[TokenizedExample], pad_i
     if not rows:
         return None
     model.eval()
+    try:
+        device = next(model.parameters()).device
+    except (StopIteration, AttributeError, TypeError):
+        return None
     losses: list[float] = []
     with torch.no_grad():
         for start in range(0, len(rows), batch_size):
             input_ids, attention, labels = _batch(torch, rows[start : start + batch_size], pad_id)
+            input_ids = input_ids.to(device)
+            attention = attention.to(device)
+            labels = labels.to(device)
             output = model(input_ids=input_ids, attention_mask=attention, labels=labels)
             loss = _loss_from_output(torch, output, labels)
             if not bool(torch.isfinite(loss).item()):
