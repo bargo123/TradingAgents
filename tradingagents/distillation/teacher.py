@@ -1,9 +1,11 @@
 """Injectable, offline-safe teacher boundary for knowledge distillation."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import os
-from typing import Any, Mapping, Protocol
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -25,7 +27,15 @@ class Teacher(Protocol):
 
 class FakeTeacher:
     """Deterministic teacher used by tests and offline acceptance."""
-    def __init__(self, responses: Any = None, *, provider: str = "fake", model: str = "fixture", error: str | None = None):
+
+    def __init__(
+        self,
+        responses: Any = None,
+        *,
+        provider: str = "fake",
+        model: str = "fixture",
+        error: str | None = None,
+    ):
         self.responses = responses
         self.provider = provider
         self.model = model
@@ -35,10 +45,20 @@ class FakeTeacher:
     def generate(self, packet: Any, config: Any) -> TeacherResult:
         self.calls.append(packet)
         if self.error:
-            return TeacherResult(provider=self.provider, model=self.model, error_code="TEACHER_FAILED", diagnostics={"error": self.error})
+            return TeacherResult(
+                provider=self.provider,
+                model=self.model,
+                error_code="TEACHER_FAILED",
+                diagnostics={"error": self.error},
+            )
         response = self.responses(packet) if callable(self.responses) else self.responses
         if response is None:
-            return TeacherResult(provider=self.provider, model=self.model, error_code="TEACHER_FAILED", diagnostics={"reason": "empty_response"})
+            return TeacherResult(
+                provider=self.provider,
+                model=self.model,
+                error_code="TEACHER_FAILED",
+                diagnostics={"reason": "empty_response"},
+            )
         return TeacherResult(candidate=response, provider=self.provider, model=self.model)
 
 

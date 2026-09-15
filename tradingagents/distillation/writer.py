@@ -1,4 +1,5 @@
 """Create-only publication and validation for Phase 11A generations."""
+
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +12,15 @@ from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-FILES = ("manifest.json", "examples.jsonl", "excluded.jsonl", "train.jsonl", "validation.jsonl", "test.jsonl", "source_index.json")
+FILES = (
+    "manifest.json",
+    "examples.jsonl",
+    "excluded.jsonl",
+    "train.jsonl",
+    "validation.jsonl",
+    "test.jsonl",
+    "source_index.json",
+)
 
 
 def _plain(value: Any) -> Any:
@@ -27,7 +36,9 @@ def _plain(value: Any) -> Any:
 
 
 def _json(value: Any) -> bytes:
-    return (json.dumps(_plain(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    return (
+        json.dumps(_plain(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
 
 
 def _row_id(row: Any) -> str:
@@ -38,19 +49,45 @@ def _row_id(row: Any) -> str:
 
 
 def _rows(items: Iterable[Any]) -> list[Any]:
-    return sorted((_plain(x) for x in items), key=lambda x: str(x.get("example_id", x.get("id", ""))) if isinstance(x, Mapping) else _row_id(x))
+    return sorted(
+        (_plain(x) for x in items),
+        key=lambda x: (
+            str(x.get("example_id", x.get("id", ""))) if isinstance(x, Mapping) else _row_id(x)
+        ),
+    )
 
 
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def write_generation(output_root: str | Path, examples: Iterable[Any], exclusions: Iterable[Any], assignments: Any = None, metadata: Mapping[str, Any] | None = None) -> Path:
+def write_generation(
+    output_root: str | Path,
+    examples: Iterable[Any],
+    exclusions: Iterable[Any],
+    assignments: Any = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> Path:
     """Publish one immutable generation using a staging directory and atomic rename."""
     examples = _rows(examples)
     exclusions = _rows(exclusions)
     metadata = dict(metadata or {})
-    generation_id = str(metadata.pop("generation_id", "generation-" + _hash(_json({"examples": examples, "excluded": exclusions, "assignments": _plain(assignments), "metadata": metadata}))[:24]))
+    generation_id = str(
+        metadata.pop(
+            "generation_id",
+            "generation-"
+            + _hash(
+                _json(
+                    {
+                        "examples": examples,
+                        "excluded": exclusions,
+                        "assignments": _plain(assignments),
+                        "metadata": metadata,
+                    }
+                )
+            )[:24],
+        )
+    )
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     destination = root / generation_id
@@ -70,8 +107,16 @@ def write_generation(output_root: str | Path, examples: Iterable[Any], exclusion
         "examples.jsonl": b"".join(_json(x) for x in examples),
         "excluded.jsonl": b"".join(_json(x) for x in exclusions),
     }
-    for name, split in (("train.jsonl", "train"), ("validation.jsonl", "validation"), ("test.jsonl", "test")):
-        files_data[name] = b"".join(_json(by_id[key]) for key, value in sorted(split_map.items()) if value == split and key in by_id)
+    for name, split in (
+        ("train.jsonl", "train"),
+        ("validation.jsonl", "validation"),
+        ("test.jsonl", "test"),
+    ):
+        files_data[name] = b"".join(
+            _json(by_id[key])
+            for key, value in sorted(split_map.items())
+            if value == split and key in by_id
+        )
     source_index = metadata.get("source_index")
     if source_index is None:
         source_index = _source_index(examples)
@@ -81,17 +126,37 @@ def write_generation(output_root: str | Path, examples: Iterable[Any], exclusion
         "schema_version": "phase11a-manifest.v1",
         "generation_id": generation_id,
         "status": "PUBLISHED" if examples else "EMPTY_ELIGIBLE_SET",
-        "counts": {"examples": len(examples), "accepted": len(examples), "exclusions": len(exclusions), "excluded": len(exclusions)},
-        "split_status": metadata.get("split_status", "COMPLETE" if split_map else "INSUFFICIENT_DATA"),
+        "counts": {
+            "examples": len(examples),
+            "accepted": len(examples),
+            "exclusions": len(exclusions),
+            "excluded": len(exclusions),
+        },
+        "split_status": metadata.get(
+            "split_status", "COMPLETE" if split_map else "INSUFFICIENT_DATA"
+        ),
         "split_counts": dict(Counter(split_map.values())),
         "exclusion_reasons": dict(sorted(reasons.items())),
         "source_fingerprints": metadata.get("source_fingerprints", {}),
         "policy_versions": metadata.get("policy_versions", {}),
         "metadata": metadata,
-        "files": {name: {"sha256": _hash(data), "bytes": len(data)} for name, data in files_data.items()},
-        "safety": metadata.get("safety", {"network_attempts": 0, "llm_calls": 0, "tool_calls": 0, "mt5_calls": 0}),
+        "files": {
+            name: {"sha256": _hash(data), "bytes": len(data)} for name, data in files_data.items()
+        },
+        "safety": metadata.get(
+            "safety", {"network_attempts": 0, "llm_calls": 0, "tool_calls": 0, "mt5_calls": 0}
+        ),
     }
-    for name in ("phase7_generation_id", "teacher", "request_fingerprint", "safety", "llm_calls", "network_attempts", "mt5_calls", "tool_calls"):
+    for name in (
+        "phase7_generation_id",
+        "teacher",
+        "request_fingerprint",
+        "safety",
+        "llm_calls",
+        "network_attempts",
+        "mt5_calls",
+        "tool_calls",
+    ):
         if name in metadata:
             manifest[name] = metadata[name]
     files_data["manifest.json"] = _json(manifest)
@@ -127,42 +192,70 @@ def validate_generation(path: str | Path):
         errors.append("generation identity does not match directory")
     for name, info in manifest.get("files", {}).items():
         target = root / name
-        if target.is_file() and isinstance(info, Mapping) and info.get("sha256") != _hash(target.read_bytes()):
+        if (
+            target.is_file()
+            and isinstance(info, Mapping)
+            and info.get("sha256") != _hash(target.read_bytes())
+        ):
             errors.append(f"hash mismatch: {name}")
     try:
         # Validate the canonical rows when the contracts are available.  This
         # catches missing provenance rather than merely checking file hashes.
         from .models import GroundingClaim, KnowledgeExample, SourceRef
+
         parsed = {}
-        for filename in ("examples.jsonl", "excluded.jsonl", "train.jsonl", "validation.jsonl", "test.jsonl"):
-          parsed[filename] = []
-          for _line_no, line in enumerate((root / filename).read_text(encoding="utf-8").splitlines(), 1):
-            if line.strip():
-                row = json.loads(line)
-                if filename == "excluded.jsonl":
-                    parsed[filename].append(row)
-                    continue
-                row["source_refs"] = tuple(SourceRef(**ref) if isinstance(ref, Mapping) else ref for ref in row.get("source_refs", ()))
-                row["claims"] = tuple(
-                    GroundingClaim(
-                        claim=item.get("claim", ""),
-                        source_refs=tuple(SourceRef(**ref) if isinstance(ref, Mapping) else ref for ref in item.get("source_refs", item.get("refs", ()))),
+        for filename in (
+            "examples.jsonl",
+            "excluded.jsonl",
+            "train.jsonl",
+            "validation.jsonl",
+            "test.jsonl",
+        ):
+            parsed[filename] = []
+            for _line_no, line in enumerate(
+                (root / filename).read_text(encoding="utf-8").splitlines(), 1
+            ):
+                if line.strip():
+                    row = json.loads(line)
+                    if filename == "excluded.jsonl":
+                        parsed[filename].append(row)
+                        continue
+                    row["source_refs"] = tuple(
+                        SourceRef(**ref) if isinstance(ref, Mapping) else ref
+                        for ref in row.get("source_refs", ())
                     )
-                    if isinstance(item, Mapping) else item
-                    for item in row.get("claims", ())
-                )
-                KnowledgeExample(**row)
-                parsed[filename].append(row)
+                    row["claims"] = tuple(
+                        GroundingClaim(
+                            claim=item.get("claim", ""),
+                            source_refs=tuple(
+                                SourceRef(**ref) if isinstance(ref, Mapping) else ref
+                                for ref in item.get("source_refs", item.get("refs", ()))
+                            ),
+                        )
+                        if isinstance(item, Mapping)
+                        else item
+                        for item in row.get("claims", ())
+                    )
+                    KnowledgeExample(**row)
+                    parsed[filename].append(row)
         counts = manifest.get("counts", {})
-        if counts.get("examples") != len(parsed["examples.jsonl"]): errors.append("example count mismatch")
-        if counts.get("exclusions") != len(parsed["excluded.jsonl"]): errors.append("exclusion count mismatch")
+        if counts.get("examples") != len(parsed["examples.jsonl"]):
+            errors.append("example count mismatch")
+        if counts.get("exclusions") != len(parsed["excluded.jsonl"]):
+            errors.append("exclusion count mismatch")
         split_counts = manifest.get("split_counts", {})
-        for name, split in (("train.jsonl", "train"), ("validation.jsonl", "validation"), ("test.jsonl", "test")):
-            if split_counts.get(split, 0) != len(parsed[name]): errors.append(f"split count mismatch: {split}")
+        for name, split in (
+            ("train.jsonl", "train"),
+            ("validation.jsonl", "validation"),
+            ("test.jsonl", "test"),
+        ):
+            if split_counts.get(split, 0) != len(parsed[name]):
+                errors.append(f"split count mismatch: {split}")
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         errors.append(f"invalid example provenance: {exc}")
     try:
         from .models import ValidationReport
+
         return ValidationReport(valid=not errors, errors=tuple(errors))
     except (ImportError, TypeError):
         return {"valid": not errors, "errors": errors}

@@ -1,4 +1,5 @@
 """Standalone machine-readable Phase 11A knowledge-distillation CLI."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,11 +16,15 @@ from .writer import validate_generation
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="knowledge-distill")
     commands = parser.add_subparsers(dest="command", required=True)
-    plan = commands.add_parser("plan", help="create a bounded plan from an existing Phase 7 generation")
+    plan = commands.add_parser(
+        "plan", help="create a bounded plan from an existing Phase 7 generation"
+    )
     plan.add_argument("--phase7-root", required=True)
     plan.add_argument("--output", required=True)
     plan.add_argument("--topic", action="append", default=[])
-    distill = commands.add_parser("distill", help="distill a plan with an explicitly configured teacher")
+    distill = commands.add_parser(
+        "distill", help="distill a plan with an explicitly configured teacher"
+    )
     distill.add_argument("--plan", required=True)
     distill.add_argument("--output-root", "--output", dest="output_root", required=True)
     validate = commands.add_parser("validate")
@@ -54,12 +59,34 @@ def _write_json(path: Path, value: Any) -> None:
 
 def _load_plan(path: Path) -> SourcePlan:
     value = json.loads(path.read_text(encoding="utf-8"))
+
     def ref(row):
         return SourceRef(**row)
+
     def block(row):
-        return SourceBlock(ref(row["ref"]), row["text"], row.get("content_type", "PROSE"), row.get("reading_order", 0), tuple(row.get("section_path", ())), row.get("metadata", {}))
-    packets = tuple(SourcePacket(row["packet_id"], tuple(block(item) for item in row["blocks"]), row.get("request_fingerprint", "")) for row in value.get("packets", ()))
-    return SourcePlan(value["generation_id"], packets, value["request_fingerprint"], tuple(value.get("diagnostics", ())))
+        return SourceBlock(
+            ref(row["ref"]),
+            row["text"],
+            row.get("content_type", "PROSE"),
+            row.get("reading_order", 0),
+            tuple(row.get("section_path", ())),
+            row.get("metadata", {}),
+        )
+
+    packets = tuple(
+        SourcePacket(
+            row["packet_id"],
+            tuple(block(item) for item in row["blocks"]),
+            row.get("request_fingerprint", ""),
+        )
+        for row in value.get("packets", ())
+    )
+    return SourcePlan(
+        value["generation_id"],
+        packets,
+        value["request_fingerprint"],
+        tuple(value.get("diagnostics", ())),
+    )
 
 
 def main(argv=None) -> int:
@@ -67,10 +94,13 @@ def main(argv=None) -> int:
     try:
         if args.command == "plan":
             from .planning import PlannerConfig, SourcePacketPlanner
+
             source = Phase7KnowledgeSource.open(args.phase7_root)
             value = SourcePacketPlanner.plan(source, tuple(args.topic), PlannerConfig())
             _write_json(Path(args.output), value)
-            _emit({"status": "PLANNED", "plan": str(Path(args.output)), "packets": len(value.packets)})
+            _emit(
+                {"status": "PLANNED", "plan": str(Path(args.output)), "packets": len(value.packets)}
+            )
             return 0
         if args.command == "distill":
             teacher = teacher_from_environment()
@@ -78,15 +108,39 @@ def main(argv=None) -> int:
                 _emit({"status": "DISTILLATION_TEACHER_NOT_CONFIGURED"})
                 return 1
             from .factory import DistillationFactory
-            report = DistillationFactory().distill(_load_plan(Path(args.plan)), teacher, args.output_root)
-            _emit({"status": "PUBLISHED", "generation": str(report.generation), "accepted": report.accepted, "excluded": report.excluded})
+
+            report = DistillationFactory().distill(
+                _load_plan(Path(args.plan)), teacher, args.output_root
+            )
+            _emit(
+                {
+                    "status": "PUBLISHED",
+                    "generation": str(report.generation),
+                    "accepted": report.accepted,
+                    "excluded": report.excluded,
+                }
+            )
             return 0
         if args.command == "validate":
             report = validate_generation(args.generation)
-            _emit({"status": "VALID" if report.valid else "INVALID", "valid": report.valid, "errors": list(report.errors)})
+            _emit(
+                {
+                    "status": "VALID" if report.valid else "INVALID",
+                    "valid": report.valid,
+                    "errors": list(report.errors),
+                }
+            )
             return 0 if report.valid else 1
         manifest = json.loads((Path(args.generation) / "manifest.json").read_text(encoding="utf-8"))
-        _emit({"status": manifest.get("status", "INVALID"), "generation_id": manifest.get("generation_id"), "counts": manifest.get("counts", {}), "split_counts": manifest.get("split_counts", {}), "exclusion_reasons": manifest.get("exclusion_reasons", {})})
+        _emit(
+            {
+                "status": manifest.get("status", "INVALID"),
+                "generation_id": manifest.get("generation_id"),
+                "counts": manifest.get("counts", {}),
+                "split_counts": manifest.get("split_counts", {}),
+                "exclusion_reasons": manifest.get("exclusion_reasons", {}),
+            }
+        )
         return 0
     except Exception as exc:
         _emit({"status": type(exc).__name__, "error": str(exc)[:512]})

@@ -13,7 +13,10 @@ def test_curriculum_exposes_only_train_and_validation(tmp_path):
     source = fixture_source()
     packet = next(iter(source.blocks()))
     from tradingagents.distillation.models import SourcePacket
-    row = _coerce_candidate(grounded_candidate(SourcePacket("p", (packet,))), SourcePacket("p", (packet,)))
+
+    row = _coerce_candidate(
+        grounded_candidate(SourcePacket("p", (packet,))), SourcePacket("p", (packet,))
+    )
     generation = write_generation(tmp_path, [row], [], {row.example_id: "train"}, metadata={})
     binding = KnowledgeDatasetBinding.open(generation)
     assert len(binding.train_rows) == 1
@@ -26,6 +29,7 @@ def test_curriculum_rejects_tampered_manifest(tmp_path):
     source = fixture_source()
     packet = next(iter(source.blocks()))
     from tradingagents.distillation.models import SourcePacket
+
     packet = SourcePacket("p", (packet,))
     row = _coerce_candidate(grounded_candidate(packet), packet)
     generation = write_generation(tmp_path, [row], [], {row.example_id: "train"}, metadata={})
@@ -42,7 +46,9 @@ def test_curriculum_rejects_tampered_manifest(tmp_path):
 
 
 def test_curriculum_rejects_insufficient_split_status(tmp_path):
-    destination = write_generation(tmp_path, [], [], {}, metadata={"split_status": "INSUFFICIENT_DATA"})
+    destination = write_generation(
+        tmp_path, [], [], {}, metadata={"split_status": "INSUFFICIENT_DATA"}
+    )
     try:
         KnowledgeDatasetBinding.open(destination)
     except KnowledgeGenerationInvalidError:

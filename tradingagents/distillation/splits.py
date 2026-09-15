@@ -39,7 +39,9 @@ class GroupedSplitter:
         refs = getattr(e, "source_refs", ())
         if refs:
             ref = refs[0]
-            section = getattr(ref, "section", None) or " / ".join(getattr(ref, "section_path", ()) or ())
+            section = getattr(ref, "section", None) or " / ".join(
+                getattr(ref, "section_path", ()) or ()
+            )
             return f"{getattr(ref, 'document_id', '')}|{getattr(ref, 'chapter', '')}|{section}"
         return (
             str(getattr(e, "document_id", ""))

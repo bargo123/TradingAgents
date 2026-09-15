@@ -64,12 +64,20 @@ class Phase7KnowledgeSource:
             valid_chunks = []
             for chunk in chunks:
                 if not str(getattr(chunk, "text", "") or "").strip():
-                    quarantined.append({"document_id": doc_id, "chunk_id": chunk.chunk_id, "code": "EMPTY_CHUNK_TEXT"})
+                    quarantined.append(
+                        {
+                            "document_id": doc_id,
+                            "chunk_id": chunk.chunk_id,
+                            "code": "EMPTY_CHUNK_TEXT",
+                        }
+                    )
                     continue
                 _validate_chunk(chunk, doc.source_hash, generation.generation_id)
                 valid_chunks.append(chunk)
             if not valid_chunks:
-                raise SourceGenerationInvalidError(f"current Phase 7 document has no valid text chunks: {doc_id}")
+                raise SourceGenerationInvalidError(
+                    f"current Phase 7 document has no valid text chunks: {doc_id}"
+                )
             docs.append((doc, tuple(valid_chunks)))
         return cls(root, catalog, generation, tuple(docs), quarantined)
 
