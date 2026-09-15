@@ -6,7 +6,7 @@ import re
 
 from .grounding import ValidationDecision, _value
 
-_ACTION = re.compile(r"\b(BUY|SELL|HOLD)\b", re.I)
+_ACTION = re.compile(r"(?<![-\w])(BUY|SELL|HOLD)(?![-\w])", re.I)
 _SENSITIVE = (
     "chain_of_thought",
     "reasoning",

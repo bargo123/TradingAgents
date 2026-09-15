@@ -1,8 +1,8 @@
 # Phase 11A — HFT/FX Book Knowledge Distillation Design
 
-**Status:** approved implementation design  
-**Date:** 2026-09-15  
-**Baseline:** `fd80d4cc67a03558d30bc4837253de2932d24476`  
+**Status:** approved implementation design
+**Date:** 2026-09-15
+**Baseline:** `fd80d4cc67a03558d30bc4837253de2932d24476`
 **Branch:** `codex/phase-11a-book-distillation`
 
 ## 1. Goals and non-goals
@@ -266,4 +266,3 @@ experience remains a separate source for later curriculum stages. Phase 12
 owns held-out knowledge evaluation, candidate comparison, model promotion, and
 any future runtime integration. No Phase 8 memory, MT5, execution, strategy
 generation, or trading outcome is introduced here.
-

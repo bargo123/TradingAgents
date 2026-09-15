@@ -105,4 +105,3 @@ curriculum may consume knowledge train/validation first and a separate Phase
 `EMPTY_ELIGIBLE_SET`.  Phase 7 RAG remains a runtime knowledge source; this
 phase does not inject lessons into any TradingAgents graph.  Phase 12 owns
 held-out knowledge evaluation and candidate comparison.
-

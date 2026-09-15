@@ -76,6 +76,7 @@ def test_quality_rejects_action_and_hidden_reasoning_fields():
         QualityPolicy().validate({"topic": "BUY EURUSD"}, packet()).reason
         == "UNSAFE_FUTURE_OUTCOME_INFERENCE"
     )
+    assert QualityPolicy().validate({"topic": "sell-side liquidity"}, packet()).accepted
 
 
 def test_quality_accepts_bounded_knowledge_lesson():

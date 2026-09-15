@@ -32,7 +32,7 @@ _FORBIDDEN_LESSON_FIELD = re.compile(
     r"(?:buy|sell|hold|pnl|profit|reward|entry|exit|future|outcome|label)",
     re.IGNORECASE,
 )
-_ACTION_TEXT = re.compile(r"\b(?:BUY|SELL|HOLD)\b", re.IGNORECASE)
+_ACTION_TEXT = re.compile(r"(?<![-\w])(?:BUY|SELL|HOLD)(?![-\w])", re.IGNORECASE)
 
 
 def _plain(value: Any) -> Any:
@@ -70,13 +70,40 @@ def _validate_metadata(value: Any, path: str = "metadata") -> None:
         raise ValueError(f"unsafe metadata value: {path}")
 
 
+def _validate_source_index(value: Any) -> None:
+    """Keep the provenance index reference-only; never publish source text."""
+
+    if not isinstance(value, list):
+        raise ValueError("source index must be a list")
+    from .models import SourceRef
+
+    forbidden = {"text", "content", "raw_text", "source_text"}
+    for index, row in enumerate(value):
+        if not isinstance(row, Mapping):
+            raise ValueError(f"source index row {index} must be an object")
+        if forbidden.intersection(str(key).lower() for key in row):
+            raise ValueError(f"source index row {index} must not contain text")
+        try:
+            SourceRef.from_dict(row)
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ValueError(f"invalid source index row {index}") from exc
+
+
 def _validate_lesson_safety(row: Mapping[str, Any]) -> None:
     if row.get("source_type", "BOOK_KNOWLEDGE") != "BOOK_KNOWLEDGE":
         raise ValueError("source_type must be BOOK_KNOWLEDGE")
     for key in row:
         if _FORBIDDEN_METADATA.search(str(key)) or _FORBIDDEN_LESSON_FIELD.search(str(key)):
             raise ValueError(f"unsafe lesson field: {key}")
-    for key in ("system", "user", "assistant", "system_instruction", "user_instruction", "assistant_target"):
+    for key in (
+        "topic",
+        "system",
+        "user",
+        "assistant",
+        "system_instruction",
+        "user_instruction",
+        "assistant_target",
+    ):
         value = row.get(key)
         if isinstance(value, str):
             if _ACTION_TEXT.search(value):
@@ -101,6 +128,24 @@ def _rows(items: Iterable[Any]) -> list[Any]:
     )
 
 
+def _canonical_knowledge_examples(items: Iterable[Any]) -> list[dict[str, Any]]:
+    """Coerce every accepted row through the closed KnowledgeExample contract."""
+    from .models import KnowledgeExample
+
+    canonical: list[dict[str, Any]] = []
+    for index, item in enumerate(_rows(items)):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"example {index} must be an object")
+        try:
+            example = (
+                item if isinstance(item, KnowledgeExample) else KnowledgeExample.from_dict(item)
+            )
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            raise ValueError(f"invalid KnowledgeExample at index {index}: {exc}") from exc
+        canonical.append(_plain(example))
+    return canonical
+
+
 def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -113,7 +158,7 @@ def write_generation(
     metadata: Mapping[str, Any] | None = None,
 ) -> Path:
     """Publish one immutable generation using a staging directory and atomic rename."""
-    examples = _rows(examples)
+    examples = _canonical_knowledge_examples(examples)
     exclusions = _rows(exclusions)
     metadata = dict(metadata or {})
     _validate_metadata(metadata)
@@ -195,6 +240,7 @@ def write_generation(
     source_index = metadata.get("source_index")
     if source_index is None:
         source_index = _source_index(examples)
+    _validate_source_index(source_index)
     files_data["source_index.json"] = _json(source_index)
     # Keep distributions in the manifest metadata so inspect/reporting can be
     # done without loading lesson rows.  Caller-provided values remain
@@ -458,6 +504,10 @@ def validate_generation(path: str | Path):
         # Split files are projections of examples.jsonl, not independent
         # datasets.  Every projected row must be unique and known.
         all_ids = [_row_id(row) for row in parsed["examples.jsonl"]]
+        canonical_by_id = {
+            _row_id(row): _json(row).decode("utf-8").rstrip("\n")
+            for row in parsed["examples.jsonl"]
+        }
         if len(set(all_ids)) != len(all_ids):
             errors.append("duplicate example id")
         for filename in ("train.jsonl", "validation.jsonl", "test.jsonl"):
@@ -466,6 +516,12 @@ def validate_generation(path: str | Path):
                 errors.append(f"duplicate split row: {filename}")
             if not set(ids).issubset(set(all_ids)):
                 errors.append(f"unknown split row: {filename}")
+            for row in parsed[filename]:
+                row_id = _row_id(row)
+                if row_id in canonical_by_id and (
+                    _json(row).decode("utf-8").rstrip("\n") != canonical_by_id[row_id]
+                ):
+                    errors.append(f"{filename} row differs from examples: {row_id}")
         split_status = manifest.get("split_status")
         if split_status == "COMPLETE" and set().union(
             *(

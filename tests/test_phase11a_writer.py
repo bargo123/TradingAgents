@@ -145,8 +145,32 @@ def test_writer_rejects_sensitive_manifest_metadata(tmp_path: Path):
         )
 
 
+def test_writer_rejects_raw_text_in_source_index(tmp_path: Path):
+    with pytest.raises(ValueError, match="source index"):
+        write_generation(
+            tmp_path,
+            _examples(),
+            [],
+            {},
+            metadata={"source_index": [{"text": "raw book content"}]},
+        )
+
+
 def test_writer_rejects_fabricated_action_lesson(tmp_path: Path):
     row = replace(_examples()[0], assistant="BUY EURUSD now")
+    with pytest.raises(ValueError, match="action|unsafe"):
+        write_generation(tmp_path, [row], [], {row.example_id: "train"}, metadata={})
+
+
+def test_writer_rejects_schema_invalid_mapping_before_publication(tmp_path: Path):
+    row = _examples()[0].to_dict()
+    row.pop("lesson_type")
+    with pytest.raises(ValueError, match="lesson_type"):
+        write_generation(tmp_path, [row], [], {row["example_id"]: "train"}, metadata={})
+
+
+def test_writer_rejects_action_text_in_lesson_topic(tmp_path: Path):
+    row = replace(_examples()[0], topic="SELL EURUSD")
     with pytest.raises(ValueError, match="action|unsafe"):
         write_generation(tmp_path, [row], [], {row.example_id: "train"}, metadata={})
 
@@ -165,6 +189,31 @@ def test_validation_rejects_tampered_fabricated_action_even_with_new_hash(tmp_pa
     manifest["files"]["examples.jsonl"]["bytes"] = path.stat().st_size
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert not validate_generation(destination).valid
+
+
+def test_validation_rejects_split_content_divergence_even_with_new_hash(tmp_path: Path):
+    rows = _examples()
+    destination = write_generation(
+        tmp_path,
+        rows,
+        [],
+        {row.example_id: "train" for row in rows},
+        metadata={},
+    )
+    path = destination / "train.jsonl"
+    value = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+    value["assistant"] = "A different canonical lesson"
+    path.write_text(json.dumps(value) + "\n", encoding="utf-8")
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["train.jsonl"]["sha256"] = __import__("hashlib").sha256(
+        path.read_bytes()
+    ).hexdigest()
+    manifest["files"]["train.jsonl"]["bytes"] = path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    report = validate_generation(destination)
+    assert not report.valid
+    assert any("differs from examples" in error for error in report.errors)
 
 
 def test_validation_rejects_unknown_manifest_states(tmp_path: Path):
