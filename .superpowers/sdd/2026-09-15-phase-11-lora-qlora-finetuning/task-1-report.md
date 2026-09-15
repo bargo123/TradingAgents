@@ -26,3 +26,7 @@ manifest version; mutable revisions (`latest`, `main`, `master`, `HEAD`, and
 invalid report message containers/types raise `ContractError`; nested sets
 are frozen in canonical order; and `DatasetBinding` validates the Phase 10
 dataset schema version.
+
+Numeric validation follow-up: integer fields reject booleans and wrong types,
+float fields reject non-finite values, and regression tests cover training
+configuration, dataset/prepared-manifest counts, and metrics.

@@ -113,6 +113,16 @@ def _bounded_text(value: Any, name: str, limit: int = 4096) -> str:
     return value
 
 
+def _bounded_int(value: Any, name: str, *, minimum: int = 0) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ContractError(f"{name} out of bounds")
+
+
+def _bounded_finite(value: Any, name: str, *, minimum: float = 0.0) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < minimum:
+        raise ContractError(f"{name} out of bounds")
+
+
 class Contract:
     """Convenience serialization surface shared by all persisted contracts."""
 
@@ -205,23 +215,22 @@ class TrainingConfig(Contract):
             _bounded_text(self.base_model_revision, "base_model_revision")
             if self.base_model_revision.casefold() in _UNRESOLVED_REVISIONS:
                 raise ContractError("base_model_revision must be immutable")
-        if self.max_sequence_length < 1 or self.max_sequence_length > 1_000_000:
+        _bounded_int(self.max_sequence_length, "max_sequence_length", minimum=1)
+        if self.max_sequence_length > 1_000_000:
             raise ContractError("max_sequence_length out of bounds")
         if isinstance(self.learning_rate, bool) or not isinstance(self.learning_rate, (int, float)) or self.learning_rate <= 0 or not math.isfinite(self.learning_rate):
             raise ContractError("learning_rate out of bounds")
-        if (
-            isinstance(self.epochs, bool) or not isinstance(self.epochs, (int, float)) or not math.isfinite(self.epochs) or self.epochs < 1
-            or self.batch_size < 1
-            or self.gradient_accumulation_steps < 1
-            or self.warmup_steps < 0
-        ):
-            raise ContractError("training bounds invalid")
-        if self.max_steps is not None and self.max_steps < 1:
-            raise ContractError("max_steps out of bounds")
+        _bounded_int(self.epochs, "epochs", minimum=1)
+        _bounded_int(self.batch_size, "batch_size", minimum=1)
+        _bounded_int(self.gradient_accumulation_steps, "gradient_accumulation_steps", minimum=1)
+        _bounded_int(self.warmup_steps, "warmup_steps")
+        if self.max_steps is not None:
+            _bounded_int(self.max_steps, "max_steps", minimum=1)
         if (isinstance(self.weight_decay, bool) or not isinstance(self.weight_decay, (int, float)) or not math.isfinite(self.weight_decay) or self.weight_decay < 0 or
             isinstance(self.gradient_clipping, bool) or not isinstance(self.gradient_clipping, (int, float)) or not math.isfinite(self.gradient_clipping) or self.gradient_clipping <= 0):
             raise ContractError("optimizer bounds invalid")
-        if self.logging_steps < 1 or self.validation_interval not in {"epoch", "steps"}:
+        _bounded_int(self.logging_steps, "logging_steps", minimum=1)
+        if self.validation_interval not in {"epoch", "steps"}:
             raise ContractError("logging/validation interval invalid")
         if self.checkpoint_interval not in {"epoch", "steps", "never"}:
             raise ContractError("checkpoint interval invalid")
@@ -247,9 +256,8 @@ class DatasetBinding(Contract):
             raise ContractError("generation_path must be a path")
         if self.test_count:
             raise ContractError("test rows cannot be bound for training")
-        for n in (self.train_count, self.validation_count, self.test_count):
-            if n < 0:
-                raise ContractError("counts cannot be negative")
+        for name, n in (("train_count", self.train_count), ("validation_count", self.validation_count), ("test_count", self.test_count)):
+            _bounded_int(n, name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,8 +299,8 @@ class PreparedManifest(Contract):
         _bounded_text(self.generation_id, "generation_id")
         if self.version != SFT_FORMAT_VERSION:
             raise UnknownVersionError(self.version)
-        if self.train_count < 0 or self.validation_count < 0:
-            raise ContractError("counts cannot be negative")
+        _bounded_int(self.train_count, "train_count")
+        _bounded_int(self.validation_count, "validation_count")
 
 
 @dataclass(frozen=True, slots=True)
@@ -337,21 +345,10 @@ class Metrics(Contract):
             raise UnknownVersionError(self.version)
         if self.loss is not None and (isinstance(self.loss, bool) or not isinstance(self.loss, (int, float)) or not math.isfinite(self.loss) or self.loss < 0):
             raise ContractError("loss out of bounds")
-        if any(
-            not isinstance(x, int) or x < 0
-            for x in (
-                self.steps,
-                self.examples,
-                self.tokens,
-                self.trainable_parameters,
-                self.total_parameters,
-            )
-        ):
-            raise ContractError("metric counts out of bounds")
-        if isinstance(self.epochs, bool) or not isinstance(self.epochs, (int, float)) or not math.isfinite(self.epochs) or self.epochs < 0:
-            raise ContractError("epochs out of bounds")
-        if isinstance(self.runtime_seconds, bool) or not isinstance(self.runtime_seconds, (int, float)) or self.runtime_seconds < 0 or not math.isfinite(self.runtime_seconds):
-            raise ContractError("runtime out of bounds")
+        for name, value in (("steps", self.steps), ("examples", self.examples), ("tokens", self.tokens), ("trainable_parameters", self.trainable_parameters), ("total_parameters", self.total_parameters)):
+            _bounded_int(value, name)
+        _bounded_finite(self.epochs, "epochs")
+        _bounded_finite(self.runtime_seconds, "runtime_seconds")
 
 
 @dataclass(frozen=True, slots=True)

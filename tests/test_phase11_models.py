@@ -64,3 +64,34 @@ def test_package_exports_are_lazy_and_version_constant_present():
     import tradingagents.finetuning as package
 
     assert "torch" not in package.__dict__
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: TrainingConfig(max_sequence_length=True),
+        lambda: TrainingConfig(epochs=1.5),
+        lambda: TrainingConfig(max_steps="2"),
+        lambda: TrainingConfig(batch_size=False),
+        lambda: TrainingConfig(gradient_accumulation_steps=object()),
+        lambda: TrainingConfig(warmup_steps=math.nan),
+        lambda: TrainingConfig(logging_steps=True),
+    ],
+)
+def test_training_integer_fields_reject_bool_and_wrong_types(factory):
+    with pytest.raises(ContractError):
+        factory()
+
+
+def test_count_and_metric_numeric_fields_reject_invalid_types():
+    from tradingagents.finetuning import DatasetBinding, Metrics, PreparedManifest
+
+    for factory in (
+        lambda: DatasetBinding("g", train_count=True),
+        lambda: PreparedManifest("g", validation_count="1"),
+        lambda: Metrics(steps=False),
+        lambda: Metrics(epochs=math.inf),
+        lambda: Metrics(runtime_seconds="1"),
+    ):
+        with pytest.raises(ContractError):
+            factory()
