@@ -240,6 +240,8 @@ def write_generation(
     source_index = metadata.get("source_index")
     if source_index is None:
         source_index = _source_index(examples)
+    elif _json(source_index) != _json(_source_index(examples)):
+        raise ValueError("source index is not bound to accepted example provenance")
     _validate_source_index(source_index)
     files_data["source_index.json"] = _json(source_index)
     # Keep distributions in the manifest metadata so inspect/reporting can be

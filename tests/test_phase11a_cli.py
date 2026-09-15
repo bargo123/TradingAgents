@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from tradingagents.distillation import cli
 
 
@@ -70,3 +72,21 @@ def test_plan_rejects_output_inside_phase7_root(monkeypatch, capsys, tmp_path):
         == 1
     )
     assert json.loads(capsys.readouterr().out)["status"] == "ValueError"
+
+
+def test_serialized_plan_revalidation_rejects_modified_source_block(monkeypatch, tmp_path):
+    from tests.fixtures.phase11a_knowledge import fixture_source
+    from tradingagents.distillation.planning import SourcePacketPlanner
+
+    source = fixture_source()
+    plan = SourcePacketPlanner.plan(source, ())
+    plan_path = tmp_path / "plan.json"
+    payload = plan.to_dict()
+    payload["source_root"] = str(tmp_path / "phase7")
+    payload["packets"][0]["blocks"][0]["text"] = "hand-authored text"
+    plan_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(cli.Phase7KnowledgeSource, "open", lambda *a, **k: source)
+
+    loaded = cli._load_plan(plan_path)
+    with pytest.raises(ValueError, match="authoritative|source block"):
+        cli._revalidate_plan(loaded)

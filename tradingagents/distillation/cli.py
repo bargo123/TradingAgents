@@ -104,6 +104,22 @@ def _load_plan(path: Path) -> SourcePlan:
     )
 
 
+def _revalidate_plan(plan: SourcePlan) -> SourcePlan:
+    """Bind a serialized plan back to the current, validated Phase 7 source."""
+    if not plan.source_root:
+        raise ValueError("serialized plan has no authoritative Phase 7 source root")
+    source = Phase7KnowledgeSource.open(plan.source_root, expected_generation_id=plan.generation_id)
+    if dict(plan.source_fingerprints) != dict(source.source_fingerprints):
+        raise ValueError("serialized plan source fingerprints do not match authoritative Phase 7")
+    authoritative = {canonical_json(block.ref): block for block in source.blocks()}
+    for packet in plan.packets:
+        for block in packet.blocks:
+            expected = authoritative.get(canonical_json(block.ref))
+            if expected is None or expected.text != block.text:
+                raise ValueError("serialized plan source block does not match authoritative Phase 7")
+    return plan
+
+
 def main(argv=None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -123,10 +139,11 @@ def main(argv=None) -> int:
             if teacher.__class__.__name__ == "UnconfiguredTeacher":
                 _emit({"status": "DISTILLATION_TEACHER_NOT_CONFIGURED"})
                 return 1
+            plan = _revalidate_plan(_load_plan(Path(args.plan)))
             from .factory import DistillationFactory
 
             report = DistillationFactory().distill(
-                _load_plan(Path(args.plan)), teacher, args.output_root
+                plan, teacher, args.output_root
             )
             _emit(
                 {

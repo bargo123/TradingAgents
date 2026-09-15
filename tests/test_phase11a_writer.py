@@ -169,6 +169,17 @@ def test_writer_rejects_raw_text_in_source_index(tmp_path: Path):
         )
 
 
+def test_writer_rejects_caller_source_index_not_bound_to_examples(tmp_path: Path):
+    rows = _examples()
+    from tradingagents.distillation.writer import _source_index
+
+    supplied = json.loads(json.dumps(_source_index(rows)))
+    supplied.append(dict(supplied[0], chunk_id="fabricated-chunk"))
+    with pytest.raises(ValueError, match="source index.*provenance|provenance.*source index"):
+        write_generation(tmp_path, rows, [], {}, metadata={"source_index": supplied})
+    assert not list(tmp_path.glob("generation-*"))
+
+
 def test_writer_rejects_fabricated_action_lesson(tmp_path: Path):
     row = replace(_examples()[0], assistant="BUY EURUSD now")
     with pytest.raises(ValueError, match="action|unsafe"):
