@@ -53,3 +53,38 @@ def test_writer_rejects_tampered_example(tmp_path: Path):
     path = destination / "examples.jsonl"
     path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
     assert not validate_generation(destination).valid
+
+
+def test_writer_rejects_output_inside_declared_phase7_source_root(tmp_path: Path):
+    source_root = tmp_path / "phase7"
+    output_root = source_root / "distilled"
+    source_root.mkdir()
+    with pytest.raises(ValueError, match="source root"):
+        write_generation(output_root, _examples(), [], {}, metadata={"source_root": str(source_root)})
+
+
+def test_validation_rejects_unlisted_rows_and_bad_bytes_metadata(tmp_path: Path):
+    destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["examples.jsonl"]["bytes"] += 1
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    report = validate_generation(destination)
+    assert not report.valid
+    assert any("byte" in error for error in report.errors)
+
+
+def test_validation_binds_source_index_to_example_provenance(tmp_path: Path):
+    destination = write_generation(tmp_path, _examples(), [], {}, metadata={})
+    index_path = destination / "source_index.json"
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    index.pop()
+    index_path.write_text(json.dumps(index), encoding="utf-8")
+    manifest_path = destination / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["source_index.json"]["sha256"] = __import__("hashlib").sha256(
+        index_path.read_bytes()
+    ).hexdigest()
+    manifest["files"]["source_index.json"]["bytes"] = index_path.stat().st_size
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert not validate_generation(destination).valid

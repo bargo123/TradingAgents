@@ -61,11 +61,13 @@ def _load_plan(path: Path) -> SourcePlan:
     value = json.loads(path.read_text(encoding="utf-8"))
 
     def ref(row):
-        return SourceRef(**row)
+        if isinstance(row, SourceRef):
+            return row
+        return SourceRef.from_dict(row)
 
     def block(row):
         return SourceBlock(
-            ref(row["ref"]),
+            ref(row.get("ref", row)),
             row["text"],
             row.get("content_type", "PROSE"),
             row.get("reading_order", 0),
@@ -82,10 +84,11 @@ def _load_plan(path: Path) -> SourcePlan:
         for row in value.get("packets", ())
     )
     return SourcePlan(
-        value["generation_id"],
+        value.get("generation_id", value.get("phase7_generation_id", "")),
         packets,
-        value["request_fingerprint"],
+        value.get("request_fingerprint", value.get("plan_fingerprint", "")),
         tuple(value.get("diagnostics", ())),
+        value.get("source_fingerprints", value.get("phase7_fingerprints", {})),
     )
 
 

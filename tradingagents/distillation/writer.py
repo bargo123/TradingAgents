@@ -9,6 +9,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, is_dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -24,14 +25,14 @@ FILES = (
 
 
 def _plain(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
     if is_dataclass(value):
         return _plain(asdict(value))
     if isinstance(value, Mapping):
         return {str(k): _plain(v) for k, v in value.items()}
     if isinstance(value, (list, tuple, set, frozenset)):
         return [_plain(v) for v in value]
-    if hasattr(value, "value") and not isinstance(value, (str, bytes)):
-        return value.value
     return value
 
 
@@ -72,6 +73,19 @@ def write_generation(
     examples = _rows(examples)
     exclusions = _rows(exclusions)
     metadata = dict(metadata or {})
+    # A Phase 7 root is an immutable input.  Refuse destinations that would
+    # place generated artifacts in (or beneath) that root, even when the
+    # directory does not exist yet.
+    source_root = metadata.get("source_root") or metadata.get("phase7_root")
+    if source_root:
+        source_path = Path(source_root).resolve()
+        output_path = Path(output_root).resolve()
+        try:
+            output_path.relative_to(source_path)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("output root must not be inside the Phase 7 source root")
     generation_id = str(
         metadata.pop(
             "generation_id",
@@ -121,6 +135,24 @@ def write_generation(
     if source_index is None:
         source_index = _source_index(examples)
     files_data["source_index.json"] = _json(source_index)
+    # Keep distributions in the manifest metadata so inspect/reporting can be
+    # done without loading lesson rows.  Caller-provided values remain
+    # authoritative for forward-compatible extensions.
+    lesson_distribution = Counter(
+        str(x.get("lesson_type", "")) for x in examples if isinstance(x, Mapping)
+    )
+    topic_distribution = Counter(
+        str(x.get("topic", "")) for x in examples if isinstance(x, Mapping)
+    )
+    metadata.setdefault("lesson_type_distribution", dict(sorted(lesson_distribution.items())))
+    metadata.setdefault("topic_distribution", dict(sorted(topic_distribution.items())))
+    metadata.setdefault(
+        "source_coverage",
+        {
+            "documents": len({str(ref.get("document_id", "")) for ref in source_index if isinstance(ref, Mapping)}),
+            "chunks": len(source_index) if isinstance(source_index, list) else 0,
+        },
+    )
     reasons = Counter(str(x.get("reason", "")) for x in exclusions if isinstance(x, Mapping))
     manifest = {
         "schema_version": "phase11a-manifest.v1",
@@ -198,12 +230,18 @@ def validate_generation(path: str | Path):
             and info.get("sha256") != _hash(target.read_bytes())
         ):
             errors.append(f"hash mismatch: {name}")
+        if target.is_file() and isinstance(info, Mapping) and info.get("bytes") != target.stat().st_size:
+            errors.append(f"byte size mismatch: {name}")
     try:
         # Validate the canonical rows when the contracts are available.  This
         # catches missing provenance rather than merely checking file hashes.
         from .models import GroundingClaim, KnowledgeExample, SourceRef
 
         parsed = {}
+        source_index_rows = json.loads((root / "source_index.json").read_text(encoding="utf-8"))
+        if not isinstance(source_index_rows, list):
+            errors.append("source index must be a list")
+            source_index_rows = []
         for filename in (
             "examples.jsonl",
             "excluded.jsonl",
@@ -236,8 +274,27 @@ def validate_generation(path: str | Path):
                         else item
                         for item in row.get("claims", ())
                     )
-                    KnowledgeExample(**row)
+                    KnowledgeExample.from_dict(row)
                     parsed[filename].append(row)
+        expected_refs = {
+            _json(ref).decode("utf-8").rstrip("\n")
+            for row in parsed["examples.jsonl"]
+            for ref in row.get("source_refs", ())
+        }
+        actual_refs = {
+            _json(ref).decode("utf-8").rstrip("\n")
+            for ref in source_index_rows
+            if isinstance(ref, Mapping)
+        }
+        if expected_refs != actual_refs:
+            errors.append("source index provenance mismatch")
+        phase7_generation_id = manifest.get("phase7_generation_id")
+        if phase7_generation_id:
+            for row in parsed["examples.jsonl"]:
+                for ref in row.get("source_refs", ()):
+                    if getattr(ref, "generation_id", None) != phase7_generation_id:
+                        errors.append("source reference generation mismatch")
+                        break
         counts = manifest.get("counts", {})
         if counts.get("examples") != len(parsed["examples.jsonl"]):
             errors.append("example count mismatch")
@@ -251,6 +308,25 @@ def validate_generation(path: str | Path):
         ):
             if split_counts.get(split, 0) != len(parsed[name]):
                 errors.append(f"split count mismatch: {split}")
+        # Split files are projections of examples.jsonl, not independent
+        # datasets.  Every projected row must be unique and known.
+        all_ids = [_row_id(row) for row in parsed["examples.jsonl"]]
+        if len(set(all_ids)) != len(all_ids):
+            errors.append("duplicate example id")
+        for filename in ("train.jsonl", "validation.jsonl", "test.jsonl"):
+            ids = [_row_id(row) for row in parsed[filename]]
+            if len(set(ids)) != len(ids):
+                errors.append(f"duplicate split row: {filename}")
+            if not set(ids).issubset(set(all_ids)):
+                errors.append(f"unknown split row: {filename}")
+        split_status = manifest.get("split_status")
+        if split_status == "COMPLETE" and set().union(
+            *(
+                {_row_id(row) for row in parsed[name]}
+                for name in ("train.jsonl", "validation.jsonl", "test.jsonl")
+            )
+        ) != set(all_ids):
+            errors.append("complete split does not cover all examples")
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
         errors.append(f"invalid example provenance: {exc}")
     try:
