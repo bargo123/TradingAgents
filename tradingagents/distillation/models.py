@@ -302,7 +302,9 @@ class KnowledgeExample(SerializableModel):
     status: CandidateStatus = CandidateStatus.ACCEPTED
     contract_version: str = CONTRACT_VERSION
     policy_versions: Mapping[str, str] = None
+    grounding_status: str = "GROUNDED"
     quality_status: str = "ACCEPTED"
+    quality_reasons: tuple[str, ...] = ()
     source_fingerprints: Mapping[str, str] = None
     split: str | None = None
 
@@ -318,6 +320,21 @@ class KnowledgeExample(SerializableModel):
         object.__setattr__(self, "claims", tuple(self.claims))
         object.__setattr__(self, "policy_versions", dict(self.policy_versions or {}))
         object.__setattr__(self, "source_fingerprints", dict(self.source_fingerprints or {}))
+        grounding_status = str(self.grounding_status).upper()
+        if grounding_status not in {"GROUNDED", "UNVERIFIED", "FAILED"}:
+            raise ValueError("unsupported grounding_status")
+        object.__setattr__(self, "grounding_status", grounding_status)
+        quality_status = str(self.quality_status).upper()
+        if quality_status not in {"ACCEPTED", "UNVERIFIED", "EXCLUDED"}:
+            raise ValueError("unsupported quality_status")
+        object.__setattr__(self, "quality_status", quality_status)
+        quality_reasons = tuple(_text(reason, "quality_reason", 200) for reason in self.quality_reasons)
+        object.__setattr__(self, "quality_reasons", quality_reasons)
+        if self.split is not None:
+            split = str(self.split).lower()
+            if split not in {"train", "validation", "test"}:
+                raise ValueError("unsupported split")
+            object.__setattr__(self, "split", split)
         if not all(isinstance(ref, SourceRef) for ref in self.source_refs):
             raise ValueError("source_refs must contain SourceRef values")
         if not all(isinstance(claim, GroundingClaim) for claim in self.claims):
@@ -347,6 +364,9 @@ class KnowledgeExample(SerializableModel):
             )
             for claim in raw_claims
         )
+        payload.setdefault("grounding_status", "GROUNDED")
+        payload.setdefault("quality_status", "ACCEPTED")
+        payload.setdefault("quality_reasons", ())
         return cls(**payload)
 
     @property
@@ -374,6 +394,8 @@ class DatasetExclusion(SerializableModel):
         object.__setattr__(self, "reason", ExclusionReason(self.reason))
         object.__setattr__(self, "diagnostic", str(self.diagnostic)[:1000])
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
+        if not all(isinstance(ref, SourceRef) for ref in self.source_refs):
+            raise ValueError("source_refs must contain SourceRef values")
 
 
 @dataclass(frozen=True, slots=True)

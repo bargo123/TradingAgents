@@ -105,3 +105,24 @@ def test_knowledge_example_persists_policy_quality_split_and_fingerprints():
     assert data["quality_status"] == "ACCEPTED"
     assert data["source_fingerprints"] == {"phase7": "fp"}
     assert data["split"] == "train"
+
+
+def test_knowledge_example_persists_grounding_and_quality_reasons():
+    ex = KnowledgeExample(
+        "e",
+        LessonType.DEFINITION,
+        "OFI",
+        Difficulty.FOUNDATIONAL,
+        "sys",
+        "user",
+        "assistant",
+        (ref(),),
+        (GroundingClaim("OFI", (ref(),)),),
+        grounding_status="GROUNDED",
+        quality_status="ACCEPTED",
+        quality_reasons=("PARAPHRASE",),
+    )
+    data = ex.to_dict()
+    assert data["grounding_status"] == "GROUNDED"
+    assert data["quality_status"] == "ACCEPTED"
+    assert data["quality_reasons"] == ["PARAPHRASE"]
