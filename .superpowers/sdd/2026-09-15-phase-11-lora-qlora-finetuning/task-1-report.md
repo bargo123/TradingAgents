@@ -19,3 +19,10 @@ Verification:
 No torch, Transformers, or other training dependencies are imported by the
 contract modules. No other phase or documentation files were changed except
 this task report.
+
+Review follow-up: persisted metrics/reports now carry and validate the run
+manifest version; mutable revisions (`latest`, `main`, `master`, `HEAD`, and
+`default`) are rejected; all relevant numeric fields reject non-finite values;
+invalid report message containers/types raise `ContractError`; nested sets
+are frozen in canonical order; and `DatasetBinding` validates the Phase 10
+dataset schema version.

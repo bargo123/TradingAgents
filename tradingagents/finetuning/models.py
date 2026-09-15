@@ -32,6 +32,8 @@ _VERSIONS = {
     RUN_MANIFEST_VERSION,
     ADAPTER_PACKAGE_VERSION,
 }
+PHASE10_DATASET_SCHEMA_VERSION = "phase10.dataset.v1"
+_UNRESOLVED_REVISIONS = {"latest", "main", "master", "head", "default"}
 _SENSITIVE = re.compile(
     r"(?:secret|password|credential|api[_ -]?key|access[_ -]?token|private[_ -]?key|prompt|completion|reasoning|chain[_ -]?of[_ -]?thought|\bcot\b|scratch)",
     re.I,
@@ -141,7 +143,7 @@ class LoraConfig(Contract):
             raise ContractError("r out of bounds")
         if not isinstance(self.alpha, int) or not 1 <= self.alpha <= 4096:
             raise ContractError("alpha out of bounds")
-        if not isinstance(self.dropout, (int, float)) or not 0 <= self.dropout < 1:
+        if isinstance(self.dropout, bool) or not isinstance(self.dropout, (int, float)) or not math.isfinite(self.dropout) or not 0 <= self.dropout < 1:
             raise ContractError("dropout out of bounds")
         if not isinstance(self.target_modules, (tuple, list)) or not self.target_modules or any(
             not isinstance(x, str) or not x for x in self.target_modules
@@ -199,12 +201,16 @@ class TrainingConfig(Contract):
             raise UnknownVersionError(self.version)
         if self.base_model:
             _bounded_text(self.base_model, "base_model")
+        if self.base_model_revision is not None:
+            _bounded_text(self.base_model_revision, "base_model_revision")
+            if self.base_model_revision.casefold() in _UNRESOLVED_REVISIONS:
+                raise ContractError("base_model_revision must be immutable")
         if self.max_sequence_length < 1 or self.max_sequence_length > 1_000_000:
             raise ContractError("max_sequence_length out of bounds")
-        if self.learning_rate <= 0 or not math.isfinite(self.learning_rate):
+        if isinstance(self.learning_rate, bool) or not isinstance(self.learning_rate, (int, float)) or self.learning_rate <= 0 or not math.isfinite(self.learning_rate):
             raise ContractError("learning_rate out of bounds")
         if (
-            self.epochs < 1
+            isinstance(self.epochs, bool) or not isinstance(self.epochs, (int, float)) or not math.isfinite(self.epochs) or self.epochs < 1
             or self.batch_size < 1
             or self.gradient_accumulation_steps < 1
             or self.warmup_steps < 0
@@ -212,7 +218,8 @@ class TrainingConfig(Contract):
             raise ContractError("training bounds invalid")
         if self.max_steps is not None and self.max_steps < 1:
             raise ContractError("max_steps out of bounds")
-        if self.weight_decay < 0 or self.gradient_clipping <= 0:
+        if (isinstance(self.weight_decay, bool) or not isinstance(self.weight_decay, (int, float)) or not math.isfinite(self.weight_decay) or self.weight_decay < 0 or
+            isinstance(self.gradient_clipping, bool) or not isinstance(self.gradient_clipping, (int, float)) or not math.isfinite(self.gradient_clipping) or self.gradient_clipping <= 0):
             raise ContractError("optimizer bounds invalid")
         if self.logging_steps < 1 or self.validation_interval not in {"epoch", "steps"}:
             raise ContractError("logging/validation interval invalid")
@@ -234,6 +241,8 @@ class DatasetBinding(Contract):
 
     def __post_init__(self):
         _bounded_text(self.generation_id, "generation_id")
+        if self.schema_version != PHASE10_DATASET_SCHEMA_VERSION:
+            raise UnknownVersionError(self.schema_version)
         if not isinstance(self.generation_path, (str, Path)):
             raise ContractError("generation_path must be a path")
         if self.test_count:
@@ -321,9 +330,12 @@ class Metrics(Contract):
     runtime_seconds: float = 0.0
     trainable_parameters: int = 0
     total_parameters: int = 0
+    version: str = RUN_MANIFEST_VERSION
 
     def __post_init__(self):
-        if self.loss is not None and (not math.isfinite(self.loss) or self.loss < 0):
+        if self.version != RUN_MANIFEST_VERSION:
+            raise UnknownVersionError(self.version)
+        if self.loss is not None and (isinstance(self.loss, bool) or not isinstance(self.loss, (int, float)) or not math.isfinite(self.loss) or self.loss < 0):
             raise ContractError("loss out of bounds")
         if any(
             not isinstance(x, int) or x < 0
@@ -336,7 +348,9 @@ class Metrics(Contract):
             )
         ):
             raise ContractError("metric counts out of bounds")
-        if self.runtime_seconds < 0 or not math.isfinite(self.runtime_seconds):
+        if isinstance(self.epochs, bool) or not isinstance(self.epochs, (int, float)) or not math.isfinite(self.epochs) or self.epochs < 0:
+            raise ContractError("epochs out of bounds")
+        if isinstance(self.runtime_seconds, bool) or not isinstance(self.runtime_seconds, (int, float)) or self.runtime_seconds < 0 or not math.isfinite(self.runtime_seconds):
             raise ContractError("runtime out of bounds")
 
 
@@ -346,6 +360,7 @@ class TrainingReport(Contract):
     metrics: Metrics | None = None
     message: str = ""
     run_id: str | None = None
+    version: str = RUN_MANIFEST_VERSION
 
     def __post_init__(self):
         if not isinstance(self.status, Phase11Status):
@@ -353,7 +368,9 @@ class TrainingReport(Contract):
                 object.__setattr__(self, "status", Phase11Status(self.status))
             except ValueError as exc:
                 raise InvalidStatusError(str(self.status)) from exc
-        if len(self.message) > 4096:
+        if self.version != RUN_MANIFEST_VERSION:
+            raise UnknownVersionError(self.version)
+        if not isinstance(self.message, str) or len(self.message) > 4096:
             raise ContractError("message too long")
         if self.metrics is not None and not isinstance(self.metrics, Metrics):
             raise ContractError("invalid metrics")
@@ -368,8 +385,11 @@ class ValidationReport(Contract):
     status: Phase11Status = Phase11Status.COMPLETE
     errors: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
+    version: str = RUN_MANIFEST_VERSION
 
     def __post_init__(self):
+        if self.version != RUN_MANIFEST_VERSION:
+            raise UnknownVersionError(self.version)
         if not isinstance(self.valid, bool):
             raise ContractError("valid must be bool")
         if not isinstance(self.status, Phase11Status):
@@ -377,6 +397,8 @@ class ValidationReport(Contract):
                 object.__setattr__(self, "status", Phase11Status(self.status))
             except ValueError as exc:
                 raise InvalidStatusError(str(self.status)) from exc
+        if not isinstance(self.errors, (tuple, list)) or not isinstance(self.warnings, (tuple, list)):
+            raise ContractError("report messages must be sequences")
         object.__setattr__(self, "errors", tuple(self.errors))
         object.__setattr__(self, "warnings", tuple(self.warnings))
         if any(not isinstance(x, str) or len(x) > 4096 for x in self.errors + self.warnings):
@@ -393,6 +415,9 @@ def _freeze(value: Any) -> Any:
         return tuple(_freeze(v) for v in value)
     if isinstance(value, tuple):
         return tuple(_freeze(v) for v in value)
+    if isinstance(value, (set, frozenset)):
+        frozen = tuple(_freeze(v) for v in value)
+        return tuple(sorted(frozen, key=lambda item: json.dumps(item, sort_keys=True, ensure_ascii=False)))
     return value
 
 
