@@ -8,6 +8,10 @@ from typing import Any
 
 class GroupedSplitter:
     def __init__(self, *, ratios=(0.70, 0.15, 0.15), min_groups=3):
+        if len(ratios) != 3 or any(float(x) <= 0 for x in ratios) or abs(sum(ratios) - 1.0) > 1e-6:
+            raise ValueError("ratios must be three positive values summing to one")
+        if min_groups < 3:
+            raise ValueError("min_groups must be at least three")
         self.ratios = ratios
         self.min_groups = min_groups
 
@@ -29,6 +33,15 @@ class GroupedSplitter:
 
     def _group(self, e):
         if isinstance(e, dict):
+            if e.get("source_refs"):
+                refs = e["source_refs"]
+                locations = []
+                for ref in refs:
+                    get = ref.get if isinstance(ref, dict) else lambda key, default=None: getattr(ref, key, default)
+                    locations.append(
+                        f"{get('document_id', '')}|{get('chapter', '')}|{get('section', '')}"
+                    )
+                return "||".join(sorted(set(locations)))
             return (
                 str(e.get("document_id", ""))
                 + "|"
@@ -38,11 +51,18 @@ class GroupedSplitter:
             )
         refs = getattr(e, "source_refs", ())
         if refs:
-            ref = refs[0]
-            section = getattr(ref, "section", None) or " / ".join(
-                getattr(ref, "section_path", ()) or ()
-            )
-            return f"{getattr(ref, 'document_id', '')}|{getattr(ref, 'chapter', '')}|{section}"
+            # A multi-source lesson is one indivisible provenance group.  Use
+            # all source locations, order-independent, so no source can leak
+            # across partitions by virtue of appearing after the first ref.
+            locations = []
+            for ref in refs:
+                section = getattr(ref, "section", None) or " / ".join(
+                    getattr(ref, "section_path", ()) or ()
+                )
+                locations.append(
+                    f"{getattr(ref, 'document_id', '')}|{getattr(ref, 'chapter', '')}|{section}"
+                )
+            return "||".join(sorted(set(locations)))
         return (
             str(getattr(e, "document_id", ""))
             + "|"

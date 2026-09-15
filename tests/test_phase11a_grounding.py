@@ -24,6 +24,33 @@ def test_grounding_accepts_chunk_id_and_string_references():
     )
 
 
+def test_grounding_checks_all_candidate_refs_and_full_structured_provenance():
+    good = SimpleNamespace(
+        source_refs=["r1", "r2"],
+        claims=[SimpleNamespace(source_refs=["r1"])],
+    )
+    bad = SimpleNamespace(
+        source_refs=["r1", "foreign"],
+        claims=[SimpleNamespace(source_refs=["r1"])],
+    )
+    p = SimpleNamespace(refs=[SimpleNamespace(ref_id="r1"), SimpleNamespace(ref_id="r2")])
+    assert GroundingValidator().validate(good, p).accepted
+    assert GroundingValidator().validate(bad, p).reason == "GROUNDING_FAILED"
+
+
+def test_grounding_rejects_structured_ref_missing_generation_provenance():
+    expected = SimpleNamespace(
+        chunk_id="c1", document_id="doc", source_hash="hash", generation_id="gen"
+    )
+    provided = SimpleNamespace(chunk_id="c1", document_id="doc", source_hash="hash")
+    candidate = SimpleNamespace(
+        source_refs=[provided], claims=[SimpleNamespace(source_refs=[provided])]
+    )
+    assert GroundingValidator().validate(candidate, SimpleNamespace(refs=[expected])).reason == (
+        "SOURCE_PROVENANCE_INCOMPLETE"
+    )
+
+
 def test_dataset_exclusion_can_persist_source_refs():
     from tradingagents.distillation.models import DatasetExclusion, SourceRef
 

@@ -41,6 +41,30 @@ def _ref_id(ref: Any) -> str:
     )
 
 
+def _check_ref(ref: Any, available: dict[str, Any]) -> ValidationDecision | None:
+    rid = _ref_id(ref)
+    if not rid or rid not in available:
+        return ValidationDecision(False, "GROUNDING_FAILED", {"ref_id": rid})
+    expected = available[rid]
+    # String references are IDs only; structured references must carry the
+    # provenance fields that identify the source generation unambiguously.
+    if not isinstance(ref, str):
+        for field in ("document_id", "source_hash", "generation_id"):
+            expected_value = _value(expected, field, None)
+            if expected_value is None:
+                continue
+            ref_value = _value(ref, field, None)
+            if ref_value is None:
+                return ValidationDecision(
+                    False, "SOURCE_PROVENANCE_INCOMPLETE", {"ref_id": rid, "field": field}
+                )
+            if ref_value != expected_value:
+                return ValidationDecision(
+                    False, "SOURCE_PROVENANCE_INCOMPLETE", {"ref_id": rid, "field": field}
+                )
+    return None
+
+
 class GroundingValidator:
     def validate(self, candidate: Any, packet: Any) -> ValidationDecision:
         available = _refs(packet)
@@ -54,25 +78,16 @@ class GroundingValidator:
             ]
         if not refs or not claims:
             return ValidationDecision(False, "GROUNDING_FAILED", {"reason": "missing_provenance"})
+        for ref in refs:
+            failure = _check_ref(ref, available)
+            if failure:
+                return failure
         for claim in claims:
             refs = _value(claim, "refs", _value(claim, "source_refs", [])) or []
             if not refs:
                 return ValidationDecision(False, "GROUNDING_FAILED", {"claim": "missing_ref"})
             for ref in refs:
-                rid = _ref_id(ref)
-                if rid not in available:
-                    return ValidationDecision(False, "GROUNDING_FAILED", {"ref_id": rid})
-                expected = available[rid]
-                for field in ("document_id", "source_hash", "generation_id"):
-                    ref_value, expected_value = _value(ref, field), _value(expected, field)
-                    if (
-                        ref_value is not None
-                        and expected_value is not None
-                        and ref_value != expected_value
-                    ):
-                        return ValidationDecision(
-                            False, "SOURCE_PROVENANCE_INCOMPLETE", {"ref_id": rid, "field": field}
-                        )
-        if any(_ref_id(r) not in available for r in refs):
-            return ValidationDecision(False, "GROUNDING_FAILED", {"reason": "unknown_source_ref"})
+                failure = _check_ref(ref, available)
+                if failure:
+                    return failure
         return ValidationDecision(True, diagnostics={"refs_checked": len(available)})

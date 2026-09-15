@@ -80,3 +80,16 @@ def test_grouped_split_uses_knowledge_example_source_refs():
         )
     assignments = GroupedSplitter().assign(rows)
     assert set(assignments.values()) == {"train", "validation", "test"}
+
+
+def test_multi_source_examples_share_their_complete_provenance_group():
+    from tradingagents.distillation.models import SourceRef
+
+    a = SourceRef("doc-a", "a.pdf", "ha", "ca", "gen", section="s")
+    b = SourceRef("doc-b", "b.pdf", "hb", "cb", "gen", section="s")
+    left = {"example_id": "left", "source_refs": (a, b)}
+    reordered = {"example_id": "reordered", "source_refs": (b, a)}
+    only_a = {"example_id": "only-a", "source_refs": (a,)}
+    splitter = GroupedSplitter(min_groups=3)
+    assert splitter._group(left) == splitter._group(reordered)
+    assert splitter._group(left) != splitter._group(only_a)

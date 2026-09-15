@@ -18,6 +18,7 @@ GROUNDING_POLICY_VERSION = "phase11a-grounding-policy.v1"
 SPLIT_POLICY_VERSION = "phase11a-split-policy.v1"
 MANIFEST_VERSION = "phase11a-manifest.v1"
 MAX_TEXT_CHARS = 20_000
+CONTENT_TYPES = frozenset({"PROSE", "EQUATION", "TABLE", "FIGURE_CAPTION", "DEFINITION", "REFERENCE", "LIST"})
 _SENSITIVE = re.compile(
     r"(prompt|completion|reasoning|chain.of.thought|secret|api[_ -]?key|password)", re.I
 )
@@ -160,7 +161,11 @@ class SourceRef(SerializableModel):
             _text(getattr(self, n), n, 500)
         if self.page is not None and int(self.page) < 1:
             raise ValueError("page must be positive")
-        object.__setattr__(self, "content_type", str(self.content_type).upper())
+        content_type = getattr(self.content_type, "value", self.content_type)
+        content_type = str(content_type).upper()
+        if content_type not in CONTENT_TYPES:
+            raise ValueError(f"unsupported content_type: {content_type}")
+        object.__setattr__(self, "content_type", content_type)
 
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> SourceRef:
@@ -230,7 +235,11 @@ class SourceBlock(SerializableModel):
 
     def __post_init__(self):
         _text(self.text)
-        object.__setattr__(self, "content_type", str(self.content_type).upper())
+        content_type = getattr(self.content_type, "value", self.content_type)
+        content_type = str(content_type).upper()
+        if content_type not in CONTENT_TYPES:
+            raise ValueError(f"unsupported content_type: {content_type}")
+        object.__setattr__(self, "content_type", content_type)
         object.__setattr__(self, "section_path", _tuple(self.section_path))
         object.__setattr__(self, "metadata", dict(self.metadata or {}))
         _safe_mapping(self.metadata)
@@ -322,6 +331,8 @@ class KnowledgeExample(SerializableModel):
         object.__setattr__(self, "difficulty", Difficulty(self.difficulty))
         object.__setattr__(self, "source_refs", tuple(self.source_refs))
         object.__setattr__(self, "claims", tuple(self.claims))
+        if self.contract_version != CONTRACT_VERSION:
+            raise ValueError(f"unsupported contract_version: {self.contract_version}")
         object.__setattr__(self, "policy_versions", dict(self.policy_versions or {}))
         object.__setattr__(self, "source_fingerprints", dict(self.source_fingerprints or {}))
         grounding_status = str(self.grounding_status).upper()
