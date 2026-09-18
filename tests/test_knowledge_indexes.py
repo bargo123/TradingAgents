@@ -177,6 +177,23 @@ def test_failed_vector_build_does_not_swap_active_generation(tmp_path):
     assert (tmp_path / "vector" / "lancedb" / old.generation_id).exists()
 
 
+def test_long_windows_artifact_root_uses_short_index_staging_path(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    long_root = tmp_path / ("artifact-" + ("x" * 180))
+    manager = IndexGenerationManager(
+        artifact_root=long_root,
+        catalog=catalog,
+        embedding_spec=make_embedding_spec(),
+        vector_writer=VectorIndexWriter(backend=FakeVectorBackend()),
+        lexical_writer=LexicalIndexWriter(),
+    )
+
+    staging_root = manager._staging_root()
+
+    assert len(str(staging_root)) <= 160
+    assert staging_root != long_root / ".index-staging"
+
+
 def test_projection_rows_mark_both_readiness_flags_after_validated_build(tmp_path):
     chunks = make_chunks()
     spec = make_embedding_spec()

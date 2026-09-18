@@ -363,6 +363,22 @@ class IndexGenerationManager:
 
     def _staging_root(self) -> Path:
         root = self.artifact_root / ".index-staging"
+        # LanceDB/Arrow creates nested temporary files below the projection
+        # location.  On Windows those internal paths can exceed MAX_PATH even
+        # when the final generation path itself is usable.  Keep the staging
+        # root short and on the same volume so the final directory move stays
+        # atomic.  The digest prevents different artifact roots sharing a
+        # staging namespace.
+        if os.name == "nt" and len(str(root)) > 80:
+            digest = hashlib.sha256(str(self.artifact_root.resolve()).encode("utf-8")).hexdigest()[:16]
+            candidate = Path(tempfile.gettempdir()) / "tradingagents-index-staging" / digest
+            artifact_drive = os.path.splitdrive(str(self.artifact_root.resolve()))[0].casefold()
+            candidate_drive = os.path.splitdrive(str(candidate.resolve()))[0].casefold()
+            if artifact_drive and candidate_drive and artifact_drive != candidate_drive:
+                raise IncompatibleIndexGeneration(
+                    "short index staging root must be on the same volume as the artifact root"
+                )
+            root = candidate
         root.mkdir(parents=True, exist_ok=True)
         return root
 
