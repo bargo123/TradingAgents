@@ -10,6 +10,7 @@ from tradingagents.knowledge.catalog import KnowledgeCatalog
 from tradingagents.knowledge.identity import document_id_for
 from tradingagents.knowledge.models import (
     AliasRelation,
+    ChunkRecord,
     DocumentMetadata,
     EmbeddingSpec,
     IndexGeneration,
@@ -86,6 +87,35 @@ def test_remove_one_duplicate_alias_keeps_document_active(tmp_path):
 
     assert catalog.current_alias_count(document_id) == 1
     assert catalog.document_is_active(document_id) is True
+
+
+def test_chunks_for_document_returns_deterministic_chunk_ordinal_order(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("44" * 32)
+    catalog.register_document(make_parsed_document(document_id=document_id, source_hash="44" * 32))
+    chunks = (
+        ChunkRecord(
+            chunk_id="chk_z",
+            document_id=document_id,
+            source_hash="44" * 32,
+            text="second",
+            chunk_ordinal=1,
+        ),
+        ChunkRecord(
+            chunk_id="chk_a",
+            document_id=document_id,
+            source_hash="44" * 32,
+            text="first",
+            chunk_ordinal=0,
+        ),
+    )
+    catalog.store_chunks(document_id, chunks)
+
+    assert [chunk.chunk_id for chunk in catalog.chunks_for_document(document_id)] == [
+        "chk_a",
+        "chk_z",
+    ]
 
 
 def test_remove_last_alias_deactivates_default_view_but_keeps_rows(tmp_path):

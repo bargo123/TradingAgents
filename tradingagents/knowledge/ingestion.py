@@ -151,6 +151,28 @@ class KnowledgeIngestor:
                         changed = True
                         continue
 
+                    # Exact-byte aliases must also be deduplicated when the
+                    # first copy cannot produce a document (for example, an
+                    # image-only PDF classified as NEEDS_OCR). There is no
+                    # document id to alias in that case, but the duplicate
+                    # resource still belongs in the catalog as a duplicate.
+                    if repeated_hash:
+                        self.catalog.set_resource_state(
+                            resource.resource_id,
+                            IngestionState.DUPLICATE,
+                            source_hash=resource.source_hash,
+                        )
+                        self._event(
+                            run_id,
+                            resource,
+                            None,
+                            IngestionState.DUPLICATE,
+                            "DEDUPLICATE",
+                            counts,
+                        )
+                        changed = True
+                        continue
+
                     staged = self._stage_resource(run_id, resource, previous, counts)
                     if staged is not None:
                         pending[resource.source_hash] = staged

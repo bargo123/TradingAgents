@@ -26,6 +26,7 @@ from tradingagents.knowledge.models import (
     ParsedBlock,
     ParsedDocument,
 )
+from tradingagents.knowledge.scanned import ScanDecision
 from tradingagents.knowledge.vector_index import VectorIndexWriter
 
 
@@ -203,6 +204,38 @@ def test_incremental_run_skips_unchanged_and_deduplicates_bytes(tmp_path):
     assert second.counts[IngestionState.DUPLICATE] == 1
     assert harness.parser.parse_calls == []
     assert harness.embedder.embed_calls == 0
+
+
+def test_duplicate_image_only_alias_is_deduplicated_without_second_parse(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionMode
+
+    harness = ingestion_harness(tmp_path, duplicate=True)
+
+    class AlwaysNeedsOcr:
+        def classify(self, document):
+            return ScanDecision(
+                state=IngestionState.NEEDS_OCR,
+                document_id=document.document_id,
+                source_hash=document.source_hash,
+                total_pages=1,
+                text_bearing_pages=0,
+                image_bearing_pages=1,
+                parser_id=document.parser_id,
+                parser_version=document.parser_version,
+                parser_config_hash=document.parser_config_hash,
+            )
+
+    harness.ingestor.scanned_detector = AlwaysNeedsOcr()
+    result = harness.ingestor.run(IngestionMode.INCREMENTAL)
+
+    assert result.counts[IngestionState.NEEDS_OCR] == 1
+    assert result.counts[IngestionState.DUPLICATE] == 1
+    assert harness.parser.parse_calls == ["book.pdf"]
+    assert harness.catalog.get_alias(resource_id_for("copy.pdf")) is None
+    with sqlite3.connect(harness.catalog.path) as connection:
+        assert connection.execute(
+            "SELECT state FROM knowledge_resources WHERE relative_path = ?", ("copy.pdf",)
+        ).fetchone()[0] == IngestionState.DUPLICATE.value
 
 
 def test_remove_one_alias_then_last_alias_updates_default_activity(tmp_path):

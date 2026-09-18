@@ -425,7 +425,14 @@ class KnowledgeCatalog:
                 "SELECT provenance_json FROM knowledge_chunks WHERE document_id = ? ORDER BY chunk_id",
                 (document_id,),
             ).fetchall()
-        return tuple(ChunkRecord.from_dict(json.loads(row["provenance_json"])) for row in rows)
+        # Chunk caches and projection writers use the deterministic semantic
+        # order represented by ``chunk_ordinal``.  The SQLite row key is the
+        # hash-derived chunk id, so lexical SQL ordering is not the cache
+        # identity order and would force safe cache misses on a later
+        # incremental publication.
+        chunks = [ChunkRecord.from_dict(json.loads(row["provenance_json"])) for row in rows]
+        chunks.sort(key=lambda chunk: (chunk.chunk_ordinal, chunk.chunk_id))
+        return tuple(chunks)
 
     def discard_staged_run(self, run_id: str) -> None:
         """Remove unaliased document/chunk rows created by an interrupted run."""

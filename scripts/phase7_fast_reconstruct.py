@@ -70,7 +70,13 @@ class CacheAwareIngestor(KnowledgeIngestor):
             if payload.get("embedding_spec") != self.embedder.spec.to_dict():
                 raise ValueError("embedding specification mismatch")
             expected_ids = [chunk.chunk_id for chunk in chunks]
-            if payload.get("chunk_ids") != expected_ids:
+            cached_ids = payload.get("chunk_ids")
+            if (
+                not isinstance(cached_ids, list)
+                or len(cached_ids) != len(expected_ids)
+                or len(set(cached_ids)) != len(cached_ids)
+                or set(cached_ids) != set(expected_ids)
+            ):
                 raise ValueError("chunk identity/content/chunker mismatch")
             vectors = tuple(tuple(float(value) for value in row) for row in payload["vectors"])
             if len(vectors) != len(chunks) or any(
@@ -79,7 +85,12 @@ class CacheAwareIngestor(KnowledgeIngestor):
                 for vector in vectors
             ):
                 raise ValueError("embedding dimension or finite-value mismatch")
-            return vectors
+            # Cache identity is the deterministic chunk-id set.  A catalog
+            # reload may present those same chunks in a different stable
+            # order, so align vectors by id instead of recomputing a valid
+            # cache merely because list order changed.
+            vectors_by_id = dict(zip(cached_ids, vectors, strict=True))
+            return tuple(vectors_by_id[chunk_id] for chunk_id in expected_ids)
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             self.cache_mismatches.add(document_id)
             raise ValueError(str(exc)) from exc
