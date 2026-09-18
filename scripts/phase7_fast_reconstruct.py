@@ -142,8 +142,8 @@ def main() -> int:
         parser_config_hash="sha256:" + hashlib.sha256(
             b"pypdfium2-page-v1|ocr=false|deterministic-page-order=true"
         ).hexdigest(),
-        worker_count=12,
-        embedding_batch_size=128,
+        worker_count=6,
+        embedding_batch_size=64,
     )
     scanner = FilteredScanner(SourceScanner(config))
     embedder = FastEmbedProvider.from_config(config)
