@@ -65,3 +65,49 @@ decoder-only model. These acceptance tests are not a production checkpoint.
 Phase 12 owns fixture and smoke expansion. Phase 11 has no merge, deployment,
 Ollama replacement, live trading, or promotion boundary; any adapter remains a
 research artifact until separately reviewed and governed.
+
+## Bounded shadow-data collection
+
+When the real Phase 10 generation has no eligible examples, use the bounded
+EURUSD lifecycle below to collect one auditable shadow decision. It reuses the
+existing collector/evaluator and never sends an order:
+
+```powershell
+python scripts/phase11_shadow_cycle.py collect `
+  --db-path C:\AITrading\TradingAgents\data_cache\phase11-shadow.db `
+  --phase7-root C:\p7fast `
+  --embedding-model-path C:\path\to\local\bge-small `
+  --phase8-root C:\AITrading\TradingAgents\data_cache\phase11-phase8 `
+  --phase10-output-root C:\AITrading\TradingAgents\data_cache\phase11-phase10-next `
+  --runtime-cache-dir C:\AITrading\TradingAgents\data_cache\phase11-runtime `
+  --phase9-audit C:\AITrading\TradingAgents\data_cache\phase11-runtime\evidence_runtime\evidence_audit.sqlite3
+```
+
+The command prints `SHADOW ONLY — NO ORDER WILL BE SENT` and emits bounded JSON
+metadata. After the approved shortest horizon (300 seconds plus the existing
+30-second observation tolerance) has elapsed, run the evaluation stage once:
+
+```powershell
+python scripts/phase11_shadow_cycle.py evaluate `
+  --db-path C:\AITrading\TradingAgents\data_cache\phase11-shadow.db `
+  --phase7-root C:\p7fast `
+  --embedding-model-path C:\path\to\local\bge-small `
+  --phase8-root C:\AITrading\TradingAgents\data_cache\phase11-phase8 `
+  --phase10-output-root C:\AITrading\TradingAgents\data_cache\phase11-phase10-next `
+  --runtime-cache-dir C:\AITrading\TradingAgents\data_cache\phase11-runtime `
+  --phase9-audit C:\AITrading\TradingAgents\data_cache\phase11-runtime\evidence_runtime\evidence_audit.sqlite3
+```
+
+The Phase 7 root and embedding model are read-only and offline. Phase 8 is
+append-only; use a dedicated operator root rather than an acceptance fixture.
+The Phase 10 output root must be new or empty; an existing non-empty root is
+rejected without deletion or overwrite. The JSON report includes candidate and
+eligible counts, reason counts, and a metadata-only `exclusion_audit` mapping
+each Phase 10 reason to its upstream status/field values. It never includes
+prompts, completions, reasoning, credentials, or rendered evidence text.
+
+If the evaluation is not mature, the command returns `PENDING` and does not
+call MT5. If the resulting eligible count is zero, stop and diagnose the
+reported upstream reasons; do not weaken Phase 10 gates, start bulk collection,
+or attempt real training. Phase 7 remains frozen and Phase 12 remains out of
+scope.
