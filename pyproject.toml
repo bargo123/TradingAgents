@@ -45,6 +45,7 @@ knowledge = [
     "fastembed>=0.4",
     "onnxruntime>=1.18",
     "lancedb>=0.18",
+    "pypdfium2>=4.30",
 ]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
 # stays lean: pip install "tradingagents[bedrock]".
