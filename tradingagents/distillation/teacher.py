@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from time import perf_counter
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
 from langchain_core.callbacks import BaseCallbackHandler
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, StringConstraints, ValidationError
 
 from tradingagents.llm_clients.openai_client import OllamaChatOpenAI
 
-from .models import Difficulty, LessonType, TeacherConfig
+from .models import Difficulty, GroundingClaim, LessonType, TeacherConfig
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,38 @@ class TeacherLesson(BaseModel):
     grounding_claims: list[TeacherClaim] = Field(min_length=1, max_length=32)
 
 
+TEACHER_TRANSPORT_SCHEMA_VERSION = "phase11a-teacher-atom.v1"
+_DEFAULT_SYSTEM_INSTRUCTION = "Explain the supplied source evidence only."
+_PACKET_ALIAS_RE = re.compile(r"^B[0-9]+$")
+_PacketAlias = Annotated[str, StringConstraints(strict=True, pattern=r"^B[0-9]+$")]
+
+
+class TeacherAtomClaim(BaseModel):
+    """Compact claim payload using packet-local aliases only."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    claim: StrictStr = Field(min_length=1, max_length=300)
+    refs: list[_PacketAlias] = Field(min_length=1, max_length=4)
+
+
+class TeacherAtom(BaseModel):
+    """Bounded semantic response exchanged with the local teacher.
+
+    This is transport-only.  ``hydrate_teacher_atom`` restores immutable
+    Phase 7 references before the normal grounding and quality gates run.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    lesson_type: LessonType
+    difficulty: Difficulty
+    topic: StrictStr = Field(min_length=1, max_length=100)
+    question: StrictStr = Field(min_length=1, max_length=250)
+    answer: StrictStr = Field(min_length=1, max_length=800)
+    claims: list[TeacherAtomClaim] = Field(min_length=1, max_length=3)
+
+
 @dataclass
 class TeacherMetrics:
     calls: int = 0
@@ -105,6 +138,12 @@ class TeacherMetrics:
 
 class _GroundingReferenceError(ValueError):
     pass
+
+
+class _TeacherAliasError(_GroundingReferenceError):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
 
 
 def _safe_int(value: Any) -> int | None:
@@ -241,6 +280,115 @@ def _packet_prompt(packet: Any) -> list[dict[str, str]]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def packet_aliases(packet: Any) -> dict[str, Any]:
+    """Return deterministic packet-local aliases for immutable source refs."""
+
+    blocks_value = getattr(packet, "blocks", None)
+    if blocks_value is None and isinstance(packet, Mapping):
+        blocks_value = packet.get("blocks", ())
+    blocks = list(blocks_value or ())
+    if not blocks:
+        raise ValueError("teacher packet has no source blocks")
+    aliases: dict[str, Any] = {}
+    for index, block in enumerate(blocks):
+        ref = block.get("ref", block) if isinstance(block, Mapping) else getattr(block, "ref", block)
+        if ref is None:
+            raise ValueError("teacher packet block has no source reference")
+        aliases[f"B{index}"] = ref
+    return aliases
+
+
+def _ref_value(ref: Any, name: str, default: Any = None) -> Any:
+    if isinstance(ref, Mapping):
+        return ref.get(name, default)
+    return getattr(ref, name, default)
+
+
+def _compact_packet_prompt(packet: Any) -> list[dict[str, str]]:
+    """Build a source-grounded prompt whose response cites only ``B*`` aliases."""
+
+    aliases = packet_aliases(packet)
+    blocks_value = getattr(packet, "blocks", None)
+    if blocks_value is None and isinstance(packet, Mapping):
+        blocks_value = packet.get("blocks", ())
+    blocks = list(blocks_value or ())
+    evidence: list[str] = []
+    for index, block in enumerate(blocks):
+        ref = aliases[f"B{index}"]
+        page = _ref_value(ref, "page")
+        page_start = _ref_value(ref, "page_start")
+        page_end = _ref_value(ref, "page_end")
+        section = _ref_value(ref, "section")
+        location_parts = []
+        if page is not None:
+            location_parts.append(f"page={page}")
+        elif page_start is not None or page_end is not None:
+            location_parts.append(f"pages={page_start}-{page_end}")
+        if section:
+            location_parts.append(f"section={section}")
+        location = f" ({', '.join(location_parts)})" if location_parts else ""
+        evidence.append(
+            f"ALIAS: B{index}\n"
+            f"SOURCE: {_ref_value(ref, 'source_filename', '')}{location}\n"
+            f"CONTENT_TYPE: {_ref_value(block, 'content_type', 'PROSE')}\n"
+            f"TEXT:\n{_ref_value(block, 'text', '')}"
+        )
+    system = (
+        "You are a local, source-grounded knowledge teacher. Return only the requested "
+        "JSON object matching the schema. Produce exactly one concise educational lesson "
+        "with exactly one grounding claim. "
+        "Use only the supplied source blocks. Cite exact packet-local aliases such as B0 "
+        "in every claim. Use each alias at most once in the whole response; combine "
+        "supporting details into one claim instead of repeating an alias. Do not emit "
+        "full source references, metadata, trading labels, future outcomes, reasoning, "
+        "or essays. Keep the answer concise."
+    )
+    user = (
+        "Create one useful lesson from the supplied evidence. The answer must explain one "
+        "concept or mechanism and only limitations supported by the packet. Return exactly "
+        "one grounding claim with one or more exact aliases, without repeating any alias.\n\n"
+        + "\n\n---\n\n".join(evidence)
+    )
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+def hydrate_teacher_atom(atom: TeacherAtom | Mapping[str, Any], packet: Any) -> dict[str, Any]:
+    """Hydrate compact aliases into exact packet refs and final candidate fields."""
+
+    if not isinstance(atom, TeacherAtom):
+        atom = TeacherAtom.model_validate(atom)
+    aliases = packet_aliases(packet)
+    used_aliases: set[str] = set()
+    source_refs: list[Any] = []
+    claims: list[GroundingClaim] = []
+    for atom_claim in atom.claims:
+        claim_refs: list[Any] = []
+        for alias in atom_claim.refs:
+            if not _PACKET_ALIAS_RE.fullmatch(alias):
+                raise _TeacherAliasError("ALIAS_MALFORMED")
+            if alias in used_aliases:
+                raise _TeacherAliasError("ALIAS_DUPLICATE")
+            ref = aliases.get(alias)
+            if ref is None:
+                raise _TeacherAliasError("ALIAS_UNKNOWN")
+            used_aliases.add(alias)
+            claim_refs.append(ref)
+            source_refs.append(ref)
+        claims.append(GroundingClaim(atom_claim.claim, tuple(claim_refs)))
+    if not source_refs or not claims:
+        raise _TeacherAliasError("ALIAS_EMPTY")
+    return {
+        "lesson_type": atom.lesson_type,
+        "topic": atom.topic,
+        "difficulty": atom.difficulty,
+        "system": _DEFAULT_SYSTEM_INSTRUCTION,
+        "user": atom.question,
+        "assistant": atom.answer,
+        "source_refs": tuple(source_refs),
+        "claims": tuple(claims),
+    }
+
+
 def _validate_packet_refs(lesson: TeacherLesson, packet: Any) -> None:
     available = {_ref_id(ref) for ref in (getattr(packet, "refs", ()) or ())}
     if not available or not set(lesson.source_refs).issubset(available):
@@ -303,7 +451,7 @@ class OllamaTeacher:
         else:
             self._llm = client_factory(config, self.endpoint)
         self._structured = self._llm.with_structured_output(
-            TeacherLesson,
+            TeacherAtom,
             method="json_schema",
             reasoning_effort="none",
             extra_body={"think": False},
@@ -314,7 +462,8 @@ class OllamaTeacher:
         self.metrics.calls += 1
         prompt: list[dict[str, str]] | None = None
         diagnostics: dict[str, Any] = {
-            "schema": TeacherLesson.__name__,
+            "schema": TeacherAtom.__name__,
+            "transport_schema_version": TEACHER_TRANSPORT_SCHEMA_VERSION,
             "response_format": "json_schema",
             "reasoning_effort": "none",
             "retry_count": 0,
@@ -322,15 +471,12 @@ class OllamaTeacher:
         observation = _CallObservation()
         callback = _CallMetadataHandler(observation)
         try:
-            prompt = _packet_prompt(packet)
+            prompt = _compact_packet_prompt(packet)
             raw = self._structured.invoke(prompt, config={"callbacks": [callback]})
             if observation.provider_status == "UNKNOWN":
                 observation.provider_status = "SUCCESS"
-            lesson = raw if isinstance(raw, TeacherLesson) else TeacherLesson.model_validate(raw)
-            _validate_packet_refs(lesson, packet)
-            candidate = lesson.model_dump(mode="json")
-            candidate["source_refs"] = list(lesson.source_refs)
-            candidate["grounding_claims"] = [claim.model_dump(mode="json") for claim in lesson.grounding_claims]
+            atom = raw if isinstance(raw, TeacherAtom) else TeacherAtom.model_validate(raw)
+            candidate = hydrate_teacher_atom(atom, packet)
             return TeacherResult(
                 candidate=candidate,
                 provider=self.provider,
@@ -461,11 +607,16 @@ def teacher_from_environment(environ: Mapping[str, str] | None = None) -> Teache
 __all__ = [
     "FakeTeacher",
     "OllamaTeacher",
+    "TEACHER_TRANSPORT_SCHEMA_VERSION",
     "Teacher",
+    "TeacherAtom",
+    "TeacherAtomClaim",
     "TeacherClaim",
     "TeacherLesson",
     "TeacherMetrics",
     "TeacherResult",
     "UnconfiguredTeacher",
+    "hydrate_teacher_atom",
+    "packet_aliases",
     "teacher_from_environment",
 ]

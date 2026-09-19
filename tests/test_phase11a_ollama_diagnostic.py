@@ -3,13 +3,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts.phase11a_ollama_diagnostic import select_real_packets
+from scripts.phase11a_ollama_diagnostic import _compact_validator, select_real_packets
+from tests.fixtures.phase11a_knowledge import fixture_source
 from tradingagents.distillation.ollama_diagnostic import (
     build_native_payload,
     classify_diagnostic_error,
     run_native_call,
     summarise_native_response,
 )
+from tradingagents.distillation.planning import PlannerConfig, SourcePacketPlanner
 
 
 def test_native_payload_uses_json_schema_and_bounded_native_controls():
@@ -153,6 +155,54 @@ def test_select_real_packets_is_deterministic_and_bounded():
     selected = select_real_packets(packets, (4, 2, 3))
 
     assert [packet.packet_id for packet in selected] == ["4", "2", "3"]
+
+
+def test_compact_validator_reports_only_safe_size_and_status_metadata():
+    packet = SourcePacketPlanner.plan(
+        fixture_source(), (), PlannerConfig(max_blocks=1, max_chars=2_000, max_estimated_tokens=400)
+    ).packets[0]
+    telemetry = {}
+    validator = _compact_validator(packet, telemetry)
+
+    result = validator(
+        {
+            "lesson_type": "DEFINITION",
+            "difficulty": "FOUNDATIONAL",
+            "topic": "order flow imbalance",
+            "question": "What is the concept?",
+            "answer": "The supplied evidence describes the concept.",
+            "claims": [{"claim": "The supplied source describes the concept.", "refs": ["B0"]}],
+        }
+    )
+
+    assert result is None
+    assert telemetry["schema_status"] == "VALID"
+    assert telemetry["grounding_status"] == "VALID"
+    assert telemetry["quality_status"] == "VALID"
+    assert telemetry["compact_response_chars"] > 0
+    assert telemetry["hydrated_example_chars"] > telemetry["compact_response_chars"]
+
+
+def test_compact_validator_reports_bounded_grounding_reason_only():
+    packet = SourcePacketPlanner.plan(
+        fixture_source(), (), PlannerConfig(max_blocks=1, max_chars=2_000, max_estimated_tokens=400)
+    ).packets[0]
+    telemetry = {}
+    validator = _compact_validator(packet, telemetry)
+
+    result = validator(
+        {
+            "lesson_type": "DEFINITION",
+            "difficulty": "FOUNDATIONAL",
+            "topic": "order flow imbalance",
+            "question": "What is the concept?",
+            "answer": "The supplied evidence describes the concept.",
+            "claims": [{"claim": "The moon is made of cheese.", "refs": ["B0"]}],
+        }
+    )
+
+    assert result == "GROUNDING_FAILED"
+    assert telemetry["grounding_reason"] == "UNSUPPORTED_CLAIM"
 
 
 @pytest.mark.parametrize("indexes", [(4, 4), (5,), ()])

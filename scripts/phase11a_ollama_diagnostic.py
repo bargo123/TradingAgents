@@ -28,9 +28,10 @@ from tradingagents.distillation.pilot import select_representative_packets
 from tradingagents.distillation.planning import PlannerConfig, SourcePacketPlanner
 from tradingagents.distillation.quality import QualityPolicy
 from tradingagents.distillation.teacher import (
-    TeacherLesson,
-    _packet_prompt,
-    _validate_packet_refs,
+    TEACHER_TRANSPORT_SCHEMA_VERSION,
+    TeacherAtom,
+    _compact_packet_prompt,
+    hydrate_teacher_atom,
 )
 
 
@@ -73,20 +74,43 @@ def _tiny_messages() -> tuple[list[dict[str, str]], int, int]:
     )
 
 
-def _real_validator(packet):
+def _compact_validator(packet, telemetry: dict[str, Any]):
     grounding = GroundingValidator()
     quality = QualityPolicy()
 
     def validate(value: Any) -> str | None:
-        lesson = TeacherLesson.model_validate(value)
-        _validate_packet_refs(lesson, packet)
-        candidate = _coerce_candidate(lesson.model_dump(mode="json"), packet)
+        try:
+            atom = TeacherAtom.model_validate(value)
+        except Exception:
+            telemetry["schema_status"] = "INVALID"
+            return "SCHEMA_INVALID"
+        telemetry["compact_response_chars"] = len(
+            json.dumps(atom.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        )
+        try:
+            hydrated = hydrate_teacher_atom(atom, packet)
+            candidate = _coerce_candidate(hydrated, packet)
+        except Exception as error:
+            telemetry["schema_status"] = "VALID"
+            telemetry["grounding_status"] = "FAILED"
+            telemetry["grounding_reason"] = getattr(error, "code", "HYDRATION_FAILED")
+            return "GROUNDING_FAILED"
+        telemetry["schema_status"] = "VALID"
+        telemetry["grounding_status"] = "VALID"
+        telemetry["hydrated_example_chars"] = len(
+            json.dumps(candidate.to_dict(), sort_keys=True, separators=(",", ":"))
+        )
         grounding_report = grounding.validate(candidate, packet)
         if not getattr(grounding_report, "accepted", bool(grounding_report)):
+            telemetry["grounding_status"] = "FAILED"
+            telemetry["grounding_reason"] = getattr(grounding_report, "reason", None)
             return "GROUNDING_FAILED"
         quality_report = quality.validate(candidate, packet)
         if not getattr(quality_report, "accepted", bool(quality_report)):
+            telemetry["quality_status"] = "FAILED"
+            telemetry["quality_reason"] = getattr(quality_report, "reason", None)
             return "QUALITY_FAILED"
+        telemetry["quality_status"] = "VALID"
         return None
 
     return validate
@@ -190,17 +214,22 @@ def _run_model(
             diagnostics.append(medium)
 
             def run_real(name: str, real_packet) -> dict[str, Any]:
-                messages = _packet_prompt(real_packet)
+                messages = _compact_packet_prompt(real_packet)
                 source_chars = sum(len(block.text) for block in real_packet.blocks)
                 request_chars = sum(len(item["content"]) for item in messages)
                 instruction_chars = max(0, request_chars - source_chars)
+                telemetry: dict[str, Any] = {
+                    "schema_status": "NOT_PARSED",
+                    "grounding_status": "NOT_CHECKED",
+                    "quality_status": "NOT_CHECKED",
+                }
                 result = run_native_call(
                     client,
                     model=model,
                     test_name=name,
                     messages=messages,
-                    schema=TeacherLesson.model_json_schema(),
-                    validator=_real_validator(real_packet),
+                    schema=TeacherAtom.model_json_schema(),
+                    validator=_compact_validator(real_packet, telemetry),
                     context_tokens=context_tokens,
                     max_tokens=max_tokens,
                     keep_alive="5m",
@@ -209,6 +238,7 @@ def _run_model(
                     load_phase="warm_candidate",
                 )
                 result["packet_id"] = real_packet.packet_id
+                result.update(telemetry)
                 result["context_candidates"] = _context_fit(result, context_candidates)
                 return result
 
@@ -234,6 +264,7 @@ def _run_model(
         "model": model,
         "context_tokens": context_tokens,
         "max_tokens": max_tokens,
+        "transport_schema_version": TEACHER_TRANSPORT_SCHEMA_VERSION,
         "timeout_seconds": timeout_seconds,
         "retry_count": 0,
         "diagnostics": diagnostics,

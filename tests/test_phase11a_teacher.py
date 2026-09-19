@@ -9,7 +9,7 @@ from tradingagents.distillation.planning import PlannerConfig, SourcePacketPlann
 from tradingagents.distillation.teacher import (
     FakeTeacher,
     OllamaTeacher,
-    TeacherLesson,
+    TeacherAtom,
     teacher_from_environment,
 )
 
@@ -70,20 +70,17 @@ def _plan_one():
     )
 
 
-def _lesson(packet):
-    ref = packet.refs[0]
-    return TeacherLesson(
+def _atom():
+    return TeacherAtom(
         lesson_type="DEFINITION",
         topic="order flow imbalance",
         difficulty="FOUNDATIONAL",
-        system_instruction="Explain only the supplied source evidence.",
-        user_instruction="What does this concept mean and what limitation is stated?",
-        assistant_target="It describes a relationship in the supplied market-microstructure evidence.",
-        source_refs=[ref.chunk_id],
-        grounding_claims=[
+        question="What does this concept mean and what limitation is stated?",
+        answer="It describes a relationship in the supplied market-microstructure evidence.",
+        claims=[
             {
                 "claim": "The supplied source describes the concept.",
-                "source_refs": [ref.chunk_id],
+                "refs": ["B0"],
             }
         ],
     )
@@ -92,7 +89,7 @@ def _lesson(packet):
 def test_ollama_teacher_uses_strict_json_schema_and_exact_packet_refs():
     plan = _plan_one()
     packet = plan.packets[0]
-    fake = _FakeLLM(_lesson(packet))
+    fake = _FakeLLM(_atom())
     teacher = OllamaTeacher(
         TeacherConfig(provider="ollama", model="qwen3.5:4b", max_tokens=512),
         client_factory=lambda config, endpoint: fake,
@@ -103,12 +100,12 @@ def test_ollama_teacher_uses_strict_json_schema_and_exact_packet_refs():
     assert result.ok
     assert result.provider == "ollama"
     assert result.model == "qwen3.5:4b"
-    assert result.candidate["source_refs"] == [packet.refs[0].chunk_id]
-    assert fake.schema is TeacherLesson
+    assert result.candidate["source_refs"] == (packet.refs[0],)
+    assert fake.schema is TeacherAtom
     assert fake.kwargs["method"] == "json_schema"
     assert fake.kwargs["reasoning_effort"] == "none"
     assert fake.kwargs["extra_body"] == {"think": False}
-    assert packet.refs[0].chunk_id in str(fake.structured.messages)
+    assert "B0" in str(fake.structured.messages)
     assert "prompt" not in result.diagnostics
     assert "completion" not in result.diagnostics
 
@@ -132,7 +129,7 @@ def test_ollama_teacher_actual_client_sends_json_schema_payload():
                         "index": 0,
                         "message": {
                             "role": "assistant",
-                            "content": _lesson(packet).model_dump_json(),
+                            "content": _atom().model_dump_json(),
                         },
                         "finish_reason": "stop",
                     }
@@ -169,7 +166,7 @@ def test_ollama_teacher_actual_client_sends_json_schema_payload():
     assert result.diagnostics["total_tokens"] == 50
     body = calls[0]
     assert body["response_format"]["type"] == "json_schema"
-    assert body["response_format"]["json_schema"]["name"] == "TeacherLesson"
+    assert body["response_format"]["json_schema"]["name"] == "TeacherAtom"
     assert body["reasoning_effort"] == "none"
     assert body["max_tokens"] == 512
     assert body["think"] is False
@@ -202,7 +199,7 @@ def test_ollama_teacher_fails_closed_on_schema_invalid_response():
 
 def test_ollama_teacher_records_safe_call_status_and_disables_implicit_retries():
     packet = _plan_one().packets[0]
-    fake = _FakeLLM(_lesson(packet))
+    fake = _FakeLLM(_atom())
     teacher = OllamaTeacher(
         TeacherConfig(provider="ollama", model="qwen3.5:4b", max_tokens=512),
         max_retries=0,
@@ -239,8 +236,13 @@ def test_ollama_teacher_classifies_timeout_without_private_error_text():
 
 def test_ollama_teacher_rejects_unknown_source_reference():
     packet = _plan_one().packets[0]
-    candidate = _lesson(packet).model_copy(
-        update={"source_refs": ["not-a-packet-ref"], "grounding_claims": []}
+    candidate = TeacherAtom(
+        lesson_type="DEFINITION",
+        difficulty="FOUNDATIONAL",
+        topic="order flow imbalance",
+        question="What does this concept mean?",
+        answer="The supplied source describes the concept.",
+        claims=[{"claim": "The supplied source describes the concept.", "refs": ["B9"]}],
     )
     fake = _FakeLLM(candidate)
     teacher = OllamaTeacher(
