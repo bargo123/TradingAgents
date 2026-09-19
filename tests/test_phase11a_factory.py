@@ -5,7 +5,7 @@ from tradingagents.distillation.factory import DistillationFactory
 from tradingagents.distillation.grounding import GroundingValidator
 from tradingagents.distillation.planning import PlannerConfig, SourcePacketPlanner
 from tradingagents.distillation.quality import QualityPolicy
-from tradingagents.distillation.teacher import FakeTeacher
+from tradingagents.distillation.teacher import FakeTeacher, TeacherResult
 
 
 def test_factory_coerces_structured_candidate_and_records_failures(tmp_path: Path):
@@ -85,6 +85,36 @@ def test_factory_rejects_teacher_fingerprint_override(tmp_path: Path):
     report = DistillationFactory().distill(plan, FakeTeacher(candidate), tmp_path)
     assert report.accepted == 0
     assert report.excluded >= 1
+
+
+def test_factory_preserves_typed_teacher_failure_categories(tmp_path: Path):
+    plan = SourcePacketPlanner.plan(
+        fixture_source(), ("liquidity",), PlannerConfig(max_blocks=1)
+    )
+    report = DistillationFactory().distill(
+        plan,
+        FakeTeacher(error="schema", provider="ollama", model="qwen3.5:4b"),
+        tmp_path,
+    )
+    import json
+
+    manifest = json.loads((Path(report.generation) / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["exclusion_reasons"] == {"TEACHER_FAILED": report.excluded}
+
+    class SchemaFailureTeacher(FakeTeacher):
+        def generate(self, packet, config):
+            return TeacherResult(
+                provider="ollama",
+                model="qwen3.5:4b",
+                error_code="SCHEMA_INVALID",
+            )
+
+    schema_root = tmp_path / "schema"
+    schema_report = DistillationFactory().distill(plan, SchemaFailureTeacher(), schema_root)
+    schema_manifest = json.loads(
+        (Path(schema_report.generation) / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert schema_manifest["exclusion_reasons"] == {"SCHEMA_INVALID": schema_report.excluded}
 
 
 def test_factory_preserves_and_binds_candidate_provenance_and_quality_metadata(tmp_path: Path):

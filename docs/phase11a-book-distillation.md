@@ -38,6 +38,36 @@ knowledge-distill validate --generation C:\path\to\phase11a\generation-...
 knowledge-distill inspect --generation C:\path\to\phase11a\generation-...
 ```
 
+## Explicit local Ollama teacher pilot
+
+Planning and validation never construct a teacher.  A real teacher run is a
+separate, bounded operator action.  Configure the local endpoint and model
+explicitly, then run no more than ten representative packets:
+
+```powershell
+$env:PHASE11A_TEACHER_PROVIDER = "ollama"
+$env:PHASE11A_TEACHER_ENDPOINT = "http://localhost:11434/v1"
+$env:PHASE11A_TEACHER_MODEL = "qwen3.5:4b"
+$env:PHASE11A_TEACHER_TEMPERATURE = "0"
+$env:PHASE11A_TEACHER_MAX_TOKENS = "1024"
+$env:PHASE11A_TEACHER_TIMEOUT_SECONDS = "120"
+
+python scripts/phase11a_teacher_pilot.py `
+  --phase7-root C:\p7fast `
+  --expected-generation-id gen_607de64268a04a6ab09ffa1e160fc280 `
+  --output-root C:\AITrading\TradingAgents\data_cache\phase11a-ollama-pilot `
+  --count 5
+```
+
+The adapter uses the Ollama OpenAI-compatible endpoint with
+`response_format=json_schema`, `reasoning_effort=none`, temperature `0`, and a
+bounded token limit.  It accepts only the closed lesson schema and exact packet
+reference IDs.  Provider failures, schema failures, grounding failures, and
+quality failures are excluded rather than repaired; prompts, completions, and
+private reasoning are never persisted.  The pilot reports latency and linear
+runtime projections for 100, 1,000, and 4,351 packets.  It never starts a full
+corpus run automatically.
+
 `plan` performs no teacher calls.  `validate` and `inspect` perform no source
   or model construction.  `distill` returns
   `DISTILLATION_TEACHER_NOT_CONFIGURED` when no explicit adapter is available;

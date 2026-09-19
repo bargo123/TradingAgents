@@ -15,6 +15,7 @@ from .models import (
     CandidateStatus,
     DatasetExclusion,
     Difficulty,
+    ExclusionReason,
     GroundingClaim,
     KnowledgeExample,
     LessonType,
@@ -249,9 +250,13 @@ class DistillationFactory:
                 result = teacher.generate(packet, getattr(teacher, "config", None))
                 error_code = _get(result, "error_code")
                 if error_code:
+                    try:
+                        failure_reason = ExclusionReason(str(error_code))
+                    except ValueError:
+                        failure_reason = ExclusionReason.TEACHER_FAILED
                     excluded.append(
                         DatasetExclusion(
-                            "TEACHER_FAILED",
+                            failure_reason,
                             packet_id=packet_id,
                             diagnostic=str(error_code),
                             source_refs=tuple(_get(packet, "refs", ()) or ()),
