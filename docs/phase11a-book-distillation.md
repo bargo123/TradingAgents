@@ -51,6 +51,7 @@ $env:PHASE11A_TEACHER_MODEL = "qwen3.5:4b"
 $env:PHASE11A_TEACHER_TEMPERATURE = "0"
 $env:PHASE11A_TEACHER_MAX_TOKENS = "1024"
 $env:PHASE11A_TEACHER_TIMEOUT_SECONDS = "120"
+$env:PHASE11A_TEACHER_MAX_RETRIES = "0"
 
 python scripts/phase11a_teacher_pilot.py `
   --phase7-root C:\p7fast `
@@ -64,9 +65,12 @@ The adapter uses the Ollama OpenAI-compatible endpoint with
 bounded token limit.  It accepts only the closed lesson schema and exact packet
 reference IDs.  Provider failures, schema failures, grounding failures, and
 quality failures are excluded rather than repaired; prompts, completions, and
-private reasoning are never persisted.  The pilot reports latency and linear
-runtime projections for 100, 1,000, and 4,351 packets.  It never starts a full
-corpus run automatically.
+private reasoning are never persisted.  Automatic retries default to zero and
+are bounded to at most one when explicitly configured.  The pilot reports
+per-call latency, provider status, timeout/error class, finish reason, safe
+token counts when returned, retry count, and linear runtime projections for
+100, 1,000, and 4,351 packets.  It never starts a full corpus run
+automatically.
 
 `plan` performs no teacher calls.  `validate` and `inspect` perform no source
   or model construction.  `distill` returns

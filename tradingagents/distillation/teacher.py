@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Protocol
 
+from langchain_core.callbacks import BaseCallbackHandler
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, ValidationError
 
 from tradingagents.llm_clients.openai_client import OllamaChatOpenAI
@@ -68,6 +69,7 @@ class TeacherMetrics:
     grounding_failures: int = 0
     provider_failures: int = 0
     latencies: list[float] = field(default_factory=list)
+    call_diagnostics: list[Mapping[str, Any]] = field(default_factory=list)
 
     @property
     def average_latency_seconds(self) -> float:
@@ -78,6 +80,16 @@ class TeacherMetrics:
         return max(self.latencies, default=0.0)
 
     def to_dict(self) -> dict[str, Any]:
+        input_tokens = [
+            item.get("input_tokens")
+            for item in self.call_diagnostics
+            if isinstance(item.get("input_tokens"), int)
+        ]
+        output_tokens = [
+            item.get("output_tokens")
+            for item in self.call_diagnostics
+            if isinstance(item.get("output_tokens"), int)
+        ]
         return {
             "calls": self.calls,
             "schema_failures": self.schema_failures,
@@ -85,11 +97,102 @@ class TeacherMetrics:
             "provider_failures": self.provider_failures,
             "average_latency_seconds": round(self.average_latency_seconds, 3),
             "max_latency_seconds": round(self.max_latency_seconds, 3),
+            "input_tokens": sum(input_tokens) if input_tokens else None,
+            "output_tokens": sum(output_tokens) if output_tokens else None,
+            "call_diagnostics": [dict(item) for item in self.call_diagnostics],
         }
 
 
 class _GroundingReferenceError(ValueError):
     pass
+
+
+def _safe_int(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    return None
+
+
+def _failure_class(exc: BaseException) -> str:
+    name = type(exc).__name__.casefold()
+    module = type(exc).__module__.casefold()
+    if isinstance(exc, TimeoutError) or "timeout" in name or "timeout" in module:
+        return "PROVIDER_TIMEOUT"
+    if "jsondecode" in name or ("json" in name and "decode" in name):
+        return "JSON_DECODE"
+    if "outputparser" in name or "parse" in name:
+        return "STRUCTURED_OUTPUT_ERROR"
+    if "connection" in name or "connect" in name:
+        return "CONNECTION_ERROR"
+    if getattr(exc, "status_code", None) is not None or "status" in name or "http" in name:
+        return "HTTP_ERROR"
+    return "PROVIDER_ERROR"
+
+
+@dataclass
+class _CallObservation:
+    provider_status: str = "UNKNOWN"
+    finish_reason: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    failure_class: str | None = None
+
+    def _update_mapping(self, value: Any) -> None:
+        if not isinstance(value, Mapping):
+            return
+        finish_reason = value.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason:
+            self.finish_reason = finish_reason
+        usage = value.get("token_usage") or value.get("usage") or value
+        if isinstance(usage, Mapping):
+            self.input_tokens = self.input_tokens or _safe_int(
+                usage.get("prompt_tokens", usage.get("input_tokens"))
+            )
+            self.output_tokens = self.output_tokens or _safe_int(
+                usage.get("completion_tokens", usage.get("output_tokens"))
+            )
+            self.total_tokens = self.total_tokens or _safe_int(usage.get("total_tokens"))
+
+    def update_from_response(self, response: Any) -> None:
+        self.provider_status = "SUCCESS"
+        self._update_mapping(getattr(response, "llm_output", None))
+        self._update_mapping(getattr(response, "response_metadata", None))
+        for generation_group in getattr(response, "generations", ()) or ():
+            for generation in generation_group or ():
+                self._update_mapping(getattr(generation, "generation_info", None))
+                message = getattr(generation, "message", None)
+                self._update_mapping(getattr(message, "response_metadata", None))
+                self._update_mapping(getattr(message, "usage_metadata", None))
+
+    def as_dict(self) -> dict[str, Any]:
+        if self.finish_reason in {"length", "max_tokens"} and self.failure_class is None:
+            failure_class = "OUTPUT_TRUNCATED"
+        else:
+            failure_class = self.failure_class
+        return {
+            "provider_status": self.provider_status,
+            "finish_reason": self.finish_reason,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "failure_class": failure_class,
+        }
+
+
+class _CallMetadataHandler(BaseCallbackHandler):
+    def __init__(self, observation: _CallObservation):
+        super().__init__()
+        self.observation = observation
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        self.observation.update_from_response(response)
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        self.observation.provider_status = "ERROR"
+        self.observation.failure_class = _failure_class(error)
 
 
 def _ref_id(ref: Any) -> str:
@@ -166,14 +269,24 @@ class OllamaTeacher:
 
     provider = "ollama"
 
-    def __init__(self, config: TeacherConfig, *, endpoint: str = "http://localhost:11434/v1", client_factory=None):
+    def __init__(
+        self,
+        config: TeacherConfig,
+        *,
+        endpoint: str = "http://localhost:11434/v1",
+        client_factory=None,
+        max_retries: int = 0,
+    ):
         if config.provider.lower() != "ollama":
             raise ValueError("OllamaTeacher requires provider=ollama")
         if not config.model.strip():
             raise ValueError("OllamaTeacher requires an explicit model")
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int) or not 0 <= max_retries <= 1:
+            raise ValueError("OllamaTeacher max_retries must be 0 or 1")
         self.config = config
         self.model = config.model
         self.endpoint = _normalise_endpoint(endpoint)
+        self.max_retries = max_retries
         self.metrics = TeacherMetrics()
         if client_factory is None:
             self._llm = OllamaChatOpenAI(
@@ -183,6 +296,7 @@ class OllamaTeacher:
                 temperature=config.temperature,
                 max_tokens=config.max_tokens,
                 timeout=config.timeout_seconds,
+                max_retries=max_retries,
                 reasoning_effort="none",
                 extra_body={"think": False},
             )
@@ -203,10 +317,15 @@ class OllamaTeacher:
             "schema": TeacherLesson.__name__,
             "response_format": "json_schema",
             "reasoning_effort": "none",
+            "retry_count": 0,
         }
+        observation = _CallObservation()
+        callback = _CallMetadataHandler(observation)
         try:
             prompt = _packet_prompt(packet)
-            raw = self._structured.invoke(prompt)
+            raw = self._structured.invoke(prompt, config={"callbacks": [callback]})
+            if observation.provider_status == "UNKNOWN":
+                observation.provider_status = "SUCCESS"
             lesson = raw if isinstance(raw, TeacherLesson) else TeacherLesson.model_validate(raw)
             _validate_packet_refs(lesson, packet)
             candidate = lesson.model_dump(mode="json")
@@ -219,35 +338,48 @@ class OllamaTeacher:
                 diagnostics=diagnostics,
             )
         except _GroundingReferenceError as exc:
+            if observation.provider_status == "UNKNOWN":
+                observation.provider_status = "SUCCESS"
+            observation.failure_class = "GROUNDING_FAILED"
             self.metrics.grounding_failures += 1
+            diagnostics["error_type"] = type(exc).__name__
             return TeacherResult(
                 provider=self.provider,
                 model=self.model,
                 error_code="GROUNDING_FAILED",
-                diagnostics={**diagnostics, "error_type": type(exc).__name__},
+                diagnostics=diagnostics,
             )
         except (ValidationError, TypeError, ValueError) as exc:
+            if observation.provider_status == "UNKNOWN":
+                observation.provider_status = "SUCCESS"
+            observation.failure_class = observation.failure_class or "SCHEMA_INVALID"
             self.metrics.schema_failures += 1
+            diagnostics["error_type"] = type(exc).__name__
             return TeacherResult(
                 provider=self.provider,
                 model=self.model,
                 error_code="SCHEMA_INVALID",
-                diagnostics={**diagnostics, "error_type": type(exc).__name__},
+                diagnostics=diagnostics,
             )
         except Exception as exc:  # provider errors are intentionally type-only
+            observation.provider_status = "ERROR"
+            observation.failure_class = observation.failure_class or _failure_class(exc)
             self.metrics.provider_failures += 1
+            diagnostics["error_type"] = type(exc).__name__
             return TeacherResult(
                 provider=self.provider,
                 model=self.model,
                 error_code="TEACHER_FAILED",
-                diagnostics={**diagnostics, "error_type": type(exc).__name__},
+                diagnostics=diagnostics,
             )
         finally:
             elapsed = perf_counter() - started
             self.metrics.latencies.append(elapsed)
+            diagnostics.update(observation.as_dict())
             diagnostics["elapsed_seconds"] = round(elapsed, 3)
             if prompt is not None:
                 diagnostics["input_chars"] = sum(len(item["content"]) for item in prompt)
+            self.metrics.call_diagnostics.append(dict(diagnostics))
 
 
 class FakeTeacher:
@@ -311,6 +443,7 @@ def teacher_from_environment(environ: Mapping[str, str] | None = None) -> Teache
             max_tokens=int(env.get("PHASE11A_TEACHER_MAX_TOKENS", "1024")),
             timeout_seconds=float(env.get("PHASE11A_TEACHER_TIMEOUT_SECONDS", "60")),
         )
+        max_retries = int(env.get("PHASE11A_TEACHER_MAX_RETRIES", "0"))
     except (TypeError, ValueError):
         return UnconfiguredTeacher()
     if provider.lower() != "ollama" or not config.model:
@@ -319,6 +452,7 @@ def teacher_from_environment(environ: Mapping[str, str] | None = None) -> Teache
         return OllamaTeacher(
             config,
             endpoint=env.get("PHASE11A_TEACHER_ENDPOINT", "http://localhost:11434/v1"),
+            max_retries=max_retries,
         )
     except (TypeError, ValueError):
         return UnconfiguredTeacher(config)

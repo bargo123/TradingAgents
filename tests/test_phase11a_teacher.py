@@ -44,7 +44,7 @@ class _Structured:
         self.result = result
         self.messages = None
 
-    def invoke(self, messages):
+    def invoke(self, messages, config=None):
         self.messages = messages
         if isinstance(self.result, BaseException):
             raise self.result
@@ -162,6 +162,11 @@ def test_ollama_teacher_actual_client_sends_json_schema_payload():
 
     assert result.ok
     assert len(calls) == 1
+    assert result.diagnostics["provider_status"] == "SUCCESS"
+    assert result.diagnostics["finish_reason"] == "stop"
+    assert result.diagnostics["input_tokens"] == 20
+    assert result.diagnostics["output_tokens"] == 30
+    assert result.diagnostics["total_tokens"] == 50
     body = calls[0]
     assert body["response_format"]["type"] == "json_schema"
     assert body["response_format"]["json_schema"]["name"] == "TeacherLesson"
@@ -169,6 +174,15 @@ def test_ollama_teacher_actual_client_sends_json_schema_payload():
     assert body["max_tokens"] == 512
     assert body["think"] is False
     assert "tools" not in body
+
+
+def test_ollama_teacher_client_has_no_implicit_openai_retries():
+    teacher = OllamaTeacher(
+        TeacherConfig(provider="ollama", model="qwen3.5:4b", max_tokens=512)
+    )
+
+    assert teacher.max_retries == 0
+    assert teacher._llm.root_client.max_retries == 0
 
 
 def test_ollama_teacher_fails_closed_on_schema_invalid_response():
@@ -184,6 +198,43 @@ def test_ollama_teacher_fails_closed_on_schema_invalid_response():
     assert not result.ok
     assert result.error_code == "SCHEMA_INVALID"
     assert result.candidate is None
+
+
+def test_ollama_teacher_records_safe_call_status_and_disables_implicit_retries():
+    packet = _plan_one().packets[0]
+    fake = _FakeLLM(_lesson(packet))
+    teacher = OllamaTeacher(
+        TeacherConfig(provider="ollama", model="qwen3.5:4b", max_tokens=512),
+        max_retries=0,
+        client_factory=lambda config, endpoint: fake,
+    )
+
+    result = teacher.generate(packet, teacher.config)
+
+    assert result.ok
+    assert result.diagnostics["provider_status"] == "SUCCESS"
+    assert result.diagnostics["retry_count"] == 0
+    assert result.diagnostics["failure_class"] is None
+    metrics = teacher.metrics.to_dict()
+    assert metrics["calls"] == 1
+    assert metrics["call_diagnostics"][0]["provider_status"] == "SUCCESS"
+
+
+def test_ollama_teacher_classifies_timeout_without_private_error_text():
+    packet = _plan_one().packets[0]
+    fake = _FakeLLM(TimeoutError("private request details"))
+    teacher = OllamaTeacher(
+        TeacherConfig(provider="ollama", model="qwen3.5:4b"),
+        max_retries=0,
+        client_factory=lambda config, endpoint: fake,
+    )
+
+    result = teacher.generate(packet, teacher.config)
+
+    assert not result.ok
+    assert result.error_code == "TEACHER_FAILED"
+    assert result.diagnostics["failure_class"] == "PROVIDER_TIMEOUT"
+    assert "private" not in str(result.diagnostics).lower()
 
 
 def test_ollama_teacher_rejects_unknown_source_reference():
@@ -206,6 +257,17 @@ def test_ollama_teacher_rejects_unknown_source_reference():
 def test_teacher_environment_is_opt_in_and_does_not_construct_ollama_without_provider():
     teacher = teacher_from_environment({})
     assert teacher.__class__.__name__ == "UnconfiguredTeacher"
+
+
+def test_teacher_environment_defaults_to_zero_bounded_retries():
+    teacher = teacher_from_environment(
+        {
+            "PHASE11A_TEACHER_PROVIDER": "ollama",
+            "PHASE11A_TEACHER_MODEL": "qwen3.5:4b",
+        }
+    )
+    assert isinstance(teacher, OllamaTeacher)
+    assert teacher.max_retries == 0
 
 
 def test_teacher_environment_rejects_non_ollama_provider():

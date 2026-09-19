@@ -82,6 +82,18 @@ def run_pilot(
     }
     elapsed = time.perf_counter() - started
     average = teacher.metrics.average_latency_seconds
+    teacher_metrics = teacher.metrics.to_dict()
+    call_diagnostics = teacher_metrics["call_diagnostics"]
+    failure_classes = Counter(
+        str(item.get("failure_class"))
+        for item in call_diagnostics
+        if item.get("failure_class")
+    )
+    provider_statuses = Counter(
+        str(item.get("provider_status"))
+        for item in call_diagnostics
+        if item.get("provider_status")
+    )
     return {
         "status": "VALID" if validation.valid else "INVALID",
         "phase7_root": str(source_root),
@@ -103,6 +115,8 @@ def run_pilot(
         "endpoint": teacher.endpoint,
         "temperature": teacher.config.temperature,
         "max_tokens": teacher.config.max_tokens,
+        "timeout_seconds": teacher.config.timeout_seconds,
+        "retry_budget": teacher.max_retries,
         "generation_path": str(generation),
         "train_count": int(manifest.get("split_counts", {}).get("train", 0)),
         "validation_count": int(manifest.get("split_counts", {}).get("validation", 0)),
@@ -111,6 +125,11 @@ def run_pilot(
         "average_latency_seconds": round(average, 3),
         "max_latency_seconds": round(teacher.metrics.max_latency_seconds, 3),
         "total_elapsed_seconds": round(elapsed, 3),
+        "input_tokens": teacher_metrics["input_tokens"],
+        "output_tokens": teacher_metrics["output_tokens"],
+        "failure_class_counts": dict(sorted(failure_classes.items())),
+        "provider_status_counts": dict(sorted(provider_statuses.items())),
+        "call_diagnostics": call_diagnostics,
         "projected_runtime_seconds": {
             str(size): round(average * size, 1) for size in (100, 1000, 4351)
         },
