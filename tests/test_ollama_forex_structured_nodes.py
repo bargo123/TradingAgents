@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 from tradingagents.agents.managers.research_manager import create_research_manager
@@ -207,6 +208,68 @@ def test_graph_created_deep_ollama_portfolio_manager_overrides_thinking() -> Non
     assert result["normalization_status"] == "NORMALIZED"
     assert len(calls) == 1
     _assert_json_schema_wire(calls[0], ForexPortfolioDecision.__name__)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_profile", ("intraday", "SWING"))
+def test_ollama_forex_portfolio_rebinds_runtime_analysis_profile(model_profile: str) -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    payload["analysis_profile"] = model_profile
+    llm = _ollama({"ForexPortfolioDecision": payload}, calls)
+
+    result = create_portfolio_manager(llm, forex_profile="INTRADAY")(_forex_state())
+
+    assert result["normalization_status"] == "NORMALIZED"
+    assert result["portfolio_manager_raw_result"]["analysis_profile"] == "INTRADAY"
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+def test_ollama_forex_portfolio_supplies_missing_runtime_analysis_profile() -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    payload.pop("analysis_profile")
+    llm = _ollama({"ForexPortfolioDecision": payload}, calls)
+
+    result = create_portfolio_manager(llm, forex_profile="INTRADAY")(_forex_state())
+
+    assert result["normalization_status"] == "NORMALIZED"
+    assert result["portfolio_manager_raw_result"]["analysis_profile"] == "INTRADAY"
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "mutation,expected_path",
+    (
+        (lambda payload: payload.pop("executive_summary"), "executive_summary"),
+        (lambda payload: payload.__setitem__("rating", "NotARating"), "rating"),
+    ),
+)
+def test_ollama_forex_portfolio_still_fails_closed_for_non_runtime_invalid_fields(
+    mutation, expected_path: str
+) -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    mutation(payload)
+    llm = _ollama({"ForexPortfolioDecision": payload}, calls)
+
+    result = create_portfolio_manager(llm, forex_profile="INTRADAY")(_forex_state())
+
+    assert result["normalization_status"] == "FAILED"
+    assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
+    assert f'"path":"{expected_path}"' in result["normalization_error"]
+    assert len(calls) == 2
+
+
+@pytest.mark.unit
+def test_forex_portfolio_schema_validator_still_rejects_model_profile_without_rebinding() -> None:
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    payload["analysis_profile"] = "SWING"
+
+    with pytest.raises(ValidationError):
+        ForexPortfolioDecision.model_validate(payload)
 
 
 @pytest.mark.unit

@@ -11,6 +11,7 @@ back gracefully to free-text generation.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping
 
 from tradingagents.agents.schemas import (
@@ -27,7 +28,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
-    bind_forex_ollama_structured,
+    bind_forex_ollama_structured_mapping,
     bind_structured,
     invoke_structured_only,
     invoke_structured_or_freetext,
@@ -35,6 +36,8 @@ from tradingagents.agents.utils.structured import (
     structured_failure_diagnostics,
 )
 from tradingagents.forex.profile import build_forex_profile_context
+
+logger = logging.getLogger(__name__)
 
 
 def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
@@ -139,22 +142,37 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
 
         if is_forex:
             if forex_structured_llm is None:
-                forex_structured_llm = bind_forex_ollama_structured(
+                forex_structured_llm = bind_forex_ollama_structured_mapping(
                     llm,
                     ForexPortfolioDecision,
                     "Forex Portfolio Manager",
                 )
+
+            trusted_fields = {"analysis_profile": forex_profile}
+
+            def validate_forex_payload(value):
+                if isinstance(value, Mapping):
+                    payload = dict(value)
+                else:
+                    payload = value.model_dump(mode="python")
+                if payload.get("analysis_profile") != trusted_fields["analysis_profile"]:
+                    logger.info(
+                        "Portfolio Manager runtime_invariant_rebound field=analysis_profile"
+                    )
+                payload["analysis_profile"] = trusted_fields["analysis_profile"]
+                return ForexPortfolioDecision.model_validate(payload)
+
             try:
                 structured_result = invoke_structured_only(
                     forex_structured_llm,
                     prompt,
                     "Portfolio Manager",
                     max_attempts=2,
+                    allow_mapping=True,
+                    result_validator=validate_forex_payload,
                 )
                 if not isinstance(structured_result, ForexPortfolioDecision):
-                    structured_result = ForexPortfolioDecision.model_validate(
-                        structured_result.model_dump(mode="python")
-                    )
+                    raise TypeError("forex structured payload validator returned an invalid result")
                 raw_result = structured_result.model_dump(mode="json")
                 json.dumps(raw_result, allow_nan=False)
                 final_trade_decision = render_forex_pm_decision(structured_result)

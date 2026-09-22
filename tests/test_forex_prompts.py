@@ -257,3 +257,22 @@ def test_forex_trader_treats_price_levels_as_observational_only():
     text = _prompt_text(llm.prompts[0]).lower()
     assert "observational only" in text
     assert "no order is sent" in text
+
+
+def test_stock_portfolio_manager_keeps_general_structured_path():
+    llm = _PromptCaptureLLM(
+        PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Remain flat.",
+            investment_thesis="Evidence is mixed.",
+        )
+    )
+    state = _forex_state()
+    state["asset_type"] = "stock"
+    state["company_of_interest"] = "AAPL"
+
+    result = create_portfolio_manager(llm)(state)
+
+    assert "normalization_status" not in result
+    assert result["final_trade_decision"].startswith("**Rating**: Hold")
+    assert len(llm.prompts) == 1

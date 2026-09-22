@@ -21,9 +21,10 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import BaseModel
 
 from tradingagents.llm_clients.openai_client import OllamaChatOpenAI
@@ -166,7 +167,9 @@ def invoke_structured_only(
     agent_name: str,
     *,
     max_attempts: int = 1,
-) -> BaseModel:
+    allow_mapping: bool = False,
+    result_validator: Callable[[Any], BaseModel] | None = None,
+) -> BaseModel | Mapping[str, Any]:
     """Invoke a structured LLM binding and fail closed on any miss.
 
     The helper never falls back to plain-text generation. Callers use it only
@@ -190,7 +193,11 @@ def invoke_structured_only(
                 raise StructuredOutputRequiredError(
                     f"{agent_name}: structured output returned no parsed result"
                 )
-            if not isinstance(result, BaseModel):
+            if result_validator is not None:
+                result = result_validator(result)
+            if not isinstance(result, BaseModel) and not (
+                allow_mapping and isinstance(result, Mapping)
+            ):
                 raise StructuredOutputRequiredError(
                     f"{agent_name}: structured output did not return a BaseModel"
                 )
@@ -306,6 +313,34 @@ def bind_forex_ollama_structured(
         # default (``think=true``).  Ollama's JSON-schema path is reliable
         # only when the structured request explicitly disables thinking; the
         # per-binding override leaves ordinary deep analysis unchanged.
+        extra_body={"think": False},
+    )
+
+
+def bind_forex_ollama_structured_mapping(
+    llm: Any,
+    schema: type[T],
+    agent_name: str,
+) -> Any | None:
+    """Bind an Ollama forex schema to return a mapping for final validation.
+
+    Ollama's JSON-schema response is parsed by LangChain before the caller can
+    rebind deterministic runtime metadata.  This explicit mapping seam is used
+    only where a runtime-owned field must be replaced before the unchanged
+    Pydantic model validates the complete payload.  The wire schema remains the
+    strict schema derived from the same Pydantic model; no fields are removed.
+    """
+
+    if not is_ollama_chat_model(llm):
+        return bind_structured(llm, schema, agent_name)
+    function_schema = convert_to_openai_tool(schema, strict=True)["function"]
+    return bind_structured(
+        llm,
+        function_schema,
+        agent_name,
+        method="json_schema",
+        strict=True,
+        reasoning_effort="none",
         extra_body={"think": False},
     )
 
