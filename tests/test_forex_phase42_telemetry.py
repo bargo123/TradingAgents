@@ -94,6 +94,32 @@ def test_stats_collects_usage_per_agent_without_private_content():
     assert not hasattr(handler, "prompts")
 
 
+def test_stats_reset_starts_a_new_shadow_run_window():
+    handler = StatsCallbackHandler()
+
+    def emit(run_id: str) -> None:
+        with agent_context("Trader", SimpleNamespace(model_name="quick-model")):
+            handler.on_chat_model_start(
+                {"name": "ChatOpenAI"},
+                [[]],
+                run_id=run_id,
+                invocation_params={"model": "quick-model"},
+            )
+            handler.on_llm_end(_response(), run_id=run_id)
+
+    emit("run-1")
+    assert handler.get_stats()["llm_calls"] == 1
+
+    handler.reset()
+    emit("run-2")
+
+    stats = handler.get_stats()
+    assert stats["llm_calls"] == 1
+    assert stats["tokens_in"] == 11
+    assert stats["tokens_out"] == 7
+    assert stats["agents"]["Trader"]["calls"] == 1
+
+
 def _bare_graph(config, mode="forex_mt5"):
     graph = object.__new__(TradingAgentsGraph)
     graph.config = config

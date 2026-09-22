@@ -8,6 +8,7 @@ import math
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -540,6 +541,15 @@ class ForexShadowRunner:
             raise ValueError("snapshot_bytes must be immutable bytes")
         mt5_provider: Any | None = None
         callback_list = list(callbacks or ())
+        # The watcher intentionally reuses its callback handler for each
+        # scheduled opportunity.  Reset only handlers that explicitly expose
+        # this opt-in seam so persisted metrics represent this decision, while
+        # arbitrary integration callbacks retain their existing behavior.
+        for callback in callback_list:
+            reset = getattr(callback, "reset", None)
+            if callable(reset):
+                with suppress(Exception):
+                    reset()
         if source_run_id is not None:
             if not isinstance(source_run_id, str) or not source_run_id.strip():
                 raise ValueError("source_run_id must be a non-empty string")

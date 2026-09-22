@@ -108,6 +108,44 @@ def _ollama(response_by_schema: dict[str, str | dict], calls: list[dict]) -> Oll
     )
 
 
+def _ollama_sequence(
+    responses: list[str | dict], calls: list[dict]
+) -> OllamaChatOpenAI:
+    """Return an Ollama mock that consumes one PM response per invocation."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        calls.append(body)
+        response = responses.pop(0)
+        content = response if isinstance(response, str) else json.dumps(response)
+        return httpx.Response(
+            200,
+            json={
+                "id": "structured-sequence-probe",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "qwen3.5:2b",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+            },
+            request=request,
+        )
+
+    return OllamaChatOpenAI(
+        model="qwen3.5:2b",
+        api_key="ollama",
+        base_url="http://127.0.0.1:11434/v1",
+        temperature=0,
+        max_tokens=1024,
+        extra_body={"think": True},
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
 def _assert_json_schema_wire(call: dict, schema_name: str) -> None:
     assert call["response_format"]["type"] == "json_schema"
     assert call["response_format"]["json_schema"]["name"] == schema_name
@@ -172,6 +210,44 @@ def test_graph_created_deep_ollama_portfolio_manager_overrides_thinking() -> Non
 
 
 @pytest.mark.unit
+def test_ollama_forex_portfolio_manager_retries_only_the_failed_structured_call() -> None:
+    calls: list[dict] = []
+    llm = _ollama_sequence(
+        ['{"unexpected": "value"}', _VALID_RESPONSES["ForexPortfolioDecision"]],
+        calls,
+    )
+
+    result = create_portfolio_manager(llm)(_forex_state())
+
+    assert result["normalization_status"] == "NORMALIZED"
+    assert "**Rating**: Hold" in result["final_trade_decision"]
+    assert len(calls) == 2
+    for call in calls:
+        _assert_json_schema_wire(call, ForexPortfolioDecision.__name__)
+        assert call["response_format"]["json_schema"]["schema"] == calls[0]["response_format"]["json_schema"]["schema"]
+    wire_schema = calls[0]["response_format"]["json_schema"]["schema"]
+    model_schema = ForexPortfolioDecision.model_json_schema()
+    assert set(wire_schema["properties"]) == set(model_schema["properties"])
+    assert wire_schema["properties"]["rating"]["enum"] == model_schema["$defs"]["PortfolioRating"]["enum"]
+    assert wire_schema["additionalProperties"] is False
+
+
+@pytest.mark.unit
+def test_ollama_forex_portfolio_manager_retries_once_then_fails_closed() -> None:
+    calls: list[dict] = []
+    llm = _ollama_sequence(['{"unexpected": "value"}', '{"unexpected": "value"}'], calls)
+
+    result = create_portfolio_manager(llm)(_forex_state())
+
+    assert result["normalization_status"] == "FAILED"
+    assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
+    assert "cause_type=ValidationError" in result["normalization_error"]
+    assert len(calls) == 2
+    for call in calls:
+        _assert_json_schema_wire(call, ForexPortfolioDecision.__name__)
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("node", ("research", "trader", "portfolio"))
 def test_ollama_forex_structured_nodes_fail_closed_on_malformed_output(node: str) -> None:
     calls: list[dict] = []
@@ -193,5 +269,7 @@ def test_ollama_forex_structured_nodes_fail_closed_on_malformed_output(node: str
         assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
         schema_name = ForexPortfolioDecision.__name__
 
-    assert len(calls) == 1
-    _assert_json_schema_wire(calls[0], schema_name)
+    expected_calls = 2 if node == "portfolio" else 1
+    assert len(calls) == expected_calls
+    for call in calls:
+        _assert_json_schema_wire(call, schema_name)

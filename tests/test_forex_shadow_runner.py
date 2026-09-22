@@ -365,6 +365,32 @@ def test_runner_passes_callbacks_and_reports_llm_metrics(tmp_path):
     assert result.elapsed_seconds >= 0
 
 
+def test_runner_resets_opt_in_reusable_callback_before_each_decision(tmp_path):
+    class Callback:
+        def __init__(self):
+            self.reset_calls = 0
+
+        def reset(self):
+            self.reset_calls += 1
+
+        def get_stats(self):
+            return {"llm_calls": 1, "tool_calls": 0}
+
+    callback = Callback()
+    runner, _, _, _ = _make_runner(
+        tmp_path,
+        {
+            "final_trade_decision": {"rating": "Hold"},
+            "portfolio_manager_raw_result": {"rating": "Hold"},
+            "risk_debate_state": {},
+        },
+    )
+
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08", callbacks=[callback])
+
+    assert callback.reset_calls == 1
+
+
 def test_runner_marks_analysis_telemetry_unavailable_without_callback(tmp_path):
     runner, _, _, _ = _make_runner(
         tmp_path,

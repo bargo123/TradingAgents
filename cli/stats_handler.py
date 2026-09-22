@@ -100,6 +100,23 @@ class StatsCallbackHandler(BaseCallbackHandler):
         self._completed_runs: set[str] = set()
         self._agents: dict[str, dict[str, Any]] = {}
 
+    def reset(self) -> None:
+        """Start a fresh accounting window for one shadow analysis.
+
+        A watcher process reuses one callback handler across scheduled
+        opportunities.  Resetting at the runner boundary keeps persisted
+        telemetry per-decision instead of reporting process-lifetime totals.
+        """
+        with self._lock:
+            self.llm_calls = 0
+            self.tool_calls = 0
+            self.tokens_in = 0
+            self.tokens_out = 0
+            self.reasoning_tokens = 0
+            self._active_runs.clear()
+            self._completed_runs.clear()
+            self._agents.clear()
+
     @staticmethod
     def _event_model(serialized: Mapping[str, Any] | None, kwargs: Mapping[str, Any]) -> str:
         serialized = serialized or {}

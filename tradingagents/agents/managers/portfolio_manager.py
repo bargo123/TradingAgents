@@ -148,6 +148,7 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
                     forex_structured_llm,
                     prompt,
                     "Portfolio Manager",
+                    max_attempts=2,
                 )
                 if not isinstance(structured_result, ForexPortfolioDecision):
                     structured_result = ForexPortfolioDecision.model_validate(

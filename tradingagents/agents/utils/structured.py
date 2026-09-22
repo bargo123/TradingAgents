@@ -34,6 +34,19 @@ T = TypeVar("T", bound=BaseModel)
 class StructuredOutputRequiredError(RuntimeError):
     """Raised when a structured-output binding is required but unavailable."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        attempts: int = 1,
+        previous_errors: tuple[BaseException, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        # Retry provenance remains in memory only.  Persisted callers expose
+        # only bounded failure categories, never provider text or model output.
+        self.attempts = attempts
+        self.previous_errors = previous_errors
+
 
 def structured_failure_category(exc: BaseException) -> str:
     """Return a safe type-only category for a structured-output failure.
@@ -52,34 +65,65 @@ def invoke_structured_only(
     structured_llm: Any | None,
     prompt: Any,
     agent_name: str,
+    *,
+    max_attempts: int = 1,
 ) -> BaseModel:
     """Invoke a structured LLM binding and fail closed on any miss.
 
     The helper never falls back to plain-text generation. Callers use it only
     when structured output is mandatory and any missing binding or invocation
-    failure should be surfaced explicitly.
+    failure should be surfaced explicitly.  ``max_attempts`` is intentionally
+    capped at two so a caller can permit one bounded retry without creating a
+    recursive or unbounded retry path.
     """
+    if max_attempts not in (1, 2):
+        raise ValueError("structured output max_attempts must be 1 or 2")
     if structured_llm is None:
         raise StructuredOutputRequiredError(
             f"{agent_name}: structured output binding is required"
         )
 
-    try:
-        result = structured_llm.invoke(prompt)
-    except Exception as exc:  # pragma: no cover - exercised in tests
-        raise StructuredOutputRequiredError(
-            f"{agent_name}: structured output invocation failed"
-        ) from exc
+    failures: list[StructuredOutputRequiredError] = []
+    for attempt in range(max_attempts):
+        try:
+            result = structured_llm.invoke(prompt)
+            if result is None:
+                raise StructuredOutputRequiredError(
+                    f"{agent_name}: structured output returned no parsed result"
+                )
+            if not isinstance(result, BaseModel):
+                raise StructuredOutputRequiredError(
+                    f"{agent_name}: structured output did not return a BaseModel"
+                )
+            return result
+        except StructuredOutputRequiredError as exc:
+            failures.append(exc)
+        except Exception as exc:  # pragma: no cover - exercised in tests
+            wrapped = StructuredOutputRequiredError(
+                f"{agent_name}: structured output invocation failed"
+            )
+            wrapped.__cause__ = exc
+            failures.append(wrapped)
 
-    if result is None:
-        raise StructuredOutputRequiredError(
-            f"{agent_name}: structured output returned no parsed result"
-        )
-    if not isinstance(result, BaseModel):
-        raise StructuredOutputRequiredError(
-            f"{agent_name}: structured output did not return a BaseModel"
-        )
-    return result
+        if attempt + 1 < max_attempts:
+            logger.warning(
+                "%s: structured-output attempt %d/%d failed (%s); retrying once",
+                agent_name,
+                attempt + 1,
+                max_attempts,
+                structured_failure_category(failures[-1]),
+            )
+
+    final = failures[-1]
+    if len(failures) == 1:
+        raise final
+    cause = final.__cause__ or final
+    retry_error = StructuredOutputRequiredError(
+        f"{agent_name}: structured output invocation failed after {len(failures)} attempts",
+        attempts=len(failures),
+        previous_errors=tuple(failures[:-1]),
+    )
+    raise retry_error from cause
 
 # Schema-only structured output binds exactly one tool (the schema itself), so a
 # model that reaches for a search tool emits an unknown tool call and the whole
