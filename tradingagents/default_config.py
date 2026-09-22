@@ -34,6 +34,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_FOREX_QUICK_EFFORT":           "forex_quick_effort",
     "TRADINGAGENTS_FOREX_DEEP_EFFORT":            "forex_deep_effort",
     "TRADINGAGENTS_FOREX_QUICK_THINKING":         "forex_quick_thinking",
+    "TRADINGAGENTS_FOREX_QUICK_MAX_TOKENS":      "forex_quick_max_tokens",
     "TRADINGAGENTS_FOREX_DEEP_THINKING":          "forex_deep_thinking",
     "TRADINGAGENTS_FOREX_EVIDENCE_ENABLED": "forex_evidence_enabled",
     "TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS": "forex_evidence_timeout_seconds",
@@ -154,6 +155,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "forex_quick_effort": None,
     "forex_deep_effort": None,
     "forex_quick_thinking": False,
+    # Ollama quick forex prose is deliberately bounded; prompts require
+    # concise evidence-bearing reports so this does not affect structured deep
+    # decisions or the stock workflow.
+    "forex_quick_max_tokens": 512,
     "forex_deep_thinking": True,
     # Optional read-only Phase 9 evidence augmentation (forex only).
     "forex_evidence_enabled": False,

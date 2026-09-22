@@ -1,4 +1,5 @@
 from tradingagents.agents.utils.agent_utils import (
+    FOREX_CONCISE_OUTPUT_INSTRUCTION,
     get_instrument_context_from_state,
     get_language_instruction,
     opponent_argument_or_opening,
@@ -59,7 +60,7 @@ Global macro news: {news_report}
 Risk debate history: {history}
 Last aggressive argument: {current_aggressive_response}
 Last conservative argument: {current_conservative_response}
-Issuer-level fundamentals are unavailable for forex; do not infer them. Identify what is known, what conflicts, and what would change the view.""" + (f"\n\n{evidence_block}" if evidence_block else "") + get_language_instruction()
+Issuer-level fundamentals are unavailable for forex; do not infer them. Identify what is known, what conflicts, and what would change the view.""" + (f"\n\n{evidence_block}" if evidence_block else "") + FOREX_CONCISE_OUTPUT_INSTRUCTION + get_language_instruction()
 
         response = llm.invoke(prompt)
 

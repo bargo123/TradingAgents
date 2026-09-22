@@ -1,4 +1,5 @@
 from tradingagents.agents.utils.agent_utils import (
+    FOREX_CONCISE_OUTPUT_INSTRUCTION,
     get_instrument_context_from_state,
     get_language_instruction,
     opponent_argument_or_opening,
@@ -65,7 +66,7 @@ Global news report: {news_report}
 Conversation history: {history}
 Last bull argument: {current_response}
 
-Address the bull argument directly, distinguish observations from assumptions, and state when evidence is insufficient for a directional view.""" + (f"\n\n{evidence_block}" if evidence_block else "") + get_language_instruction()
+Address the bull argument directly, distinguish observations from assumptions, and state when evidence is insufficient for a directional view.""" + (f"\n\n{evidence_block}" if evidence_block else "") + FOREX_CONCISE_OUTPUT_INSTRUCTION + get_language_instruction()
 
         response = llm.invoke(prompt)
 

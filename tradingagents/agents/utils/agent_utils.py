@@ -44,6 +44,7 @@ __all__ = [
     "get_instrument_context_from_state",
     "render_supporting_evidence",
     "render_final_pm_evidence_instruction",
+    "FOREX_CONCISE_OUTPUT_INSTRUCTION",
     "get_language_instruction",
     "create_msg_delete",
 ]
@@ -51,6 +52,16 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _MAX_MARKET_CONTEXT_CHARS = 4096
+
+# Quick forex reports are consumed by downstream debate nodes.  Keep the
+# evidence-bearing content concise so the bounded Ollama quick-model output
+# cap cannot cut off the report; this is intentionally not used in stock mode
+# or in strict structured-output nodes.
+FOREX_CONCISE_OUTPUT_INSTRUCTION = (
+    " Keep the argument concise (about 4-6 sentences, normally under 350 words). "
+    "Cover the strongest observed evidence, the relevant counterpoint, and the "
+    "remaining uncertainty without repeating the full source reports."
+)
 
 
 def get_language_instruction() -> str:

@@ -51,6 +51,7 @@ from tradingagents.forex.telemetry import instrument_agent_node
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
+from .parallel_analysts import ParallelAnalystBranch, run_parallel_analysts
 
 _FORBIDDEN_MT5_TOOL_TOKENS = (
     "order_send",
@@ -93,6 +94,8 @@ RISK_ANALYSIS_PATH_MAP = {
     "Neutral Analyst": "Neutral Analyst",
     "Portfolio Manager": "Portfolio Manager",
 }
+
+_FOREX_PARALLEL_ANALYST_NODE = "Forex Market and News Analysts"
 
 
 class GraphSetup:
@@ -203,16 +206,45 @@ class GraphSetup:
         # Create workflow
         workflow = StateGraph(AgentState)
 
+        parallel_forex_analysts = (
+            self.market_data_mode == "forex_mt5"
+            and len(plan.specs) == 2
+            and {spec.key for spec in plan.specs} == {"market", "news"}
+        )
+        parallel_branches: list[ParallelAnalystBranch] = []
+
         # Add analyst nodes to the graph
         for spec in plan.specs:
+            analyst_node = self._instrument(
+                analyst_factories[spec.key](), spec.agent_node, self.quick_thinking_llm
+            )
+            clear_node = create_msg_delete()
+            if parallel_forex_analysts:
+                parallel_branches.append(
+                    ParallelAnalystBranch(
+                        key=spec.key,
+                        agent_node=spec.agent_node,
+                        clear_node=spec.clear_node,
+                        tool_node=spec.tool_node,
+                        report_key=spec.report_key,
+                        node=analyst_node,
+                        clear=clear_node,
+                        tool=self.tool_nodes[spec.key],
+                        route=getattr(self.conditional_logic, f"should_continue_{spec.key}"),
+                    )
+                )
+            else:
+                workflow.add_node(spec.agent_node, analyst_node)
+                workflow.add_node(spec.clear_node, clear_node)
+                workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
+
+        if parallel_forex_analysts:
             workflow.add_node(
-                spec.agent_node,
-                self._instrument(
-                    analyst_factories[spec.key](), spec.agent_node, self.quick_thinking_llm
+                _FOREX_PARALLEL_ANALYST_NODE,
+                lambda state, config=None: run_parallel_analysts(
+                    tuple(parallel_branches), state, config=config
                 ),
             )
-            workflow.add_node(spec.clear_node, create_msg_delete())
-            workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
         # Add other nodes
         workflow.add_node(
@@ -250,29 +282,31 @@ class GraphSetup:
             self._instrument(portfolio_manager_node, "Portfolio Manager", self.deep_thinking_llm),
         )
 
-        # Define edges
-        # Start with the first analyst
-        workflow.add_edge(START, plan.specs[0].agent_node)
+        # Define edges. Market and News begin from the same immutable snapshot;
+        # their tool loops run in isolated branch state and merge by report key.
+        if parallel_forex_analysts:
+            workflow.add_edge(START, _FOREX_PARALLEL_ANALYST_NODE)
+            workflow.add_edge(_FOREX_PARALLEL_ANALYST_NODE, "Bull Researcher")
+        else:
+            workflow.add_edge(START, plan.specs[0].agent_node)
 
-        # Connect analysts in sequence
-        for i, spec in enumerate(plan.specs):
-            current_analyst = spec.agent_node
-            current_tools = spec.tool_node
-            current_clear = spec.clear_node
+            # Connect analysts in sequence
+            for i, spec in enumerate(plan.specs):
+                current_analyst = spec.agent_node
+                current_tools = spec.tool_node
+                current_clear = spec.clear_node
 
-            # Add conditional edges for current analyst
-            workflow.add_conditional_edges(
-                current_analyst,
-                getattr(self.conditional_logic, f"should_continue_{spec.key}"),
-                [current_tools, current_clear],
-            )
-            workflow.add_edge(current_tools, current_analyst)
+                workflow.add_conditional_edges(
+                    current_analyst,
+                    getattr(self.conditional_logic, f"should_continue_{spec.key}"),
+                    [current_tools, current_clear],
+                )
+                workflow.add_edge(current_tools, current_analyst)
 
-            # Connect to next analyst or to Bull Researcher if this is the last analyst
-            if i < len(plan.specs) - 1:
-                workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
-            else:
-                workflow.add_edge(current_clear, "Bull Researcher")
+                if i < len(plan.specs) - 1:
+                    workflow.add_edge(current_clear, plan.specs[i + 1].agent_node)
+                else:
+                    workflow.add_edge(current_clear, "Bull Researcher")
 
         # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
         for debate_node in ("Bull Researcher", "Bear Researcher"):

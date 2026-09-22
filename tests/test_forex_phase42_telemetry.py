@@ -156,6 +156,22 @@ def test_ollama_forex_thinking_controls_use_reasoning_effort_for_quick_and_extra
     assert "extra_body" not in graph._get_provider_kwargs(role="quick")
 
 
+def test_ollama_forex_quick_role_uses_bounded_output_cap_without_affecting_stock_or_deep():
+    config = {
+        "llm_provider": "ollama",
+        "forex_quick_thinking": False,
+        "forex_deep_thinking": True,
+        "forex_quick_max_tokens": 512,
+    }
+    graph = _bare_graph(config)
+
+    assert graph._get_provider_kwargs(role="quick")["max_tokens"] == 512
+    assert "max_tokens" not in graph._get_provider_kwargs(role="deep")
+
+    graph.market_data_mode = "stock"
+    assert "max_tokens" not in graph._get_provider_kwargs(role="quick")
+
+
 def test_forex_trader_keeps_deep_model_available_without_changing_stock():
     setup = object.__new__(GraphSetup)
     setup.market_data_mode = "forex_mt5"

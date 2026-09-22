@@ -35,6 +35,7 @@ except ModuleNotFoundError:  # pragma: no cover
             return _Chain(self, llm)
 
 from tradingagents.agents.utils.agent_utils import (
+    FOREX_CONCISE_OUTPUT_INSTRUCTION,
     get_global_news,
     get_instrument_context_from_state,
     get_language_instruction,
@@ -66,6 +67,7 @@ def create_news_analyst(llm, market_data_mode: str = "stock"):
                 "occurred. Instrument-specific issuer information is unavailable; do not infer it.\n"
                 + build_forex_profile_context(state.get("forex_analysis_profile"))
                 + (f"\n\n{evidence_block}" if evidence_block else "")
+                + FOREX_CONCISE_OUTPUT_INSTRUCTION
                 + get_language_instruction()
             )
         else:

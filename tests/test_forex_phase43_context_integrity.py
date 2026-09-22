@@ -286,6 +286,16 @@ def test_compiled_forex_graph_trace_is_complete_without_report_retention():
         "Neutral Analyst",
         "Portfolio Manager",
     }
+    after_nodes = [entry["node"] for entry in trace if entry["phase"] == "after"]
+    positions = {node: after_nodes.index(node) for node in after_nodes}
+    assert positions["Research Manager"] > max(
+        positions["Bull Researcher"], positions["Bear Researcher"]
+    )
+    assert positions["Portfolio Manager"] > max(
+        positions["Aggressive Analyst"],
+        positions["Conservative Analyst"],
+        positions["Neutral Analyst"],
+    )
     assert all(entry["artifacts"]["portfolio_manager"]["present"] is False for entry in trace if entry["phase"] == "before")
     assert "BULL_REPORT" not in repr(trace)
     assert "BEAR_REPORT" not in repr(trace)

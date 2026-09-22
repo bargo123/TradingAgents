@@ -276,6 +276,10 @@ class TradingAgentsGraph:
                 kwargs["extra_body"] = {
                     "think": _coerce_bool(thinking, f"forex_{role}_thinking")
                 }
+            if role == "quick" and self.config.get("max_tokens") in (None, ""):
+                quick_max_tokens = self.config.get("forex_quick_max_tokens")
+                if quick_max_tokens not in (None, ""):
+                    kwargs["max_tokens"] = _coerce_max_tokens(quick_max_tokens)
 
         # Sampling temperature is cross-provider: forward it whenever set.
         # float() here so a value coming from a TRADINGAGENTS_TEMPERATURE env

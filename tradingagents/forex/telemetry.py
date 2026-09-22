@@ -94,6 +94,13 @@ def record_state_boundary(
     )
 
 
+def extend_state_trace(entries: list[dict[str, Any]]) -> None:
+    """Append metadata-only child-thread boundaries to the active trace."""
+    trace = _STATE_TRACE.get()
+    if trace is not None:
+        trace.extend(entries)
+
+
 def instrument_agent_node(node, agent_name: str, llm: Any):
     """Wrap an LLM-bearing graph node with context and state attribution."""
     if not callable(node):
@@ -121,6 +128,7 @@ __all__ = [
     "AgentContext",
     "agent_context",
     "capture_state_trace",
+    "extend_state_trace",
     "current_agent_context",
     "instrument_agent_node",
     "model_identifier",

@@ -35,6 +35,7 @@ except ModuleNotFoundError:  # pragma: no cover
             return _Chain(self, llm)
 
 from tradingagents.agents.utils.agent_utils import (
+    FOREX_CONCISE_OUTPUT_INSTRUCTION,
     get_indicators,
     get_instrument_context_from_state,
     get_language_instruction,
@@ -71,6 +72,7 @@ def create_market_analyst(llm, market_data_mode: str = "stock", mt5_tools=None):
                 "Issuer-level fundamentals and corporate events are unavailable; "
                 "do not infer them."
                 + (f"\n\n{evidence_block}" if evidence_block else "")
+                + FOREX_CONCISE_OUTPUT_INSTRUCTION
                 + get_language_instruction()
             )
         else:
