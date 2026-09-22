@@ -219,7 +219,9 @@ def test_forex_portfolio_manager_fails_closed_without_structured_output():
     assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
     assert result["normalization_status"] == "FAILED"
     assert result["normalization_error"]
-    assert len(llm.prompts) == 1
+    # Forex structured output permits one bounded retry, never a prose
+    # fallback or an unbounded loop.
+    assert len(llm.prompts) == 2
 
 
 def test_forex_portfolio_manager_retains_safe_structured_failure_category():

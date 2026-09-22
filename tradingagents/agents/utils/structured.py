@@ -18,7 +18,9 @@ all three agents log the same warnings when fallback fires.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -59,6 +61,103 @@ def structured_failure_category(exc: BaseException) -> str:
 
     cause = exc.__cause__
     return type(cause if cause is not None else exc).__name__
+
+
+def _safe_error_path(location: Any) -> str:
+    """Render a Pydantic error location without retaining model data."""
+
+    if not isinstance(location, (tuple, list)):
+        return "$"
+    path = ""
+    for part in location:
+        if isinstance(part, int):
+            path += f"[{part}]"
+        else:
+            text = str(part).replace("\r", " ").replace("\n", " ")
+            path += f".{text}" if path else text
+    return path or "$"
+
+
+def _safe_error_message(message: Any) -> str:
+    """Bound and sanitize a validator message before it reaches logs/DB."""
+
+    text = " ".join(str(message or "").split())
+    # Validator messages can echo an arbitrary model-provided scalar.  Keep the
+    # stable human-readable prefix, but never persist quoted/JSON payloads.
+    text = re.sub(r"(['\"]).*?\1", "<redacted>", text)
+    text = re.sub(r"\{.*\}|\[.*\]", "<redacted>", text)
+    return text[:160] + ("..." if len(text) > 160 else "")
+
+
+def _validation_error_details(exc: BaseException) -> list[dict[str, Any]]:
+    """Extract field/type metadata from a Pydantic ValidationError only.
+
+    ``input`` is inspected solely to record its Python type.  The value itself
+    is deliberately never returned, logged, or persisted because it may contain
+    arbitrary model prose or sensitive context.
+    """
+
+    errors_method = getattr(exc, "errors", None)
+    if not callable(errors_method):
+        return []
+    try:
+        entries = errors_method(include_url=False, include_context=False)
+    except TypeError:  # pragma: no cover - compatibility with older Pydantic
+        try:
+            entries = errors_method()
+        except Exception:  # pragma: no cover - defensive diagnostics boundary
+            return []
+    except Exception:  # pragma: no cover - defensive diagnostics boundary
+        return []
+
+    details: list[dict[str, Any]] = []
+    for entry in entries if isinstance(entries, list) else ():
+        if not isinstance(entry, dict):
+            continue
+        input_value = entry.get("input")
+        detail = {
+            "path": _safe_error_path(entry.get("loc")),
+            "type": str(entry.get("type", "unknown")),
+            "message": _safe_error_message(entry.get("msg", "")),
+            "input_type": type(input_value).__name__ if "input" in entry else None,
+        }
+        details.append(detail)
+    return details
+
+
+def _structured_attempt_causes(exc: BaseException):
+    """Yield ``(attempt, cause)`` pairs without exposing exception messages."""
+
+    if isinstance(exc, StructuredOutputRequiredError):
+        previous = list(exc.previous_errors)
+        for index, previous_error in enumerate(previous, start=1):
+            yield index, previous_error.__cause__ or previous_error
+        if exc.__cause__ is not None:
+            yield len(previous) + 1, exc.__cause__
+        elif not previous:
+            yield 1, exc
+        return
+    yield 1, exc.__cause__ or exc
+
+
+def structured_failure_diagnostics(exc: BaseException) -> list[dict[str, Any]]:
+    """Return bounded, content-free diagnostics for structured failures.
+
+    The result contains only attempt number, exception class, validation field
+    paths/types/messages, and input Python types.  It must be safe for logs and
+    the shadow decision's ``normalization_error`` field.
+    """
+
+    diagnostics: list[dict[str, Any]] = []
+    for attempt, cause in _structured_attempt_causes(exc):
+        diagnostics.append(
+            {
+                "attempt": attempt,
+                "exception_type": type(cause).__name__,
+                "validation_errors": _validation_error_details(cause),
+            }
+        )
+    return diagnostics
 
 
 def invoke_structured_only(
@@ -107,11 +206,15 @@ def invoke_structured_only(
 
         if attempt + 1 < max_attempts:
             logger.warning(
-                "%s: structured-output attempt %d/%d failed (%s); retrying once",
+                "%s: structured-output attempt %d/%d failed; diagnostics=%s; retrying once",
                 agent_name,
                 attempt + 1,
                 max_attempts,
-                structured_failure_category(failures[-1]),
+                json.dumps(
+                    structured_failure_diagnostics(failures[-1]),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
             )
 
     final = failures[-1]
@@ -122,6 +225,17 @@ def invoke_structured_only(
         f"{agent_name}: structured output invocation failed after {len(failures)} attempts",
         attempts=len(failures),
         previous_errors=tuple(failures[:-1]),
+    )
+    retry_error.__cause__ = cause
+    logger.warning(
+        "%s: structured-output failed after %d attempts; diagnostics=%s",
+        agent_name,
+        len(failures),
+        json.dumps(
+            structured_failure_diagnostics(retry_error),
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
     )
     raise retry_error from cause
 

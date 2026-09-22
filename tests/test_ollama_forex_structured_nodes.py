@@ -242,6 +242,16 @@ def test_ollama_forex_portfolio_manager_retries_once_then_fails_closed() -> None
     assert result["normalization_status"] == "FAILED"
     assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
     assert "cause_type=ValidationError" in result["normalization_error"]
+    assert '"attempt":1' in result["normalization_error"]
+    assert '"attempt":2' in result["normalization_error"]
+    assert '"exception_type":"ValidationError"' in result["normalization_error"]
+    assert '"path":"rating"' in result["normalization_error"]
+    assert '"path":"executive_summary"' in result["normalization_error"]
+    assert '"path":"investment_thesis"' in result["normalization_error"]
+    assert '"type":"missing"' in result["normalization_error"]
+    assert '"input_type":"dict"' in result["normalization_error"]
+    # Diagnostics must not retain the malformed payload itself.
+    assert '"unexpected"' not in result["normalization_error"]
     assert len(calls) == 2
     for call in calls:
         _assert_json_schema_wire(call, ForexPortfolioDecision.__name__)
