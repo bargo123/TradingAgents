@@ -54,21 +54,61 @@ def _json(value: Any) -> bytes:
 
 
 def _validate_metadata(value: Any, path: str = "metadata") -> None:
-    """Reject private teacher material before it can reach a manifest."""
+    """Reject private teacher material before it can reach a manifest.
+
+    Keys inside ``metadata.topic_distribution`` are lesson topic labels rather
+    than metadata field names. Legitimate educational topics may contain words
+    such as ``completion`` or ``reasoning``. Apply a narrower sensitive/private
+    check to those labels while retaining the strict metadata policy everywhere
+    else.
+    """
+
+    topic_label_forbidden = re.compile(
+        r"(?:"
+        r"chain[._ -]?of[._ -]?thought|"
+        r"\bcot\b|"
+        r"scratchpad|"
+        r"private[._ -]?reasoning|"
+        r"reasoning[._ -]?trace|"
+        r"secret|"
+        r"password|"
+        r"credential|"
+        r"api[._ -]?key|"
+        r"private[._ -]?key"
+        r")",
+        re.IGNORECASE,
+    )
 
     if isinstance(value, Mapping):
+        topic_distribution = path == "metadata.topic_distribution"
+
         for key, child in value.items():
             key_text = str(key)
             child_path = f"{path}.{key_text}"
-            if _FORBIDDEN_METADATA.search(key_text):
-                raise ValueError(f"unsafe metadata field: {child_path}")
+
+            if topic_distribution:
+                if topic_label_forbidden.search(key_text):
+                    raise ValueError(
+                        f"unsafe metadata field: {child_path}"
+                    )
+            elif _FORBIDDEN_METADATA.search(key_text):
+                raise ValueError(
+                    f"unsafe metadata field: {child_path}"
+                )
+
             _validate_metadata(child, child_path)
+
     elif isinstance(value, (list, tuple, set, frozenset)):
         for index, child in enumerate(value):
-            _validate_metadata(child, f"{path}[{index}]")
-    elif isinstance(value, str) and _FORBIDDEN_METADATA.search(value):
-        raise ValueError(f"unsafe metadata value: {path}")
+            _validate_metadata(
+                child,
+                f"{path}[{index}]",
+            )
 
+    elif isinstance(value, str) and _FORBIDDEN_METADATA.search(value):
+        raise ValueError(
+            f"unsafe metadata value: {path}"
+        )
 
 def _validate_source_index(value: Any) -> None:
     """Keep the provenance index reference-only; never publish source text."""
@@ -265,7 +305,7 @@ def write_generation(
         if isinstance(ref, Mapping) and ref.get("document_id")
     }
     metadata.setdefault("lesson_type_distribution", dict(sorted(lesson_distribution.items())))
-    metadata.setdefault("topic_distribution", dict(sorted(topic_distribution.items())))
+    metadata.setdefault("topic_count", len(topic_distribution))
     metadata.setdefault("difficulty_distribution", dict(sorted(difficulty_distribution.items())))
     metadata.setdefault("candidate_count", len(examples) + len(exclusions))
     metadata.setdefault(

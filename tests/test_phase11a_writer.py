@@ -248,3 +248,152 @@ def test_validation_rejects_unknown_manifest_states(tmp_path: Path):
     manifest["split_status"] = "MAYBE"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     assert not validate_generation(destination).valid
+
+
+
+def test_writer_allows_safe_completion_word_in_topic_distribution(tmp_path: Path):
+    row = replace(
+        _examples()[0],
+        topic="Pattern Completion Rule Limitations",
+    )
+
+    destination = write_generation(
+        tmp_path,
+        [row],
+        [],
+        {},
+        metadata={},
+    )
+
+    report = validate_generation(destination)
+
+    assert report.valid, report.errors
+
+
+
+def test_writer_allows_legitimate_topic_distribution_labels(tmp_path: Path):
+    rows = _examples()
+
+    destination = write_generation(
+        tmp_path,
+        rows,
+        [],
+        {},
+        metadata={
+            "topic_distribution": {
+                "Pattern Completion Rule Limitations": 1
+            }
+        },
+    )
+
+    assert validate_generation(destination).valid
+
+
+def test_writer_allows_legitimate_completion_topic_label(tmp_path: Path):
+    """A public lesson topic may contain 'Completion' without being teacher output."""
+    import json
+    from dataclasses import replace
+
+    rows = _examples()
+    row = replace(
+        rows[0],
+        topic="Pattern Completion Rule Limitations",
+    )
+
+    destination = write_generation(
+        tmp_path,
+        [row],
+        [],
+        {row.example_id: "train"},
+        metadata={},
+    )
+
+    manifest = json.loads(
+        (destination / "manifest.json").read_text(encoding="utf-8")
+    )
+
+    # Writer no longer needs to persist topic strings as metadata keys.
+    assert manifest["metadata"]["topic_count"] == 1
+
+    report = validate_generation(destination)
+    assert report.valid, report.errors
+
+
+def test_writer_allows_safe_explicit_topic_distribution_label(tmp_path: Path):
+    """If a caller supplies topic_distribution, its keys are public labels."""
+    row = _examples()[0]
+
+    destination = write_generation(
+        tmp_path,
+        [row],
+        [],
+        {row.example_id: "train"},
+        metadata={
+            "topic_distribution": {
+                "Pattern Completion Rule Limitations": 1,
+            }
+        },
+    )
+
+    report = validate_generation(destination)
+    assert report.valid, report.errors
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"completion": "raw teacher output"},
+        {"private_reasoning": "hidden reasoning trace"},
+        {"diagnostics": {"scratchpad": "hidden work"}},
+        {"diagnostics": {"chain_of_thought": "hidden work"}},
+        {"api_key": "do-not-persist"},
+        {"credential": "do-not-persist"},
+    ],
+)
+def test_writer_still_rejects_sensitive_metadata_after_topic_fix(
+    tmp_path: Path,
+    metadata,
+):
+    """The topic-label exception must not weaken normal metadata protection."""
+    row = _examples()[0]
+
+    with pytest.raises(ValueError, match="unsafe metadata"):
+        write_generation(
+            tmp_path,
+            [row],
+            [],
+            {row.example_id: "train"},
+            metadata=metadata,
+        )
+
+
+@pytest.mark.parametrize(
+    "unsafe_topic_label",
+    [
+        "private reasoning trace",
+        "chain of thought notes",
+        "scratchpad dump",
+        "API key details",
+        "credential secret",
+    ],
+)
+def test_writer_rejects_sensitive_topic_distribution_labels(
+    tmp_path: Path,
+    unsafe_topic_label: str,
+):
+    """Even public-label handling remains fail-closed for private/sensitive labels."""
+    row = _examples()[0]
+
+    with pytest.raises(ValueError, match="unsafe metadata"):
+        write_generation(
+            tmp_path,
+            [row],
+            [],
+            {row.example_id: "train"},
+            metadata={
+                "topic_distribution": {
+                    unsafe_topic_label: 1,
+                }
+            },
+        )
+

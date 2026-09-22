@@ -83,6 +83,11 @@ class CachedTeacher:
             )
 
         result = self.inner.generate(packet, config)
+        self.live_calls += 1
+
+        # Transient provider failures must be retried on resume.
+        if result.error_code == "TEACHER_FAILED":
+            return result
 
         payload = {
             **expected,
@@ -96,7 +101,6 @@ class CachedTeacher:
         temp.write_text(canonical_json(payload) + "\n", encoding="utf-8")
         os.replace(temp, path)
 
-        self.live_calls += 1
         return result
 
 

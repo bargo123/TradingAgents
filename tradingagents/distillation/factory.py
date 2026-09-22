@@ -273,7 +273,7 @@ class DistillationFactory:
                             DatasetExclusion(
                                 _reason(report, "GROUNDING_FAILED"),
                                 packet_id=packet_id,
-                                diagnostic=str(_get(report, "diagnostics", "")),
+                                diagnostic=f"validator:{_reason(report, 'GROUNDING_FAILED')}",
                                 source_refs=tuple(_get(packet, "refs", ()) or ()),
                             )
                         )
@@ -285,7 +285,7 @@ class DistillationFactory:
                             DatasetExclusion(
                                 _reason(report, "SCHEMA_INVALID"),
                                 packet_id=packet_id,
-                                diagnostic=str(_get(report, "diagnostics", "")),
+                                diagnostic=f"validator:{_reason(report, 'SCHEMA_INVALID')}",
                                 source_refs=tuple(_get(packet, "refs", ()) or ()),
                             )
                         )
