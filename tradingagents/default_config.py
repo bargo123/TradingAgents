@@ -35,6 +35,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_FOREX_DEEP_EFFORT":            "forex_deep_effort",
     "TRADINGAGENTS_FOREX_QUICK_THINKING":         "forex_quick_thinking",
     "TRADINGAGENTS_FOREX_QUICK_MAX_TOKENS":      "forex_quick_max_tokens",
+    "TRADINGAGENTS_FOREX_PM_MAX_TOKENS":         "forex_pm_max_tokens",
     "TRADINGAGENTS_FOREX_DEEP_THINKING":          "forex_deep_thinking",
     "TRADINGAGENTS_FOREX_EVIDENCE_ENABLED": "forex_evidence_enabled",
     "TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS": "forex_evidence_timeout_seconds",
@@ -159,6 +160,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # concise evidence-bearing reports so this does not affect structured deep
     # decisions or the stock workflow.
     "forex_quick_max_tokens": 512,
+    # PM is a strict JSON-schema call and gets a request-local bounded budget;
+    # it is not inherited by the shared deep client or quick prose nodes.
+    "forex_pm_max_tokens": 1024,
     "forex_deep_thinking": True,
     # Optional read-only Phase 9 evidence augmentation (forex only).
     "forex_evidence_enabled": False,

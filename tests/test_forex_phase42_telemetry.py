@@ -162,11 +162,13 @@ def test_ollama_forex_quick_role_uses_bounded_output_cap_without_affecting_stock
         "forex_quick_thinking": False,
         "forex_deep_thinking": True,
         "forex_quick_max_tokens": 512,
+        "forex_pm_max_tokens": 1024,
     }
     graph = _bare_graph(config)
 
     assert graph._get_provider_kwargs(role="quick")["max_tokens"] == 512
     assert "max_tokens" not in graph._get_provider_kwargs(role="deep")
+    assert graph.config["forex_pm_max_tokens"] == 1024
 
     graph.market_data_mode = "stock"
     assert "max_tokens" not in graph._get_provider_kwargs(role="quick")

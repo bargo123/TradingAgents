@@ -321,6 +321,8 @@ def bind_forex_ollama_structured_mapping(
     llm: Any,
     schema: type[T],
     agent_name: str,
+    *,
+    max_tokens: int | None = None,
 ) -> Any | None:
     """Bind an Ollama forex schema to return a mapping for final validation.
 
@@ -334,7 +336,7 @@ def bind_forex_ollama_structured_mapping(
     if not is_ollama_chat_model(llm):
         return bind_structured(llm, schema, agent_name)
     function_schema = convert_to_openai_tool(schema, strict=True)["function"]
-    return bind_structured(
+    structured_llm = bind_structured(
         llm,
         function_schema,
         agent_name,
@@ -343,6 +345,14 @@ def bind_forex_ollama_structured_mapping(
         reasoning_effort="none",
         extra_body={"think": False},
     )
+    if structured_llm is None or max_tokens is None:
+        return structured_llm
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+        raise ValueError("forex structured max_tokens must be a positive integer")
+    # ``with_structured_output`` binds the schema; this second bind supplies a
+    # request-local budget for the PM only, without changing the shared deep
+    # client used by Research Manager and Trader.
+    return structured_llm.bind(max_tokens=max_tokens)
 
 
 def invoke_structured_or_freetext(

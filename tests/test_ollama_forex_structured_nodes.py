@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
+from openai import LengthFinishReasonError
 from pydantic import ValidationError
 
+from tradingagents.agents.managers import portfolio_manager as portfolio_manager_module
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 from tradingagents.agents.managers.research_manager import create_research_manager
 from tradingagents.agents.schemas import ForexPortfolioDecision, ResearchPlan, TraderProposal
@@ -72,7 +75,13 @@ _VALID_RESPONSES = {
 }
 
 
-def _ollama(response_by_schema: dict[str, str | dict], calls: list[dict]) -> OllamaChatOpenAI:
+def _ollama(
+    response_by_schema: dict[str, str | dict],
+    calls: list[dict],
+    *,
+    max_tokens: int | None = 1024,
+    completion_tokens: int = 20,
+) -> OllamaChatOpenAI:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode("utf-8"))
         calls.append(body)
@@ -91,26 +100,33 @@ def _ollama(response_by_schema: dict[str, str | dict], calls: list[dict]) -> Oll
                     "message": {"role": "assistant", "content": content},
                     "finish_reason": "stop",
                 }],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": 10 + completion_tokens,
+                },
             },
             request=request,
         )
 
-    return OllamaChatOpenAI(
-        model="qwen3.5:2b",
-        api_key="ollama",
-        base_url="http://127.0.0.1:11434/v1",
-        temperature=0,
-        max_tokens=1024,
+    kwargs = {
+        "model": "qwen3.5:2b",
+        "api_key": "ollama",
+        "base_url": "http://127.0.0.1:11434/v1",
+        "temperature": 0,
         # Simulate the graph's deep default. The forex structured binding must
         # override this with the documented reasoning_effort=none request.
-        extra_body={"think": True},
-        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
+        "extra_body": {"think": True},
+        "http_client": httpx.Client(transport=httpx.MockTransport(handler)),
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return OllamaChatOpenAI(**kwargs)
 
 
 def _ollama_sequence(
-    responses: list[str | dict], calls: list[dict]
+    responses: list[str | dict],
+    calls: list[dict],
 ) -> OllamaChatOpenAI:
     """Return an Ollama mock that consumes one PM response per invocation."""
 
@@ -131,7 +147,11 @@ def _ollama_sequence(
                     "message": {"role": "assistant", "content": content},
                     "finish_reason": "stop",
                 }],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 20,
+                    "total_tokens": 30,
+                },
             },
             request=request,
         )
@@ -208,6 +228,26 @@ def test_graph_created_deep_ollama_portfolio_manager_overrides_thinking() -> Non
     assert result["normalization_status"] == "NORMALIZED"
     assert len(calls) == 1
     _assert_json_schema_wire(calls[0], ForexPortfolioDecision.__name__)
+
+
+@pytest.mark.unit
+def test_ollama_forex_portfolio_manager_uses_dedicated_budget_above_quick_cap() -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    payload["investment_thesis"] = "Observed intraday evidence remains balanced. " * 180
+    llm = _ollama(
+        {"ForexPortfolioDecision": payload},
+        calls,
+        max_tokens=None,
+        completion_tokens=600,
+    )
+
+    result = create_portfolio_manager(llm, forex_pm_max_tokens=1024)(_forex_state())
+
+    assert result["normalization_status"] == "NORMALIZED"
+    assert len(calls) == 1
+    _assert_json_schema_wire(calls[0], ForexPortfolioDecision.__name__)
+    assert calls[0]["max_tokens"] > 512
 
 
 @pytest.mark.unit
@@ -318,6 +358,33 @@ def test_ollama_forex_portfolio_manager_retries_once_then_fails_closed() -> None
     assert len(calls) == 2
     for call in calls:
         _assert_json_schema_wire(call, ForexPortfolioDecision.__name__)
+
+
+@pytest.mark.unit
+def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed() -> None:
+    class TruncatingStructuredOutput:
+        def invoke(self, _prompt):
+            raise LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+
+    def bind_truncating(*_args, **_kwargs):
+        return TruncatingStructuredOutput()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        portfolio_manager_module,
+        "bind_forex_ollama_structured_mapping",
+        bind_truncating,
+    )
+    try:
+        result = create_portfolio_manager(object(), forex_pm_max_tokens=1024)(
+            _forex_state()
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert result["normalization_status"] == "FAILED"
+    assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
+    assert "cause_type=LengthFinishReasonError" in result["normalization_error"]
 
 
 @pytest.mark.unit

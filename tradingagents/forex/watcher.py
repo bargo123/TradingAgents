@@ -117,6 +117,7 @@ _SAFE_CONFIG_KEYS = frozenset(
         "forex_deep_effort",
         "forex_quick_thinking",
         "forex_quick_max_tokens",
+        "forex_pm_max_tokens",
         "forex_deep_thinking",
         "analysis_profile",
         "analysts",

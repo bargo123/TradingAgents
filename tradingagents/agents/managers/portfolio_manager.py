@@ -40,7 +40,11 @@ from tradingagents.forex.profile import build_forex_profile_context
 logger = logging.getLogger(__name__)
 
 
-def create_portfolio_manager(llm, forex_profile: str = "INTRADAY"):
+def create_portfolio_manager(
+    llm,
+    forex_profile: str = "INTRADAY",
+    forex_pm_max_tokens: int | None = None,
+):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
     forex_structured_llm = None
 
@@ -146,6 +150,7 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
                     llm,
                     ForexPortfolioDecision,
                     "Forex Portfolio Manager",
+                    max_tokens=forex_pm_max_tokens,
                 )
 
             trusted_fields = {"analysis_profile": forex_profile}

@@ -110,6 +110,7 @@ class GraphSetup:
         market_data_mode: str = "stock",
         mt5_tools: Any | None = None,
         forex_profile: str = "INTRADAY",
+        forex_pm_max_tokens: int | None = None,
     ):
         """Initialize with required components."""
         if market_data_mode not in {"stock", "forex_mt5"}:
@@ -132,6 +133,7 @@ class GraphSetup:
         self.market_data_mode = market_data_mode
         self.mt5_tools = mt5_tools
         self.forex_profile = forex_profile
+        self.forex_pm_max_tokens = forex_pm_max_tokens
 
     def _instrument(self, node, agent_name: str, llm: Any):
         """Add forex-only callback attribution around an LLM-bearing node."""
@@ -201,6 +203,7 @@ class GraphSetup:
         portfolio_manager_node = create_portfolio_manager(
             self.deep_thinking_llm,
             forex_profile=self.forex_profile,
+            forex_pm_max_tokens=self.forex_pm_max_tokens,
         )
 
         # Create workflow

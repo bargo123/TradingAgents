@@ -196,6 +196,7 @@ class TradingAgentsGraph:
             market_data_mode=self.market_data_mode,
             mt5_tools=self.mt5_tools,
             forex_profile=self.forex_analysis_profile,
+            forex_pm_max_tokens=self.config.get("forex_pm_max_tokens"),
         )
 
         self.propagator = Propagator(
