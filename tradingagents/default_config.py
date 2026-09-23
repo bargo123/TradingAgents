@@ -161,8 +161,10 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # decisions or the stock workflow.
     "forex_quick_max_tokens": 512,
     # PM is a strict JSON-schema call and gets a request-local bounded budget;
-    # it is not inherited by the shared deep client or quick prose nodes.
-    "forex_pm_max_tokens": 1024,
+    # it is not inherited by the shared deep client or quick prose nodes.  The
+    # larger bounded budget leaves room for the complete required decision
+    # object without changing any other node's output cap.
+    "forex_pm_max_tokens": 2048,
     "forex_deep_thinking": True,
     # Optional read-only Phase 9 evidence augmentation (forex only).
     "forex_evidence_enabled": False,

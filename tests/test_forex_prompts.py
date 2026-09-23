@@ -211,6 +211,24 @@ def test_forex_portfolio_manager_keeps_structured_raw_result():
     assert result["normalization_error"] is None
 
 
+def test_forex_portfolio_manager_requests_concise_json_only_output():
+    llm = _PromptCaptureLLM(
+        PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Remain flat.",
+            investment_thesis="Evidence is mixed.",
+        )
+    )
+
+    create_portfolio_manager(llm)(_forex_state())
+
+    prompt = _prompt_text(llm.prompts[0]).lower()
+    assert "return only the required json object" in prompt
+    assert "no markdown or prose outside json" in prompt
+    assert "keep each narrative field concise" in prompt
+    assert "avoid repeating the same rationale" in prompt
+
+
 def test_forex_portfolio_manager_fails_closed_without_structured_output():
     llm = _PromptCaptureLLM(RuntimeError("provider rejected schema"))
     result = create_portfolio_manager(llm)(_forex_state())
@@ -276,3 +294,4 @@ def test_stock_portfolio_manager_keeps_general_structured_path():
     assert "normalization_status" not in result
     assert result["final_trade_decision"].startswith("**Rating**: Hold")
     assert len(llm.prompts) == 1
+    assert "return only the required json object" not in _prompt_text(llm.prompts[0]).lower()

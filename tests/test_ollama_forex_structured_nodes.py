@@ -14,6 +14,7 @@ from tradingagents.agents.managers.research_manager import create_research_manag
 from tradingagents.agents.schemas import ForexPortfolioDecision, ResearchPlan, TraderProposal
 from tradingagents.agents.trader.trader import create_trader
 from tradingagents.agents.utils.structured import StructuredOutputRequiredError
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients.openai_client import OllamaChatOpenAI
 
 
@@ -167,11 +168,16 @@ def _ollama_sequence(
     )
 
 
-def _assert_json_schema_wire(call: dict, schema_name: str) -> None:
+def _assert_json_schema_wire(
+    call: dict,
+    schema_name: str,
+    *,
+    expected_max_tokens: int = 1024,
+) -> None:
     assert call["response_format"]["type"] == "json_schema"
     assert call["response_format"]["json_schema"]["name"] == schema_name
     assert call["reasoning_effort"] == "none"
-    assert call["max_tokens"] == 1024
+    assert call["max_tokens"] == expected_max_tokens
     assert "tools" not in call
     assert "tool_choice" not in call
     # Graph-created deep clients carry their normal thinking default.  A
@@ -233,21 +239,37 @@ def test_graph_created_deep_ollama_portfolio_manager_overrides_thinking() -> Non
 @pytest.mark.unit
 def test_ollama_forex_portfolio_manager_uses_dedicated_budget_above_quick_cap() -> None:
     calls: list[dict] = []
+    completion_tokens = 1500
     payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
     payload["investment_thesis"] = "Observed intraday evidence remains balanced. " * 180
     llm = _ollama(
         {"ForexPortfolioDecision": payload},
         calls,
         max_tokens=None,
-        completion_tokens=600,
+        completion_tokens=completion_tokens,
     )
 
-    result = create_portfolio_manager(llm, forex_pm_max_tokens=1024)(_forex_state())
+    result = create_portfolio_manager(
+        llm,
+        forex_pm_max_tokens=DEFAULT_CONFIG["forex_pm_max_tokens"],
+    )(_forex_state())
 
     assert result["normalization_status"] == "NORMALIZED"
     assert len(calls) == 1
-    _assert_json_schema_wire(calls[0], ForexPortfolioDecision.__name__)
+    _assert_json_schema_wire(
+        calls[0],
+        ForexPortfolioDecision.__name__,
+        expected_max_tokens=2048,
+    )
     assert calls[0]["max_tokens"] > 512
+    assert len(json.dumps(payload, separators=(",", ":"))) > 8_000
+    assert 1024 < completion_tokens < 2048
+
+
+@pytest.mark.unit
+def test_default_forex_portfolio_budget_is_2048_not_quick_cap() -> None:
+    assert DEFAULT_CONFIG["forex_pm_max_tokens"] == 2048
+    assert DEFAULT_CONFIG["forex_quick_max_tokens"] == 512
 
 
 @pytest.mark.unit
@@ -362,9 +384,18 @@ def test_ollama_forex_portfolio_manager_retries_once_then_fails_closed() -> None
 
 @pytest.mark.unit
 def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed() -> None:
+    attempts = 0
+
     class TruncatingStructuredOutput:
         def invoke(self, _prompt):
-            raise LengthFinishReasonError(completion=SimpleNamespace(usage=None))
+            nonlocal attempts
+            attempts += 1
+            raise LengthFinishReasonError(
+                completion=SimpleNamespace(
+                    choices=[SimpleNamespace(finish_reason="length")],
+                    usage=SimpleNamespace(completion_tokens=2049),
+                )
+            )
 
     def bind_truncating(*_args, **_kwargs):
         return TruncatingStructuredOutput()
@@ -376,7 +407,7 @@ def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed(
         bind_truncating,
     )
     try:
-        result = create_portfolio_manager(object(), forex_pm_max_tokens=1024)(
+        result = create_portfolio_manager(object(), forex_pm_max_tokens=2048)(
             _forex_state()
         )
     finally:
@@ -385,6 +416,10 @@ def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed(
     assert result["normalization_status"] == "FAILED"
     assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
     assert "cause_type=LengthFinishReasonError" in result["normalization_error"]
+    assert '"finish_reason":"length"' in result["normalization_error"]
+    assert '"output_tokens":2049' in result["normalization_error"]
+    assert '"configured_max_tokens":2048' in result["normalization_error"]
+    assert attempts == 2
 
 
 @pytest.mark.unit

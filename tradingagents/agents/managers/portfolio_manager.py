@@ -39,6 +39,12 @@ from tradingagents.forex.profile import build_forex_profile_context
 
 logger = logging.getLogger(__name__)
 
+_FOREX_PM_CONCISE_JSON_INSTRUCTION = (
+    "Return only the required JSON object. No markdown or prose outside JSON. "
+    "Keep each narrative field concise, avoid repeating the same rationale "
+    "across fields, and satisfy every required field."
+)
+
 
 def create_portfolio_manager(
     llm,
@@ -115,6 +121,7 @@ def create_portfolio_manager(
 
 Ground the rating in observed currency-pair price action, spread, volatility, and broad macro context from the analysts. Commit to a directional call only when evidence clearly supports one; choose Hold when the case is balanced, materially conflicting, ambiguous, or insufficient. Entry and risk levels are hypothetical observations only; no order is sent. Return the exact analysis profile and a bounded valid_for_seconds value. Use minutes-to-hours horizons only; never use months, years, long-term equity language, issuer valuation, dividends, or company fundamentals. Do not infer issuer-level business data.
 
+{_FOREX_PM_CONCISE_JSON_INSTRUCTION}
 {evidence_prompt_section}
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
         else:
@@ -194,7 +201,7 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
                     "Portfolio Manager: structured output invocation failed "
                     f"after {getattr(exc, 'attempts', 1)} attempts "
                     f"(cause_type={structured_failure_category(exc)}; diagnostics="
-                    f"{json.dumps(structured_failure_diagnostics(exc), sort_keys=True, separators=(',', ':'))})"
+                    f"{json.dumps(structured_failure_diagnostics(exc, configured_max_tokens=forex_pm_max_tokens), sort_keys=True, separators=(',', ':'))})"
                 )
         else:
             final_trade_decision = invoke_structured_or_freetext(

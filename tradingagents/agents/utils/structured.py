@@ -141,12 +141,56 @@ def _structured_attempt_causes(exc: BaseException):
     yield 1, exc.__cause__ or exc
 
 
-def structured_failure_diagnostics(exc: BaseException) -> list[dict[str, Any]]:
+def _safe_completion_metadata(
+    exc: BaseException,
+    *,
+    configured_max_tokens: int | None,
+) -> dict[str, Any]:
+    """Extract scalar provider completion metadata without response content."""
+
+    completion = getattr(exc, "completion", None)
+    choices = completion.get("choices") if isinstance(completion, Mapping) else getattr(completion, "choices", None)
+    choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+    finish_reason = (
+        choice.get("finish_reason")
+        if isinstance(choice, Mapping)
+        else getattr(choice, "finish_reason", None)
+    )
+    usage = completion.get("usage") if isinstance(completion, Mapping) else getattr(completion, "usage", None)
+    output_tokens = (
+        usage.get("completion_tokens")
+        if isinstance(usage, Mapping)
+        else getattr(usage, "completion_tokens", None)
+    )
+    finish_reason = (
+        finish_reason[:64] if isinstance(finish_reason, str) else None
+    )
+    if isinstance(output_tokens, bool) or not isinstance(output_tokens, int) or output_tokens < 0:
+        output_tokens = None
+    if (
+        isinstance(configured_max_tokens, bool)
+        or not isinstance(configured_max_tokens, int)
+        or configured_max_tokens <= 0
+    ):
+        configured_max_tokens = None
+    return {
+        "finish_reason": finish_reason,
+        "output_tokens": output_tokens,
+        "configured_max_tokens": configured_max_tokens,
+    }
+
+
+def structured_failure_diagnostics(
+    exc: BaseException,
+    *,
+    configured_max_tokens: int | None = None,
+) -> list[dict[str, Any]]:
     """Return bounded, content-free diagnostics for structured failures.
 
-    The result contains only attempt number, exception class, validation field
-    paths/types/messages, and input Python types.  It must be safe for logs and
-    the shadow decision's ``normalization_error`` field.
+    The result contains only attempt number, exception class, scalar provider
+    completion metadata, validation field paths/types/messages, and input
+    Python types.  It must be safe for logs and the shadow decision's
+    ``normalization_error`` field.
     """
 
     diagnostics: list[dict[str, Any]] = []
@@ -155,6 +199,10 @@ def structured_failure_diagnostics(exc: BaseException) -> list[dict[str, Any]]:
             {
                 "attempt": attempt,
                 "exception_type": type(cause).__name__,
+                **_safe_completion_metadata(
+                    cause,
+                    configured_max_tokens=configured_max_tokens,
+                ),
                 "validation_errors": _validation_error_details(cause),
             }
         )
