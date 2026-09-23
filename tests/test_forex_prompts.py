@@ -229,6 +229,23 @@ def test_forex_portfolio_manager_requests_concise_json_only_output():
     assert "avoid repeating the same rationale" in prompt
 
 
+def test_forex_portfolio_manager_explicitly_accounts_for_disabled_evidence():
+    llm = _PromptCaptureLLM(
+        PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Remain flat.",
+            investment_thesis="Evidence is mixed.",
+        )
+    )
+
+    create_portfolio_manager(llm)(_forex_state())
+
+    prompt = _prompt_text(llm.prompts[0]).lower()
+    assert "supporting evidence integration is disabled" in prompt
+    assert "evidence_refs_used must be []" in prompt
+    assert "evidence_refs_rejected must be []" in prompt
+
+
 def test_forex_portfolio_manager_compacts_redundant_debate_histories():
     state = _forex_state()
     state["investment_debate_state"].update(

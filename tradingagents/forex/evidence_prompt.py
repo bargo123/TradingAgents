@@ -34,6 +34,15 @@ _FINAL_PM_EVIDENCE_INSTRUCTION = "\n".join(
     )
 )
 
+_DISABLED_PM_EVIDENCE_INSTRUCTION = "\n".join(
+    (
+        "Supporting evidence integration is DISABLED for this decision.",
+        "Set evidence_use_status to DISABLED.",
+        "evidence_refs_used must be [].",
+        "evidence_refs_rejected must be [].",
+    )
+)
+
 
 def _value(context: Any, name: str, default: Any = None) -> Any:
     if isinstance(context, Mapping):
@@ -73,4 +82,13 @@ def render_final_pm_evidence_instruction() -> str:
     return _FINAL_PM_EVIDENCE_INSTRUCTION
 
 
-__all__ = ["render_supporting_evidence", "render_final_pm_evidence_instruction"]
+def render_disabled_pm_evidence_instruction() -> str:
+    """State the runtime-owned evidence contract when integration is disabled."""
+    return _DISABLED_PM_EVIDENCE_INSTRUCTION
+
+
+__all__ = [
+    "render_supporting_evidence",
+    "render_final_pm_evidence_instruction",
+    "render_disabled_pm_evidence_instruction",
+]

@@ -44,6 +44,7 @@ __all__ = [
     "get_instrument_context_from_state",
     "render_supporting_evidence",
     "render_final_pm_evidence_instruction",
+    "render_disabled_pm_evidence_instruction",
     "FOREX_CONCISE_OUTPUT_INSTRUCTION",
     "get_language_instruction",
     "create_msg_delete",
@@ -91,6 +92,15 @@ def render_final_pm_evidence_instruction() -> str:
     """Expose the bounded forex PM instruction without importing forex eagerly."""
     from tradingagents.forex.evidence_prompt import (
         render_final_pm_evidence_instruction as _render,
+    )
+
+    return _render()
+
+
+def render_disabled_pm_evidence_instruction() -> str:
+    """Expose the runtime-owned disabled-evidence PM instruction lazily."""
+    from tradingagents.forex.evidence_prompt import (
+        render_disabled_pm_evidence_instruction as _render,
     )
 
     return _render()

@@ -16,6 +16,7 @@ from tradingagents.agents.schemas import ForexPortfolioDecision, ResearchPlan, T
 from tradingagents.agents.trader.trader import create_trader
 from tradingagents.agents.utils.structured import StructuredOutputRequiredError
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.forex.evidence_context import EvidenceContext, EvidenceIntegrationStatus
 from tradingagents.llm_clients.openai_client import OllamaChatOpenAI
 
 
@@ -188,6 +189,15 @@ def _assert_json_schema_wire(
     assert call.get("think") is False
 
 
+def _state_with_evidence(state: dict, status: EvidenceIntegrationStatus) -> dict:
+    enriched = dict(state)
+    enriched["evidence_context"] = EvidenceContext(
+        integration_status=status,
+        rendered_context="K1: supporting context",
+    )
+    return enriched
+
+
 @pytest.mark.unit
 def test_ollama_forex_research_manager_uses_json_schema_and_parses() -> None:
     calls: list[dict] = []
@@ -301,6 +311,76 @@ def test_ollama_forex_portfolio_supplies_missing_runtime_analysis_profile() -> N
     assert result["normalization_status"] == "NORMALIZED"
     assert result["portfolio_manager_raw_result"]["analysis_profile"] == "INTRADAY"
     assert len(calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("model_status", ("DISABLED", "USED"))
+def test_disabled_forex_evidence_rebinds_runtime_owned_reference_fields(model_status: str) -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    payload.update(
+        {
+            "evidence_use_status": model_status,
+            "evidence_refs_used": ["K1"],
+            "evidence_refs_rejected": [],
+        }
+    )
+    llm = _ollama({"ForexPortfolioDecision": payload}, calls)
+
+    result = create_portfolio_manager(llm, forex_profile="INTRADAY")(_forex_state())
+
+    assert result["normalization_status"] == "NORMALIZED"
+    assert result["portfolio_manager_raw_result"]["evidence_use_status"] == "DISABLED"
+    assert result["portfolio_manager_raw_result"]["evidence_refs_used"] == []
+    assert result["portfolio_manager_raw_result"]["evidence_refs_rejected"] == []
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+def test_injected_forex_evidence_reference_fields_remain_model_owned() -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    payload.update(
+        {
+            "evidence_use_status": "USED",
+            "evidence_refs_used": ["K1"],
+            "evidence_refs_rejected": [],
+        }
+    )
+    llm = _ollama({"ForexPortfolioDecision": payload}, calls)
+
+    result = create_portfolio_manager(llm)(
+        _state_with_evidence(_forex_state(), EvidenceIntegrationStatus.INJECTED)
+    )
+
+    assert result["normalization_status"] == "NORMALIZED"
+    assert result["portfolio_manager_raw_result"]["evidence_use_status"] == "USED"
+    assert result["portfolio_manager_raw_result"]["evidence_refs_used"] == ["K1"]
+    assert result["portfolio_manager_raw_result"]["evidence_refs_rejected"] == []
+    assert len(calls) == 1
+
+
+@pytest.mark.unit
+def test_injected_forex_evidence_duplicate_refs_still_fail_closed() -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
+    payload.update(
+        {
+            "evidence_use_status": "USED",
+            "evidence_refs_used": ["K1", "K1"],
+            "evidence_refs_rejected": [],
+        }
+    )
+    llm = _ollama({"ForexPortfolioDecision": payload}, calls)
+
+    result = create_portfolio_manager(llm)(
+        _state_with_evidence(_forex_state(), EvidenceIntegrationStatus.INJECTED)
+    )
+
+    assert result["normalization_status"] == "FAILED"
+    assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
+    assert '"path":"$"' in result["normalization_error"]
+    assert len(calls) == 2
 
 
 @pytest.mark.unit

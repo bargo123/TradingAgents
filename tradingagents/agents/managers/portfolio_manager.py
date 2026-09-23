@@ -24,6 +24,7 @@ from tradingagents.agents.schemas import (
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    render_disabled_pm_evidence_instruction,
     render_final_pm_evidence_instruction,
     render_supporting_evidence,
 )
@@ -60,6 +61,16 @@ def _compact_debate_history(
         if history and history not in combined:
             parts.append(f"{label}:\n{history}")
     return "\n".join(parts)
+
+
+def _forex_evidence_integration_status(state: Mapping[str, Any]) -> str:
+    """Read the immutable evidence integration state supplied to a forex node."""
+    context = state.get("evidence_context")
+    if context is None:
+        return "DISABLED"
+    status = context.get("integration_status") if isinstance(context, Mapping) else getattr(context, "integration_status", None)
+    status = getattr(status, "value", status)
+    return str(status or "UNAVAILABLE").strip().upper()
 
 
 def create_portfolio_manager(
@@ -110,12 +121,16 @@ def create_portfolio_manager(
 
         if is_forex:
             profile_context = build_forex_profile_context(state.get("forex_analysis_profile", forex_profile))
-            evidence_block = render_supporting_evidence(state)
-            evidence_prompt_section = (
-                f"{evidence_block}\n\n{render_final_pm_evidence_instruction()}"
-                if evidence_block
-                else ""
-            )
+            evidence_integration_status = _forex_evidence_integration_status(state)
+            if evidence_integration_status == "DISABLED":
+                evidence_prompt_section = render_disabled_pm_evidence_instruction()
+            else:
+                evidence_block = render_supporting_evidence(state)
+                evidence_prompt_section = (
+                    f"{evidence_block}\n\n{render_final_pm_evidence_instruction()}"
+                    if evidence_block
+                    else ""
+                )
             prompt = f"""As the Portfolio Manager for a currency pair, synthesize the risk analysts' debate and return one structured portfolio rating.
 
 {instrument_context}
@@ -183,18 +198,30 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
                     max_tokens=forex_pm_max_tokens,
                 )
 
-            trusted_fields = {"analysis_profile": forex_profile}
+            trusted_fields = {
+                "analysis_profile": forex_profile,
+            }
+            if _forex_evidence_integration_status(state) == "DISABLED":
+                trusted_fields.update(
+                    {
+                        "evidence_use_status": "DISABLED",
+                        "evidence_refs_used": [],
+                        "evidence_refs_rejected": [],
+                    }
+                )
 
             def validate_forex_payload(value):
                 if isinstance(value, Mapping):
                     payload = dict(value)
                 else:
                     payload = value.model_dump(mode="python")
-                if payload.get("analysis_profile") != trusted_fields["analysis_profile"]:
-                    logger.info(
-                        "Portfolio Manager runtime_invariant_rebound field=analysis_profile"
-                    )
-                payload["analysis_profile"] = trusted_fields["analysis_profile"]
+                for field, trusted_value in trusted_fields.items():
+                    if payload.get(field) != trusted_value:
+                        logger.info(
+                            "Portfolio Manager runtime_invariant_rebound field=%s",
+                            field,
+                        )
+                    payload[field] = trusted_value
                 return ForexPortfolioDecision.model_validate(payload)
 
             try:
