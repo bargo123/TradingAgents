@@ -229,6 +229,71 @@ def test_forex_portfolio_manager_requests_concise_json_only_output():
     assert "avoid repeating the same rationale" in prompt
 
 
+def test_forex_portfolio_manager_compacts_redundant_debate_histories():
+    state = _forex_state()
+    state["investment_debate_state"].update(
+        {
+            "history": "Bull: momentum is constructive.\nBear: spread-adjusted edge is weak.",
+            "bull_history": "Bull: momentum is constructive.",
+            "bear_history": "Bear: spread-adjusted edge is weak.",
+        }
+    )
+    state["risk_debate_state"].update(
+        {
+            "history": "Aggressive: small size.\nConservative: wait for confirmation.\nNeutral: balanced.",
+            "aggressive_history": "Aggressive: small size.",
+            "conservative_history": "Conservative: wait for confirmation.",
+            "neutral_history": "Neutral: balanced.",
+        }
+    )
+    llm = _PromptCaptureLLM(
+        PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Remain flat.",
+            investment_thesis="Evidence is mixed.",
+        )
+    )
+
+    create_portfolio_manager(llm)(state)
+
+    prompt = _prompt_text(llm.prompts[0])
+    assert prompt.count("Bull: momentum is constructive.") == 1
+    assert prompt.count("Bear: spread-adjusted edge is weak.") == 1
+    assert prompt.count("Aggressive: small size.") == 1
+    assert prompt.count("Conservative: wait for confirmation.") == 1
+    assert prompt.count("Neutral: balanced.") == 1
+
+
+def test_forex_portfolio_manager_preserves_unique_history_when_combined_history_is_incomplete():
+    state = _forex_state()
+    state["investment_debate_state"]["history"] = "Combined bull/bear history only."
+    state["investment_debate_state"]["bull_history"] = "Bull-only evidence not in combined history."
+    state["investment_debate_state"]["bear_history"] = "Bear-only evidence not in combined history."
+    state["risk_debate_state"]["history"] = "Combined risk history only."
+    state["risk_debate_state"]["aggressive_history"] = "Aggressive-only evidence not in combined history."
+    state["risk_debate_state"]["conservative_history"] = "Conservative-only evidence not in combined history."
+    state["risk_debate_state"]["neutral_history"] = "Neutral-only evidence not in combined history."
+    llm = _PromptCaptureLLM(
+        PortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Remain flat.",
+            investment_thesis="Evidence is mixed.",
+        )
+    )
+
+    create_portfolio_manager(llm)(state)
+
+    prompt = _prompt_text(llm.prompts[0])
+    for evidence in (
+        "Bull-only evidence not in combined history.",
+        "Bear-only evidence not in combined history.",
+        "Aggressive-only evidence not in combined history.",
+        "Conservative-only evidence not in combined history.",
+        "Neutral-only evidence not in combined history.",
+    ):
+        assert evidence in prompt
+
+
 def test_forex_portfolio_manager_fails_closed_without_structured_output():
     llm = _PromptCaptureLLM(RuntimeError("provider rejected schema"))
     result = create_portfolio_manager(llm)(_forex_state())

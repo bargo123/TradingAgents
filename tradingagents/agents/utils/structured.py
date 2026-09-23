@@ -162,11 +162,18 @@ def _safe_completion_metadata(
         if isinstance(usage, Mapping)
         else getattr(usage, "completion_tokens", None)
     )
+    input_tokens = (
+        usage.get("prompt_tokens")
+        if isinstance(usage, Mapping)
+        else getattr(usage, "prompt_tokens", None)
+    )
     finish_reason = (
         finish_reason[:64] if isinstance(finish_reason, str) else None
     )
     if isinstance(output_tokens, bool) or not isinstance(output_tokens, int) or output_tokens < 0:
         output_tokens = None
+    if isinstance(input_tokens, bool) or not isinstance(input_tokens, int) or input_tokens < 0:
+        input_tokens = None
     if (
         isinstance(configured_max_tokens, bool)
         or not isinstance(configured_max_tokens, int)
@@ -175,6 +182,7 @@ def _safe_completion_metadata(
         configured_max_tokens = None
     return {
         "finish_reason": finish_reason,
+        "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "configured_max_tokens": configured_max_tokens,
     }
@@ -217,6 +225,7 @@ def invoke_structured_only(
     max_attempts: int = 1,
     allow_mapping: bool = False,
     result_validator: Callable[[Any], BaseModel] | None = None,
+    configured_max_tokens: int | None = None,
 ) -> BaseModel | Mapping[str, Any]:
     """Invoke a structured LLM binding and fail closed on any miss.
 
@@ -266,7 +275,10 @@ def invoke_structured_only(
                 attempt + 1,
                 max_attempts,
                 json.dumps(
-                    structured_failure_diagnostics(failures[-1]),
+                    structured_failure_diagnostics(
+                        failures[-1],
+                        configured_max_tokens=configured_max_tokens,
+                    ),
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
@@ -287,7 +299,10 @@ def invoke_structured_only(
         agent_name,
         len(failures),
         json.dumps(
-            structured_failure_diagnostics(retry_error),
+            structured_failure_diagnostics(
+                retry_error,
+                configured_max_tokens=configured_max_tokens,
+            ),
             sort_keys=True,
             separators=(",", ":"),
         ),

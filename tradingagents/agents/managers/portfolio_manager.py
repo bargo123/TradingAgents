@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Mapping
+from typing import Any
 
 from tradingagents.agents.schemas import (
     ForexPortfolioDecision,
@@ -46,6 +47,21 @@ _FOREX_PM_CONCISE_JSON_INSTRUCTION = (
 )
 
 
+def _compact_debate_history(
+    combined_history: Any,
+    labelled_histories: tuple[tuple[str, Any], ...],
+) -> str:
+    """Keep a combined debate once, appending only entries it does not contain."""
+
+    combined = combined_history if isinstance(combined_history, str) else ""
+    parts = [combined] if combined else []
+    for label, value in labelled_histories:
+        history = value if isinstance(value, str) else ""
+        if history and history not in combined:
+            parts.append(f"{label}:\n{history}")
+    return "\n".join(parts)
+
+
 def create_portfolio_manager(
     llm,
     forex_profile: str = "INTRADAY",
@@ -59,18 +75,29 @@ def create_portfolio_manager(
         instrument_context = get_instrument_context_from_state(state)
         is_forex = state.get("asset_type") == "forex"
 
-        history = state["risk_debate_state"]["history"]
         risk_debate_state = state["risk_debate_state"]
+        history = risk_debate_state["history"]
+        risk_debate_history = history
         investment_debate_history = ""
-        bull_history = ""
-        bear_history = ""
         if is_forex:
             investment_debate_state = state.get("investment_debate_state", {})
             if not isinstance(investment_debate_state, Mapping):
                 investment_debate_state = {}
-            investment_debate_history = investment_debate_state.get("history", "")
-            bull_history = investment_debate_state.get("bull_history", "")
-            bear_history = investment_debate_state.get("bear_history", "")
+            investment_debate_history = _compact_debate_history(
+                investment_debate_state.get("history", ""),
+                (
+                    ("Bull Research History", investment_debate_state.get("bull_history", "")),
+                    ("Bear Research History", investment_debate_state.get("bear_history", "")),
+                ),
+            )
+            risk_debate_history = _compact_debate_history(
+                history,
+                (
+                    ("Aggressive Risk History", risk_debate_state.get("aggressive_history", "")),
+                    ("Conservative Risk History", risk_debate_state.get("conservative_history", "")),
+                    ("Neutral Risk History", risk_debate_state.get("neutral_history", "")),
+                ),
+            )
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
 
@@ -107,15 +134,11 @@ def create_portfolio_manager(
 **Context:**
 - Bull/Bear Research Debate History:
 {investment_debate_history}
-- Bull Research History:
-{bull_history}
-- Bear Research History:
-{bear_history}
 - Research Manager's investment plan: **{research_plan}**
 - Trader's transaction proposal: **{trader_plan}**
 {lessons_line}
 **Risk Analysts Debate History:**
-{history}
+{risk_debate_history}
 
 ---
 
@@ -182,6 +205,7 @@ Ground every conclusion in specific evidence from the analysts. Commit to a dire
                     max_attempts=2,
                     allow_mapping=True,
                     result_validator=validate_forex_payload,
+                    configured_max_tokens=forex_pm_max_tokens,
                 )
                 if not isinstance(structured_result, ForexPortfolioDecision):
                     raise TypeError("forex structured payload validator returned an invalid result")

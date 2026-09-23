@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 import httpx
@@ -178,6 +179,7 @@ def _assert_json_schema_wire(
     assert call["response_format"]["json_schema"]["name"] == schema_name
     assert call["reasoning_effort"] == "none"
     assert call["max_tokens"] == expected_max_tokens
+    assert "max_completion_tokens" not in call
     assert "tools" not in call
     assert "tool_choice" not in call
     # Graph-created deep clients carry their normal thinking default.  A
@@ -237,7 +239,7 @@ def test_graph_created_deep_ollama_portfolio_manager_overrides_thinking() -> Non
 
 
 @pytest.mark.unit
-def test_ollama_forex_portfolio_manager_uses_dedicated_budget_above_quick_cap() -> None:
+def test_ollama_forex_portfolio_manager_provider_request_carries_2048_budget() -> None:
     calls: list[dict] = []
     completion_tokens = 1500
     payload = dict(_VALID_RESPONSES["ForexPortfolioDecision"])
@@ -261,7 +263,7 @@ def test_ollama_forex_portfolio_manager_uses_dedicated_budget_above_quick_cap() 
         ForexPortfolioDecision.__name__,
         expected_max_tokens=2048,
     )
-    assert calls[0]["max_tokens"] > 512
+    assert calls[0]["max_tokens"] == 2048
     assert len(json.dumps(payload, separators=(",", ":"))) > 8_000
     assert 1024 < completion_tokens < 2048
 
@@ -383,7 +385,9 @@ def test_ollama_forex_portfolio_manager_retries_once_then_fails_closed() -> None
 
 
 @pytest.mark.unit
-def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed() -> None:
+def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed(
+    caplog,
+) -> None:
     attempts = 0
 
     class TruncatingStructuredOutput:
@@ -393,7 +397,7 @@ def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed(
             raise LengthFinishReasonError(
                 completion=SimpleNamespace(
                     choices=[SimpleNamespace(finish_reason="length")],
-                    usage=SimpleNamespace(completion_tokens=2049),
+                    usage=SimpleNamespace(prompt_tokens=1981, completion_tokens=2049),
                 )
             )
 
@@ -407,6 +411,7 @@ def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed(
         bind_truncating,
     )
     try:
+        caplog.set_level(logging.WARNING, logger="tradingagents.agents.utils.structured")
         result = create_portfolio_manager(object(), forex_pm_max_tokens=2048)(
             _forex_state()
         )
@@ -417,9 +422,12 @@ def test_ollama_forex_portfolio_manager_length_finish_retries_then_fails_closed(
     assert result["final_trade_decision"] == "FOREX_PORTFOLIO_MANAGER_FAILED"
     assert "cause_type=LengthFinishReasonError" in result["normalization_error"]
     assert '"finish_reason":"length"' in result["normalization_error"]
+    assert '"input_tokens":1981' in result["normalization_error"]
     assert '"output_tokens":2049' in result["normalization_error"]
     assert '"configured_max_tokens":2048' in result["normalization_error"]
     assert attempts == 2
+    assert '"configured_max_tokens":2048' in caplog.text
+    assert '"configured_max_tokens":null' not in caplog.text
 
 
 @pytest.mark.unit
