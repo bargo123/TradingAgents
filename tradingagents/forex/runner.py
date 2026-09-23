@@ -108,6 +108,131 @@ def _fresh_reference_quote(
     }
 
 
+def _fresh_reference_quote_until_post_completion(
+    provider: Any,
+    resolved_symbol: str,
+    completed_timestamp: datetime,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+    max_attempts: int,
+    monotonic: Callable[[], float] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+) -> tuple[dict[str, Any] | None, dict[str, Any], Exception | None]:
+    """Read a broker quote until its timestamp is not before completion.
+
+    The first read is always attempted.  A pre-completion quote is retained as
+    temporal evidence, but never promoted to ``AVAILABLE``.  Subsequent reads
+    are bounded by both a monotonic timeout and an explicit attempt cap so a
+    quiet market or a stalled test/provider cannot create an unbounded loop.
+    """
+    if timeout_seconds < 0 or not math.isfinite(timeout_seconds):
+        raise ValueError("reference quote timeout must be finite and non-negative")
+    if poll_interval_seconds < 0 or not math.isfinite(poll_interval_seconds):
+        raise ValueError("reference quote poll interval must be finite and non-negative")
+    if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts <= 0:
+        raise ValueError("reference quote max attempts must be a positive integer")
+
+    clock = monotonic or time.monotonic
+    wait = sleeper or time.sleep
+    started = clock()
+    attempts = 0
+    candidate: dict[str, Any] | None = None
+    poll_error: Exception | None = None
+
+    while attempts < max_attempts:
+        # Always perform the first immediate read.  After sleeping exactly to
+        # the deadline, one final broker read is allowed; no further wait is.
+        if attempts and clock() - started > timeout_seconds:
+            break
+        attempts += 1
+        try:
+            candidate = _fresh_reference_quote(
+                provider, resolved_symbol, completed_timestamp
+            )
+        except Exception as exc:  # provider/validation failure is fail-closed
+            poll_error = exc
+            break
+        if candidate["delay"] >= 0:
+            break
+        elapsed = max(0.0, clock() - started)
+        if elapsed >= timeout_seconds or attempts >= max_attempts:
+            break
+        remaining = timeout_seconds - elapsed
+        try:
+            wait(min(poll_interval_seconds, remaining))
+        except Exception as exc:  # a broken wait seam is also fail-closed
+            poll_error = exc
+            break
+
+    elapsed = max(0.0, clock() - started)
+    telemetry = {
+        "reference_poll_attempts": attempts,
+        "reference_wait_seconds": elapsed,
+        "final_reference_delay_seconds": (
+            None if candidate is None else candidate["delay"]
+        ),
+        "reference_status": (
+            "UNAVAILABLE" if candidate is None else candidate["status"]
+        ),
+    }
+    return candidate, telemetry, poll_error
+
+
+def _reference_poll_settings(
+    config: Mapping[str, Any],
+    snapshot_timestamp: datetime,
+    completed_timestamp: datetime,
+) -> tuple[float, float, int]:
+    """Resolve and freshness-cap the bounded reference polling settings."""
+    try:
+        timeout_seconds = float(
+            config.get("forex_reference_poll_timeout_seconds", 5.0)
+        )
+        poll_interval_seconds = float(
+            config.get("forex_reference_poll_interval_seconds", 0.25)
+        )
+        max_attempts_value = config.get("forex_reference_poll_max_attempts", 21)
+        max_attempts = int(max_attempts_value)
+        freshness_budget_value = config.get("freshness_budget_seconds")
+        freshness_budget = (
+            None
+            if freshness_budget_value is None
+            else float(freshness_budget_value)
+        )
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("invalid reference quote polling configuration") from exc
+    if (
+        not math.isfinite(timeout_seconds)
+        or timeout_seconds < 0
+        or not math.isfinite(poll_interval_seconds)
+        or poll_interval_seconds < 0
+        or isinstance(max_attempts_value, bool)
+        or max_attempts <= 0
+        or (
+            freshness_budget is not None
+            and (not math.isfinite(freshness_budget) or freshness_budget < 0)
+        )
+    ):
+        raise ValueError("invalid reference quote polling configuration")
+
+    # Freshness is measured from the analyzed broker snapshot through decision
+    # completion.  Do not spend a polling wait that would cross that budget.
+    if freshness_budget is None:
+        return timeout_seconds, poll_interval_seconds, max_attempts
+    analysis_elapsed = (completed_timestamp - snapshot_timestamp).total_seconds()
+    remaining_freshness = max(0.0, freshness_budget - analysis_elapsed)
+    return min(timeout_seconds, remaining_freshness), poll_interval_seconds, max_attempts
+
+
+def _safe_reference_error(exc: Exception) -> str:
+    """Keep reference diagnostics bounded and free of model/prompt content."""
+    detail = str(exc).strip()
+    if len(detail) > 200:
+        detail = detail[:200]
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+
+
 def _as_date(value: date | str | None) -> date:
     if value is None:
         return _utc_now().date()
@@ -724,10 +849,38 @@ class ForexShadowRunner:
                     )
             decision_reference: dict[str, Any] | None = None
             decision_reference_error: str | None = None
+            reference_telemetry: dict[str, Any] = {
+                "reference_poll_attempts": 0,
+                "reference_wait_seconds": 0.0,
+                "final_reference_delay_seconds": None,
+                "reference_status": "UNAVAILABLE",
+            }
             try:
-                decision_reference = _fresh_reference_quote(mt5_provider, resolved_symbol, decision_completed_timestamp)
+                timeout_seconds, poll_interval_seconds, max_attempts = _reference_poll_settings(
+                    config_for_graph,
+                    snapshot.timestamp,
+                    decision_completed_timestamp,
+                )
+                decision_reference, reference_telemetry, poll_error = (
+                    _fresh_reference_quote_until_post_completion(
+                        mt5_provider,
+                        resolved_symbol,
+                        decision_completed_timestamp,
+                        timeout_seconds=timeout_seconds,
+                        poll_interval_seconds=poll_interval_seconds,
+                        max_attempts=max_attempts,
+                    )
+                )
+                if poll_error is not None:
+                    decision_reference_error = _safe_reference_error(poll_error)
             except Exception as exc:
-                decision_reference_error = str(exc)
+                decision_reference_error = _safe_reference_error(exc)
+                reference_telemetry = {
+                    "reference_poll_attempts": 0,
+                    "reference_wait_seconds": 0.0,
+                    "final_reference_delay_seconds": None,
+                    "reference_status": "UNAVAILABLE",
+                }
             valid_for_seconds = None
             valid_until = None
             if normalized.normalization_status == "NORMALIZED":
@@ -735,6 +888,7 @@ class ForexShadowRunner:
                 valid_for_seconds = raw_validity if isinstance(raw_validity, int) and not isinstance(raw_validity, bool) else profile.valid_for_seconds
                 valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
             analysis_telemetry.update(_callback_metrics(callback_list))
+            analysis_telemetry.update(reference_telemetry)
             analysis_telemetry.update(
                 {
                     "provider_snapshot_calls": getattr(mt5_provider, "market_snapshot_calls", 1),

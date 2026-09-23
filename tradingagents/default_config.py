@@ -36,6 +36,9 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_FOREX_QUICK_THINKING":         "forex_quick_thinking",
     "TRADINGAGENTS_FOREX_QUICK_MAX_TOKENS":      "forex_quick_max_tokens",
     "TRADINGAGENTS_FOREX_PM_MAX_TOKENS":         "forex_pm_max_tokens",
+    "TRADINGAGENTS_FOREX_REFERENCE_POLL_TIMEOUT_SECONDS": "forex_reference_poll_timeout_seconds",
+    "TRADINGAGENTS_FOREX_REFERENCE_POLL_INTERVAL_SECONDS": "forex_reference_poll_interval_seconds",
+    "TRADINGAGENTS_FOREX_REFERENCE_POLL_MAX_ATTEMPTS": "forex_reference_poll_max_attempts",
     "TRADINGAGENTS_FOREX_DEEP_THINKING":          "forex_deep_thinking",
     "TRADINGAGENTS_FOREX_EVIDENCE_ENABLED": "forex_evidence_enabled",
     "TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS": "forex_evidence_timeout_seconds",
@@ -165,6 +168,12 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # larger bounded budget leaves room for the complete required decision
     # object without changing any other node's output cap.
     "forex_pm_max_tokens": 2048,
+    # A post-decision broker quote must be observed, but a quiet market must
+    # not hold a shadow run indefinitely.  The attempt cap protects the wait
+    # even when a test/provider clock does not advance.
+    "forex_reference_poll_timeout_seconds": 5.0,
+    "forex_reference_poll_interval_seconds": 0.25,
+    "forex_reference_poll_max_attempts": 21,
     "forex_deep_thinking": True,
     # Optional read-only Phase 9 evidence augmentation (forex only).
     "forex_evidence_enabled": False,

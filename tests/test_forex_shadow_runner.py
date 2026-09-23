@@ -678,10 +678,14 @@ class _TemporalProvider:
         *,
         spread_error: Exception | None = None,
         old_timestamp: bool = False,
+        spread_timestamps: list[datetime] | None = None,
+        spread_errors: list[Exception | None] | None = None,
     ):
         self.events = events
         self.spread_error = spread_error
         self.old_timestamp = old_timestamp
+        self.spread_timestamps = list(spread_timestamps or [])
+        self.spread_errors = list(spread_errors or [])
         self.market_snapshot_calls = 0
 
     def initialize(self) -> bool:
@@ -702,9 +706,16 @@ class _TemporalProvider:
 
     def get_spread(self, symbol: str) -> Mt5Spread:
         self.events.append("spread")
+        if self.spread_errors:
+            error = self.spread_errors.pop(0)
+            if error is not None:
+                raise error
         if self.spread_error is not None:
             raise self.spread_error
-        timestamp = ANALYSIS_TIMESTAMP if self.old_timestamp else BROKER_REFERENCE_TIMESTAMP
+        if self.spread_timestamps:
+            timestamp = self.spread_timestamps.pop(0)
+        else:
+            timestamp = ANALYSIS_TIMESTAMP if self.old_timestamp else BROKER_REFERENCE_TIMESTAMP
         return Mt5Spread(
             symbol="EURUSDm",
             bid=1.1004,
@@ -743,18 +754,24 @@ def _run_temporal(
     *,
     spread_error: Exception | None = None,
     old_timestamp: bool = False,
+    spread_timestamps: list[datetime] | None = None,
+    spread_errors: list[Exception | None] | None = None,
+    config: dict | None = None,
 ):
     events: list[str] = []
     provider = _TemporalProvider(
         events,
         spread_error=spread_error,
         old_timestamp=old_timestamp,
+        spread_timestamps=spread_timestamps,
+        spread_errors=spread_errors,
     )
     graph = _TemporalGraph(events)
     monkeypatch.setattr(runner_module, "_utc_now", lambda: COMPLETION_TIMESTAMP)
     result = ForexShadowRunner(
         provider_factory=lambda terminal_path=None: provider,
         graph_factory=lambda **kwargs: graph,
+        config=config,
     ).run(
         symbol="EURUSD",
         count=1,
@@ -784,6 +801,10 @@ def test_runner_persists_broker_timestamp_after_graph_without_extra_llm_call(
     assert decision.analysis_latency_seconds == pytest.approx(41.0)
     assert decision.decision_reference_delay_seconds == pytest.approx(1.25)
     assert decision.decision_reference_status == "AVAILABLE"
+    assert result.metrics["reference_poll_attempts"] == 1
+    assert result.metrics["reference_wait_seconds"] == pytest.approx(0.0)
+    assert result.metrics["final_reference_delay_seconds"] == pytest.approx(1.25)
+    assert result.metrics["reference_status"] == "AVAILABLE"
 
 
 def test_runner_persists_analysis_when_fresh_quote_fails(
@@ -807,13 +828,223 @@ def test_runner_persists_analysis_when_fresh_quote_fails(
 def test_runner_marks_older_broker_quote_temporally_invalid(
     tmp_path: Path, monkeypatch
 ) -> None:
-    _, result, _ = _run_temporal(tmp_path, monkeypatch, old_timestamp=True)
+    _, result, _ = _run_temporal(
+        tmp_path,
+        monkeypatch,
+        old_timestamp=True,
+        config={
+            "forex_reference_poll_timeout_seconds": 0.0,
+            "forex_reference_poll_max_attempts": 1,
+        },
+    )
 
     decision = result.decision
     assert decision.decision_reference_timestamp == ANALYSIS_TIMESTAMP
     assert decision.decision_reference_status == "INVALID_TEMPORAL"
     assert decision.decision_reference_delay_seconds == pytest.approx(-41.0)
     assert decision.decision_reference_bid == pytest.approx(1.1004)
+
+
+class _ReferencePollClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def _poll_reference(provider, *, clock, timeout=2.0, interval=0.5, max_attempts=5):
+    return runner_module._fresh_reference_quote_until_post_completion(
+        provider,
+        "EURUSDm",
+        COMPLETION_TIMESTAMP,
+        timeout_seconds=timeout,
+        poll_interval_seconds=interval,
+        max_attempts=max_attempts,
+        monotonic=clock.monotonic,
+        sleeper=clock.sleep,
+    )
+
+
+def test_reference_poll_retries_older_tick_until_post_completion() -> None:
+    events: list[str] = []
+    provider = _TemporalProvider(
+        events,
+        spread_timestamps=[ANALYSIS_TIMESTAMP, BROKER_REFERENCE_TIMESTAMP],
+    )
+    clock = _ReferencePollClock()
+
+    quote, telemetry, poll_error = _poll_reference(provider, clock=clock)
+
+    assert poll_error is None
+    assert quote["status"] == "AVAILABLE"
+    assert quote["timestamp"] == BROKER_REFERENCE_TIMESTAMP
+    assert telemetry == {
+        "reference_poll_attempts": 2,
+        "reference_wait_seconds": pytest.approx(0.5),
+        "final_reference_delay_seconds": pytest.approx(1.25),
+        "reference_status": "AVAILABLE",
+    }
+
+
+def test_reference_poll_accepts_exact_completion_without_retry() -> None:
+    events: list[str] = []
+    provider = _TemporalProvider(events, spread_timestamps=[COMPLETION_TIMESTAMP])
+    clock = _ReferencePollClock()
+
+    quote, telemetry, poll_error = _poll_reference(provider, clock=clock)
+
+    assert poll_error is None
+    assert quote["status"] == "AVAILABLE"
+    assert quote["timestamp"] == COMPLETION_TIMESTAMP
+    assert telemetry["reference_poll_attempts"] == 1
+    assert telemetry["reference_wait_seconds"] == pytest.approx(0.0)
+    assert telemetry["final_reference_delay_seconds"] == pytest.approx(0.0)
+
+
+def test_reference_poll_times_out_with_only_pre_completion_ticks() -> None:
+    events: list[str] = []
+    provider = _TemporalProvider(
+        events,
+        spread_timestamps=[ANALYSIS_TIMESTAMP] * 10,
+    )
+    clock = _ReferencePollClock()
+
+    quote, telemetry, poll_error = _poll_reference(
+        provider,
+        clock=clock,
+        timeout=1.0,
+        interval=0.5,
+        max_attempts=10,
+    )
+
+    assert poll_error is None
+    assert quote["status"] == "INVALID_TEMPORAL"
+    assert quote["timestamp"] == ANALYSIS_TIMESTAMP
+    assert quote["delay"] == pytest.approx(-41.0)
+    assert telemetry["reference_poll_attempts"] == 3
+    assert telemetry["reference_wait_seconds"] == pytest.approx(1.0)
+    assert telemetry["final_reference_delay_seconds"] == pytest.approx(-41.0)
+    assert telemetry["reference_status"] == "INVALID_TEMPORAL"
+
+
+def test_reference_poll_provider_failure_after_old_tick_fails_closed() -> None:
+    events: list[str] = []
+    provider = _TemporalProvider(
+        events,
+        spread_timestamps=[ANALYSIS_TIMESTAMP],
+        spread_errors=[None, RuntimeError("poll failed")],
+    )
+    clock = _ReferencePollClock()
+
+    quote, telemetry, poll_error = _poll_reference(provider, clock=clock)
+
+    assert quote["status"] == "INVALID_TEMPORAL"
+    assert telemetry["reference_status"] == "INVALID_TEMPORAL"
+    assert isinstance(poll_error, RuntimeError)
+    assert str(poll_error) == "poll failed"
+
+
+def test_reference_poll_has_a_hard_attempt_bound_even_without_clock_progress() -> None:
+    events: list[str] = []
+    provider = _TemporalProvider(events, spread_timestamps=[ANALYSIS_TIMESTAMP] * 10)
+    clock = _ReferencePollClock()
+
+    quote, telemetry, poll_error = _poll_reference(
+        provider,
+        clock=clock,
+        timeout=5.0,
+        interval=0.0,
+        max_attempts=2,
+    )
+
+    assert poll_error is None
+    assert quote["status"] == "INVALID_TEMPORAL"
+    assert telemetry["reference_poll_attempts"] == 2
+    assert telemetry["reference_wait_seconds"] == pytest.approx(0.0)
+    assert events.count("spread") == 2
+
+
+def test_reference_poll_timeout_is_capped_by_remaining_freshness_budget() -> None:
+    timeout, interval, max_attempts = runner_module._reference_poll_settings(
+        {
+            "forex_reference_poll_timeout_seconds": 5.0,
+            "forex_reference_poll_interval_seconds": 0.25,
+            "forex_reference_poll_max_attempts": 21,
+            "freshness_budget_seconds": 41.5,
+        },
+        ANALYSIS_TIMESTAMP,
+        COMPLETION_TIMESTAMP,
+    )
+
+    assert timeout == pytest.approx(0.5)
+    assert interval == pytest.approx(0.25)
+    assert max_attempts == 21
+
+
+def test_reference_poll_keeps_quote_validation_fail_closed() -> None:
+    provider = SimpleNamespace(
+        get_spread=lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            bid=1.1006,
+            ask=1.1004,
+            price=-0.0002,
+            points=-2.0,
+            timestamp=COMPLETION_TIMESTAMP,
+        )
+    )
+    quote, telemetry, poll_error = _poll_reference(
+        provider,
+        clock=_ReferencePollClock(),
+    )
+
+    assert quote is None
+    assert telemetry["reference_status"] == "UNAVAILABLE"
+    assert isinstance(poll_error, ValueError)
+
+
+def test_reference_poll_rejects_non_utc_or_naive_broker_timestamps() -> None:
+    provider = SimpleNamespace(
+        get_spread=lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            bid=1.1004,
+            ask=1.1006,
+            price=0.0002,
+            points=2.0,
+            timestamp=COMPLETION_TIMESTAMP.replace(tzinfo=None),
+        )
+    )
+    quote, telemetry, poll_error = _poll_reference(
+        provider,
+        clock=_ReferencePollClock(),
+    )
+
+    assert quote is None
+    assert telemetry["reference_status"] == "UNAVAILABLE"
+    assert isinstance(poll_error, ValueError)
+
+
+def test_runner_persists_post_completion_quote_after_bounded_retry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, result, events = _run_temporal(
+        tmp_path,
+        monkeypatch,
+        spread_timestamps=[ANALYSIS_TIMESTAMP, BROKER_REFERENCE_TIMESTAMP],
+        config={
+            "forex_reference_poll_timeout_seconds": 1.0,
+            "forex_reference_poll_interval_seconds": 0.0,
+            "forex_reference_poll_max_attempts": 2,
+        },
+    )
+
+    assert events.count("spread") == 2
+    assert result.decision.decision_reference_status == "AVAILABLE"
+    assert result.decision.decision_reference_timestamp == BROKER_REFERENCE_TIMESTAMP
+    assert result.metrics["reference_poll_attempts"] == 2
 
 
 class _RunnerEvidenceService:

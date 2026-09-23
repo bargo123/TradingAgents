@@ -127,6 +127,7 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
             "analysis_profile": config.analysis_profile,
             "analysts": config.analysts,
             "schedule_timeframe": config.schedule_timeframe,
+            "freshness_budget_seconds": config.freshness_budget_seconds,
         }
     )
     decision_store = ShadowDecisionStore(config.db_path)
