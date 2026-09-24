@@ -27,21 +27,16 @@ HORIZON_LABELS = {300: "5m", 900: "15m", 1800: "30m", 3600: "60m"}
 TRADING_ACTIONS = ("BUY", "HOLD", "SELL")
 TRADER_ACTION_UNAVAILABLE = "TRADER_ACTION_UNAVAILABLE"
 FINAL_ACTION_UNAVAILABLE = "FINAL_ACTION_UNAVAILABLE"
+RESEARCH_RECOMMENDATIONS = ("BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL")
+RESEARCH_RECOMMENDATION_UNAVAILABLE = "RESEARCH_RECOMMENDATION_UNAVAILABLE"
 RESEARCH_MANAGER_UNAVAILABLE = (
-    "Research Manager structured recommendation is not independently persisted; "
-    "cannot audit this stage from the current immutable dataset."
+    "Research Manager structured recommendation is unavailable in the immutable dataset."
 )
 EPSILON = 1e-9
 
 _TRADER_MARKER = re.compile(
     r"(?m)^FINAL TRANSACTION PROPOSAL:\s+\*\*(BUY|HOLD|SELL)\*\*[ \t]*$"
 )
-_RESEARCH_MARKER = re.compile(
-    r"(?m)^FINAL RESEARCH RECOMMENDATION:\s+\*\*"
-    r"(BUY|OVERWEIGHT|HOLD|UNDERWEIGHT|SELL)\*\*[ \t]*$"
-)
-
-
 class DecisionPathAuditError(RuntimeError):
     """Base class for deterministic, user-visible audit failures."""
 
@@ -131,9 +126,39 @@ def _transition_key(trader_action: str, final_action: str) -> str:
     return f"{trader_action}->{final_action}"
 
 
+def _decision_transition_key(decision: _Decision) -> str:
+    return _transition_key(decision.trader_action, decision.final_action)
+
+
 def _transition_keys() -> tuple[str, ...]:
     return tuple(
         _transition_key(trader, final)
+        for trader in (*TRADING_ACTIONS, TRADER_ACTION_UNAVAILABLE)
+        for final in (*TRADING_ACTIONS, FINAL_ACTION_UNAVAILABLE)
+    )
+
+
+def _research_transition_key(recommendation: str | None, trader_action: str) -> str:
+    return f"{recommendation or RESEARCH_RECOMMENDATION_UNAVAILABLE}->{trader_action}"
+
+
+def _research_transition_keys() -> tuple[str, ...]:
+    return tuple(
+        _research_transition_key(recommendation, trader)
+        for recommendation in (*RESEARCH_RECOMMENDATIONS, None)
+        for trader in (*TRADING_ACTIONS, TRADER_ACTION_UNAVAILABLE)
+    )
+
+
+def _research_trader_pm_key(decision: _Decision) -> str:
+    recommendation = decision.research_manager_recommendation or RESEARCH_RECOMMENDATION_UNAVAILABLE
+    return f"{recommendation}->{decision.trader_action}->{decision.final_action}"
+
+
+def _research_trader_pm_keys() -> tuple[str, ...]:
+    return tuple(
+        f"{recommendation or RESEARCH_RECOMMENDATION_UNAVAILABLE}->{trader}->{final}"
+        for recommendation in (*RESEARCH_RECOMMENDATIONS, None)
         for trader in (*TRADING_ACTIONS, TRADER_ACTION_UNAVAILABLE)
         for final in (*TRADING_ACTIONS, FINAL_ACTION_UNAVAILABLE)
     )
@@ -162,6 +187,11 @@ class DecisionPathPopulation:
     outcome_by_transition: Mapping[str, Mapping[str, float | int | None]]
     persistent_by_transition: Mapping[str, Mapping[str, int]]
     fully_evaluated_source_eligible_count: int
+    research_to_trader_matrix: Mapping[str, Mapping[str, float | int]]
+    research_to_trader_pm_matrix: Mapping[str, Mapping[str, float | int]]
+    research_to_trader_suppression: Mapping[str, int]
+    research_to_trader_outcomes: Mapping[str, Mapping[str, float | int | None]]
+    research_to_trader_persistent: Mapping[str, Mapping[str, int]]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -175,6 +205,19 @@ class DecisionPathPopulation:
                 key: dict(value) for key, value in self.persistent_by_transition.items()
             },
             "fully_evaluated_source_eligible_count": self.fully_evaluated_source_eligible_count,
+            "research_to_trader_matrix": {
+                key: dict(value) for key, value in self.research_to_trader_matrix.items()
+            },
+            "research_to_trader_pm_matrix": {
+                key: dict(value) for key, value in self.research_to_trader_pm_matrix.items()
+            },
+            "research_to_trader_suppression": dict(self.research_to_trader_suppression),
+            "research_to_trader_outcomes": {
+                key: dict(value) for key, value in self.research_to_trader_outcomes.items()
+            },
+            "research_to_trader_persistent": {
+                key: dict(value) for key, value in self.research_to_trader_persistent.items()
+            },
         }
 
 
@@ -213,6 +256,7 @@ class _Decision:
     final_action: str
     decision_timestamp: datetime | None
     raw_pm_result: Any
+    research_manager_recommendation: str | None
     row: Mapping[str, Any]
 
 
@@ -276,6 +320,14 @@ def _require_columns(connection: sqlite3.Connection, table: str, required: set[s
         )
 
 
+def _persisted_research_recommendation(row: sqlite3.Row) -> str | None:
+    try:
+        value = row["research_manager_recommendation"]
+    except (IndexError, KeyError):
+        return None
+    return value if isinstance(value, str) and value in RESEARCH_RECOMMENDATIONS else None
+
+
 def _load_decisions(connection: sqlite3.Connection) -> list[_Decision]:
     _require_columns(
         connection,
@@ -319,6 +371,7 @@ def _load_decisions(connection: sqlite3.Connection) -> list[_Decision]:
                 _parse_utc(row["decision_completed_timestamp"]) or _parse_utc(row["created_at"])
             ),
             raw_pm_result=row["raw_portfolio_manager_result"],
+            research_manager_recommendation=_persisted_research_recommendation(row),
             row=dict(row),
         )
         for row in rows
@@ -401,7 +454,10 @@ def _empty_outcome() -> dict[str, float | int | None]:
 
 
 def _outcomes(
-    decisions: Iterable[_Decision], evaluations: Iterable[_Evaluation]
+    decisions: Iterable[_Decision],
+    evaluations: Iterable[_Evaluation],
+    *,
+    key_factory: Any = _decision_transition_key,
 ) -> dict[str, dict[str, float | int | None]]:
     decision_map = {decision.decision_id: decision for decision in decisions}
     values: dict[str, list[float]] = defaultdict(list)
@@ -422,7 +478,7 @@ def _outcomes(
             or row.opportunity_cost is None
         ):
             continue
-        key = _transition_key(decision.trader_action, decision.final_action)
+        key = key_factory(decision)
         values[key].append(row.opportunity_cost)
         if row.buy_net_points > EPSILON and row.buy_net_points > row.sell_net_points + EPSILON:
             buy_counts[key] += 1
@@ -431,7 +487,12 @@ def _outcomes(
         if row.opportunity_cost > EPSILON:
             positive_counts[key] += 1
 
-    output = {key: _empty_outcome() for key in _transition_keys()}
+    output_keys = (
+        _transition_keys()
+        if key_factory is _decision_transition_key
+        else _research_transition_keys()
+    )
+    output = {key: _empty_outcome() for key in output_keys}
     for key, costs in values.items():
         stats = _stats(costs)
         count = len(costs)
@@ -454,7 +515,11 @@ def _outcomes(
 
 
 def _persistent_breakdown(
-    decisions: Iterable[_Decision], evaluations: Iterable[_Evaluation], strong_miss_points: float
+    decisions: Iterable[_Decision],
+    evaluations: Iterable[_Evaluation],
+    strong_miss_points: float,
+    *,
+    key_factory: Any = _decision_transition_key,
 ) -> dict[str, dict[str, int]]:
     decision_map = {decision.decision_id: decision for decision in decisions}
     grouped: dict[str, dict[int, _Evaluation]] = defaultdict(dict)
@@ -476,13 +541,17 @@ def _persistent_breakdown(
             "STRONG_PERSISTENT_MISS": 0,
             "persistent_directional_miss_total": 0,
         }
-        for key in _transition_keys()
+        for key in (
+            _transition_keys()
+            if key_factory is _decision_transition_key
+            else _research_transition_keys()
+        )
     }
     for decision_id, rows in grouped.items():
         decision = decision_map.get(decision_id)
         if decision is None or decision.final_action != "HOLD" or len(rows) != len(EVALUATION_HORIZONS):
             continue
-        key = _transition_key(decision.trader_action, decision.final_action)
+        key = key_factory(decision)
         classification = classify_cross_horizon(
             (rows[horizon].opportunity_cost for horizon in EVALUATION_HORIZONS),
             strong_miss_points=strong_miss_points,
@@ -494,10 +563,72 @@ def _persistent_breakdown(
     return output
 
 
+def _research_key_for_decision(decision: _Decision) -> str:
+    return _research_transition_key(decision.research_manager_recommendation, decision.trader_action)
+
+
+def _research_to_trader_matrix(
+    decisions: Iterable[_Decision],
+) -> dict[str, dict[str, float | int]]:
+    rows = tuple(decisions)
+    matrix = {
+        key: {"count": 0, "percentage": 0.0}
+        for key in _research_transition_keys()
+    }
+    for decision in rows:
+        matrix[_research_key_for_decision(decision)]["count"] += 1
+    total = len(rows)
+    for values in matrix.values():
+        values["percentage"] = values["count"] * 100.0 / total if total else 0.0
+    return matrix
+
+
+def _research_to_trader_pm_matrix(
+    decisions: Iterable[_Decision],
+) -> dict[str, dict[str, float | int]]:
+    rows = tuple(decisions)
+    matrix = {
+        key: {"count": 0, "percentage": 0.0}
+        for key in _research_trader_pm_keys()
+    }
+    for decision in rows:
+        matrix[_research_trader_pm_key(decision)]["count"] += 1
+    total = len(rows)
+    for values in matrix.values():
+        values["percentage"] = values["count"] * 100.0 / total if total else 0.0
+    return matrix
+
+
+def _research_to_trader_suppression(decisions: Iterable[_Decision]) -> dict[str, int]:
+    output = {
+        _research_transition_key(recommendation, "HOLD"): 0
+        for recommendation in RESEARCH_RECOMMENDATIONS
+        if recommendation != "HOLD"
+    }
+    for decision in decisions:
+        if (
+            decision.research_manager_recommendation in {"BUY", "OVERWEIGHT", "SELL", "UNDERWEIGHT"}
+            and decision.trader_action == "HOLD"
+        ):
+            output[_research_key_for_decision(decision)] += 1
+    return output
+
+
+def _research_suppressed_decisions(decisions: Iterable[_Decision]) -> tuple[_Decision, ...]:
+    return tuple(
+        decision
+        for decision in decisions
+        if decision.research_manager_recommendation
+        in {"BUY", "OVERWEIGHT", "SELL", "UNDERWEIGHT"}
+        and decision.trader_action == "HOLD"
+    )
+
+
 def _population(
     decisions: Iterable[_Decision], evaluations: Iterable[_Evaluation], strong_miss_points: float
 ) -> DecisionPathPopulation:
     rows = tuple(decisions)
+    research_suppressed_rows = _research_suppressed_decisions(rows)
     matrix = {
         key: {"count": 0, "percentage": 0.0}
         for key in _transition_keys()
@@ -533,6 +664,20 @@ def _population(
         outcome_by_transition=_outcomes(rows, evaluations),
         persistent_by_transition=_persistent_breakdown(rows, evaluations, strong_miss_points),
         fully_evaluated_source_eligible_count=fully_evaluated,
+        research_to_trader_matrix=_research_to_trader_matrix(rows),
+        research_to_trader_pm_matrix=_research_to_trader_pm_matrix(rows),
+        research_to_trader_suppression=_research_to_trader_suppression(rows),
+        research_to_trader_outcomes=_outcomes(
+            research_suppressed_rows,
+            evaluations,
+            key_factory=_research_key_for_decision,
+        ),
+        research_to_trader_persistent=_persistent_breakdown(
+            research_suppressed_rows,
+            evaluations,
+            strong_miss_points,
+            key_factory=_research_key_for_decision,
+        ),
     )
 
 
@@ -584,19 +729,10 @@ def _pm_rating_consistency(decisions: Iterable[_Decision]) -> dict[str, Any]:
 
 def _research_manager_audit(decisions: Iterable[_Decision]) -> dict[str, Any]:
     counts: Counter[str] = Counter()
-    field_names = ("research_manager_action", "research_manager_recommendation", "research_manager_result")
-    found = False
     for decision in decisions:
-        for field_name in field_names:
-            value = decision.row.get(field_name)
-            if not isinstance(value, str):
-                continue
-            matches = _RESEARCH_MARKER.findall(value)
-            if len(matches) == 1:
-                found = True
-                counts[matches[0]] += 1
-                break
-    if not found:
+        if decision.research_manager_recommendation in RESEARCH_RECOMMENDATIONS:
+            counts[decision.research_manager_recommendation] += 1
+    if not counts:
         return {
             "status": "UNAVAILABLE",
             "message": RESEARCH_MANAGER_UNAVAILABLE,
@@ -604,8 +740,8 @@ def _research_manager_audit(decisions: Iterable[_Decision]) -> dict[str, Any]:
         }
     return {
         "status": "AVAILABLE",
-        "message": "Research Manager recommendations were counted only from the exact persisted marker.",
-        "counts": {key: int(counts[key]) for key in ("BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL")},
+        "message": "Research Manager recommendations were counted only from the persisted structured field.",
+        "counts": {key: int(counts[key]) for key in RESEARCH_RECOMMENDATIONS},
     }
 
 
@@ -687,11 +823,13 @@ def _render_population(population: DecisionPathPopulation) -> list[str]:
     return lines
 
 
-def _render_outcomes(population: DecisionPathPopulation) -> list[str]:
+def _render_outcome_map(
+    outcome_by_transition: Mapping[str, Mapping[str, float | int | None]],
+) -> list[str]:
     lines = [
         "transition | samples | avg cost | median | p90 | p95 | BUY_BETTER | SELL_BETTER | positive directional"
     ]
-    for key, values in population.outcome_by_transition.items():
+    for key, values in outcome_by_transition.items():
         if int(values["samples"]) == 0:
             continue
         lines.append(
@@ -706,9 +844,15 @@ def _render_outcomes(population: DecisionPathPopulation) -> list[str]:
     return lines
 
 
-def _render_persistent(population: DecisionPathPopulation) -> list[str]:
+def _render_outcomes(population: DecisionPathPopulation) -> list[str]:
+    return _render_outcome_map(population.outcome_by_transition)
+
+
+def _render_persistent_map(
+    persistent_by_transition: Mapping[str, Mapping[str, int]],
+) -> list[str]:
     lines = ["transition | total | CONSISTENT_HOLD | TRANSIENT_MISS | PERSISTENT_DIRECTIONAL_MISS | STRONG"]
-    for key, values in population.persistent_by_transition.items():
+    for key, values in persistent_by_transition.items():
         if values["total"] == 0:
             continue
         lines.append(
@@ -718,6 +862,31 @@ def _render_persistent(population: DecisionPathPopulation) -> list[str]:
         )
     if len(lines) == 1:
         lines.append("No final HOLD transition has all four complete source-eligible horizons.")
+    return lines
+
+
+def _render_persistent(population: DecisionPathPopulation) -> list[str]:
+    return _render_persistent_map(population.persistent_by_transition)
+
+
+def _render_research_matrix(population: DecisionPathPopulation) -> list[str]:
+    lines = ["research recommendation -> trader action | count | percent"]
+    for key, values in population.research_to_trader_matrix.items():
+        lines.append(f"{key} | {values['count']} | {float(values['percentage']):.1f}%")
+    return lines
+
+
+def _render_research_trader_pm_matrix(population: DecisionPathPopulation) -> list[str]:
+    lines = ["research recommendation -> trader action -> PM action | count | percent"]
+    for key, values in population.research_to_trader_pm_matrix.items():
+        lines.append(f"{key} | {values['count']} | {float(values['percentage']):.1f}%")
+    return lines
+
+
+def _render_research_suppression(population: DecisionPathPopulation) -> list[str]:
+    lines = ["research directional recommendation -> Trader HOLD | count"]
+    for key, value in population.research_to_trader_suppression.items():
+        lines.append(f"{key} | {value}")
     return lines
 
 
@@ -733,6 +902,15 @@ def render_text(report: DecisionPathAuditReport) -> str:
         "",
         "Trader -> PM transition matrix",
         *_render_population(report.all_population)[2:],
+        "",
+        "Research Manager -> Trader transition matrix",
+        *_render_research_matrix(report.all_population),
+        "",
+        "Research Manager -> Trader -> PM transition matrix",
+        *_render_research_trader_pm_matrix(report.all_population),
+        "",
+        "Research -> Trader suppression",
+        *_render_research_suppression(report.all_population),
         "",
         "Final HOLD origins",
     ]
@@ -751,11 +929,20 @@ def render_text(report: DecisionPathAuditReport) -> str:
             "Persistent misses by transition",
             *_render_persistent(report.all_population),
             "",
+            "Research -> Trader outcome opportunity cost",
+            *_render_outcome_map(report.all_population.research_to_trader_outcomes),
+            "Research -> Trader persistent misses",
+            *_render_persistent_map(report.all_population.research_to_trader_persistent),
+            "",
             "Recent-vs-all comparison",
             f"recent window: last {report.recent_hours:g} UTC hours",
             f"all decisions: {report.all_population.population_count}",
             f"recent decisions: {report.recent_population.population_count}",
             *_render_population(report.recent_population)[2:],
+            "recent Research Manager -> Trader transition matrix",
+            *_render_research_matrix(report.recent_population),
+            "recent Research -> Trader suppression",
+            *_render_research_suppression(report.recent_population),
             "recent outcome opportunity cost by transition",
             *_render_outcomes(report.recent_population),
             "recent persistent misses by transition",
@@ -792,6 +979,8 @@ __all__ = [
     "EVALUATION_HORIZONS",
     "FINAL_ACTION_UNAVAILABLE",
     "RESEARCH_MANAGER_UNAVAILABLE",
+    "RESEARCH_RECOMMENDATION_UNAVAILABLE",
+    "RESEARCH_RECOMMENDATIONS",
     "TRADER_ACTION_UNAVAILABLE",
     "audit_decision_path",
     "classify_cross_horizon",

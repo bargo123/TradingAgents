@@ -1006,6 +1006,11 @@ class ForexShadowRunner:
             decision_reference_status="UNAVAILABLE" if decision_reference is None else decision_reference["status"],
             decision_reference_delay_seconds=None if decision_reference is None else decision_reference["delay"],
             decision_reference_error=result.decision_reference_error,
+            research_manager_recommendation=(
+                result.final_state.get("research_manager_recommendation")
+                if isinstance(result.final_state.get("research_manager_recommendation"), str)
+                else None
+            ),
         )
         self.store.record(decision)
         metrics = dict(result.analysis_telemetry)

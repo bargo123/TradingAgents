@@ -42,6 +42,9 @@ NormalizationStatus = Literal["NORMALIZED", "FAILED"]
 DecisionContextStatus = Literal["COMPLETE", "INCOMPLETE"]
 FutureEvaluationStatus = Literal["PENDING", "RESOLVED"]
 DecisionReferenceStatus = Literal["AVAILABLE", "UNAVAILABLE", "INVALID_TEMPORAL"]
+ResearchManagerRecommendation = Literal[
+    "BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL"
+]
 
 _RATING_TO_ACTION: dict[str, AllowedAction] = {
     PortfolioRating.BUY.value: "BUY",
@@ -325,6 +328,7 @@ class ShadowTradeDecision:
     decision_reference_status: DecisionReferenceStatus = "UNAVAILABLE"
     decision_reference_delay_seconds: float | None = None
     decision_reference_error: str | None = None
+    research_manager_recommendation: ResearchManagerRecommendation | None = None
 
     def __post_init__(self) -> None:
         if self.executed is not False:
@@ -335,6 +339,14 @@ class ShadowTradeDecision:
             raise ValueError("decision_context_status must be COMPLETE or INCOMPLETE")
         if self.future_evaluation_status not in ("PENDING", "RESOLVED"):
             raise ValueError("future_evaluation_status must be PENDING or RESOLVED")
+        if self.research_manager_recommendation is not None and self.research_manager_recommendation not in (
+            "BUY",
+            "OVERWEIGHT",
+            "HOLD",
+            "UNDERWEIGHT",
+            "SELL",
+        ):
+            raise ValueError("research_manager_recommendation must use the canonical uppercase value")
         if not isinstance(self.analysis_profile, str) or not self.analysis_profile.strip():
             raise ValueError("analysis_profile must be a non-empty string")
         if self.valid_for_seconds is not None:
@@ -589,6 +601,7 @@ class ShadowDecisionStore:
                 ),
                 "decision_reference_delay_seconds": "REAL",
                 "decision_reference_error": "TEXT",
+                "research_manager_recommendation": "TEXT",
             }
             for column, declaration in migrations.items():
                 if column not in existing_columns:
@@ -624,6 +637,7 @@ class ShadowDecisionStore:
             "spread_points",
             "analysis_timeframe",
             "analysis_profile",
+            "research_manager_recommendation",
             "valid_for_seconds",
             "valid_until",
             "trader_summary",
@@ -684,6 +698,7 @@ class ShadowDecisionStore:
                     decision.spread_points,
                     decision.analysis_timeframe,
                     decision.analysis_profile,
+                    decision.research_manager_recommendation,
                     decision.valid_for_seconds,
                     None
                     if decision.valid_until is None
@@ -930,6 +945,11 @@ class ShadowDecisionStore:
             decision_reference_error=(
                 row["decision_reference_error"]
                 if "decision_reference_error" in row_keys
+                else None
+            ),
+            research_manager_recommendation=(
+                row["research_manager_recommendation"]
+                if "research_manager_recommendation" in row_keys
                 else None
             ),
         )

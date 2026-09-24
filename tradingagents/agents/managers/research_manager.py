@@ -18,6 +18,19 @@ from tradingagents.agents.utils.structured import (
 )
 from tradingagents.forex.profile import build_forex_profile_context
 
+_RESEARCH_RECOMMENDATIONS = {"BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL"}
+
+
+def _research_recommendation(plan: ResearchPlan | None) -> str | None:
+    """Return only the canonical value from a parsed ResearchPlan."""
+    if not isinstance(plan, ResearchPlan):
+        return None
+    value = getattr(plan.recommendation, "value", None)
+    if not isinstance(value, str):
+        return None
+    canonical = value.upper()
+    return canonical if canonical in _RESEARCH_RECOMMENDATIONS else None
+
 
 def create_research_manager(llm):
     # Preserve the existing stock binding and invocation timing.  The forex
@@ -95,18 +108,21 @@ Commit to a directional stance only when the debate's strongest arguments clearl
 
 {NO_EXTERNAL_TOOLS}""" + get_language_instruction()
 
+        structured_plan = None
         if is_forex and is_ollama_chat_model(llm):
-            investment_plan = render_research_plan(
-                invoke_structured_only(structured_llm, prompt, "Research Manager")
-            )
+            structured_plan = invoke_structured_only(structured_llm, prompt, "Research Manager")
+            investment_plan = render_research_plan(structured_plan)
         else:
+            captured_plan: list[ResearchPlan] = []
             investment_plan = invoke_structured_or_freetext(
                 structured_llm,
                 llm,
                 prompt,
                 render_research_plan,
                 "Research Manager",
+                on_structured_result=captured_plan.append if is_forex else None,
             )
+            structured_plan = captured_plan[0] if captured_plan else None
 
         new_investment_debate_state = {
             "judge_decision": investment_plan,
@@ -125,6 +141,7 @@ Commit to a directional stance only when the debate's strongest arguments clearl
         return {
             "investment_debate_state": new_investment_debate_state,
             "investment_plan": investment_plan,
+            "research_manager_recommendation": _research_recommendation(structured_plan),
         }
 
     return research_manager_node

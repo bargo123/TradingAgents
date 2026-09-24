@@ -208,6 +208,46 @@ def test_ollama_forex_research_manager_uses_json_schema_and_parses() -> None:
     assert "**Recommendation**: Hold" in result["investment_plan"]
     assert len(calls) == 1
     _assert_json_schema_wire(calls[0], ResearchPlan.__name__)
+    assert result["research_manager_recommendation"] == "HOLD"
+
+
+@pytest.mark.parametrize(
+    ("recommendation", "expected"),
+    [("Buy", "BUY"), ("Overweight", "OVERWEIGHT"), ("Hold", "HOLD"), ("Underweight", "UNDERWEIGHT"), ("Sell", "SELL")],
+)
+def test_ollama_forex_research_recommendation_is_persistable_metadata(
+    recommendation: str, expected: str
+) -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ResearchPlan"])
+    payload["recommendation"] = recommendation
+    result = create_research_manager(_ollama({"ResearchPlan": payload}, calls))(_forex_state())
+
+    assert result["research_manager_recommendation"] == expected
+
+
+def test_unavailable_research_plan_does_not_fabricate_recommendation() -> None:
+    class NoStructuredOutputLLM:
+        def with_structured_output(self, *_args, **_kwargs):
+            raise NotImplementedError
+
+        def invoke(self, _prompt):
+            return SimpleNamespace(content="fallback report")
+
+    result = create_research_manager(NoStructuredOutputLLM())(_forex_state())
+
+    assert result["investment_plan"] == "fallback report"
+    assert result["research_manager_recommendation"] is None
+
+
+def test_research_rationale_does_not_override_structured_recommendation() -> None:
+    calls: list[dict] = []
+    payload = dict(_VALID_RESPONSES["ResearchPlan"])
+    payload["rationale"] = "Buy only after a clearer spread-adjusted edge appears."
+
+    result = create_research_manager(_ollama({"ResearchPlan": payload}, calls))(_forex_state())
+
+    assert result["research_manager_recommendation"] == "HOLD"
 
 
 @pytest.mark.unit

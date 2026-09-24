@@ -124,6 +124,26 @@ def test_phase5_shadow_schema_has_no_phase9_columns(tmp_path: Path) -> None:
     )
 
 
+def test_shadow_schema_adds_nullable_research_recommendation_column(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-shadow.db"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE shadow_decisions (decision_id TEXT PRIMARY KEY, resolved_symbol TEXT, analysis_date TEXT)"
+        )
+    store = ShadowDecisionStore(path)
+    store.initialize()
+    with sqlite3.connect(path) as db:
+        columns = {row[1]: row[3] for row in db.execute("PRAGMA table_info(shadow_decisions)")}
+        assert columns["research_manager_recommendation"] == 0
+        db.execute(
+            "INSERT INTO shadow_decisions (decision_id, resolved_symbol, analysis_date) VALUES (?, ?, ?)",
+            ("legacy", "EURUSD", "2026-09-08"),
+        )
+        assert db.execute(
+            "SELECT research_manager_recommendation FROM shadow_decisions WHERE decision_id='legacy'"
+        ).fetchone()[0] is None
+
+
 def test_shadow_contract_does_not_persist_transient_evidence_fields() -> None:
     raw = {
         "rating": "Hold",

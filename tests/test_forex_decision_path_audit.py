@@ -38,6 +38,7 @@ def _init_db(tmp_path: Path) -> Path:
                 decision_reference_status TEXT NOT NULL,
                 raw_portfolio_manager_result TEXT,
                 trader_summary TEXT,
+                research_manager_recommendation TEXT,
                 training_eligible INTEGER
             );
             CREATE TABLE forex_watch_runs (
@@ -75,6 +76,7 @@ def _decision(
     hours: float = 0.0,
     training_eligible: int | None = None,
     raw_pm: str | None = None,
+    research_recommendation: str | None = None,
     context_status: str = "COMPLETE",
     normalization_status: str = "NORMALIZED",
     reference_status: str = "AVAILABLE",
@@ -93,8 +95,9 @@ def _decision(
             INSERT INTO shadow_decisions (
                 decision_id, created_at, decision_completed_timestamp, resolved_symbol, action,
                 decision_context_status, normalization_status, decision_reference_status,
-                raw_portfolio_manager_result, trader_summary, training_eligible
-            ) VALUES (?, ?, ?, 'EURUSD', ?, ?, ?, ?, ?, ?, ?)
+                raw_portfolio_manager_result, trader_summary, research_manager_recommendation,
+                training_eligible
+            ) VALUES (?, ?, ?, 'EURUSD', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 decision_id,
@@ -106,6 +109,7 @@ def _decision(
                 reference_status,
                 raw_pm,
                 marker,
+                research_recommendation,
                 training_eligible,
             ),
         )
@@ -221,6 +225,43 @@ def test_hold_origins_and_outcomes_are_broken_down_by_transition(tmp_path: Path)
     assert report.all_population.outcome_by_transition["BUY->HOLD"]["buy_better_count"] == 1
     assert report.all_population.outcome_by_transition["SELL->HOLD"]["sell_better_count"] == 1
     assert report.all_population.outcome_by_transition["HOLD->HOLD"]["positive_directional_count"] == 1
+
+
+def test_research_to_trader_suppression_and_outcome_join(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    _decision(path, "research-buy-trader-hold", trader_action="HOLD", research_recommendation="BUY")
+    _full_eval(
+        path,
+        "research-buy-trader-hold",
+        (5.0, 5.0, 5.0, 0.0),
+        buy=(5.0, 5.0, 5.0, -1.0),
+    )
+
+    report = audit_decision_path(path)
+
+    assert report.all_population.research_to_trader_matrix["BUY->HOLD"]["count"] == 1
+    assert report.all_population.research_to_trader_pm_matrix["BUY->HOLD->HOLD"]["count"] == 1
+    assert report.all_population.research_to_trader_suppression["BUY->HOLD"] == 1
+    assert report.all_population.research_to_trader_outcomes["BUY->HOLD"]["samples"] == 4
+    assert report.all_population.research_to_trader_persistent["BUY->HOLD"]["STRONG_PERSISTENT_MISS"] == 1
+
+
+def test_research_manager_audit_counts_only_canonical_persisted_values(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    for index, recommendation in enumerate(("BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL")):
+        _decision(path, f"research-{index}", research_recommendation=recommendation)
+    _decision(path, "legacy-null")
+
+    report = audit_decision_path(path)
+
+    assert report.research_manager_audit["status"] == "AVAILABLE"
+    assert report.research_manager_audit["counts"] == {
+        "BUY": 1,
+        "OVERWEIGHT": 1,
+        "HOLD": 1,
+        "UNDERWEIGHT": 1,
+        "SELL": 1,
+    }
 
 
 def test_persistent_breakdown_matches_hold_audit_definition(tmp_path: Path) -> None:
