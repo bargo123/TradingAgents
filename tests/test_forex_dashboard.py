@@ -139,7 +139,7 @@ def _insert_evaluations(
     decision_id: str,
     statuses: dict[int, str],
     *,
-    training_eligible: bool = False,
+    source_context_eligible: bool = True,
 ) -> None:
     with sqlite3.connect(path) as conn:
         for horizon, status in statuses.items():
@@ -150,10 +150,10 @@ def _insert_evaluations(
                     evaluation_version, market_data_source, source_context_eligible,
                     training_eligible, training_eligibility_reason, evaluation_status,
                     created_at, selected_action, selected_action_net_points
-                ) VALUES (?, 'DECISION_REFERENCE', ?, 'EURUSD', 'test', 'MT5', 1, ?,
+                ) VALUES (?, 'DECISION_REFERENCE', ?, 'EURUSD', 'test', 'MT5', ?, NULL,
                           'TEST', ?, ?, 'HOLD', ?)
                 """,
-                (decision_id, horizon, int(training_eligible), status, _ts().isoformat(),
+                (decision_id, horizon, int(source_context_eligible), status, _ts().isoformat(),
                  1.0 if status == "COMPLETE" else None),
             )
 
@@ -217,7 +217,7 @@ def test_action_distribution_and_latency_percentiles_are_deterministic(tmp_path:
     assert snapshot.latency["llm_calls_latest"] == 3
 
 
-def test_evaluation_horizon_counts_and_training_progress(tmp_path: Path) -> None:
+def test_four_complete_source_context_eligible_rows_count_as_fully_evaluated(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     ShadowDecisionStore(path).record(_decision("evaluated"))
     _insert_run(path, "evaluated")
@@ -225,15 +225,18 @@ def test_evaluation_horizon_counts_and_training_progress(tmp_path: Path) -> None
         path,
         "evaluated",
         {300: "COMPLETE", 900: "COMPLETE", 1800: "COMPLETE", 3600: "COMPLETE"},
-        training_eligible=True,
     )
+    with sqlite3.connect(path) as conn:
+        assert conn.execute(
+            "SELECT DISTINCT training_eligible FROM shadow_decision_evaluations"
+        ).fetchall() == [(None,)]
     from tradingagents.forex.dashboard import read_dashboard_snapshot
 
     snapshot = read_dashboard_snapshot(path)
 
     assert snapshot.evaluation_horizons[300]["COMPLETE"] == 1
-    assert snapshot.fully_evaluated_decisions == 1
-    assert snapshot.fully_training_eligible_decisions == 1
+    assert snapshot.source_context_eligible_decisions == 1
+    assert snapshot.fully_evaluated_source_eligible_decisions == 1
     assert snapshot.outcome_performance[300]["sample_count"] == 1
 
 
@@ -248,7 +251,68 @@ def test_pending_and_unavailable_horizons_do_not_count_as_complete(tmp_path: Pat
 
     assert snapshot.evaluation_horizons[900]["PENDING"] == 1
     assert snapshot.evaluation_horizons[1800]["DATA_UNAVAILABLE"] == 1
-    assert snapshot.fully_evaluated_decisions == 0
+    assert snapshot.fully_evaluated_source_eligible_decisions == 0
+
+
+def test_source_context_ineligible_decision_does_not_count(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    ShadowDecisionStore(path).record(_decision("ineligible-source"))
+    _insert_run(path, "ineligible-source")
+    _insert_evaluations(
+        path,
+        "ineligible-source",
+        {300: "COMPLETE", 900: "COMPLETE", 1800: "COMPLETE", 3600: "COMPLETE"},
+        source_context_eligible=False,
+    )
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+
+    assert snapshot.source_context_eligible_decisions == 0
+    assert snapshot.fully_evaluated_source_eligible_decisions == 0
+    assert snapshot.outcome_performance[300]["sample_count"] == 0
+
+
+def test_data_unavailable_decision_does_not_count_as_fully_evaluated(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    ShadowDecisionStore(path).record(_decision("unavailable"))
+    _insert_run(path, "unavailable")
+    _insert_evaluations(
+        path,
+        "unavailable",
+        {300: "COMPLETE", 900: "DATA_UNAVAILABLE", 1800: "COMPLETE", 3600: "COMPLETE"},
+    )
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+
+    assert snapshot.fully_evaluated_source_eligible_decisions == 0
+    assert snapshot.training_readiness["data_unavailable_evaluations"] == 1
+
+
+def test_dashboard_defers_final_corpus_eligibility(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    ShadowDecisionStore(path).record(_decision("deferred"))
+    _insert_run(path, "deferred")
+    _insert_evaluations(
+        path,
+        "deferred",
+        {300: "COMPLETE", 900: "COMPLETE", 1800: "COMPLETE", 3600: "COMPLETE"},
+    )
+    from rich.console import Console
+
+    from cli.forex_dashboard import render_dashboard
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+    console = Console(record=True, width=180)
+    console.print(render_dashboard(snapshot))
+    rendered = console.export_text()
+
+    assert "Fully evaluated source-eligible decisions: 1" in rendered
+    assert "Corpus eligibility: DEFERRED TO CORPUS BUILDER" in rendered
+    assert "training-eligible" not in rendered.lower()
+    assert "training ready" not in rendered.lower()
 
 
 def test_reader_is_strictly_read_only(tmp_path: Path) -> None:

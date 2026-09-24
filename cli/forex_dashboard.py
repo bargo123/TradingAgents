@@ -217,13 +217,18 @@ def _evaluation_table(snapshot: DashboardSnapshot) -> Table:
             f"{horizon // 60}m",
             *(str(counts.get(status, 0)) for status in ("COMPLETE", "PENDING", "DATA_UNAVAILABLE", "INELIGIBLE")),
         )
-    table.add_row("All 4 complete", str(snapshot.fully_evaluated_decisions), "", "", "")
-    table.add_row("Fully training-eligible", str(snapshot.fully_training_eligible_decisions), "", "", "")
+    table.add_row(
+        "Fully evaluated source-eligible",
+        str(snapshot.fully_evaluated_source_eligible_decisions),
+        "",
+        "",
+        "",
+    )
     return table
 
 
 def _outcome_table(snapshot: DashboardSnapshot) -> Table:
-    table = Table(title="OUTCOME OBSERVATIONS (TRAINING-ELIGIBLE ONLY)", expand=True)
+    table = Table(title="OUTCOME OBSERVATIONS (SOURCE-CONTEXT ELIGIBLE COMPLETE ONLY)", expand=True)
     table.add_column("Horizon")
     table.add_column("N", justify="right")
     table.add_column("Avg net pts", justify="right")
@@ -244,18 +249,19 @@ def _outcome_table(snapshot: DashboardSnapshot) -> Table:
 def _training_panel(snapshot: DashboardSnapshot) -> Panel:
     readiness = snapshot.training_readiness
     valid = int(readiness["valid_collection_decisions"])
-    evaluated = int(readiness["fully_evaluated_decisions"])
-    eligible = int(readiness["fully_training_eligible_decisions"])
+    source_eligible = int(readiness["source_context_eligible_decisions"])
+    fully_evaluated = int(readiness["fully_evaluated_source_eligible_decisions"])
     lines = [
         "TRAINING READINESS (informational only)",
-        f"Status: {'ENOUGH_SAMPLES_FOR_REVIEW' if eligible >= readiness['review_target'] else 'COLLECTING'}",
+        f"Status: {'ENOUGH_SAMPLES_FOR_REVIEW' if fully_evaluated >= readiness['review_target'] else 'COLLECTING'}",
         f"Valid collection decisions: {valid}",
-        f"Fully evaluated decisions: {evaluated}",
-        f"Fully training-eligible decisions: {eligible}",
+        f"Source-context eligible decisions: {source_eligible}",
+        f"Fully evaluated source-eligible decisions: {fully_evaluated}",
         f"Pending 60m outcomes: {readiness['pending_60m']}",
-        f"Data unavailable evaluations: {readiness['data_unavailable_evaluations']}",
-        f"Review target 100: {_bar(eligible, readiness['review_target'])} {eligible}/100",
-        f"Stronger target 300: {_bar(eligible, readiness['stronger_sample_target'])} {eligible}/300",
+        f"DATA_UNAVAILABLE evaluations: {readiness['data_unavailable_evaluations']}",
+        f"Corpus eligibility: {readiness['corpus_eligibility']}",
+        f"Dataset review progress (100): {_bar(fully_evaluated, readiness['review_target'])} {fully_evaluated}/100",
+        f"Dataset review progress (300): {_bar(fully_evaluated, readiness['stronger_sample_target'])} {fully_evaluated}/300",
     ]
     return Panel("\n".join(lines), border_style="magenta")
 

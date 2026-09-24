@@ -47,8 +47,8 @@ class DashboardSnapshot:
     reliability: Mapping[str, Any]
     latency: Mapping[str, Any]
     evaluation_horizons: Mapping[int, Mapping[str, int]]
-    fully_evaluated_decisions: int
-    fully_training_eligible_decisions: int
+    source_context_eligible_decisions: int
+    fully_evaluated_source_eligible_decisions: int
     outcome_performance: Mapping[int, Mapping[str, Any]]
     training_readiness: Mapping[str, Any]
     recent_decisions: tuple[Mapping[str, Any], ...]
@@ -218,6 +218,7 @@ def _build_evaluation_metrics(
     }
     grouped: dict[str, dict[int, Mapping[str, Any]]] = defaultdict(dict)
     eligible_rows: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+    source_context_eligible_decisions: set[str] = set()
     for row in evaluations:
         if _row_value(row, "evaluation_basis") != "DECISION_REFERENCE":
             continue
@@ -228,19 +229,20 @@ def _build_evaluation_metrics(
         decision_id = str(_row_value(row, "decision_id", default=""))
         if decision_id and horizon in EVALUATION_HORIZONS:
             grouped[decision_id][horizon] = row
-        if status == "COMPLETE" and _is_true(_row_value(row, "training_eligible")):
+            if _is_true(_row_value(row, "source_context_eligible")):
+                source_context_eligible_decisions.add(decision_id)
+        if status == "COMPLETE" and _is_true(_row_value(row, "source_context_eligible")):
             eligible_rows[horizon].append(row)
 
-    fully_evaluated = 0
-    fully_training_eligible = 0
+    fully_evaluated_source_eligible = 0
     for rows in grouped.values():
         if all(
-            horizon in rows and _row_value(rows[horizon], "evaluation_status") == "COMPLETE"
+            horizon in rows
+            and _row_value(rows[horizon], "evaluation_status") == "COMPLETE"
+            and _is_true(_row_value(rows[horizon], "source_context_eligible"))
             for horizon in EVALUATION_HORIZONS
         ):
-            fully_evaluated += 1
-            if all(_is_true(_row_value(rows[horizon], "training_eligible")) for horizon in EVALUATION_HORIZONS):
-                fully_training_eligible += 1
+            fully_evaluated_source_eligible += 1
 
     performance: dict[int, dict[str, Any]] = {}
     for horizon in EVALUATION_HORIZONS:
@@ -271,7 +273,12 @@ def _build_evaluation_metrics(
             ),
             "action_counts": {action: int(action_counts.get(action, 0)) for action in ACTION_VALUES},
         }
-    return horizons, fully_evaluated, fully_training_eligible, performance
+    return (
+        horizons,
+        len(source_context_eligible_decisions),
+        fully_evaluated_source_eligible,
+        performance,
+    )
 
 
 def derive_health(snapshot: DashboardSnapshot) -> tuple[str, tuple[str, ...]]:
@@ -412,7 +419,12 @@ def _read_snapshot(connection: sqlite3.Connection, path: Path, observed_at: date
         "tokens_in_mean": _series(_row_value(row, "tokens_in") for row in successful_runs)["mean"],
         "tokens_out_mean": _series(_row_value(row, "tokens_out") for row in successful_runs)["mean"],
     }
-    horizon_counts, fully_evaluated, fully_training, performance = _build_evaluation_metrics(evaluations)
+    (
+        horizon_counts,
+        source_context_eligible,
+        fully_evaluated_source_eligible,
+        performance,
+    ) = _build_evaluation_metrics(evaluations)
 
     decision_times = [time for row in decisions if (time := _decision_time(row)) is not None]
     oldest = min(decision_times) if decision_times else None
@@ -453,10 +465,13 @@ def _read_snapshot(connection: sqlite3.Connection, path: Path, observed_at: date
         watcher.setdefault("last_successful_decision_at", max(successful_decision_times).isoformat())
     readiness = {
         "valid_collection_decisions": len(valid_decisions),
-        "fully_evaluated_decisions": fully_evaluated,
-        "fully_training_eligible_decisions": fully_training,
+        "source_context_eligible_decisions": source_context_eligible,
+        "fully_evaluated_source_eligible_decisions": fully_evaluated_source_eligible,
         "pending_60m": horizon_counts[3600]["PENDING"],
         "data_unavailable_evaluations": data_unavailable,
+        "corpus_eligibility": (
+            "DEFERRED TO CORPUS BUILDER" if source_context_eligible else "DEFERRED"
+        ),
         "review_target": 100,
         "stronger_sample_target": 300,
     }
@@ -478,8 +493,8 @@ def _read_snapshot(connection: sqlite3.Connection, path: Path, observed_at: date
         reliability=reliability,
         latency=latency,
         evaluation_horizons=horizon_counts,
-        fully_evaluated_decisions=fully_evaluated,
-        fully_training_eligible_decisions=fully_training,
+        source_context_eligible_decisions=source_context_eligible,
+        fully_evaluated_source_eligible_decisions=fully_evaluated_source_eligible,
         outcome_performance=performance,
         training_readiness=readiness,
         recent_decisions=recent,
