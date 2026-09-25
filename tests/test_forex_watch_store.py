@@ -98,6 +98,27 @@ def test_read_only_active_lease_reads_existing_owner_without_mutation(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_read_only_summary_does_not_create_or_initialize_database(tmp_path):
+    path = tmp_path / "missing.db"
+    store = WatcherStore(path)
+
+    assert store.read_only_summary(NOW) == {}
+    assert not path.exists()
+
+
+def test_read_only_summary_reads_without_initialization_or_mutation(tmp_path):
+    path = tmp_path / "watch.db"
+    store = WatcherStore(path)
+    store.initialize()
+    before = path.read_bytes()
+    store.initialize = lambda: (_ for _ in ()).throw(AssertionError("read-only summary initialized"))
+
+    summary = store.read_only_summary(NOW)
+
+    assert summary["lifecycle_status"] == "STOPPED"
+    assert path.read_bytes() == before
+
+
 def test_evaluation_due_flag_is_fenced_and_persisted(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     acquired = store.acquire_lease(owner(), NOW)

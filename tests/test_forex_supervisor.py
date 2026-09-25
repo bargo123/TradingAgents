@@ -197,3 +197,27 @@ def test_supervisor_status_prefers_read_only_lease_probe():
     ).status("watch.db")
 
     assert report["watcher_lease_status"] == "INACTIVE"
+
+
+def test_supervisor_status_prefers_read_only_summary():
+    watcher = {"lifecycle_status": "IDLE", "circuit_reason": None}
+
+    class Store:
+        def read_only_summary(self, _now):
+            return watcher
+
+        def summary(self, _now):
+            raise AssertionError("status must not initialize the writer store")
+
+        def read_only_active_lease(self, _now):
+            return None
+
+    class Runtime:
+        def health(self):
+            return OllamaHealth("HEALTHY", "http://127.0.0.1:11435", "v", (), 16384)
+
+    report = ForexSupervisor(
+        runtime_factory=lambda _config: Runtime(), store_factory=lambda _path: Store()
+    ).status("watch.db")
+
+    assert report["watcher_status"] == "IDLE"

@@ -252,6 +252,21 @@ class WatcherStore:
         conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_seconds * 1000}")
         return conn
 
+    def _read_only_connect(self) -> sqlite3.Connection | None:
+        resolved = self.path.expanduser().resolve()
+        if not resolved.is_file():
+            return None
+        uri_path = quote(resolved.as_posix(), safe="/:\\")
+        conn = sqlite3.connect(
+            f"file:{uri_path}?mode=ro",
+            uri=True,
+            timeout=0,
+            check_same_thread=False,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        return conn
+
     @contextmanager
     def _transaction(self, *, immediate: bool = False):
         conn = self._connect()
@@ -1010,10 +1025,16 @@ class WatcherStore:
             )
         return tuple(actions)
 
-    def summary(self, now: datetime | None = None) -> dict[str, Any]:
+    def summary(self, now: datetime | None = None, *, read_only: bool = False) -> dict[str, Any]:
         del now
-        self.initialize()
-        with self._connect() as conn:
+        if read_only:
+            conn = self._read_only_connect()
+            if conn is None:
+                return {}
+        else:
+            self.initialize()
+            conn = self._connect()
+        with conn:
             state = conn.execute("SELECT * FROM forex_watcher_state WHERE singleton_id=1").fetchone()
             counts = {
                 row["status"]: row["count"]
@@ -1150,6 +1171,11 @@ class WatcherStore:
         result["failed_runs"] = int(run_counts.get("FAILED", 0))
         result["abandoned_runs"] = int(run_counts.get("ABANDONED", 0))
         return result
+
+    def read_only_summary(self, now: datetime | None = None) -> dict[str, Any]:
+        """Read watcher state without schema initialization or SQLite writes."""
+
+        return self.summary(now, read_only=True)
 
     def force_expiry(self, expiry: datetime) -> None:
         self.initialize()
