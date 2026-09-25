@@ -217,6 +217,30 @@ def test_action_distribution_and_latency_percentiles_are_deterministic(tmp_path:
     assert snapshot.latency["llm_calls_latest"] == 3
 
 
+def test_freshness_budget_metric_uses_analysis_latency_not_runtime(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    ShadowDecisionStore(path).record(_decision("latency-mismatch"))
+    _insert_run(
+        path,
+        "latency-mismatch",
+        runtime=10.0,
+        freshness_budget=900,
+    )
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE forex_watch_runs SET analysis_latency_seconds=? WHERE run_id=?",
+            (901.0, "run-latency-mismatch"),
+        )
+        conn.commit()
+
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+
+    assert snapshot.reliability["analysis_latency_at_or_above_freshness_budget_count"] == 1
+    assert snapshot.reliability["runtime_at_or_above_freshness_budget_count"] == 1
+
+
 def test_four_complete_source_context_eligible_rows_count_as_fully_evaluated(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     ShadowDecisionStore(path).record(_decision("evaluated"))
@@ -311,6 +335,7 @@ def test_dashboard_defers_final_corpus_eligibility(tmp_path: Path) -> None:
 
     assert "Fully evaluated source-eligible decisions: 1" in rendered
     assert "Corpus eligibility: DEFERRED TO CORPUS BUILDER" in rendered
+    assert "Analysis latency >= freshness budget" in rendered
     assert "training-eligible" not in rendered.lower()
     assert "training ready" not in rendered.lower()
 

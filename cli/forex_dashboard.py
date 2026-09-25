@@ -166,7 +166,15 @@ def _action_reliability_table(snapshot: DashboardSnapshot) -> Table:
     for status in ("AVAILABLE", "INVALID_TEMPORAL", "UNAVAILABLE"):
         table.add_row(f"Reference {status}", str(ref_counts.get(status, 0)))
     table.add_row("PM/normalization failures", str(reliability.get("pm_normalization_failure_count", 0)))
-    table.add_row(">= freshness budget", str(reliability.get("runtime_at_or_above_freshness_budget_count", 0)))
+    table.add_row(
+        "Analysis latency >= freshness budget",
+        str(
+            reliability.get(
+                "analysis_latency_at_or_above_freshness_budget_count",
+                reliability.get("runtime_at_or_above_freshness_budget_count", 0),
+            )
+        ),
+    )
     failure_codes = reliability.get("failure_codes", {})
     table.add_row("Failure codes", ", ".join(f"{k}:{v}" for k, v in sorted(failure_codes.items())) or "-")
     return table

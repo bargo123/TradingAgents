@@ -185,6 +185,21 @@ def _decision_status(
     return _row_value(decision, *names, default=_row_value(run or {}, *names, default=default))
 
 
+def _freshness_latency(row: Mapping[str, Any]) -> float | None:
+    """Return the contract's freshness latency, with a legacy fallback.
+
+    Freshness is measured from the analyzed snapshot to decision completion,
+    not from worker start to worker finish. Older run rows may not contain
+    ``analysis_latency_seconds``; those rows retain the historical runtime
+    fallback rather than disappearing from the dashboard metric.
+    """
+
+    analysis_latency = _float(_row_value(row, "analysis_latency_seconds"))
+    if analysis_latency is not None:
+        return analysis_latency
+    return _float(_row_value(row, "runtime_seconds"))
+
+
 def _valid_collection_decision(decision: Mapping[str, Any], run: Mapping[str, Any] | None) -> bool:
     if run is None:
         return False
@@ -309,10 +324,12 @@ def derive_health(snapshot: DashboardSnapshot) -> tuple[str, tuple[str, ...]]:
         warnings.append("no completed 60m outcomes")
     if snapshot.reliability.get("data_unavailable_evaluations", 0):
         warnings.append("some outcomes are data unavailable")
-    p95 = snapshot.latency.get("runtime_p95_seconds")
+    p95 = snapshot.latency.get("analysis_latency_p95_seconds")
+    if p95 is None:
+        p95 = snapshot.latency.get("runtime_p95_seconds")
     budget = snapshot.reliability.get("freshness_budget_seconds")
     if p95 is not None and budget and p95 >= float(budget) * 0.8:
-        warnings.append("runtime p95 is close to freshness budget")
+        warnings.append("analysis latency p95 is close to freshness budget")
     if degraded:
         return "DEGRADED", tuple(degraded + warnings)
     if warnings:
@@ -367,11 +384,10 @@ def _read_snapshot(connection: sqlite3.Connection, path: Path, observed_at: date
         if normalization_counts.get("FAILED", 0)
         else {}
     )
-    runtime_exceeded = sum(
-        (_float(_row_value(row, "runtime_seconds")) or 0.0)
-        >= (_float(_row_value(row, "freshness_budget_seconds")) or 900.0)
+    freshness_exceeded = sum(
+        latency >= (_float(_row_value(row, "freshness_budget_seconds")) or 900.0)
         for row in runs
-        if _row_value(row, "runtime_seconds") is not None
+        if (latency := _freshness_latency(row)) is not None
     )
     data_unavailable = sum(
         _row_value(row, "evaluation_status") == "DATA_UNAVAILABLE"
@@ -390,7 +406,10 @@ def _read_snapshot(connection: sqlite3.Connection, path: Path, observed_at: date
         "normalization_counts": dict(normalization_counts),
         "failure_codes": dict(failure_codes),
         "pm_normalization_failure_count": int(normalization_counts.get("FAILED", 0)),
-        "runtime_at_or_above_freshness_budget_count": runtime_exceeded,
+        "analysis_latency_at_or_above_freshness_budget_count": freshness_exceeded,
+        # Backward-compatible alias for existing scalar consumers. The value
+        # is deliberately based on analysis latency, not worker runtime.
+        "runtime_at_or_above_freshness_budget_count": freshness_exceeded,
         "freshness_budget_seconds": max(budgets) if budgets else 900.0,
         "data_unavailable_evaluations": data_unavailable,
     }
