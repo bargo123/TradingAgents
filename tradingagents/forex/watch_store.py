@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from urllib.parse import quote
 
 if TYPE_CHECKING:
     from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
@@ -440,6 +441,37 @@ class WatcherStore:
         self.initialize()
         with self._connect() as conn:
             return self._read_lease_row(conn)
+
+    def read_only_active_lease(self, now: datetime | None = None) -> LeaseRecord | None:
+        """Read an existing lease without initialization or SQLite writes.
+
+        Startup guards use this seam so an active watcher can be observed while
+        another process is writing the database. A locked/unreadable database
+        raises instead of being treated as an empty lease, which is fail-closed
+        against starting a duplicate collector.
+        """
+
+        del now  # retained for callers that want an explicit observation time
+        resolved = self.path.expanduser().resolve()
+        if not resolved.is_file():
+            return None
+        uri_path = quote(resolved.as_posix(), safe="/:\\")
+        uri = f"file:{uri_path}?mode=ro"
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            raise
+        try:
+            table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='forex_watcher_state'"
+            ).fetchone()
+            if table is None:
+                return None
+            return self._read_lease_row(conn)
+        finally:
+            conn.close()
 
     def acquire_lease(
         self,

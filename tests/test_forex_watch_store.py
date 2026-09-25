@@ -76,6 +76,28 @@ def test_expired_dead_or_unverifiable_owner_can_be_reconciled(tmp_path, alive):
     assert result.recovered_expired is True
 
 
+def test_read_only_active_lease_does_not_initialize_or_write(tmp_path):
+    path = tmp_path / "missing.db"
+    store = WatcherStore(path)
+
+    assert store.read_only_active_lease(NOW) is None
+    assert not path.exists()
+
+
+def test_read_only_active_lease_reads_existing_owner_without_mutation(tmp_path):
+    path = tmp_path / "watch.db"
+    store = WatcherStore(path)
+    acquired = store.acquire_lease(owner(), NOW)
+    before = path.read_bytes()
+
+    observed = store.read_only_active_lease(NOW)
+
+    assert acquired.status is LeaseStatus.ACQUIRED
+    assert observed is not None
+    assert observed.owner_token == "old"
+    assert path.read_bytes() == before
+
+
 def test_evaluation_due_flag_is_fenced_and_persisted(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     acquired = store.acquire_lease(owner(), NOW)

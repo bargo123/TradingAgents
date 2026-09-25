@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -227,6 +228,25 @@ def test_forex_shadow_refuses_active_watcher_before_runner_construction(
     captured = capsys.readouterr()
     assert "WATCHER_ALREADY_RUNNING" in captured.err
     assert "NO ORDER WILL BE SENT" in captured.out
+
+
+def test_forex_shadow_lease_guard_uses_read_only_probe(tmp_path, capsys, monkeypatch):
+    now = datetime.now(timezone.utc)
+
+    class Store:
+        def __init__(self, _path):
+            pass
+
+        def read_only_active_lease(self, _now):
+            return SimpleNamespace(lease_expires_at=now + timedelta(minutes=5))
+
+        def active_lease(self, _now):
+            raise AssertionError("shadow guard must not use writer-initializing lease read")
+
+    monkeypatch.setattr("cli.forex_shadow.WatcherStore", Store)
+
+    assert main([]) == 1
+    assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err
 
 
 def test_forex_shadow_runs_normally_without_active_watcher(

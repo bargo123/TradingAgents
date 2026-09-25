@@ -156,7 +156,8 @@ def _watcher_database_path(db_path: str | None) -> Path:
 
 def _watcher_lease_is_active(db_path: str | None, now: datetime) -> bool:
     store = WatcherStore(_watcher_database_path(db_path))
-    lease = store.active_lease(now)
+    reader = getattr(store, "read_only_active_lease", None)
+    lease = reader(now) if callable(reader) else store.active_lease(now)
     return lease is not None and lease.lease_expires_at > now
 
 

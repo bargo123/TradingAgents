@@ -31,6 +31,13 @@ def _health_level(ollama: OllamaHealth, watcher: Mapping[str, Any]) -> tuple[str
     return "HEALTHY", None
 
 
+def _read_active_lease(store: Any, now: datetime) -> Any:
+    reader = getattr(store, "read_only_active_lease", None)
+    if callable(reader):
+        return reader(now)
+    return store.active_lease(now)
+
+
 class ForexSupervisor:
     """Compose bounded Ollama health and existing fenced watcher lifecycle."""
 
@@ -122,7 +129,7 @@ class ForexSupervisor:
 
         store = self.store_factory(Path(db_path))
         now = datetime.now(UTC)
-        lease = store.active_lease(now)
+        lease = _read_active_lease(store, now)
         if lease is not None and lease.lease_expires_at > now:
             print("FOREX SUPERVISOR: WATCHER_ALREADY_RUNNING")
             return 1

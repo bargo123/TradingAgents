@@ -29,6 +29,27 @@ def test_supervisor_refuses_active_watcher_before_ollama_start():
     assert constructed == []
 
 
+def test_supervisor_lease_guard_prefers_read_only_probe():
+    now = datetime.now(UTC)
+
+    class Store:
+        def read_only_active_lease(self, _now):
+            return SimpleNamespace(lease_expires_at=now + timedelta(minutes=5))
+
+        def active_lease(self, _now):
+            raise AssertionError("startup guard must not use writer-initializing lease read")
+
+    supervisor = ForexSupervisor(
+        ForexShadowRuntimeConfig(),
+        runtime_factory=lambda _config: (_ for _ in ()).throw(
+            AssertionError("runtime must not be constructed")
+        ),
+        store_factory=lambda _path: Store(),
+    )
+
+    assert supervisor.run(db_path="watch.db", watch_main=lambda *a, **k: 0) == 1
+
+
 def test_supervisor_uses_bounded_runtime_then_existing_watcher():
     store = SimpleNamespace(active_lease=lambda _now: None)
     calls = []
