@@ -80,6 +80,25 @@ def test_trace_contains_hash_counts_and_no_text():
     }
 
 
+def test_trace_exposes_only_canonical_signal_handoff_metadata():
+    state = {
+        "research_manager_recommendation": "BUY",
+        "trader_investment_plan": "FINAL TRANSACTION PROPOSAL: **SELL**",
+        "portfolio_manager_raw_result": {
+            "rating": "Hold",
+            "investment_thesis": "private text",
+        },
+    }
+    metrics = state_artifact_metrics(state)
+
+    assert metrics["signals"] == {
+        "research_manager_recommendation": "BUY",
+        "trader_action": "SELL",
+        "portfolio_manager_rating": "Hold",
+    }
+    assert "private text" not in repr(metrics)
+
+
 def test_context_integrity_reports_missing_hash_observation():
     state = Propagator().create_initial_state(
         "EURUSD", "2026-09-12", asset_type="forex", evidence_context=_context()

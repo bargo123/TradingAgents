@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from collections.abc import Sequence
@@ -110,7 +111,12 @@ def _provider_factory(terminal_path: str | None = None):
     return MT5Provider(terminal_path=terminal_path)
 
 
-def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> WatcherCoordinator:
+def _make_coordinator(
+    args: argparse.Namespace,
+    config: WatcherConfig,
+    *,
+    runtime_config: Any | None = None,
+) -> WatcherCoordinator:
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.forex.evaluation import (
         EvaluationConfig,
@@ -118,10 +124,15 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
         ShadowOutcomeEvaluator,
     )
     from tradingagents.forex.runner import ForexShadowRunner
+    from tradingagents.forex.runtime_config import collect_runtime_provenance
     from tradingagents.forex.shadow import ShadowDecisionStore
-    from tradingagents.forex.watcher import SystemClock
+    from tradingagents.forex.watcher import SystemClock, safe_effective_config
 
-    safe_config = dict(DEFAULT_CONFIG)
+    safe_config = (
+        runtime_config.to_tradingagents_config()
+        if runtime_config is not None
+        else dict(DEFAULT_CONFIG)
+    )
     safe_config.update(
         {
             "analysis_profile": config.analysis_profile,
@@ -141,10 +152,36 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
     stats_handler = StatsCallbackHandler()
     runner = ForexShadowRunner(config=safe_config, store=decision_store)
     probe = ReadOnlyMarketProbe(_provider_factory, terminal_path=config.terminal_path)
+    runtime_fingerprint = (
+        None if runtime_config is None else runtime_config.fingerprint
+    )
+    config_fingerprint = hashlib.sha256(
+        json.dumps(
+            {"watcher": config.safe_fingerprint, "runtime": runtime_fingerprint},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    safe_config_values = safe_effective_config(safe_config)
+    provenance = (
+        collect_runtime_provenance(runtime_config)
+        if runtime_config is not None
+        else collect_runtime_provenance(None, safe_config=safe_config_values)
+    )
+    provenance["config_fingerprint"] = config_fingerprint
+    provenance["prompt_config_version"] = str(
+        safe_config.get("prompt_config_version", "forex-shadow.v1")
+    )
+    provenance["collector_contract_version"] = str(
+        safe_config.get("collector_contract_version", "forex-watch.v1")
+    )
+    provenance["safe_config_json"] = json.dumps(
+        safe_config_values, sort_keys=True, separators=(",", ":")
+    )
     schedule = CompletedBarSchedule(
         timeframe=config.schedule_timeframe,
         settle_seconds=config.bar_close_settle_seconds,
-        config_fingerprint=config.safe_fingerprint,
+        config_fingerprint=config_fingerprint,
         requested_symbols=config.symbols,
         analysis_profile=config.analysis_profile,
         analyst_set=config.analysts,
@@ -155,6 +192,7 @@ def _make_coordinator(args: argparse.Namespace, config: WatcherConfig) -> Watche
             config.db_path,
             lease_ttl_seconds=config.lease_ttl_seconds,
             busy_timeout_seconds=config.db_busy_timeout_seconds,
+            provenance=provenance,
         ),
         clock=SystemClock(),
         schedule=schedule,
@@ -229,6 +267,7 @@ def main(
     *,
     coordinator_factory: Any | None = None,
     store_factory: Any | None = None,
+    runtime_config: Any | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "status":
@@ -264,7 +303,12 @@ def main(
         ):
             print("FOREX WATCH ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
             return 1
-        coordinator = (coordinator_factory or _make_coordinator)(args, config)
+        if runtime_config is None:
+            coordinator = (coordinator_factory or _make_coordinator)(args, config)
+        else:
+            coordinator = (coordinator_factory or _make_coordinator)(
+                args, config, runtime_config=runtime_config
+            )
         if args.command == "once":
             return _run_once(coordinator)
         result = coordinator.start()

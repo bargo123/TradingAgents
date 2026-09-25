@@ -33,6 +33,11 @@ _DEBATE_LABEL_RE = re.compile(
     r"Conservative Analyst|Neutral Analyst)\s*:\s*",
     re.IGNORECASE | re.MULTILINE,
 )
+_TRADER_ACTION_RE = re.compile(
+    r"(?m)^FINAL TRANSACTION PROPOSAL:\s+\*\*(BUY|HOLD|SELL)\*\*[ \t]*$"
+)
+_RESEARCH_RATINGS = {"BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL"}
+_PM_RATINGS = {"Buy", "Overweight", "Hold", "Underweight", "Sell"}
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -100,6 +105,15 @@ def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
     final_pm_text = _text(final_pm).strip()
     final_pm_valid = bool(final_pm_text) and final_pm_text != "FOREX_PORTFOLIO_MANAGER_FAILED"
 
+    research_recommendation = state_map.get("research_manager_recommendation")
+    if research_recommendation not in _RESEARCH_RATINGS:
+        research_recommendation = None
+    trader_matches = _TRADER_ACTION_RE.findall(_text(state_map.get("trader_investment_plan")))
+    trader_action = trader_matches[0] if len(trader_matches) == 1 else None
+    pm_rating = raw_pm_mapping.get("rating")
+    if pm_rating not in _PM_RATINGS:
+        pm_rating = None
+
     return {
         "evidence_context_present": evidence_context is not None,
         "evidence_context_hash": evidence_context_hash,
@@ -151,6 +165,11 @@ def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
                 "present": final_pm_valid,
                 "chars": len(final_pm_text),
             },
+        },
+        "signals": {
+            "research_manager_recommendation": research_recommendation,
+            "trader_action": trader_action,
+            "portfolio_manager_rating": pm_rating,
         },
     }
 

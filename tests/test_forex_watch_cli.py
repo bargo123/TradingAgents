@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import cli.forex_watch as forex_watch
 from cli.forex_watch import build_parser, main
 from cli.stats_handler import StatsCallbackHandler
+from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
 from tradingagents.forex.watch_store import LeaseOwner, LeaseStatus, WatcherStore
 
 
@@ -128,6 +129,31 @@ def test_make_coordinator_wires_existing_numeric_stats_callback(tmp_path, monkey
     callbacks = captured["callbacks"]
     assert len(callbacks) == 1
     assert isinstance(callbacks[0], StatsCallbackHandler)
+
+
+def test_make_coordinator_accepts_explicit_runtime_config_and_provenance(
+    tmp_path, monkeypatch
+):
+    args = build_parser().parse_args(["once", "--db-path", str(tmp_path / "watch.db")])
+    config = forex_watch._make_config(args)
+    captured = {}
+
+    class _Executor:
+        def shutdown(self, wait=True):
+            del wait
+
+    class _Coordinator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(forex_watch, "SingleSlotAnalysisExecutor", _Executor)
+    monkeypatch.setattr(forex_watch, "WatcherCoordinator", _Coordinator)
+
+    forex_watch._make_coordinator(args, config, runtime_config=ForexShadowRuntimeConfig())
+
+    assert captured["runner"].config["backend_url"] == "http://127.0.0.1:11435/v1"
+    assert captured["runner"].config["quick_think_llm"] == "qwen3.5:2b"
+    assert captured["store"].provenance["prompt_config_version"] == "forex-shadow.runtime.v1"
 
 
 def test_once_refuses_active_watcher_before_coordinator_resource_construction(

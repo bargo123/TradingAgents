@@ -9,8 +9,10 @@ from cli.stats_handler import StatsCallbackHandler
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.telemetry import (
     agent_context,
+    capture_state_trace,
     current_agent_context,
     instrument_agent_node,
+    stage_timings_from_trace,
 )
 from tradingagents.graph.setup import GraphSetup
 from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -57,6 +59,23 @@ def test_instrumented_node_sets_agent_context():
     assert seen[0].name == "Portfolio Manager"
     assert seen[0].model == "deep-model"
     assert current_agent_context() is None
+
+
+def test_instrumented_node_records_metadata_only_stage_timing():
+    def node(state):
+        return {**state, "market_report": "visible report"}
+
+    wrapped = instrument_agent_node(node, "Market Analyst", SimpleNamespace(model="quick-model"))
+    with capture_state_trace() as trace:
+        assert wrapped({"ok": True})["market_report"] == "visible report"
+
+    after = [entry for entry in trace if entry["phase"] == "after"]
+    assert len(after) == 1
+    assert isinstance(after[0]["duration_seconds"], float)
+    assert after[0]["duration_seconds"] >= 0
+    assert stage_timings_from_trace(trace) == {
+        "Market Analyst": {"calls": 1, "elapsed_seconds": after[0]["duration_seconds"]}
+    }
 
 
 def test_stats_collects_usage_per_agent_without_private_content():

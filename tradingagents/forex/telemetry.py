@@ -7,11 +7,12 @@ changing LangGraph state or retaining prompt/reasoning content.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
+from time import perf_counter
 from typing import Any
 
 from .context_integrity import state_artifact_metrics
@@ -75,6 +76,8 @@ def record_state_boundary(
     node: str,
     phase: str,
     state: Mapping[str, Any] | None,
+    *,
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Append artifact and evidence-context metadata without retaining contents.
 
@@ -85,13 +88,41 @@ def record_state_boundary(
     trace = _STATE_TRACE.get()
     if trace is None:
         return
-    trace.append(
-        {
-            "node": str(node),
-            "phase": str(phase),
-            "artifacts": state_artifact_metrics(state),
-        }
-    )
+    entry: dict[str, Any] = {
+        "node": str(node),
+        "phase": str(phase),
+        "artifacts": state_artifact_metrics(state),
+    }
+    if metadata:
+        # Only scalar metadata is accepted here.  This boundary is deliberately
+        # not a transport for prompts, completions, or arbitrary state.
+        entry.update(
+            {
+                str(key): value
+                for key, value in metadata.items()
+                if isinstance(value, (str, int, float, bool)) or value is None
+            }
+        )
+    trace.append(entry)
+
+
+def stage_timings_from_trace(
+    trace: Sequence[Mapping[str, Any]] | None,
+) -> dict[str, dict[str, int | float]]:
+    """Aggregate metadata-only node durations from an instrumented trace."""
+
+    timings: dict[str, dict[str, int | float]] = {}
+    for entry in trace or ():
+        if not isinstance(entry, Mapping) or entry.get("phase") != "after":
+            continue
+        node = str(entry.get("node") or "").strip()
+        duration = entry.get("duration_seconds")
+        if not node or not isinstance(duration, (int, float)) or isinstance(duration, bool):
+            continue
+        current = timings.setdefault(node, {"calls": 0, "elapsed_seconds": 0.0})
+        current["calls"] = int(current["calls"]) + 1
+        current["elapsed_seconds"] = float(current["elapsed_seconds"]) + max(0.0, float(duration))
+    return timings
 
 
 def extend_state_trace(entries: list[dict[str, Any]]) -> None:
@@ -110,6 +141,7 @@ def instrument_agent_node(node, agent_name: str, llm: Any):
     def wrapped(*args, **kwargs):
         state = args[0] if args else kwargs.get("state")
         record_state_boundary(agent_name, "before", state)
+        started = perf_counter()
         with agent_context(agent_name, llm):
             result = node(*args, **kwargs)
         if isinstance(state, Mapping):
@@ -118,7 +150,12 @@ def instrument_agent_node(node, agent_name: str, llm: Any):
                 merged_state.update(result)
         else:
             merged_state = result if isinstance(result, Mapping) else None
-        record_state_boundary(agent_name, "after", merged_state)
+        record_state_boundary(
+            agent_name,
+            "after",
+            merged_state,
+            metadata={"duration_seconds": max(0.0, perf_counter() - started)},
+        )
         return result
 
     return wrapped
@@ -133,4 +170,5 @@ __all__ = [
     "instrument_agent_node",
     "model_identifier",
     "record_state_boundary",
+    "stage_timings_from_trace",
 ]

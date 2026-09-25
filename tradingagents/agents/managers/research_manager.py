@@ -72,11 +72,11 @@ def create_research_manager(llm):
 **Rating Scale** (use exactly one):
 - **Buy**: Strong evidence to enter or add to the currency-pair position
 - **Overweight**: Favorable intraday bias, increase exposure only hypothetically
-- **Hold**: Wait or maintain the current position while evidence is mixed
+- **Hold**: No sufficient directional edge for the current intraday horizon
 - **Underweight**: Reduce hypothetical exposure because risk dominates
 - **Sell**: Strong evidence to exit or avoid the currency-pair position
 
-Commit to the recommendation best supported by the supplied evidence. Optional macro/event data may be unavailable; treat that absence as uncertainty, not an automatic Hold. A coherent edge in the available price action, spread, volatility, or bull/bear evidence may support a directional stance. Choose Hold when the available evidence is genuinely balanced, materially conflicting, or does not establish a directional edge. Do not use months, years, company valuation, issuer fundamentals, dividends, earnings, or equity portfolio-allocation language.
+Commit to the recommendation best supported by the supplied evidence. Optional macro/event data may be unavailable; treat that absence as uncertainty, not an automatic Hold. A coherent edge in the available price action, spread, volatility, or bull/bear evidence may support a directional stance. Do not require a fresh catalyst, breakout, or agreement from every timeframe before choosing a direction. Choose Hold only when the available evidence is genuinely balanced, materially conflicting, or does not establish a directional edge; uncertainty alone is not sufficient. Do not use months, years, company valuation, issuer fundamentals, dividends, earnings, or equity portfolio-allocation language.
 
 ---
 

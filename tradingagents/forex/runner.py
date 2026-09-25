@@ -19,6 +19,7 @@ from tradingagents.dataflows.mt5.models import ForexMarketSnapshot
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.context_integrity import evaluate_context_integrity
+from tradingagents.forex.decision_path_audit import extract_trader_action
 from tradingagents.forex.evidence_audit import EvidenceAuditStore, EvidenceUsageAudit
 from tradingagents.forex.evidence_context import (
     EvidenceAuditStatus,
@@ -37,7 +38,7 @@ from tradingagents.forex.shadow import (
     ShadowTradeDecision,
     normalize_portfolio_manager_result,
 )
-from tradingagents.forex.telemetry import capture_state_trace
+from tradingagents.forex.telemetry import capture_state_trace, stage_timings_from_trace
 from tradingagents.forex.tools import MT5ToolAdapter
 
 
@@ -888,6 +889,20 @@ class ForexShadowRunner:
                 valid_for_seconds = raw_validity if isinstance(raw_validity, int) and not isinstance(raw_validity, bool) else profile.valid_for_seconds
                 valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
             analysis_telemetry.update(_callback_metrics(callback_list))
+            analysis_telemetry["stage_timings"] = stage_timings_from_trace(state_trace)
+            analysis_telemetry["signal_path"] = {
+                "research_manager_recommendation": final_state.get(
+                    "research_manager_recommendation"
+                ),
+                "trader_action": extract_trader_action(
+                    final_state.get("trader_investment_plan")
+                ),
+                "portfolio_manager_rating": (
+                    raw_pm_result.get("rating")
+                    if isinstance(raw_pm_result, Mapping)
+                    else None
+                ),
+            }
             analysis_telemetry.update(reference_telemetry)
             analysis_telemetry.update(
                 {

@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
+from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig, collect_runtime_provenance
 from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
 from tradingagents.forex.watch_store import (
     LeaseLostError,
@@ -95,6 +96,25 @@ def test_schema_is_idempotent_and_preserves_phase5_tables(tmp_path):
 
     tables = set(store.table_names())
     assert {"forex_watcher_state", "forex_watch_opportunities", "forex_watch_runs"} <= tables
+
+
+def test_new_runs_persist_runtime_provenance_at_claim(tmp_path):
+    provenance = collect_runtime_provenance(
+        ForexShadowRuntimeConfig(), repo_root=tmp_path, git_runner=lambda *a, **k: type(
+            "Result", (), {"returncode": 0, "stdout": "abc123\n"}
+        )()
+    )
+    store = WatcherStore(tmp_path / "watch.db", provenance=provenance)
+    acquired = store.acquire_lease(owner(), NOW)
+    run = _insert_running_run(store, acquired.owner_token, source_run_id="provenance-run")
+
+    persisted = store.get_run(run.run_id)
+    assert persisted.git_commit == "abc123"
+    assert persisted.prompt_config_version == "forex-shadow.runtime.v1"
+    assert persisted.application_version
+    assert persisted.collector_contract_version == "forex-watch.v1"
+    assert persisted.config_fingerprint
+    assert persisted.safe_config_json.startswith("{")
 
 
 def test_summary_exposes_evaluation_quality_counts_without_training_labels(tmp_path):

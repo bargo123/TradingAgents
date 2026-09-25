@@ -13,7 +13,13 @@ from tradingagents.agents.researchers.bull_researcher import create_bull_researc
 from tradingagents.agents.risk_mgmt.aggressive_debator import create_aggressive_debator
 from tradingagents.agents.risk_mgmt.conservative_debator import create_conservative_debator
 from tradingagents.agents.risk_mgmt.neutral_debator import create_neutral_debator
-from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating, ResearchPlan
+from tradingagents.agents.schemas import (
+    PortfolioDecision,
+    PortfolioRating,
+    ResearchPlan,
+    TraderAction,
+    TraderProposal,
+)
 from tradingagents.agents.trader.trader import create_trader
 
 
@@ -228,7 +234,24 @@ def test_forex_research_manager_treats_missing_macro_as_uncertainty():
     prompt = _prompt_text(llm.prompts[0]).lower()
     assert "macro/event data may be unavailable" in prompt
     assert "treat that absence as uncertainty, not an automatic hold" in prompt
-    assert "choose hold when the available evidence is genuinely balanced" in prompt
+    assert "choose hold only when the available evidence is genuinely balanced" in prompt
+
+
+def test_forex_research_manager_does_not_require_catalyst_or_full_timeframe_agreement():
+    llm = _PromptCaptureLLM(
+        ResearchPlan(
+            recommendation=PortfolioRating.BUY,
+            rationale="Coherent primary-timeframe edge.",
+            strategic_actions="Keep hypothetical exposure bounded.",
+        )
+    )
+
+    create_research_manager(llm)(_forex_state())
+
+    prompt = _prompt_text(llm.prompts[0]).lower()
+    assert "do not require a fresh catalyst, breakout" in prompt
+    assert "agreement from every timeframe" in prompt
+    assert "uncertainty alone is not sufficient" in prompt
 
 
 def test_forex_research_manager_uses_intraday_timeframe_roles():
@@ -295,6 +318,46 @@ def test_forex_missing_macro_does_not_override_directional_structured_plan():
     result = create_research_manager(llm)(state)
 
     assert result["research_manager_recommendation"] == "BUY"
+
+
+def test_directional_research_plan_reaches_trader_without_neutralization():
+    state = _forex_state()
+    state["investment_plan"] = (
+        "**Recommendation**: Buy\n\n"
+        "**Rationale**: M15 price action has a coherent bullish edge.\n\n"
+        "**Strategic Actions**: Keep hypothetical exposure bounded."
+    )
+    llm = _PromptCaptureLLM(
+        TraderProposal(
+            action=TraderAction.BUY,
+            reasoning="The trader preserves the research direction.",
+        )
+    )
+
+    result = create_trader(llm)(state)
+
+    assert "FINAL TRANSACTION PROPOSAL: **BUY**" in result["trader_investment_plan"]
+    assert "Recommendation**: Buy" in _prompt_text(llm.prompts[0])
+
+
+def test_directional_trader_proposal_reaches_portfolio_manager():
+    state = _forex_state()
+    state["trader_investment_plan"] = "FINAL TRANSACTION PROPOSAL: **SELL**"
+    state["risk_debate_state"]["history"] = "Risk accepted the directional thesis with bounded size."
+    llm = _PromptCaptureLLM(
+        PortfolioDecision(
+            rating=PortfolioRating.SELL,
+            executive_summary="Keep the hypothetical short bounded.",
+            investment_thesis="Risk discussion did not reject the directional thesis.",
+        )
+    )
+
+    result = create_portfolio_manager(llm)(state)
+
+    assert result["final_trade_decision"].startswith("**Rating**: Sell")
+    prompt = _prompt_text(llm.prompts[0])
+    assert "FINAL TRANSACTION PROPOSAL: **SELL**" in prompt
+    assert "Risk accepted the directional thesis" in prompt
 
 
 def test_forex_portfolio_manager_requests_concise_json_only_output():

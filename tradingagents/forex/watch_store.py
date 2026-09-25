@@ -145,6 +145,7 @@ class WatchRun:
     prompt_config_version: str
     application_version: str
     git_commit: str | None
+    working_tree_dirty: bool | None
     collector_contract_version: str
     config_fingerprint: str
     safe_config_json: str
@@ -231,10 +232,12 @@ class WatcherStore:
         *,
         lease_ttl_seconds: int = 9000,
         busy_timeout_seconds: int = 5,
+        provenance: Mapping[str, Any] | None = None,
     ) -> None:
         self.path = Path(path)
         self.lease_ttl_seconds = int(lease_ttl_seconds)
         self.busy_timeout_seconds = int(busy_timeout_seconds)
+        self.provenance = dict(provenance or {})
         if self.lease_ttl_seconds <= 0:
             raise ValueError("lease_ttl_seconds must be positive")
         if self.busy_timeout_seconds <= 0:
@@ -354,6 +357,7 @@ class WatcherStore:
                     prompt_config_version TEXT NOT NULL,
                     application_version TEXT NOT NULL,
                     git_commit TEXT,
+                    working_tree_dirty INTEGER CHECK (working_tree_dirty IS NULL OR working_tree_dirty IN (0,1)),
                     collector_contract_version TEXT NOT NULL,
                     config_fingerprint TEXT NOT NULL,
                     safe_config_json TEXT NOT NULL,
@@ -384,6 +388,13 @@ class WatcherStore:
             if "evaluation_due_pending" not in columns:
                 conn.execute(
                     "ALTER TABLE forex_watcher_state ADD COLUMN evaluation_due_pending INTEGER NOT NULL DEFAULT 0"
+                )
+            run_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(forex_watch_runs)").fetchall()
+            }
+            if "working_tree_dirty" not in run_columns:
+                conn.execute(
+                    "ALTER TABLE forex_watch_runs ADD COLUMN working_tree_dirty INTEGER"
                 )
             now = _iso(datetime.now(_UTC))
             conn.execute(
@@ -680,8 +691,9 @@ class WatcherStore:
                 "UPDATE forex_watch_opportunities SET status='RUNNING', attempt_count=?, run_id=?, updated_at=? WHERE opportunity_key=? AND status='ELIGIBLE'",
                 (attempt, run_id, _iso(now), opportunity_key),
             )
+            provenance = self.provenance
             conn.execute(
-                "INSERT INTO forex_watch_runs (run_id, opportunity_key, attempt_number, owner_token, run_status, requested_symbol, resolved_symbol, started_at, source_run_id, analyst_set_json, analysis_profile, prompt_config_version, application_version, collector_contract_version, config_fingerprint, safe_config_json) VALUES (?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO forex_watch_runs (run_id, opportunity_key, attempt_number, owner_token, run_status, requested_symbol, resolved_symbol, started_at, source_run_id, analyst_set_json, analysis_profile, prompt_config_version, application_version, git_commit, working_tree_dirty, collector_contract_version, config_fingerprint, safe_config_json) VALUES (?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run_id,
                     opportunity_key,
@@ -693,11 +705,15 @@ class WatcherStore:
                     source_run_id,
                     row["analyst_set_json"],
                     row["analysis_profile"],
-                    "forex-shadow.v1",
-                    "unknown",
-                    "forex-watch.v1",
-                    row["config_fingerprint"],
-                    "{}",
+                    provenance.get("prompt_config_version", "forex-shadow.v1"),
+                    provenance.get("application_version", "unknown"),
+                    provenance.get("git_commit"),
+                    None
+                    if provenance.get("working_tree_dirty") is None
+                    else int(bool(provenance.get("working_tree_dirty"))),
+                    provenance.get("collector_contract_version", "forex-watch.v1"),
+                    provenance.get("config_fingerprint", row["config_fingerprint"]),
+                    provenance.get("safe_config_json", "{}"),
                 ),
             )
             conn.execute(
@@ -1184,7 +1200,11 @@ class WatcherStore:
             llm_provider=row["llm_provider"], quick_model=row["quick_model"], deep_model=row["deep_model"],
             analyst_set_json=row["analyst_set_json"], analysis_profile=row["analysis_profile"],
             prompt_config_version=row["prompt_config_version"], application_version=row["application_version"],
-            git_commit=row["git_commit"], collector_contract_version=row["collector_contract_version"],
+            git_commit=row["git_commit"],
+            working_tree_dirty=None
+            if row["working_tree_dirty"] is None
+            else bool(row["working_tree_dirty"]),
+            collector_contract_version=row["collector_contract_version"],
             config_fingerprint=row["config_fingerprint"], safe_config_json=row["safe_config_json"],
             runtime_seconds=row["runtime_seconds"], llm_calls=row["llm_calls"], tool_calls=row["tool_calls"],
             tokens_in=row["tokens_in"], tokens_out=row["tokens_out"], reasoning_tokens=row["reasoning_tokens"],
