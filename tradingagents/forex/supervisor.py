@@ -61,7 +61,7 @@ class ForexSupervisor:
         store = self.store_factory(Path(db_path))
         now = datetime.now(UTC)
         watcher = store.summary(now)
-        lease = store.active_lease(now)
+        lease = _read_active_lease(store, now)
         level, reason = _health_level(health, watcher)
         lease_active = bool(lease is not None and lease.lease_expires_at > now)
         watcher_status = watcher.get("lifecycle_status")

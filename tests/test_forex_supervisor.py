@@ -173,3 +173,27 @@ def test_supervisor_status_exposes_dedicated_runtime_and_watcher_fields():
     assert report["watcher_pid"] == 4321
     assert report["current_run_id"] == "run-1"
     assert report["recovery_attempts"] == 0
+
+
+def test_supervisor_status_prefers_read_only_lease_probe():
+    watcher = {"lifecycle_status": "IDLE", "circuit_reason": None}
+
+    class Store:
+        def summary(self, _now):
+            return watcher
+
+        def read_only_active_lease(self, _now):
+            return None
+
+        def active_lease(self, _now):
+            raise AssertionError("status must not use writer-initializing lease read")
+
+    class Runtime:
+        def health(self):
+            return OllamaHealth("HEALTHY", "http://127.0.0.1:11435", "v", (), 16384)
+
+    report = ForexSupervisor(
+        runtime_factory=lambda _config: Runtime(), store_factory=lambda _path: Store()
+    ).status("watch.db")
+
+    assert report["watcher_lease_status"] == "INACTIVE"
