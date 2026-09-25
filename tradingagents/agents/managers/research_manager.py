@@ -76,7 +76,7 @@ def create_research_manager(llm):
 - **Underweight**: Reduce hypothetical exposure because risk dominates
 - **Sell**: Strong evidence to exit or avoid the currency-pair position
 
-Commit to a directional stance only when observed price action, spread, volatility, and broad macro evidence clearly warrant one. Choose Hold when evidence is balanced, materially conflicting, unavailable, or ambiguous. Do not use months, years, company valuation, issuer fundamentals, dividends, earnings, or equity portfolio-allocation language.
+Commit to the recommendation best supported by the supplied evidence. Optional macro/event data may be unavailable; treat that absence as uncertainty, not an automatic Hold. A coherent edge in the available price action, spread, volatility, or bull/bear evidence may support a directional stance. Choose Hold when the available evidence is genuinely balanced, materially conflicting, or does not establish a directional edge. Do not use months, years, company valuation, issuer fundamentals, dividends, earnings, or equity portfolio-allocation language.
 
 ---
 

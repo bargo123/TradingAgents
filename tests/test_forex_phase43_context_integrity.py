@@ -229,6 +229,33 @@ def test_context_integrity_rejects_label_only_debate_artifacts():
     assert result["artifacts"]["bull"]["chars"] > 0
 
 
+def test_context_integrity_missing_required_market_data_fails_closed():
+    state = {
+        "market_report": "",
+        "news_report": "MACRO/EVENT DATA UNAVAILABLE",
+        "investment_debate_state": {
+            "history": "Bull Analyst: report",
+            "bull_history": "Bull Analyst: report",
+            "bear_history": "Bear Analyst: report",
+        },
+        "investment_plan": "RM_PLAN",
+        "trader_investment_plan": "TRADER_PLAN",
+        "risk_debate_state": {
+            "history": "Aggressive Analyst: report\nConservative Analyst: report\nNeutral Analyst: report",
+            "aggressive_history": "Aggressive Analyst: report",
+            "conservative_history": "Conservative Analyst: report",
+            "neutral_history": "Neutral Analyst: report",
+        },
+        "portfolio_manager_raw_result": {"rating": "Hold"},
+        "final_trade_decision": "PM_RESULT",
+    }
+
+    result = evaluate_context_integrity(state)
+
+    assert result["status"] == "INCOMPLETE"
+    assert "market" in result["missing"]
+
+
 def test_instrumented_state_trace_contains_metadata_only():
     state = {"market_report": "PRIVATE REPORT CONTENT"}
 

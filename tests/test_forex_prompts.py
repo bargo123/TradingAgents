@@ -5,12 +5,13 @@ from types import SimpleNamespace
 from tradingagents.agents.analysts.market_analyst import create_market_analyst
 from tradingagents.agents.analysts.news_analyst import create_news_analyst
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
+from tradingagents.agents.managers.research_manager import create_research_manager
 from tradingagents.agents.researchers.bear_researcher import create_bear_researcher
 from tradingagents.agents.researchers.bull_researcher import create_bull_researcher
 from tradingagents.agents.risk_mgmt.aggressive_debator import create_aggressive_debator
 from tradingagents.agents.risk_mgmt.conservative_debator import create_conservative_debator
 from tradingagents.agents.risk_mgmt.neutral_debator import create_neutral_debator
-from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating
+from tradingagents.agents.schemas import PortfolioDecision, PortfolioRating, ResearchPlan
 from tradingagents.agents.trader.trader import create_trader
 
 
@@ -209,6 +210,39 @@ def test_forex_portfolio_manager_keeps_structured_raw_result():
     assert result["final_trade_decision"].startswith("**Rating**: Sell")
     assert result["normalization_status"] == "NORMALIZED"
     assert result["normalization_error"] is None
+
+
+def test_forex_research_manager_treats_missing_macro_as_uncertainty():
+    llm = _PromptCaptureLLM(
+        ResearchPlan(
+            recommendation=PortfolioRating.HOLD,
+            rationale="Evidence is balanced.",
+            strategic_actions="Wait for a clearer edge.",
+        )
+    )
+
+    create_research_manager(llm)(_forex_state())
+
+    prompt = _prompt_text(llm.prompts[0]).lower()
+    assert "macro/event data may be unavailable" in prompt
+    assert "treat that absence as uncertainty, not an automatic hold" in prompt
+    assert "choose hold when the available evidence is genuinely balanced" in prompt
+
+
+def test_forex_missing_macro_does_not_override_directional_structured_plan():
+    state = _forex_state()
+    state["news_report"] = "MACRO/EVENT DATA UNAVAILABLE"
+    llm = _PromptCaptureLLM(
+        ResearchPlan(
+            recommendation=PortfolioRating.BUY,
+            rationale="Available price action has a coherent edge.",
+            strategic_actions="Consider a bounded hypothetical long bias.",
+        )
+    )
+
+    result = create_research_manager(llm)(state)
+
+    assert result["research_manager_recommendation"] == "BUY"
 
 
 def test_forex_portfolio_manager_requests_concise_json_only_output():
