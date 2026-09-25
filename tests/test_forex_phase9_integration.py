@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import time
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
@@ -49,6 +50,11 @@ from tradingagents.knowledge.models import (
 )
 from tradingagents.knowledge.query import KnowledgeQueryService
 from tradingagents.knowledge.vector_index import VectorIndexReader
+
+# Windows ``spawn`` imports the full TradingAgents module graph before the
+# read-only child can query.  Keep the query deadline semantics unchanged, but
+# give real-spawn integration tests enough bounded time for that startup cost.
+_REAL_SPAWN_TIMEOUT_SECONDS = 30.0 if sys.platform == "win32" else 5.0
 
 
 def _snapshot() -> ForexMarketSnapshot:
@@ -404,7 +410,7 @@ def test_real_spawn_query_uses_serializable_envelope_and_reaches_child(tmp_path:
     roots = _artifact_roots(tmp_path)
     before = {Path(path) / "catalog.sqlite3": (Path(path) / "catalog.sqlite3").read_bytes() for path in roots.values()}
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=_child_evidence_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
@@ -435,7 +441,7 @@ def test_real_spawn_timeout_leaves_zero_workers(tmp_path: Path):
 def test_real_spawn_drains_large_bundle_without_pipe_deadlock(tmp_path: Path):
     roots = _artifact_roots(tmp_path)
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=10),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=_large_child_evidence_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
@@ -454,7 +460,7 @@ def test_real_spawn_drains_large_bundle_without_pipe_deadlock(tmp_path: Path):
 
 def test_child_rejects_unapproved_or_writer_factory_without_query():
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=_unapproved_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
@@ -478,7 +484,7 @@ def test_worker_failure_diagnostic_keeps_code_and_safe_exception_type():
 def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):
     roots = _artifact_roots(tmp_path)
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=_approved_writer_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
@@ -491,7 +497,7 @@ def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):
 
 def test_child_guard_rejects_typed_service_with_writer_component(tmp_path: Path):
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=_typed_writer_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
@@ -504,7 +510,7 @@ def test_child_guard_rejects_typed_service_with_writer_component(tmp_path: Path)
 
 def test_child_guard_rejects_untyped_reader_dependency(tmp_path: Path):
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=_untyped_dependency_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
@@ -543,7 +549,7 @@ def test_child_guard_treats_approved_embedding_provider_as_read_only_leaf(tmp_pa
 @pytest.mark.parametrize("factory", [_nested_writer_dependency_factory, _nested_untyped_dependency_factory])
 def test_child_guard_recurses_nested_dependency_containers(tmp_path: Path, factory):
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
@@ -566,7 +572,7 @@ def test_populated_profiles_pass_adapter_backed_spawn_guard(tmp_path: Path):
     )
     writer.store_feature_projection(record.experience_id, dict(record.market_state))
     service = EvidenceIntegrationService(
-        policy=EvidenceQueryPolicy(evidence_timeout_seconds=5),
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=_REAL_SPAWN_TIMEOUT_SECONDS),
         orchestrator_factory=_profile_child_factory,
         generation_provider=lambda: ("p7", "p8"),
         provider_endpoint="http://127.0.0.1:11434",
