@@ -16,18 +16,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tradingagents.distillation.phase7 import Phase7KnowledgeSource
 from tradingagents.knowledge.catalog import KnowledgeCatalog
-from tradingagents.knowledge.chunking import ChunkPolicy, ChunkTooLargeForEmbedding, StructureAwareChunker
+from tradingagents.knowledge.chunking import (
+    ChunkPolicy,
+    ChunkTooLargeForEmbedding,
+    StructureAwareChunker,
+)
 from tradingagents.knowledge.config import KnowledgeConfig
 from tradingagents.knowledge.discovery import SourceScanner
 from tradingagents.knowledge.docling_parser import DoclingDocumentParser
 from tradingagents.knowledge.embeddings import FastEmbedProvider
 from tradingagents.knowledge.ingestion import IngestionMode, KnowledgeIngestor
-from tradingagents.knowledge.models import ParsedBlock
+from tradingagents.knowledge.lexical_index import LexicalIndexReader
+from tradingagents.knowledge.models import KnowledgeQuery, ParsedBlock
 from tradingagents.knowledge.query import KnowledgeQueryService
 from tradingagents.knowledge.vector_index import VectorIndexReader
-from tradingagents.knowledge.lexical_index import LexicalIndexReader
-from tradingagents.knowledge.models import KnowledgeQuery
-
 
 SOURCE_ROOT = Path(r"C:\Users\Zaid barghouthi\Downloads\new books")
 ARTIFACT_ROOT = Path(r"C:\p7r3")
@@ -128,7 +130,9 @@ class KnownOversizedChunker:
             )
             chunks = self.base.chunk(rebuilt)
             if any(chunk.embedding_input_tokens > self.policy.model_max_input_tokens for chunk in chunks):
-                raise ChunkTooLargeForEmbedding("local split still exceeds the active embedding limit")
+                raise ChunkTooLargeForEmbedding(
+                    "local split still exceeds the active embedding limit"
+                ) from error
             return chunks
 
     def _first_oversized_block(self, document):
