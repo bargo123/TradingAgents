@@ -195,9 +195,25 @@ def validate_revision(db_path: str | Path, commit: str) -> dict[str, Any]:
         stage_values = metrics.get("stage_timings")
         if not isinstance(stage_values, Mapping):
             stage_values = {}
+        explicit_stages: set[str] = set()
         for stage, value in stage_values.items():
-            if isinstance(value, dict) and isinstance(value.get("elapsed_seconds"), (int, float)):
-                stage_timings[stage] += float(value["elapsed_seconds"])
+            if not isinstance(stage, str) or not isinstance(value, Mapping):
+                continue
+            elapsed = _safe_nonnegative_float(value.get("elapsed_seconds"))
+            if elapsed is None:
+                continue
+            explicit_stages.add(stage)
+            stage_timings[stage] += elapsed
+        if not explicit_stages:
+            boundaries = metrics.get("state_boundaries")
+            if isinstance(boundaries, (list, tuple)):
+                for boundary in boundaries:
+                    if not isinstance(boundary, Mapping) or boundary.get("phase") != "after":
+                        continue
+                    stage = boundary.get("node")
+                    elapsed = _safe_nonnegative_float(boundary.get("duration_seconds"))
+                    if isinstance(stage, str) and stage.strip() and elapsed is not None:
+                        stage_timings[stage.strip()] += elapsed
     agent_metrics = aggregate_agent_metrics(metrics_documents)
     latency_bottlenecks = sorted(
         (

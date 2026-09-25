@@ -194,7 +194,14 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
                             "tokens_in": 20,
                             "tokens_out": 4,
                         }
-                    }
+                    },
+                    "state_boundaries": [
+                        {
+                            "node": "Portfolio Manager",
+                            "phase": "after",
+                            "duration_seconds": 5.0,
+                        }
+                    ],
                 }
             ),
         ),
@@ -209,4 +216,5 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
     assert report["portfolio_manager_actions"] == {"HOLD": 1}
     assert report["agent_metrics"]["Portfolio Manager"]["elapsed_seconds"]["p95"] == 3.0
     assert report["latency_bottlenecks"][0]["agent"] == "Portfolio Manager"
+    assert report["stage_elapsed_seconds"] == {"Portfolio Manager": 5.0}
     assert db_path.read_bytes() == before
