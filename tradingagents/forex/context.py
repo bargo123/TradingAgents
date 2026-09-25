@@ -7,6 +7,7 @@ from typing import Any
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar
 
 from .profile import (
+    INTRADAY_TIMEFRAME_ROLES,
     MACRO_EVENT_UNAVAILABLE,
     ForexAnalysisProfile,
     calculate_timeframe_features,
@@ -187,6 +188,7 @@ def build_forex_market_context(
         f"DECISION HORIZON: {resolved_profile.horizon_label}",
         f"VALID FOR SECONDS: {resolved_profile.valid_for_seconds}",
         f"MACRO/EVENT STATUS: {MACRO_EVENT_UNAVAILABLE}",
+        *INTRADAY_TIMEFRAME_ROLES,
         f"Requested symbol: {payload['symbol']}",
         f"Resolved symbol: {payload['symbol']}",
         f"Snapshot UTC: {payload['timestamp']}",

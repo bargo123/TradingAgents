@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from tradingagents.agents.analysts.market_analyst import create_market_analyst
 from tradingagents.agents.analysts.news_analyst import create_news_analyst
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
@@ -227,6 +229,56 @@ def test_forex_research_manager_treats_missing_macro_as_uncertainty():
     assert "macro/event data may be unavailable" in prompt
     assert "treat that absence as uncertainty, not an automatic hold" in prompt
     assert "choose hold when the available evidence is genuinely balanced" in prompt
+
+
+def test_forex_research_manager_uses_intraday_timeframe_roles():
+    llm = _PromptCaptureLLM(
+        ResearchPlan(
+            recommendation=PortfolioRating.HOLD,
+            rationale="Timeframes are genuinely mixed.",
+            strategic_actions="Wait for a clearer thesis.",
+        )
+    )
+
+    create_research_manager(llm)(_forex_state())
+
+    prompt = _prompt_text(llm.prompts[0]).lower()
+    assert "h1: regime/context" in prompt
+    assert "m15: primary decision/thesis timeframe" in prompt
+    assert "m5: setup/confirmation timeframe" in prompt
+    assert "m1: execution/micro-noise context" in prompt
+    assert "disagreement is not an automatic hold" in prompt
+
+
+@pytest.mark.parametrize(
+    ("directions", "recommendation"),
+    [
+        ({"M1": "UP", "M5": "DOWN", "M15": "DOWN", "H1": "DOWN"}, PortfolioRating.SELL),
+        ({"M1": "DOWN", "M5": "UP", "M15": "UP", "H1": "UP"}, PortfolioRating.BUY),
+        ({"M1": "UP", "M5": "UP", "M15": "UP", "H1": "DOWN"}, PortfolioRating.BUY),
+        ({"M1": "MIXED", "M5": "MIXED", "M15": "FLAT", "H1": "DOWN"}, PortfolioRating.HOLD),
+    ],
+)
+def test_forex_research_manager_does_not_override_profile_aware_direction(
+    directions, recommendation
+):
+    state = _forex_state()
+    state["instrument_context"] += "\n" + " ".join(
+        f"{timeframe} direction={direction}" for timeframe, direction in directions.items()
+    )
+    llm = _PromptCaptureLLM(
+        ResearchPlan(
+            recommendation=recommendation,
+            rationale="Deterministic profile-aware test result.",
+            strategic_actions="Use bounded shadow reasoning only.",
+        )
+    )
+
+    result = create_research_manager(llm)(state)
+
+    assert result["research_manager_recommendation"] == recommendation.value.upper()
+    prompt = _prompt_text(llm.prompts[0]).lower()
+    assert "disagreement is not an automatic hold" in prompt
 
 
 def test_forex_missing_macro_does_not_override_directional_structured_plan():

@@ -28,6 +28,17 @@ INTRADAY_PROFILE = ForexAnalysisProfile(
     default_bar_count=100,
 )
 
+# The collector anchors INTRADAY opportunities to M15.  Keep the role
+# hierarchy explicit in one profile-owned contract so every forex prompt sees
+# the same semantics instead of treating four horizons as equal votes.
+INTRADAY_TIMEFRAME_ROLES = (
+    "H1: regime/context; higher-timeframe disagreement is not an absolute veto.",
+    "M15: primary decision/thesis timeframe for the INTRADAY profile.",
+    "M5: setup/confirmation timeframe; confirmation changes conviction.",
+    "M1: execution/micro-noise context; M1 alone should not veto an M15 thesis.",
+    "Timeframe disagreement is not an automatic HOLD; evaluate the profile-aware conflict and adjust conviction/risk.",
+)
+
 _PROFILES = {INTRADAY_PROFILE.name: INTRADAY_PROFILE}
 
 
@@ -57,6 +68,7 @@ def build_forex_profile_context(
             f"VALID FOR SECONDS: {resolved.valid_for_seconds}",
             "Use minutes/hours and current-session conditions; never use "
             "months, years, equity-investment, or issuer-valuation horizons.",
+            *INTRADAY_TIMEFRAME_ROLES,
         )
     )
 

@@ -24,6 +24,7 @@ from .decision_path_audit import extract_trader_action
 RESEARCH_RECOMMENDATIONS = ("BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL")
 UNAVAILABLE = "UNAVAILABLE"
 MACRO_UNAVAILABLE = "MACRO/EVENT DATA UNAVAILABLE"
+TIMEFRAMES = ("M1", "M5", "M15", "H1")
 _SUCCESS_STATUSES = ("SUCCEEDED", "SUCCEEDED_SLOW")
 
 
@@ -55,6 +56,7 @@ class ResearchSignalObservation:
     evidence_integration_status: str
     decision_context_status: str
     normalization_status: str
+    timeframe_directions: Mapping[str, str | None] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,6 +68,7 @@ class ResearchSignalObservation:
             "news_present": self.news_present,
             "bull_present": self.bull_present,
             "bear_present": self.bear_present,
+            "timeframe_directions": dict(self.timeframe_directions or {}),
             "macro_event_status": self.macro_event_status,
             "evidence_integration_status": self.evidence_integration_status,
             "decision_context_status": self.decision_context_status,
@@ -81,6 +84,7 @@ class ResearchSignalAuditReport:
     trader_action_counts: Mapping[str, int]
     portfolio_manager_action_counts: Mapping[str, int]
     pipeline_counts: Mapping[str, int]
+    timeframe_pattern_recommendations: Mapping[str, Mapping[str, int]]
     availability: Mapping[str, Mapping[str, int | float]]
     structured_upstream: Mapping[str, Mapping[str, Any]]
     observations: tuple[ResearchSignalObservation, ...]
@@ -95,6 +99,9 @@ class ResearchSignalAuditReport:
             "trader_action_counts": dict(self.trader_action_counts),
             "portfolio_manager_action_counts": dict(self.portfolio_manager_action_counts),
             "pipeline_counts": dict(self.pipeline_counts),
+            "timeframe_pattern_recommendations": {
+                key: dict(value) for key, value in self.timeframe_pattern_recommendations.items()
+            },
             "availability": {key: dict(value) for key, value in self.availability.items()},
             "structured_upstream": {
                 key: dict(value) for key, value in self.structured_upstream.items()
@@ -201,6 +208,27 @@ def _present(artifact: Mapping[str, Any]) -> bool:
     return bool(artifact.get("present"))
 
 
+def _timeframe_directions(metrics: Mapping[str, Any]) -> dict[str, str | None]:
+    features = metrics.get("market_features")
+    features = features if isinstance(features, Mapping) else {}
+    directions: dict[str, str | None] = {}
+    for timeframe in TIMEFRAMES:
+        section = features.get(timeframe)
+        direction = section.get("direction") if isinstance(section, Mapping) else None
+        directions[timeframe] = (
+            str(direction).strip().upper()
+            if isinstance(direction, str) and direction.strip()
+            else None
+        )
+    return directions
+
+
+def _timeframe_pattern(directions: Mapping[str, str | None]) -> str:
+    return " / ".join(
+        str(directions.get(timeframe) or UNAVAILABLE) for timeframe in TIMEFRAMES
+    )
+
+
 def _load_observations(connection: sqlite3.Connection) -> tuple[ResearchSignalObservation, ...]:
     _require_columns(
         connection,
@@ -245,6 +273,7 @@ def _load_observations(connection: sqlite3.Connection) -> tuple[ResearchSignalOb
                 news_present=_present(_artifact(metrics, "News Analyst", "news")),
                 bull_present=_present(_artifact(metrics, "Bull Researcher", "bull")),
                 bear_present=_present(_artifact(metrics, "Bear Researcher", "bear")),
+                timeframe_directions=_timeframe_directions(metrics),
                 macro_event_status=str(metrics.get("macro_event_status") or UNAVAILABLE),
                 evidence_integration_status=str(
                     metrics.get("evidence_integration_status") or UNAVAILABLE
@@ -297,6 +326,11 @@ def audit_research_signals(
         f"->{observation.trader_action}->{observation.portfolio_manager_action}"
         for observation in observations
     )
+    timeframe_pattern_recommendations: dict[str, Counter[str]] = {}
+    for observation in observations:
+        pattern = _timeframe_pattern(observation.timeframe_directions or {})
+        counts = timeframe_pattern_recommendations.setdefault(pattern, Counter())
+        counts[observation.research_recommendation or UNAVAILABLE] += 1
     availability = {
         "macro_unavailable": _condition_stats(
             observations,
@@ -351,6 +385,10 @@ def audit_research_signals(
             key: int(pm_counts.get(key, 0)) for key in ("BUY", "HOLD", "SELL", UNAVAILABLE)
         },
         pipeline_counts=dict(sorted(pipeline_counts.items())),
+        timeframe_pattern_recommendations={
+            key: {label: int(count) for label, count in sorted(values.items())}
+            for key, values in sorted(timeframe_pattern_recommendations.items())
+        },
         availability=availability,
         structured_upstream=structured_upstream,
         observations=observations,
@@ -371,6 +409,11 @@ def render_text(report: ResearchSignalAuditReport) -> str:
         f"trader actions: {dict(report.trader_action_counts)}",
         f"portfolio-manager actions: {dict(report.portfolio_manager_action_counts)}",
         "pipeline: " + ", ".join(f"{key}={value}" for key, value in report.pipeline_counts.items()),
+        "timeframe pattern -> Research recommendation: "
+        + "; ".join(
+            f"{pattern}={dict(values)}"
+            for pattern, values in report.timeframe_pattern_recommendations.items()
+        ),
         "availability (structured Research Manager rows only):",
     ]
     for key, value in report.availability.items():

@@ -36,35 +36,45 @@ def _init_db(tmp_path: Path) -> Path:
     return path
 
 
-def _metrics(*, macro: str = "MACRO/EVENT DATA UNAVAILABLE") -> str:
-    return json.dumps(
-        {
-            "macro_event_status": macro,
-            "evidence_integration_status": "DISABLED",
-            "state_boundaries": [
-                {
-                    "node": "Market Analyst",
-                    "phase": "after",
-                    "artifacts": {"market": {"present": True, "content_chars": 100}},
-                },
-                {
-                    "node": "News Analyst",
-                    "phase": "after",
-                    "artifacts": {"news": {"present": True, "content_chars": 80}},
-                },
-                {
-                    "node": "Bull Researcher",
-                    "phase": "after",
-                    "artifacts": {"bull": {"present": True, "content_chars": 90}},
-                },
-                {
-                    "node": "Bear Researcher",
-                    "phase": "after",
-                    "artifacts": {"bear": {"present": True, "content_chars": 90}},
-                },
-            ],
+def _metrics(
+    *,
+    macro: str = "MACRO/EVENT DATA UNAVAILABLE",
+    directions: dict[str, str] | None = None,
+    include_timeframes: bool = True,
+) -> str:
+    directions = directions or {"M1": "UP", "M5": "UP", "M15": "UP", "H1": "DOWN"}
+    payload = {
+        "macro_event_status": macro,
+        "evidence_integration_status": "DISABLED",
+        "state_boundaries": [
+            {
+                "node": "Market Analyst",
+                "phase": "after",
+                "artifacts": {"market": {"present": True, "content_chars": 100}},
+            },
+            {
+                "node": "News Analyst",
+                "phase": "after",
+                "artifacts": {"news": {"present": True, "content_chars": 80}},
+            },
+            {
+                "node": "Bull Researcher",
+                "phase": "after",
+                "artifacts": {"bull": {"present": True, "content_chars": 90}},
+            },
+            {
+                "node": "Bear Researcher",
+                "phase": "after",
+                "artifacts": {"bear": {"present": True, "content_chars": 90}},
+            },
+        ],
+    }
+    if include_timeframes:
+        payload["market_features"] = {
+            timeframe: {"direction": direction}
+            for timeframe, direction in directions.items()
         }
-    )
+    return json.dumps(payload)
 
 
 def test_research_signal_audit_reports_availability_and_path(tmp_path: Path) -> None:
@@ -110,6 +120,54 @@ def test_research_signal_audit_does_not_treat_missing_recommendation_as_hold(tmp
     assert report.recommendation_counts["UNAVAILABLE"] == 1
     assert report.availability["macro_unavailable"]["samples"] == 0
     assert report.observations[0].research_recommendation is None
+
+
+def test_research_signal_audit_attributes_timeframe_pattern_to_recommendation(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
+            ("d1", "HOLD", "HOLD", "FINAL TRANSACTION PROPOSAL: **HOLD**", "COMPLETE", "NORMALIZED"),
+        )
+        db.execute(
+            "INSERT INTO forex_watch_runs VALUES (?, ?, ?, ?)",
+            ("r1", "d1", "SUCCEEDED", _metrics()),
+        )
+
+    report = audit_research_signals(path)
+
+    assert report.timeframe_pattern_recommendations["UP / UP / UP / DOWN"]["HOLD"] == 1
+    assert report.observations[0].timeframe_directions == {
+        "M1": "UP",
+        "M5": "UP",
+        "M15": "UP",
+        "H1": "DOWN",
+    }
+
+
+def test_research_signal_audit_keeps_missing_timeframes_nullable(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
+            ("d1", "HOLD", "HOLD", "FINAL TRANSACTION PROPOSAL: **HOLD**", "COMPLETE", "NORMALIZED"),
+        )
+        db.execute(
+            "INSERT INTO forex_watch_runs VALUES (?, ?, ?, ?)",
+            ("r1", "d1", "SUCCEEDED", _metrics(include_timeframes=False)),
+        )
+
+    report = audit_research_signals(path)
+
+    assert report.observations[0].timeframe_directions == {
+        "M1": None,
+        "M5": None,
+        "M15": None,
+        "H1": None,
+    }
+    assert report.timeframe_pattern_recommendations["UNAVAILABLE / UNAVAILABLE / UNAVAILABLE / UNAVAILABLE"] == {
+        "HOLD": 1,
+    }
 
 
 def test_research_signal_audit_requires_read_contract(tmp_path: Path) -> None:

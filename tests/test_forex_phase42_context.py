@@ -107,6 +107,16 @@ def test_forex_context_contains_profile_features_and_macro_uncertainty() -> None
     assert len(context) < 12000
 
 
+def test_intraday_context_declares_timeframe_roles_without_unanimous_alignment() -> None:
+    context = build_forex_market_context(_snapshot(_bars()))
+
+    assert "H1: regime/context" in context
+    assert "M15: primary decision/thesis timeframe" in context
+    assert "M5: setup/confirmation timeframe" in context
+    assert "M1: execution/micro-noise context" in context
+    assert "disagreement is not an automatic HOLD" in context
+
+
 def test_snapshot_serialization_exposes_features_without_changing_bar_bound() -> None:
     payload = snapshot_to_dict(_snapshot(_bars()))
 
