@@ -1,7 +1,7 @@
 """Bounded lifecycle and health checks for the dedicated local Ollama server.
 
-Only a supervisor owns the process started by this module.  Existing Ollama
-instances on other ports are never terminated or reconfigured.  Health checks
+Only a supervisor-owned child may be terminated by this module. The normal
+Ollama instance (normally listening on 11434) is never touched. Health checks
 are scalar-only and never persist prompts, completions, or reasoning.
 """
 
@@ -27,6 +27,14 @@ class OllamaHealth:
     models: tuple[str, ...]
     context_length: int | None
     error_code: str | None = None
+    server_healthy: bool = False
+    loaded_models: tuple[str, ...] = ()
+    quick_context_verified: bool = False
+    deep_context_verified: bool = False
+    verified_context_length: int | None = None
+    openai_probe_ok: bool | None = None
+    dedicated_pid: int | None = None
+    recovery_attempts: int = 0
 
     @property
     def healthy(self) -> bool:
@@ -50,6 +58,27 @@ def _model_name(item: Any) -> str | None:
     return None
 
 
+def _context_value(item: Any) -> int | None:
+    """Read only documented runtime context fields from an /api/ps item."""
+
+    if not isinstance(item, Mapping):
+        return None
+    for key in ("context_length", "context", "context_window"):
+        value = item.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str) and value.isdigit() and int(value) > 0:
+            return int(value)
+    for key in ("details", "options", "model_info"):
+        nested = item.get(key)
+        value = _context_value(nested)
+        if value is not None:
+            return value
+    return None
+
+
 class DedicatedOllamaRuntime:
     """Probe/start one explicitly owned local Ollama endpoint."""
 
@@ -63,6 +92,7 @@ class DedicatedOllamaRuntime:
         sleep: Callable[[float], None] = time.sleep,
         probe_attempts: int = 12,
         probe_interval_seconds: float = 0.5,
+        max_recovery_attempts: int = 2,
     ) -> None:
         self.config = config
         self.http = http
@@ -71,7 +101,16 @@ class DedicatedOllamaRuntime:
         self.sleep = sleep
         self.probe_attempts = max(1, int(probe_attempts))
         self.probe_interval_seconds = max(0.0, float(probe_interval_seconds))
+        self.max_recovery_attempts = max(0, int(max_recovery_attempts))
         self._owned_process: Any | None = None
+        self._verified_contexts: dict[str, int] = {}
+        self._recovery_attempts = 0
+
+    @property
+    def dedicated_pid(self) -> int | None:
+        process = self._owned_process
+        value = getattr(process, "pid", None) if process is not None else None
+        return value if isinstance(value, int) and value > 0 else None
 
     def installed_version(self) -> str | None:
         try:
@@ -89,48 +128,147 @@ class DedicatedOllamaRuntime:
         output = str(getattr(result, "stdout", "")).strip()
         return output[:120] if output else None
 
-    def health(self) -> OllamaHealth:
+    def _api_version(self) -> str:
+        payload = _response_json(
+            self.http.get(f"{self.config.ollama_base_url}/api/version", timeout=3)
+        )
+        version = payload.get("version")
+        if not isinstance(version, str) or not version.strip():
+            raise RuntimeError("OLLAMA_VERSION_MISSING")
+        return version.strip()[:120]
+
+    def _read_server_state(self) -> tuple[str, tuple[str, ...], dict[str, int | None]]:
         base = self.config.ollama_base_url
+        server_version = self._api_version()
+        tags = _response_json(self.http.get(f"{base}/api/tags", timeout=3))
+        entries = tags.get("models", [])
+        models = tuple(sorted(filter(None, (_model_name(item) for item in entries))))
+        ps = _response_json(self.http.get(f"{base}/api/ps", timeout=3))
+        loaded: dict[str, int | None] = {}
+        for item in ps.get("models", []):
+            name = _model_name(item)
+            if name:
+                loaded[name] = _context_value(item)
+        return server_version, models, loaded
+
+    def _make_health(
+        self,
+        *,
+        status: str,
+        version: str | None,
+        models: tuple[str, ...],
+        loaded: Mapping[str, int | None],
+        context_length: int | None,
+        error_code: str | None,
+        server_healthy: bool,
+    ) -> OllamaHealth:
+        required = {self.config.quick_model, self.config.deep_model}
+        verified = {
+            model: value
+            for model, value in self._verified_contexts.items()
+            if model in required and value >= self.config.context_length
+        }
+        current_valid = bool(loaded) and all(
+            value is not None and value >= self.config.context_length
+            for value in loaded.values()
+        )
+        if status == "CONTEXT_NOT_VERIFIED" and verified.keys() == required and current_valid:
+            status = "HEALTHY"
+            error_code = None
+        return OllamaHealth(
+            status="HEALTHY" if status == "HEALTHY" else "DEGRADED",
+            endpoint=self.config.ollama_base_url,
+            version=version,
+            models=models,
+            context_length=context_length,
+            error_code=error_code,
+            server_healthy=server_healthy,
+            loaded_models=tuple(sorted(loaded)),
+            quick_context_verified=self.config.quick_model in verified,
+            deep_context_verified=self.config.deep_model in verified,
+            verified_context_length=(
+                min(verified.values()) if verified.keys() == required else None
+            ),
+            dedicated_pid=self.dedicated_pid,
+            recovery_attempts=self._recovery_attempts,
+        )
+
+    def _observe(self) -> tuple[OllamaHealth, dict[str, int | None]]:
         version = self.installed_version()
         try:
-            tags = _response_json(self.http.get(f"{base}/api/tags", timeout=3))
-            entries = tags.get("models", [])
-            models = tuple(sorted(filter(None, (_model_name(item) for item in entries))))
+            server_version, models, loaded = self._read_server_state()
+            version = version or server_version
             required = {self.config.quick_model, self.config.deep_model}
             missing = sorted(required - set(models))
             if missing:
-                return OllamaHealth(
-                    "DEGRADED", base, version, models, None, "REQUIRED_MODEL_MISSING"
+                return (
+                    self._make_health(
+                        status="DEGRADED",
+                        version=version,
+                        models=models,
+                        loaded=loaded,
+                        context_length=None,
+                        error_code="REQUIRED_MODEL_MISSING",
+                        server_healthy=True,
+                    ),
+                    loaded,
                 )
-            ps = _response_json(self.http.get(f"{base}/api/ps", timeout=3))
-            context_length = None
-            for item in ps.get("models", []):
-                if not isinstance(item, Mapping):
-                    continue
-                for key in ("context_length", "context", "context_window"):
-                    value = item.get(key)
-                    if isinstance(value, int) and value > 0:
-                        context_length = max(context_length or 0, value)
-                        break
-            if context_length is not None and context_length < self.config.context_length:
-                return OllamaHealth(
-                    "DEGRADED", base, version, models, context_length, "CONTEXT_TOO_SMALL"
-                )
-            if context_length is None:
-                return OllamaHealth(
-                    "DEGRADED", base, version, models, None, "CONTEXT_NOT_VERIFIED"
-                )
-            return OllamaHealth("HEALTHY", base, version, models, context_length)
+            observed = [value for value in loaded.values() if value is not None]
+            context_length = max(observed) if observed else None
+            if any(
+                value is not None and value < self.config.context_length
+                for value in loaded.values()
+            ):
+                error_code = "CONTEXT_TOO_SMALL"
+            elif (
+                not loaded
+                or any(value is None for value in loaded.values())
+                or required - set(self._verified_contexts)
+            ):
+                error_code = "CONTEXT_NOT_VERIFIED"
+            else:
+                error_code = None
+            status = "HEALTHY" if error_code is None else "DEGRADED"
+            health = self._make_health(
+                status=status,
+                version=version,
+                models=models,
+                loaded=loaded,
+                context_length=context_length,
+                error_code=error_code,
+                server_healthy=True,
+            )
+            return health, loaded
         except Exception as exc:  # health reporting must remain bounded
-            return OllamaHealth(
-                "UNAVAILABLE", base, version, (), None, type(exc).__name__.upper()
+            return (
+                OllamaHealth(
+                    status="UNAVAILABLE",
+                    endpoint=self.config.ollama_base_url,
+                    version=version,
+                    models=(),
+                    context_length=None,
+                    error_code=type(exc).__name__.upper(),
+                    server_healthy=False,
+                    dedicated_pid=self.dedicated_pid,
+                    recovery_attempts=self._recovery_attempts,
+                ),
+                {},
             )
 
+    def health(self) -> OllamaHealth:
+        return self._observe()[0]
+
+    def _process_alive(self) -> bool:
+        process = self._owned_process
+        if process is None:
+            return False
+        poll = getattr(process, "poll", None)
+        return not callable(poll) or poll() is None
+
     def _start_owned_server(self) -> None:
-        if self._owned_process is not None:
-            poll = getattr(self._owned_process, "poll", None)
-            if callable(poll) and poll() is None:
-                return
+        if self._process_alive():
+            return
+        self._owned_process = None
         env = os.environ.copy()
         env.update(
             {
@@ -146,84 +284,138 @@ class DedicatedOllamaRuntime:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
         )
+        self._verified_contexts.clear()
 
-    def ensure_healthy(self) -> OllamaHealth:
+    def _stop_owned_server(self) -> None:
+        process = self._owned_process
+        self._owned_process = None
+        if process is None:
+            return
+        poll = getattr(process, "poll", None)
+        if callable(poll) and poll() is not None:
+            return
+        terminate = getattr(process, "terminate", None)
+        if callable(terminate):
+            terminate()
+        wait = getattr(process, "wait", None)
+        try:
+            if callable(wait):
+                wait(timeout=5)
+        except (OSError, subprocess.SubprocessError, TimeoutError):
+            kill = getattr(process, "kill", None)
+            if callable(kill):
+                kill()
+            try:
+                if callable(wait):
+                    wait(timeout=5)
+            except (OSError, subprocess.SubprocessError, TimeoutError):
+                pass
+
+    def _wait_for_server(self) -> OllamaHealth:
         current = self.health()
-        if current.healthy:
-            probe_error = self.probe_openai_compatible()
-            return (
-                current
-                if probe_error is None
-                else replace(current, status="DEGRADED", error_code=f"OPENAI_PROBE_{probe_error}")
-            )
-        # A responsive endpoint on the dedicated port is not ours to kill or
-        # replace.  If models are present but context is not yet observable,
-        # warm them and re-check; a too-small or missing-model endpoint is a
-        # visible configuration fault, not permission to launch a second server.
-        if current.status != "UNAVAILABLE":
-            if (
-                current.error_code == "CONTEXT_NOT_VERIFIED"
-                and {self.config.quick_model, self.config.deep_model} <= set(current.models)
-            ):
-                self.prewarm()
-                current = self.health()
-                if current.healthy:
-                    probe_error = self.probe_openai_compatible()
-                    if probe_error is not None:
-                        return replace(
-                            current,
-                            status="DEGRADED",
-                            error_code=f"OPENAI_PROBE_{probe_error}",
-                        )
-                return current
-            return current
-        self._start_owned_server()
-        prewarmed = False
         for _ in range(self.probe_attempts):
+            if current.status != "UNAVAILABLE":
+                return current
             self.sleep(self.probe_interval_seconds)
             current = self.health()
-            if (
-                current.error_code == "CONTEXT_NOT_VERIFIED"
-                and {self.config.quick_model, self.config.deep_model} <= set(current.models)
-                and not prewarmed
-            ):
-                self.prewarm()
-                prewarmed = True
-                continue
-            if current.healthy:
-                probe_error = self.probe_openai_compatible()
-                if probe_error is None:
-                    return current
-                current = replace(
-                    current,
-                    status="DEGRADED",
-                    error_code=f"OPENAI_PROBE_{probe_error}",
-                )
         return current
 
-    def prewarm(self) -> dict[str, Any]:
-        """Warm both models with bounded, content-free health prompts."""
+    def _prewarm_model(self, model: str) -> str:
+        try:
+            response = self.http.post(
+                f"{self.config.ollama_base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Reply OK."}],
+                    "stream": False,
+                    "think": False,
+                    "options": {"num_predict": 1},
+                },
+                timeout=10,
+            )
+            _response_json(response)
+            return "OK"
+        except Exception as exc:
+            return type(exc).__name__.upper()
 
-        results: dict[str, Any] = {}
-        base = self.config.ollama_base_url
-        for model in (self.config.quick_model, self.config.deep_model):
-            try:
-                response = self.http.post(
-                    f"{base}/api/chat",
-                    json={
-                        "model": model,
-                        "messages": [{"role": "user", "content": "Reply OK."}],
-                        "stream": False,
-                        "think": False,
-                        "options": {"num_predict": 1},
-                    },
-                    timeout=10,
-                )
-                _response_json(response)
-                results[model] = "OK"
-            except Exception as exc:
-                results[model] = type(exc).__name__.upper()
-        return results
+    def _verify_model(self, model: str) -> OllamaHealth:
+        last = self.health()
+        for attempt in range(self.probe_attempts):
+            last, loaded = self._observe()
+            value = loaded.get(model)
+            if value is not None:
+                if value < self.config.context_length:
+                    return last
+                self._verified_contexts[model] = value
+                return self.health()
+            if attempt + 1 < self.probe_attempts:
+                self.sleep(self.probe_interval_seconds)
+        return last
+
+    def _probe_after_verification(self, health: OllamaHealth) -> OllamaHealth:
+        probe_error = self.probe_openai_compatible()
+        if probe_error is None:
+            return replace(health, openai_probe_ok=True)
+        return replace(
+            health,
+            status="DEGRADED",
+            error_code=f"OPENAI_PROBE_{probe_error}",
+            openai_probe_ok=False,
+        )
+
+    def ensure_healthy(self) -> OllamaHealth:
+        """Boundedly start/recover the dedicated server and verify both models."""
+
+        for recovery in range(self.max_recovery_attempts + 1):
+            self._recovery_attempts = recovery
+            current = self.health()
+            if current.status == "UNAVAILABLE":
+                if not self._process_alive():
+                    self._start_owned_server()
+                current = self._wait_for_server()
+                if current.status == "UNAVAILABLE":
+                    if recovery < self.max_recovery_attempts and self._process_alive():
+                        self._stop_owned_server()
+                    continue
+            if current.error_code == "REQUIRED_MODEL_MISSING":
+                return current
+            if current.error_code == "CONTEXT_TOO_SMALL":
+                if not self._process_alive() and recovery == 0:
+                    return current
+                if not self._process_alive():
+                    self._start_owned_server()
+                    continue
+                self._stop_owned_server()
+                continue
+
+            for model in (self.config.quick_model, self.config.deep_model):
+                if model in self._verified_contexts:
+                    continue
+                self._prewarm_model(model)
+                current = self._verify_model(model)
+                if current.error_code == "CONTEXT_TOO_SMALL":
+                    break
+            else:
+                current = self.health()
+                if current.healthy:
+                    return self._probe_after_verification(current)
+
+            if current.error_code == "CONTEXT_TOO_SMALL" and self._process_alive():
+                self._stop_owned_server()
+                continue
+            if current.status == "UNAVAILABLE" and self._process_alive():
+                self._stop_owned_server()
+                continue
+            return current
+        return self.health()
+
+    def prewarm(self) -> dict[str, Any]:
+        """Warm both models with bounded, content-free health requests."""
+
+        return {
+            model: self._prewarm_model(model)
+            for model in (self.config.quick_model, self.config.deep_model)
+        }
 
     def probe_openai_compatible(self) -> str | None:
         """Run one bounded scalar-only ``/v1/chat/completions`` probe."""

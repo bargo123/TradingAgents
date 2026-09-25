@@ -20,6 +20,14 @@ Status is scalar-only and does not construct MT5 or TradingAgents resources:
 python -m cli.forex_supervisor status --db-path data_cache/live-market-clean-20260923.db
 ```
 
+JSON status includes the dedicated endpoint/port and owned PID, server/model
+availability, independent quick/deep 16,384-context verification, the
+OpenAI-compatible probe result, watcher PID/lease/current run/error, and
+bounded recovery-attempt counts. An empty `/api/ps` is treated as a model
+residency state: the supervisor prewarms and rechecks each model rather than
+declaring the context wrong. A wrong context can only restart a child process
+owned by this supervisor; an unowned process is left for operator review.
+
 The health levels are `HEALTHY`, `DEGRADED`, and
 `OPERATOR_REVIEW_REQUIRED`. Recovery is bounded; stale watcher takeover still
 uses the existing lease/process-identity rules. No supervisor path sends an

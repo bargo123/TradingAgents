@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .ollama_runtime import DedicatedOllamaRuntime, OllamaHealth
 from .runtime_config import ForexShadowRuntimeConfig
@@ -55,19 +56,50 @@ class ForexSupervisor:
         watcher = store.summary(now)
         lease = store.active_lease(now)
         level, reason = _health_level(health, watcher)
+        lease_active = bool(lease is not None and lease.lease_expires_at > now)
+        watcher_status = watcher.get("lifecycle_status")
+        watcher_pid = watcher.get("owner_pid")
+        endpoint = urlparse(health.endpoint)
+        port = endpoint.port
+        nested_ollama = {
+            "status": health.status,
+            "endpoint": health.endpoint,
+            "version": health.version,
+            "models": list(health.models),
+            "context_length": health.context_length,
+            "error_code": health.error_code,
+            "server_healthy": health.server_healthy,
+            "loaded_models": list(health.loaded_models),
+            "quick_context_verified": health.quick_context_verified,
+            "deep_context_verified": health.deep_context_verified,
+            "verified_context_length": health.verified_context_length,
+            "openai_probe_ok": health.openai_probe_ok,
+            "dedicated_pid": health.dedicated_pid,
+            "recovery_attempts": health.recovery_attempts,
+        }
         return {
+            "supervisor_status": level,
             "health_level": level,
             "health_reason": reason,
-            "ollama": {
-                "status": health.status,
-                "endpoint": health.endpoint,
-                "version": health.version,
-                "models": list(health.models),
-                "context_length": health.context_length,
-                "error_code": health.error_code,
-            },
+            "ollama": nested_ollama,
+            "dedicated_ollama_pid": health.dedicated_pid,
+            "dedicated_ollama_port": port,
+            "ollama_server_healthy": health.server_healthy,
+            "ollama_models_available": list(health.models),
+            "quick_model": self.runtime_config.quick_model,
+            "deep_model": self.runtime_config.deep_model,
+            "quick_context_verified": health.quick_context_verified,
+            "deep_context_verified": health.deep_context_verified,
+            "verified_context_length": health.verified_context_length,
+            "openai_probe_ok": health.openai_probe_ok,
             "watcher": watcher,
-            "lease_active": bool(lease is not None and lease.lease_expires_at > now),
+            "watcher_status": watcher_status,
+            "watcher_pid": watcher_pid,
+            "watcher_lease_status": "ACTIVE" if lease_active else "INACTIVE",
+            "current_run_id": watcher.get("current_run_id"),
+            "last_error_code": watcher.get("last_error_code"),
+            "recovery_attempts": health.recovery_attempts,
+            "lease_active": lease_active,
             "database_path": str(Path(db_path)),
             "executed": False,
         }
