@@ -39,6 +39,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"TRADER: {report['trader_actions']}")
         print(f"PORTFOLIO MANAGER: {report['portfolio_manager_actions']}")
         print(f"TEMPORAL: {report['temporal_status_counts']}")
+        print(f"AGENT METRICS: {report['agent_metrics']}")
+        print(f"LATENCY BOTTLENECKS: {report['latency_bottlenecks']}")
         print("READ-ONLY: true")
     return 0
 

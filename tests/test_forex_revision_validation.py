@@ -1,14 +1,105 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 
-from tradingagents.forex.revision_validation import validate_revision
+from tradingagents.forex.revision_validation import aggregate_agent_metrics, validate_revision
 from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
 from tradingagents.forex.watch_store import LeaseOwner, RunEvidence, WatcherStore
 from tradingagents.forex.watcher import ScheduledOpportunity
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+
+
+def test_agent_metrics_aggregate_safe_numeric_telemetry_only():
+    report = aggregate_agent_metrics(
+        [
+            {
+                "agents": {
+                    "Portfolio Manager": {
+                        "model": "qwen3.5:4b",
+                        "calls": 1,
+                        "elapsed_seconds": 10.0,
+                        "tokens_in": 100,
+                        "tokens_out": 20,
+                        "reasoning_tokens": 0,
+                    }
+                }
+            },
+            {
+                "agents": {
+                    "Portfolio Manager": {
+                        "model": "qwen3.5:4b",
+                        "calls": 1,
+                        "elapsed_seconds": 14.0,
+                        "tokens_in": 120,
+                        "tokens_out": 24,
+                        "reasoning_tokens": 2,
+                    },
+                    "News Analyst": {
+                        "model": "qwen3.5:2b",
+                        "calls": 3,
+                        "elapsed_seconds": 8.0,
+                        "tokens_in": 300,
+                        "tokens_out": 40,
+                    },
+                }
+            },
+        ]
+    )
+
+    assert report["Portfolio Manager"]["run_count"] == 2
+    assert report["Portfolio Manager"]["calls"] == 2
+    assert report["Portfolio Manager"]["models"] == ["qwen3.5:4b"]
+    assert report["Portfolio Manager"]["elapsed_seconds"] == {
+        "count": 2,
+        "mean": 12.0,
+        "median": 12.0,
+        "p95": 14.0,
+        "max": 14.0,
+    }
+    assert report["Portfolio Manager"]["tokens_in"] == 220
+    assert report["Portfolio Manager"]["tokens_out"] == 44
+    assert report["Portfolio Manager"]["reasoning_tokens"] == 2
+
+
+def test_agent_metrics_ignore_malformed_rows_and_private_fields():
+    report = aggregate_agent_metrics(
+        [
+            {"agents": "not-a-mapping", "prompt": "must not be returned"},
+            {
+                "agents": {
+                    "Trader": {
+                        "model": "qwen3.5:4b",
+                        "calls": True,
+                        "elapsed_seconds": "bad",
+                        "tokens_in": float("nan"),
+                        "tokens_out": 7,
+                        "completion": "must not be returned",
+                    }
+                }
+            },
+        ]
+    )
+
+    assert report["Trader"] == {
+        "run_count": 1,
+        "calls": 0,
+        "models": ["qwen3.5:4b"],
+        "elapsed_seconds": {
+            "count": 0,
+            "mean": None,
+            "median": None,
+            "p95": None,
+            "max": None,
+        },
+        "tokens_in": 0,
+        "tokens_out": 7,
+        "reasoning_tokens": 0,
+    }
+    assert "prompt" not in str(report)
+    assert "completion" not in str(report)
 
 
 def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
@@ -93,6 +184,19 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
             executed=False,
             decision_reference_status="AVAILABLE",
             freshness_budget_seconds=900,
+            metrics_json=json.dumps(
+                {
+                    "agents": {
+                        "Portfolio Manager": {
+                            "model": "qwen3.5:4b",
+                            "calls": 1,
+                            "elapsed_seconds": 3.0,
+                            "tokens_in": 20,
+                            "tokens_out": 4,
+                        }
+                    }
+                }
+            ),
         ),
     )
     before = db_path.read_bytes()
@@ -103,4 +207,6 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
     assert report["research_recommendations"] == {"UNAVAILABLE": 1}
     assert report["trader_actions"] == {"HOLD": 1}
     assert report["portfolio_manager_actions"] == {"HOLD": 1}
+    assert report["agent_metrics"]["Portfolio Manager"]["elapsed_seconds"]["p95"] == 3.0
+    assert report["latency_bottlenecks"][0]["agent"] == "Portfolio Manager"
     assert db_path.read_bytes() == before
