@@ -35,6 +35,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"RUNS: {report['run_count']}")
         print(f"STATUS: {report['run_status_counts']}")
         print(f"RUNTIME: {report['runtime_seconds']}")
+        print(f"FRESHNESS: {report['freshness']}")
+        print(f"EVALUATION COVERAGE: {report['evaluation_coverage']}")
         print(f"RESEARCH: {report['research_recommendations']}")
         print(f"TRADER: {report['trader_actions']}")
         print(f"PORTFOLIO MANAGER: {report['portfolio_manager_actions']}")

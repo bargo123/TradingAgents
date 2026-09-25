@@ -3,13 +3,30 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timezone
 
-from tradingagents.forex.revision_validation import aggregate_agent_metrics, validate_revision
+from tradingagents.forex.evaluation import ShadowEvaluationStore, ShadowOutcomeEvaluation
+from tradingagents.forex.revision_validation import (
+    _freshness_report,
+    aggregate_agent_metrics,
+    validate_revision,
+)
 from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
 from tradingagents.forex.watch_store import LeaseOwner, RunEvidence, WatcherStore
 from tradingagents.forex.watcher import ScheduledOpportunity
 
 UTC = timezone.utc
 NOW = datetime(2026, 9, 25, 12, 0, tzinfo=UTC)
+
+
+def test_freshness_report_does_not_infer_without_a_budget():
+    report = _freshness_report(
+        [
+            {"stale_by_completion": 1, "analysis_latency_seconds": 901, "freshness_budget_seconds": 900},
+            {"stale_by_completion": None, "analysis_latency_seconds": 1, "freshness_budget_seconds": None},
+        ]
+    )
+
+    assert report["status_counts"] == {"STALE": 1, "UNAVAILABLE": 1}
+    assert report["stale_by_completion_count"] == 1
 
 
 def test_agent_metrics_aggregate_safe_numeric_telemetry_only():
@@ -206,6 +223,41 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
             ),
         ),
     )
+    ShadowEvaluationStore(db_path).upsert(
+        [
+            ShadowOutcomeEvaluation(
+                decision_id="decision-1",
+                resolved_symbol="EURUSD",
+                evaluation_basis="ANALYSIS_SNAPSHOT",
+                horizon_seconds=300,
+                evaluation_version="v1",
+                market_data_source="MT5",
+                source_context_eligible=True,
+                training_eligible=None,
+                training_eligibility_reason="DEFERRED_TO_CORPUS_BUILDER",
+                evaluation_status="COMPLETE",
+                target_timestamp=NOW,
+                observation_timestamp=NOW,
+                entry_timestamp=NOW,
+                created_at=NOW,
+                evaluated_at=NOW,
+            ),
+            ShadowOutcomeEvaluation(
+                decision_id="decision-1",
+                resolved_symbol="EURUSD",
+                evaluation_basis="ANALYSIS_SNAPSHOT",
+                horizon_seconds=900,
+                evaluation_version="v1",
+                market_data_source="MT5",
+                source_context_eligible=True,
+                training_eligible=None,
+                training_eligibility_reason="DEFERRED_TO_CORPUS_BUILDER",
+                evaluation_status="PENDING",
+                target_timestamp=NOW,
+                created_at=NOW,
+            ),
+        ]
+    )
     before = db_path.read_bytes()
 
     report = validate_revision(db_path, "abc123")
@@ -214,6 +266,24 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
     assert report["research_recommendations"] == {"UNAVAILABLE": 1}
     assert report["trader_actions"] == {"HOLD": 1}
     assert report["portfolio_manager_actions"] == {"HOLD": 1}
+    assert report["runtime_seconds"]["p95"] == 1.0
+    assert report["runtime_seconds"]["average"] == 1.0
+    assert report["runtime_seconds"]["maximum"] == 1.0
+    assert report["freshness"] == {
+        "status_counts": {"WITHIN_BUDGET": 1},
+        "stale_by_completion_count": 0,
+        "budget_seconds": {"count": 1, "mean": 900.0, "median": 900.0, "p95": 900.0, "max": 900.0},
+    }
+    assert report["evaluation_coverage"] == {
+        "evaluations_total": 2,
+        "decisions_with_evaluations": 1,
+        "decision_count": 1,
+        "status_counts": {"COMPLETE": 1, "PENDING": 1},
+        "by_basis_horizon_status": {
+            "ANALYSIS_SNAPSHOT/300/COMPLETE": 1,
+            "ANALYSIS_SNAPSHOT/900/PENDING": 1,
+        },
+    }
     assert report["agent_metrics"]["Portfolio Manager"]["elapsed_seconds"]["p95"] == 3.0
     assert report["latency_bottlenecks"][0]["agent"] == "Portfolio Manager"
     assert report["stage_elapsed_seconds"] == {"Portfolio Manager": 5.0}

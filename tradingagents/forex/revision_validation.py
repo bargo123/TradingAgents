@@ -8,7 +8,7 @@ import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from statistics import mean, median
+from statistics import median
 from typing import Any
 from urllib.parse import quote
 
@@ -121,6 +121,75 @@ def aggregate_agent_metrics(metrics_documents: Iterable[Mapping[str, Any]]) -> d
     return result
 
 
+def _freshness_report(rows: Iterable[sqlite3.Row]) -> dict[str, Any]:
+    status_counts: Counter[str] = Counter()
+    stale_count = 0
+    budgets: list[float] = []
+    for row in rows:
+        budget = _safe_nonnegative_float(row["freshness_budget_seconds"])
+        if budget is not None:
+            budgets.append(budget)
+        raw_stale = row["stale_by_completion"]
+        if raw_stale is not None:
+            stale = bool(raw_stale)
+        else:
+            latency = _safe_nonnegative_float(row["analysis_latency_seconds"])
+            stale = latency is not None and budget is not None and latency >= budget
+        latency = _safe_nonnegative_float(row["analysis_latency_seconds"])
+        if raw_stale is None and (latency is None or budget is None):
+            status = "UNAVAILABLE"
+        else:
+            status = "STALE" if stale else "WITHIN_BUDGET"
+        status_counts[status] += 1
+        stale_count += int(status == "STALE")
+    return {
+        "status_counts": dict(status_counts),
+        "stale_by_completion_count": stale_count,
+        "budget_seconds": _numeric_series(budgets),
+    }
+
+
+def _evaluation_coverage(conn: sqlite3.Connection, rows: Iterable[sqlite3.Row]) -> dict[str, Any]:
+    decision_ids = {str(row["decision_id"]) for row in rows if row["decision_id"]}
+    result: dict[str, Any] = {
+        "evaluations_total": 0,
+        "decisions_with_evaluations": 0,
+        "decision_count": len(decision_ids),
+        "status_counts": {},
+        "by_basis_horizon_status": {},
+    }
+    if not decision_ids:
+        return result
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='shadow_decision_evaluations'"
+    ).fetchone()
+    if table_exists is None:
+        return result
+    status_counts: Counter[str] = Counter()
+    by_key: Counter[str] = Counter()
+    observed_decisions: set[str] = set()
+    for evaluation in conn.execute(
+        "SELECT decision_id, evaluation_basis, horizon_seconds, evaluation_status "
+        "FROM shadow_decision_evaluations"
+    ):
+        decision_id = str(evaluation["decision_id"])
+        if decision_id not in decision_ids:
+            continue
+        basis = str(evaluation["evaluation_basis"])
+        horizon = _safe_nonnegative_int(evaluation["horizon_seconds"])
+        status = str(evaluation["evaluation_status"])
+        observed_decisions.add(decision_id)
+        status_counts[status] += 1
+        by_key[f"{basis}/{horizon}/{status}"] += 1
+    result.update(
+        evaluations_total=sum(status_counts.values()),
+        decisions_with_evaluations=len(observed_decisions),
+        status_counts=dict(status_counts),
+        by_basis_horizon_status=dict(by_key),
+    )
+    return result
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
@@ -162,6 +231,8 @@ def validate_revision(db_path: str | Path, commit: str) -> dict[str, Any]:
             """,
             (commit.strip(),),
         ).fetchall()
+        freshness = _freshness_report(rows)
+        evaluation_coverage = _evaluation_coverage(conn, rows)
 
     status_counts = Counter(str(row["run_status"]) for row in rows)
     reference_counts = Counter(str(row["decision_reference_status"] or "UNAVAILABLE") for row in rows)
@@ -215,6 +286,10 @@ def validate_revision(db_path: str | Path, commit: str) -> dict[str, Any]:
                     if isinstance(stage, str) and stage.strip() and elapsed is not None:
                         stage_timings[stage.strip()] += elapsed
     agent_metrics = aggregate_agent_metrics(metrics_documents)
+    runtime_summary = _numeric_series(runtimes)
+    # Preserve the original report keys while exposing the shared p95 shape.
+    runtime_summary["average"] = runtime_summary["mean"]
+    runtime_summary["maximum"] = runtime_summary["max"]
     latency_bottlenecks = sorted(
         (
             {
@@ -235,12 +310,9 @@ def validate_revision(db_path: str | Path, commit: str) -> dict[str, Any]:
         "commit": commit.strip(),
         "run_count": len(rows),
         "run_status_counts": dict(status_counts),
-        "runtime_seconds": {
-            "count": len(runtimes),
-            "average": mean(runtimes) if runtimes else None,
-            "median": median(runtimes) if runtimes else None,
-            "maximum": max(runtimes) if runtimes else None,
-        },
+        "runtime_seconds": runtime_summary,
+        "freshness": freshness,
+        "evaluation_coverage": evaluation_coverage,
         "temporal_status_counts": dict(reference_counts),
         "research_recommendations": dict(research_counts),
         "trader_actions": dict(trader_counts),
