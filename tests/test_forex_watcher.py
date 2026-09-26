@@ -58,6 +58,31 @@ def test_watcher_config_rejects_unsafe_or_invalid_values(tmp_path, field, value)
         WatcherConfig(db_path=tmp_path / "watch.db", **{field: value})
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("analysis_profile", "SWING"),
+        ("schedule_timeframe", "H4"),
+        ("analyst_set", ("market", "MARKET")),
+    ],
+)
+def test_scheduled_opportunity_rejects_unsafe_identity_fields(field, value):
+    values = {
+        "requested_symbol": "EURUSD",
+        "analysis_profile": "INTRADAY",
+        "schedule_timeframe": "M15",
+        "anchor_timestamp": NOW,
+        "bar_close_timestamp": NOW,
+        "eligible_after": NOW,
+        "config_fingerprint": "cfg",
+    }
+    values[field] = value
+    with pytest.raises(ValueError):
+        from tradingagents.forex.watcher import ScheduledOpportunity
+
+        ScheduledOpportunity(**values)
+
+
 def test_m15_policy_returns_only_settled_completed_bucket():
     policy = CompletedBarSchedule(
         timeframe="M15", settle_seconds=30, config_fingerprint="cfg"

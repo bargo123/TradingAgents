@@ -311,17 +311,27 @@ class ScheduledOpportunity:
     opportunity_key: str = field(default="")
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "requested_symbol", self.requested_symbol.strip().upper())
-        object.__setattr__(self, "analysis_profile", self.analysis_profile.strip().upper())
-        object.__setattr__(self, "schedule_timeframe", self.schedule_timeframe.strip().upper())
-        analysts = tuple(str(value).strip().lower() for value in self.analyst_set)
-        if not analysts or any(value not in _FOREX_ANALYSTS for value in analysts):
-            raise ValueError("scheduled opportunity analyst_set must be forex-safe")
-        object.__setattr__(self, "analyst_set", analysts)
+        if not isinstance(self.requested_symbol, str):
+            raise ValueError("scheduled opportunity requested_symbol must be a string")
+        requested_symbol = self.requested_symbol.strip().upper()
+        if not requested_symbol:
+            raise ValueError("scheduled opportunity requested_symbol must be non-empty")
+        object.__setattr__(self, "requested_symbol", requested_symbol)
+        if not isinstance(self.analysis_profile, str):
+            raise ValueError("scheduled opportunity analysis_profile must be a string")
+        analysis_profile = self.analysis_profile.strip().upper()
+        _require_choice(analysis_profile, {"INTRADAY"}, "analysis_profile")
+        object.__setattr__(self, "analysis_profile", analysis_profile)
+        if not isinstance(self.schedule_timeframe, str):
+            raise ValueError("scheduled opportunity schedule_timeframe must be a string")
+        schedule_timeframe = self.schedule_timeframe.strip().upper()
+        _require_choice(schedule_timeframe, set(_TIMEFRAME_SECONDS), "schedule_timeframe")
+        object.__setattr__(self, "schedule_timeframe", schedule_timeframe)
+        object.__setattr__(self, "analyst_set", _normalize_analyst_tuple(self.analyst_set))
         for name in ("anchor_timestamp", "bar_close_timestamp", "eligible_after"):
             object.__setattr__(self, name, _require_aware_utc(getattr(self, name), name))
-        if not self.requested_symbol or not self.config_fingerprint:
-            raise ValueError("scheduled opportunity requires symbol and config fingerprint")
+        if not isinstance(self.config_fingerprint, str) or not self.config_fingerprint.strip():
+            raise ValueError("scheduled opportunity config_fingerprint must be non-empty")
         expected_key = canonical_opportunity_key(self)
         if self.opportunity_key and self.opportunity_key != expected_key:
             raise ValueError("opportunity_key does not match canonical opportunity identity")
