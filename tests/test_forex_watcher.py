@@ -369,6 +369,7 @@ class _Harness:
         probe_error=None,
         symbols=("EURUSD",),
         process_alive=None,
+        cooldown_seconds=60,
     ):
         from concurrent.futures import Future
 
@@ -376,6 +377,7 @@ class _Harness:
         self.config = WatcherConfig(
             db_path=tmp_path / "watch.db",
             symbols=symbols,
+            cooldown_seconds=cooldown_seconds,
             evaluation_interval_seconds=0,
         )
         self.store = WatcherStore(self.config.db_path, lease_ttl_seconds=self.config.lease_ttl_seconds)
@@ -487,6 +489,27 @@ def test_completion_persists_cooldown_for_restart_state(tmp_path):
 
     assert cycle.skip_reasons == ("COOLDOWN",)
     assert restarted.runner.calls == []
+
+
+def test_shutdown_finalizes_completed_analysis_before_releasing_lease(tmp_path):
+    harness = _Harness(
+        tmp_path,
+        runner_result=_complete_run_result(),
+        cooldown_seconds=0,
+    )
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.clock.set(_utc("2026-09-09T12:15:32Z"))
+
+    # The worker has finished, but no subsequent scheduler poll has run yet.
+    harness.shutdown()
+
+    run = harness.store.list_runs()[0]
+    assert run.run_status in {"SUCCEEDED", "SUCCEEDED_SLOW"}
+    assert run.decision_id is not None
+    assert harness.store.summary()["next_eligible_at"] == "2026-09-09T12:15:32Z"
+    assert len(harness.runner.calls) == 1
 
 
 def test_unavailable_analysis_telemetry_persists_nulls_without_private_text(tmp_path):

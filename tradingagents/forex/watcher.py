@@ -1405,11 +1405,15 @@ class WatcherCoordinator:
         now = _require_aware_utc(self.clock.now(), "now")
         if self.owner_token is not None:
             token = self.owner_token
-            if self._analysis_future is not None and not self._analysis_future.done():
+            if self._analysis_future is not None:
                 with suppress(Exception):
-                    self._analysis_future.result()
+                    if not self._analysis_future.done():
+                        self._analysis_future.result()
                 with suppress(Exception):
-                    self.run_once(now)
+                    # Finalize the current result directly.  Calling run_once
+                    # here could claim a new opportunity when cooldown is
+                    # configured as zero during an otherwise graceful stop.
+                    self._finalize_completed(now)
             with suppress(Exception):
                 self._maybe_evaluate(now)
             with suppress(Exception):
