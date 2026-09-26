@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,7 +28,7 @@ def _ts(hours: float = 0.0) -> str:
 
 def _init_db(tmp_path: Path) -> Path:
     path = tmp_path / "hold-audit.db"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript(
             """
             CREATE TABLE shadow_decisions (
@@ -60,7 +61,7 @@ def _init_db(tmp_path: Path) -> Path:
 
 def _decision(path: Path, decision_id: str, *, hours: float = 0.0, action: str = "HOLD") -> None:
     timestamp = _ts(hours)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?)",
             (decision_id, timestamp, timestamp, "EURUSD", action),
@@ -83,7 +84,7 @@ def _evaluation(
 ) -> None:
     if opportunity_cost is None:
         opportunity_cost = max(0.0, buy, sell)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             """
             INSERT INTO shadow_decision_evaluations (

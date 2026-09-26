@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -98,7 +99,7 @@ def _insert_run(
         offset = sum(ord(char) for char in decision_id) % 30
     now = _ts(offset)
     opportunity = f"op-{decision_id}"
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             """
             INSERT INTO forex_watch_opportunities (
@@ -141,7 +142,7 @@ def _insert_evaluations(
     *,
     source_context_eligible: bool = True,
 ) -> None:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         for horizon, status in statuses.items():
             conn.execute(
                 """
@@ -226,7 +227,7 @@ def test_freshness_budget_metric_uses_analysis_latency_not_runtime(tmp_path: Pat
         runtime=10.0,
         freshness_budget=900,
     )
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "UPDATE forex_watch_runs SET analysis_latency_seconds=? WHERE run_id=?",
             (901.0, "run-latency-mismatch"),
@@ -250,7 +251,7 @@ def test_four_complete_source_context_eligible_rows_count_as_fully_evaluated(tmp
         "evaluated",
         {300: "COMPLETE", 900: "COMPLETE", 1800: "COMPLETE", 3600: "COMPLETE"},
     )
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         assert conn.execute(
             "SELECT DISTINCT training_eligible FROM shadow_decision_evaluations"
         ).fetchall() == [(None,)]
@@ -316,7 +317,7 @@ def test_data_unavailable_decision_does_not_count_as_fully_evaluated(tmp_path: P
 
 def test_evaluation_error_is_visible_in_dashboard_health(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "UPDATE forex_watcher_state SET last_evaluation_status=?, last_error_code=?, last_error=? WHERE singleton_id=1",
             ("ERROR", "EVALUATION_FAILED", "historical read failed"),

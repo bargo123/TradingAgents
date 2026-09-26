@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -232,7 +233,7 @@ def test_duplicate_image_only_alias_is_deduplicated_without_second_parse(tmp_pat
     assert result.counts[IngestionState.DUPLICATE] == 1
     assert harness.parser.parse_calls == ["book.pdf"]
     assert harness.catalog.get_alias(resource_id_for("copy.pdf")) is None
-    with sqlite3.connect(harness.catalog.path) as connection:
+    with closing(sqlite3.connect(harness.catalog.path)) as connection, connection:
         assert connection.execute(
             "SELECT state FROM knowledge_resources WHERE relative_path = ?", ("copy.pdf",)
         ).fetchone()[0] == IngestionState.DUPLICATE.value
@@ -374,7 +375,7 @@ def test_index_failure_discards_unpublished_catalog_rows_and_artifacts(tmp_path)
     assert not (harness.catalog.path.parent / ".ingestion-staging" / result.run_id).exists()
     assert not (harness.catalog.path.parent / "vector" / "lancedb" / f"gen_{result.run_id}").exists()
     assert not (harness.catalog.path.parent / "keyword" / f"gen_{result.run_id}").exists()
-    with sqlite3.connect(harness.catalog.path) as connection:
+    with closing(sqlite3.connect(harness.catalog.path)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM knowledge_documents WHERE ingestion_run_id = ?", (result.run_id,)
         ).fetchone()[0] == 0
@@ -409,7 +410,7 @@ def test_failed_rebuild_preserves_prior_active_generation_and_current_aliases(tm
         assert alias.relation is AliasRelation.CURRENT
         assert alias.document_id == old_alias.document_id
         assert alias.source_hash == old_alias.source_hash
-    with sqlite3.connect(harness.catalog.path) as connection:
+    with closing(sqlite3.connect(harness.catalog.path)) as connection, connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM knowledge_documents WHERE ingestion_run_id = ?", (result.run_id,)
         ).fetchone()[0] == 0

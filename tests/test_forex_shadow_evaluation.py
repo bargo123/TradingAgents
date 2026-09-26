@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -262,7 +263,7 @@ def test_evaluation_store_creates_basis_schema_and_triple_key(tmp_path: Path) ->
     store = ShadowEvaluationStore(tmp_path / "evaluations.db")
     store.initialize()
 
-    with sqlite3.connect(store.path) as conn:
+    with closing(sqlite3.connect(store.path)) as conn, conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(shadow_decision_evaluations)")}
         primary_key = [
             row[1]
@@ -335,7 +336,7 @@ def test_evaluation_store_allows_recovery_but_preserves_complete_and_ineligible(
 
 def test_evaluation_store_migrates_legacy_single_key_table(tmp_path: Path) -> None:
     path = tmp_path / "legacy-evaluations.db"
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             """
             CREATE TABLE shadow_decision_evaluations (

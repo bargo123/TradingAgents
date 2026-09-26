@@ -148,6 +148,7 @@ def _fresh_reference_quote_until_post_completion(
     wait = sleeper or time.sleep
     started = clock()
     attempts = 0
+    waited_seconds = 0.0
     candidate: dict[str, Any] | None = None
     poll_error: Exception | None = None
 
@@ -170,16 +171,17 @@ def _fresh_reference_quote_until_post_completion(
         if elapsed >= timeout_seconds or attempts >= max_attempts:
             break
         remaining = timeout_seconds - elapsed
+        wait_started = clock()
         try:
             wait(min(poll_interval_seconds, remaining))
         except Exception as exc:  # a broken wait seam is also fail-closed
             poll_error = exc
             break
+        waited_seconds += max(0.0, clock() - wait_started)
 
-    elapsed = max(0.0, clock() - started)
     telemetry = {
         "reference_poll_attempts": attempts,
-        "reference_wait_seconds": elapsed,
+        "reference_wait_seconds": waited_seconds,
         "final_reference_delay_seconds": (
             None if candidate is None else candidate["delay"]
         ),
