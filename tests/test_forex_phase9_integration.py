@@ -1003,6 +1003,33 @@ def test_close_orchestrator_recurses_through_service_catalog_idempotently():
     assert experience.count == 1
 
 
+def test_close_orchestrator_continues_after_one_close_failure():
+    class Broken:
+        def close(self):
+            raise RuntimeError("close failed")
+
+    class Closed:
+        def __init__(self):
+            self.count = 0
+
+        def close(self):
+            self.count += 1
+
+    healthy = Closed()
+    orchestrator = type(
+        "Orchestrator",
+        (),
+        {
+            "knowledge_service": type("Service", (), {"catalog": Broken()})(),
+            "experience_service": type("Service", (), {"catalog": healthy})(),
+        },
+    )()
+
+    _close_orchestrator(orchestrator)
+
+    assert healthy.count == 1
+
+
 def test_readonly_experience_adapter_matches_phase8_reader_semantics(tmp_path: Path):
     sqlite3.connect(tmp_path / "catalog.sqlite3").close()
     assert ReadonlyExperienceCatalog(tmp_path).historical_records() == ()

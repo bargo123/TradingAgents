@@ -527,7 +527,13 @@ def _close_orchestrator(orchestrator: Any) -> None:
         if callable(close):
             if getattr(owner, "_evidence_runtime_closed", False) or id(owner) in _CLOSED_OBJECT_IDS:
                 continue
-            close()
+            try:
+                close()
+            except Exception:
+                # Cleanup is best effort at the process boundary.  One
+                # broken reader must not prevent the remaining read-only
+                # handles from being released.
+                continue
             try:
                 owner._evidence_runtime_closed = True
             except (AttributeError, TypeError):
