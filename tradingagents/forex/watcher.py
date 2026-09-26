@@ -369,14 +369,20 @@ class CompletedBarSchedule:
     analyst_set: tuple[str, ...] = ("market", "news")
 
     def __post_init__(self) -> None:
+        if not isinstance(self.timeframe, str):
+            raise ValueError("timeframe must be a string")
         timeframe = self.timeframe.strip().upper()
         _require_choice(timeframe, set(_TIMEFRAME_SECONDS), "timeframe")
         object.__setattr__(self, "timeframe", timeframe)
         _require_nonnegative_int(self.settle_seconds, "settle_seconds")
-        if not self.config_fingerprint:
+        if not isinstance(self.config_fingerprint, str) or not self.config_fingerprint.strip():
             raise ValueError("config_fingerprint must be non-empty")
         object.__setattr__(self, "requested_symbols", _normalize_symbol_tuple(self.requested_symbols))
-        object.__setattr__(self, "analysis_profile", self.analysis_profile.strip().upper())
+        if not isinstance(self.analysis_profile, str):
+            raise ValueError("analysis_profile must be a string")
+        analysis_profile = self.analysis_profile.strip().upper()
+        _require_choice(analysis_profile, {"INTRADAY"}, "analysis_profile")
+        object.__setattr__(self, "analysis_profile", analysis_profile)
         object.__setattr__(self, "analyst_set", _normalize_analyst_tuple(self.analyst_set))
 
     def _floor(self, value: datetime) -> datetime:

@@ -51,6 +51,15 @@ def test_runtime_owned_fields_cannot_be_overridden_by_extra():
         )
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [("provider", None), ("provider", 1), ("temperature", "0"), ("temperature", True)],
+)
+def test_runtime_config_rejects_invalid_provider_and_temperature_types(field, value):
+    with pytest.raises(ValueError):
+        ForexShadowRuntimeConfig(**{field: value})
+
+
 def test_additive_extra_settings_change_fingerprint_without_persisting_values():
     first = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "first-secret"})
     second = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "second-secret"})

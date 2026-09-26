@@ -95,14 +95,20 @@ class ForexShadowRuntimeConfig:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.provider.casefold() != "ollama":
+        if not isinstance(self.provider, str) or self.provider.casefold() != "ollama":
             raise ValueError("forex shadow runtime provider must be ollama")
         for name in ("backend_url", "quick_model", "deep_model"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"{name} must be non-empty")
         if not self.backend_url.rstrip("/").endswith("/v1"):
             raise ValueError("backend_url must point at an OpenAI-compatible /v1 endpoint")
-        if self.temperature < 0 or self.temperature > 2:
+        if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(float(self.temperature))
+            or self.temperature < 0
+            or self.temperature > 2
+        ):
             raise ValueError("temperature must be between 0 and 2")
         for name in ("max_tokens", "context_length"):
             value = getattr(self, name)

@@ -83,6 +83,29 @@ def test_scheduled_opportunity_rejects_unsafe_identity_fields(field, value):
         ScheduledOpportunity(**values)
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("timeframe", None),
+        ("timeframe", "H4"),
+        ("analysis_profile", None),
+        ("analysis_profile", "SWING"),
+        ("config_fingerprint", 1),
+        ("config_fingerprint", ""),
+    ],
+)
+def test_completed_bar_schedule_rejects_invalid_identity_fields(field, value):
+    values = {
+        "timeframe": "M15",
+        "settle_seconds": 30,
+        "config_fingerprint": "cfg",
+        "analysis_profile": "INTRADAY",
+    }
+    values[field] = value
+    with pytest.raises(ValueError):
+        CompletedBarSchedule(**values)
+
+
 def test_m15_policy_returns_only_settled_completed_bucket():
     policy = CompletedBarSchedule(
         timeframe="M15", settle_seconds=30, config_fingerprint="cfg"
