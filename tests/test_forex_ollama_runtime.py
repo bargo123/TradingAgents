@@ -310,6 +310,44 @@ def test_unavailable_server_starts_with_explicit_dedicated_environment():
     assert env["OLLAMA_NUM_PARALLEL"] == "1"
 
 
+def test_unavailable_server_uses_configured_loopback_endpoint():
+    class StartsHttp(_Http):
+        def __init__(self):
+            super().__init__()
+            self.started = False
+
+        def get(self, _url, **_kwargs):
+            if not self.started:
+                raise OSError("offline")
+            return super().get(_url, **_kwargs)
+
+        def post(self, _url, **kwargs):
+            self.started = True
+            return super().post(_url, **kwargs)
+
+    http = StartsHttp()
+    launches = []
+
+    def launch(command, **kwargs):
+        launches.append((command, kwargs))
+        http.started = True
+        return SimpleNamespace(poll=lambda: None)
+
+    runtime = DedicatedOllamaRuntime(
+        ForexShadowRuntimeConfig(backend_url="http://127.0.0.1:12345/v1"),
+        http=http,
+        process_launcher=launch,
+        version_runner=lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v"),
+        sleep=lambda _: None,
+        probe_attempts=3,
+    )
+
+    health = runtime.ensure_healthy()
+
+    assert health.healthy
+    assert launches[0][1]["env"]["OLLAMA_HOST"] == "127.0.0.1:12345"
+
+
 def test_repeated_startup_failure_is_bounded_and_operator_visible():
     class OfflineHttp:
         def get(self, _url, **_kwargs):

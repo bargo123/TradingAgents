@@ -60,6 +60,27 @@ def test_runtime_config_rejects_invalid_provider_and_temperature_types(field, va
         ForexShadowRuntimeConfig(**{field: value})
 
 
+@pytest.mark.parametrize(
+    "backend_url",
+    [
+        "https://api.example.invalid/v1",
+        "http://127.0.0.1:11435/v1?api_key=secret",
+        "http://user:secret@127.0.0.1:11435/v1",
+        "http://127.0.0.1/v1",
+    ],
+)
+def test_runtime_config_rejects_non_local_or_credential_bearing_endpoints(backend_url):
+    with pytest.raises(ValueError):
+        ForexShadowRuntimeConfig(backend_url=backend_url)
+
+
+def test_runtime_config_accepts_custom_loopback_port_without_persisting_credentials():
+    runtime = ForexShadowRuntimeConfig(backend_url="http://127.0.0.1:12345/v1")
+
+    assert runtime.ollama_base_url == "http://127.0.0.1:12345"
+    assert "12345" in runtime.safe_dict()["backend_url"]
+
+
 def test_additive_extra_settings_change_fingerprint_without_persisting_values():
     first = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "first-secret"})
     second = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "second-secret"})

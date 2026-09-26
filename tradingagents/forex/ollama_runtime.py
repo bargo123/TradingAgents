@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -269,10 +270,15 @@ class DedicatedOllamaRuntime:
         if self._process_alive():
             return
         self._owned_process = None
+        endpoint = urlsplit(self.config.ollama_base_url)
+        hostname = endpoint.hostname
+        if not hostname or endpoint.port is None:
+            raise RuntimeError("OLLAMA_LOCAL_ENDPOINT_INVALID")
+        host = f"[{hostname}]" if ":" in hostname and not hostname.startswith("[") else hostname
         env = os.environ.copy()
         env.update(
             {
-                "OLLAMA_HOST": "127.0.0.1:11435",
+                "OLLAMA_HOST": f"{host}:{endpoint.port}",
                 "OLLAMA_CONTEXT_LENGTH": str(self.config.context_length),
                 "OLLAMA_MAX_LOADED_MODELS": "1",
                 "OLLAMA_NUM_PARALLEL": "1",

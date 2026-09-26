@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import ipaddress
 import json
 import math
 import subprocess
@@ -18,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit
 
 _RUNTIME_OWNED_CONFIG_KEYS = frozenset(
     {
@@ -100,8 +102,29 @@ class ForexShadowRuntimeConfig:
         for name in ("backend_url", "quick_model", "deep_model"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"{name} must be non-empty")
-        if not self.backend_url.rstrip("/").endswith("/v1"):
-            raise ValueError("backend_url must point at an OpenAI-compatible /v1 endpoint")
+        try:
+            endpoint = urlsplit(self.backend_url)
+            hostname = endpoint.hostname
+            is_loopback = hostname == "localhost"
+            if hostname and not is_loopback:
+                is_loopback = ipaddress.ip_address(hostname).is_loopback
+            endpoint_port = endpoint.port
+        except ValueError as exc:
+            raise ValueError("backend_url must be a valid local HTTP endpoint") from exc
+        if (
+            endpoint.scheme != "http"
+            or not hostname
+            or not is_loopback
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or endpoint.query
+            or endpoint.fragment
+            or endpoint.path.rstrip("/") != "/v1"
+            or endpoint_port is None
+        ):
+            raise ValueError(
+                "backend_url must be a credential-free loopback HTTP /v1 endpoint with an explicit port"
+            )
         if (
             isinstance(self.temperature, bool)
             or not isinstance(self.temperature, (int, float))
