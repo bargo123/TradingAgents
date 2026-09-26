@@ -125,6 +125,30 @@ def test_supervisor_status_separates_operational_health_from_strategy_distributi
     assert report["executed"] is False
 
 
+def test_supervisor_status_degrades_when_evaluation_failed_while_idle():
+    watcher = {
+        "lifecycle_status": "IDLE",
+        "last_evaluation_status": "ERROR",
+        "last_error_code": "EVALUATION_FAILED",
+        "circuit_reason": None,
+    }
+    store = SimpleNamespace(
+        summary=lambda _now: watcher,
+        active_lease=lambda _now: None,
+    )
+
+    class Runtime:
+        def health(self):
+            return OllamaHealth("HEALTHY", "http://127.0.0.1:11435", "v", (), 16384)
+
+    report = ForexSupervisor(
+        runtime_factory=lambda _config: Runtime(), store_factory=lambda _path: store
+    ).status("watch.db")
+
+    assert report["supervisor_status"] == "DEGRADED"
+    assert report["health_reason"] == "EVALUATION_FAILED"
+
+
 def test_supervisor_status_exposes_dedicated_runtime_and_watcher_fields():
     watcher = {
         "lifecycle_status": "ANALYZING",

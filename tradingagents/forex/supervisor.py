@@ -23,6 +23,8 @@ def _health_level(ollama: OllamaHealth, watcher: Mapping[str, Any]) -> tuple[str
         return "DEGRADED", ollama.error_code or "OLLAMA_DEGRADED"
     if watcher.get("circuit_reason"):
         return "OPERATOR_REVIEW_REQUIRED", str(watcher["circuit_reason"])
+    if watcher.get("last_evaluation_status") == "ERROR":
+        return "DEGRADED", str(watcher.get("last_error_code") or "EVALUATION_FAILED")
     lifecycle = str(watcher.get("lifecycle_status") or "STOPPED")
     if lifecycle == "DEGRADED":
         return "DEGRADED", str(watcher.get("last_error_code") or "WATCHER_DEGRADED")

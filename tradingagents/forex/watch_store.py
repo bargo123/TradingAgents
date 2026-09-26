@@ -1181,6 +1181,12 @@ class WatcherStore:
             if state is not None
             else {}
         )
+        if result.get("last_evaluation_status") == "ERROR" and not result.get(
+            "last_error_code"
+        ):
+            # Older watcher processes could persist ERROR without a diagnostic
+            # code.  Keep status reads explicit without mutating the database.
+            result["last_error_code"] = "EVALUATION_FAILED"
         result["evaluation_due_pending"] = bool(result.get("evaluation_due_pending", 0))
         result["opportunity_counts"] = counts
         result["run_counts"] = run_counts

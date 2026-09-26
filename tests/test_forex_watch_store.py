@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
@@ -160,6 +161,22 @@ def test_successful_evaluation_preserves_unrelated_error(tmp_path):
     summary = store.summary(NOW)
     assert summary["last_error_code"] == "ANALYSIS_FAILED"
     assert summary["last_error"] == "analysis failed"
+
+
+def test_error_status_without_code_has_safe_read_only_fallback(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    store.initialize()
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            "UPDATE forex_watcher_state SET last_evaluation_status='ERROR', last_error_code=NULL, last_error=NULL WHERE singleton_id=1"
+        )
+        conn.commit()
+
+    summary = store.read_only_summary()
+
+    assert summary["last_evaluation_status"] == "ERROR"
+    assert summary["last_error_code"] == "EVALUATION_FAILED"
+    assert summary["last_error"] is None
 
 
 def test_schema_is_idempotent_and_preserves_phase5_tables(tmp_path):
