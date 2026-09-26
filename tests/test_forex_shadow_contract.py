@@ -263,6 +263,23 @@ def test_shadow_decision_rejects_executed_true_and_invalid_status() -> None:
         make_decision(decision_context_status="BROKEN")
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("requested_symbol", " "),
+        ("resolved_symbol", ""),
+        ("analysis_timeframe", "\t"),
+        ("analysis_profile", "SWING"),
+        ("analysis_profile", "intraday"),
+    ),
+)
+def test_shadow_decision_rejects_invalid_runtime_identity_fields(
+    field: str, value: str
+) -> None:
+    with pytest.raises(ValueError):
+        make_decision(**{field: value})
+
+
 def test_shadow_decision_requires_utc_timestamps() -> None:
     with pytest.raises(ValueError):
         make_decision(created_at=datetime(2026, 9, 8, 2, 0, tzinfo=timezone(timedelta(hours=2))))

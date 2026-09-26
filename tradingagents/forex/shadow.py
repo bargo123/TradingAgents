@@ -339,6 +339,10 @@ class ShadowTradeDecision:
             raise ValueError("decision_context_status must be COMPLETE or INCOMPLETE")
         if self.future_evaluation_status not in ("PENDING", "RESOLVED"):
             raise ValueError("future_evaluation_status must be PENDING or RESOLVED")
+        for field_name in ("requested_symbol", "resolved_symbol", "analysis_timeframe"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be a non-empty string")
         if self.research_manager_recommendation is not None and self.research_manager_recommendation not in (
             "BUY",
             "OVERWEIGHT",
@@ -349,6 +353,8 @@ class ShadowTradeDecision:
             raise ValueError("research_manager_recommendation must use the canonical uppercase value")
         if not isinstance(self.analysis_profile, str) or not self.analysis_profile.strip():
             raise ValueError("analysis_profile must be a non-empty string")
+        if self.analysis_profile != "INTRADAY":
+            raise ValueError("analysis_profile must be exactly INTRADAY")
         if self.valid_for_seconds is not None:
             if (
                 isinstance(self.valid_for_seconds, bool)
