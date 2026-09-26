@@ -16,6 +16,7 @@ import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 _RUNTIME_OWNED_CONFIG_KEYS = frozenset(
@@ -37,23 +38,42 @@ _RUNTIME_OWNED_CONFIG_KEYS = frozenset(
 )
 
 
+def _normalize_extra(item: Any) -> Any:
+    if isinstance(item, Mapping):
+        if any(not isinstance(key, str) for key in item):
+            raise ValueError("extra mapping keys must be strings")
+        return {key: _normalize_extra(item[key]) for key in sorted(item)}
+    if isinstance(item, (list, tuple)):
+        return [_normalize_extra(child) for child in item]
+    if item is None or isinstance(item, (str, int, bool)):
+        return item
+    if isinstance(item, float) and math.isfinite(item):
+        return item
+    raise ValueError("extra values must be JSON-safe")
+
+
+def _freeze_extra(item: Any) -> Any:
+    if isinstance(item, Mapping):
+        return MappingProxyType({key: _freeze_extra(value) for key, value in item.items()})
+    if isinstance(item, list):
+        return tuple(_freeze_extra(value) for value in item)
+    return item
+
+
+def _thaw_extra(item: Any) -> Any:
+    if isinstance(item, Mapping):
+        return {key: _thaw_extra(value) for key, value in item.items()}
+    if isinstance(item, tuple):
+        return [_thaw_extra(value) for value in item]
+    return item
+
+
 def _canonical_extra_json(value: Mapping[str, Any]) -> str:
     """Serialize additive runtime extensions without retaining their values."""
 
-    def normalize(item: Any) -> Any:
-        if isinstance(item, Mapping):
-            if any(not isinstance(key, str) for key in item):
-                raise ValueError("extra mapping keys must be strings")
-            return {key: normalize(item[key]) for key in sorted(item)}
-        if isinstance(item, (list, tuple)):
-            return [normalize(child) for child in item]
-        if item is None or isinstance(item, (str, int, bool)):
-            return item
-        if isinstance(item, float) and math.isfinite(item):
-            return item
-        raise ValueError("extra values must be JSON-safe")
-
-    return json.dumps(normalize(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return json.dumps(
+        _normalize_extra(value), sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +112,8 @@ class ForexShadowRuntimeConfig:
             raise ValueError("thinking controls must be bools")
         if not isinstance(self.extra, Mapping):
             raise ValueError("extra must be a mapping")
-        _canonical_extra_json(self.extra)
+        normalized_extra = _normalize_extra(self.extra)
+        object.__setattr__(self, "extra", _freeze_extra(normalized_extra))
         conflicting = sorted(_RUNTIME_OWNED_CONFIG_KEYS.intersection(self.extra))
         if conflicting:
             raise ValueError(
@@ -134,7 +155,7 @@ class ForexShadowRuntimeConfig:
         # ``extra`` is an additive extension point only.  Runtime-owned
         # provider/model/budget/thinking fields are rejected in __post_init__
         # rather than silently weakening the dedicated shadow contract.
-        config.update(dict(self.extra))
+        config.update(_thaw_extra(self.extra))
         return config
 
     def safe_dict(self) -> dict[str, Any]:

@@ -61,6 +61,22 @@ def test_additive_extra_settings_change_fingerprint_without_persisting_values():
     assert len(first.safe_dict()["extra_fingerprint"]) == 64
 
 
+def test_extra_is_detached_and_immutable():
+    extra = {"nested": {"value": 1}}
+    runtime = ForexShadowRuntimeConfig(extra=extra)
+    fingerprint = runtime.fingerprint
+
+    extra["nested"]["value"] = 2
+    extra["new"] = True
+
+    assert runtime.fingerprint == fingerprint
+    assert runtime.extra["nested"]["value"] == 1
+    with pytest.raises(TypeError):
+        runtime.extra["new"] = True
+    with pytest.raises(TypeError):
+        runtime.extra["nested"]["value"] = 2
+
+
 def test_runtime_provenance_is_safe_and_source_attributable(tmp_path):
     calls = []
 
