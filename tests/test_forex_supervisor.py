@@ -252,3 +252,17 @@ def test_supervisor_run_reports_startup_error_without_traceback(capsys):
     captured = capsys.readouterr()
     assert "FOREX SUPERVISOR ERROR:" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_supervisor_factory_error_is_reported_without_traceback(capsys):
+    def broken_factory(_config):
+        raise sqlite3.DatabaseError("runtime construction failed")
+
+    assert main(
+        ["run", "--db-path", "broken.db"],
+        supervisor_factory=broken_factory,
+        watch_main=lambda *_args, **_kwargs: 0,
+    ) == 1
+    captured = capsys.readouterr()
+    assert "FOREX SUPERVISOR ERROR:" in captured.err
+    assert "Traceback" not in captured.err

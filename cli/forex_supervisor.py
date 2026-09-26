@@ -59,8 +59,8 @@ def main(
     if watch_main is None:
         from cli.forex_watch import main as watch_main
 
-    supervisor = supervisor_factory(ForexShadowRuntimeConfig())
     try:
+        supervisor = supervisor_factory(ForexShadowRuntimeConfig())
         return supervisor.run(
             db_path=args.db_path,
             terminal_path=args.terminal_path,
