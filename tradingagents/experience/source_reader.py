@@ -203,6 +203,20 @@ class ReadonlySourceReader:
                 raise SourceDatabaseUnavailableError(str(exc)) from exc
         return self._connection
 
+    def close(self) -> None:
+        """Release the read-only SQLite handle owned by this reader."""
+
+        connection = self._connection
+        self._connection = None
+        if connection is not None:
+            connection.close()
+
+    def __enter__(self) -> ReadonlySourceReader:
+        return self
+
+    def __exit__(self, _exc_type, _exc_value, _traceback) -> None:
+        self.close()
+
     @staticmethod
     def _schema(connection: sqlite3.Connection) -> dict[str, Any]:
         tables: dict[str, Any] = {}
@@ -245,6 +259,14 @@ class ReadonlySourceReader:
         return tuple(rows)
 
     def read_snapshot(self) -> ReadonlySourceSnapshot:
+        """Read one immutable snapshot and release the SQLite handle."""
+
+        try:
+            return self._read_snapshot()
+        finally:
+            self.close()
+
+    def _read_snapshot(self) -> ReadonlySourceSnapshot:
         before_file, before_wal = self._file_fingerprint(), self._wal_fingerprint()
         connection = self._open()
         schema = self._schema(connection)

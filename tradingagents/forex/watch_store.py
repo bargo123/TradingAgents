@@ -6,7 +6,7 @@ import json
 import sqlite3
 import uuid
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -463,7 +463,7 @@ class WatcherStore:
 
     def table_names(self) -> tuple[str, ...]:
         self.initialize()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             rows = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
             ).fetchall()
@@ -507,7 +507,7 @@ class WatcherStore:
 
         del now  # retained for callers that want an explicit observation time
         self.initialize()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             return self._read_lease_row(conn)
 
     def read_only_active_lease(self, now: datetime | None = None) -> LeaseRecord | None:
@@ -733,7 +733,7 @@ class WatcherStore:
 
     def get_opportunity(self, opportunity_key: str) -> WatchOpportunity:
         self.initialize()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             row = conn.execute(
                 "SELECT * FROM forex_watch_opportunities WHERE opportunity_key=?",
                 (opportunity_key,),
@@ -744,7 +744,7 @@ class WatcherStore:
 
     def list_opportunities(self) -> list[WatchOpportunity]:
         self.initialize()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             rows = conn.execute(
                 "SELECT * FROM forex_watch_opportunities ORDER BY anchor_timestamp, requested_symbol, opportunity_key"
             ).fetchall()
@@ -844,7 +844,7 @@ class WatcherStore:
 
     def get_run(self, run_id: str) -> WatchRun:
         self.initialize()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             row = conn.execute("SELECT * FROM forex_watch_runs WHERE run_id=?", (run_id,)).fetchone()
         if row is None:
             raise KeyError(run_id)
@@ -852,7 +852,7 @@ class WatcherStore:
 
     def list_runs(self) -> list[WatchRun]:
         self.initialize()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             rows = conn.execute("SELECT * FROM forex_watch_runs ORDER BY started_at, run_id").fetchall()
         return [self._row_to_run(row) for row in rows]
 
@@ -1172,7 +1172,7 @@ class WatcherStore:
         else:
             self.initialize()
             conn = self._connect()
-        with conn:
+        with closing(conn) as conn, conn:
             state = conn.execute("SELECT * FROM forex_watcher_state WHERE singleton_id=1").fetchone()
             counts = {
                 row["status"]: row["count"]
@@ -1331,7 +1331,7 @@ class WatcherStore:
 
     def circuit_reason(self) -> str | None:
         self.initialize()
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             row = conn.execute("SELECT circuit_reason FROM forex_watcher_state WHERE singleton_id=1").fetchone()
         return None if row is None else row[0]
 
@@ -1340,7 +1340,7 @@ class WatcherStore:
 
         store = ShadowDecisionStore(self.path)
         store.initialize()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute("SELECT decision_id FROM shadow_decisions ORDER BY created_at, decision_id").fetchall()
         return [store.get(row[0]) for row in rows]

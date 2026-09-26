@@ -7,6 +7,7 @@ import math
 import sqlite3
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
+from contextlib import closing
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -213,7 +214,7 @@ def validate_revision(db_path: str | Path, commit: str) -> dict[str, Any]:
 
     if not isinstance(commit, str) or not commit.strip():
         raise ValueError("commit must be non-empty")
-    with _connect(Path(db_path)) as conn:
+    with closing(_connect(Path(db_path))) as conn, conn:
         run_columns = _table_columns(conn, "forex_watch_runs")
         if "git_commit" not in run_columns:
             raise RevisionValidationError("forex_watch_runs.git_commit is unavailable")

@@ -162,7 +162,8 @@ def run_smoke(
     )
     guard = OfflineNetworkGuard()
     with guard:
-        snapshot = ReadonlySourceReader(source).read_snapshot()
+        with ReadonlySourceReader(source) as reader:
+            snapshot = reader.read_snapshot()
         catalog = ExperienceCatalog(root)
         imported = ExperienceImporter(catalog).import_sources((source,))
         generation = ExperienceRebuilder(catalog).rebuild()

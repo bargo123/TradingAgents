@@ -120,7 +120,13 @@ class ExperienceImporter:
             for path in sorted((Path(p) for p in source_paths), key=lambda p: str(p.resolve())):
                 committed_counts = (indexed, unchanged, aliases, quarantined, eval_count)
                 try:
-                    snapshot = self.reader_factory(path).read_snapshot()
+                    reader = self.reader_factory(path)
+                    try:
+                        snapshot = reader.read_snapshot()
+                    finally:
+                        close = getattr(reader, "close", None)
+                        if callable(close):
+                            close()
                     source_id = _stable_source_id(snapshot)
                     with self.catalog.transaction():
                         schema_fp = hashlib.sha256(

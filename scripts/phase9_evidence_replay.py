@@ -100,7 +100,12 @@ def run_replay(
     phase8_preflight = resolve_verified_phase8_root(experience_root)
     phase7_preflight = _resolve_verified_phase7_generation(knowledge_root)
     reader = ReadonlySourceReader(source)
-    snapshot_store = reader.read_snapshot()
+    try:
+        snapshot_store = reader.read_snapshot()
+    finally:
+        close = getattr(reader, "close", None)
+        if callable(close):
+            close()
     row = next((item for item in snapshot_store.decisions if str(item.get("decision_id")) == str(decision_id)), None)
     if row is None:
         raise SnapshotReplayError(f"source decision not found: {decision_id}")

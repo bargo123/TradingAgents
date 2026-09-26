@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -135,7 +136,7 @@ class EvidenceAuditStore:
     def initialize(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(self.path) as db:
+            with closing(sqlite3.connect(self.path)) as db, db:
                 db.execute("""CREATE TABLE IF NOT EXISTS evidence_usage_audit (
                     decision_id TEXT NOT NULL, source_run_id TEXT NOT NULL, integration_status TEXT NOT NULL,
                     bundle_status TEXT NOT NULL, as_of TEXT NOT NULL, knowledge_generation_id TEXT,
@@ -160,7 +161,7 @@ class EvidenceAuditStore:
             columns = [f.name for f in fields(audit)]
             values = [json.dumps(payload[c], sort_keys=True, separators=(",", ":")) if isinstance(payload[c], (dict, list)) else payload[c] for c in columns]
             placeholders = ",".join("?" for _ in columns)
-            with sqlite3.connect(self.path) as db:
+            with closing(sqlite3.connect(self.path)) as db, db:
                 db.execute(f"INSERT OR IGNORE INTO evidence_usage_audit ({','.join(columns)}) VALUES ({placeholders})", values)
         except ValueError:
             raise
@@ -170,7 +171,7 @@ class EvidenceAuditStore:
     def _rows(self, query: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
         try:
             self.initialize()
-            with sqlite3.connect(self.path) as db:
+            with closing(sqlite3.connect(self.path)) as db, db:
                 db.row_factory = sqlite3.Row
                 rows = [dict(row) for row in db.execute(query, params)]
             return rows

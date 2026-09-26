@@ -6,6 +6,7 @@ import math
 import sqlite3
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -799,7 +800,7 @@ class ShadowEvaluationStore:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             exists = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                 ("shadow_decision_evaluations",),
@@ -882,7 +883,7 @@ class ShadowEvaluationStore:
         horizon_seconds: int,
     ) -> ShadowOutcomeEvaluation:
         self.initialize()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM shadow_decision_evaluations WHERE decision_id=? AND evaluation_basis=? AND horizon_seconds=?",
@@ -894,7 +895,7 @@ class ShadowEvaluationStore:
 
     def list_for_decision(self, decision_id: str) -> list[ShadowOutcomeEvaluation]:
         self.initialize()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM shadow_decision_evaluations WHERE decision_id=? ORDER BY evaluation_basis, horizon_seconds",
@@ -907,7 +908,7 @@ class ShadowEvaluationStore:
         records = tuple(records)
         if not records:
             return
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             for record in records:
                 key = (record.decision_id, record.evaluation_basis, record.horizon_seconds)

@@ -7,6 +7,7 @@ import re
 import sqlite3
 import sys
 from collections.abc import Mapping
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -587,7 +588,7 @@ class ShadowDecisionStore:
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS shadow_decisions (
@@ -741,7 +742,7 @@ class ShadowDecisionStore:
             "decision_reference_error",
         ]
         placeholders = ", ".join(["?"] * len(columns))
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute(
                 f"""
                 INSERT INTO shadow_decisions ({", ".join(columns)}) VALUES ({placeholders})
@@ -823,7 +824,7 @@ class ShadowDecisionStore:
 
     def get(self, decision_id: str) -> ShadowTradeDecision:
         self.initialize()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute(
                 "SELECT * FROM shadow_decisions WHERE decision_id = ?",
@@ -838,7 +839,7 @@ class ShadowDecisionStore:
         if not isinstance(source_run_id, str) or not source_run_id.strip():
             raise ValueError("source_run_id must be a non-empty string")
         self.initialize()
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
                 "SELECT * FROM shadow_decisions WHERE source_run_id = ? ORDER BY created_at, decision_id",
@@ -854,7 +855,7 @@ class ShadowDecisionStore:
             query += " AND resolved_symbol = ?"
             params.append(resolved_symbol)
         query += " ORDER BY created_at, decision_id"
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_decision(row) for row in rows]
@@ -869,7 +870,7 @@ class ShadowDecisionStore:
     ) -> None:
         self.initialize()
         resolved_at = _parse_utc_datetime(outcome_resolved_at).isoformat().replace("+00:00", "Z")
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute(
                 """
                 UPDATE shadow_decisions

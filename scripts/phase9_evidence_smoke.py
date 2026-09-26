@@ -712,7 +712,12 @@ def run_smoke(
     _assert_report_outside(None if report_path is None else Path(report_path), ((source, "source"), (Path(str(source) + "-wal"), "source WAL"), (knowledge_root, "Phase 7"), (experience_root, "Phase 8"), (model_path, "embedding model")))
     before = {"source": _source_fingerprint(source), "phase7": _fingerprint(knowledge_root), "phase8": _fingerprint(experience_root)}
     reader = ReadonlySourceReader(source)
-    source_snapshot = reader.read_snapshot()
+    try:
+        source_snapshot = reader.read_snapshot()
+    finally:
+        close = getattr(reader, "close", None)
+        if callable(close):
+            close()
     row = next((item for item in source_snapshot.decisions if item.get("snapshot_json")), None)
     if row is None:
         raise SnapshotReplayError("source has no saved ForexMarketSnapshot decision")

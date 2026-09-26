@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import urllib.request
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -67,7 +68,7 @@ def test_smoke_rejects_bare_qwen_provider_label(monkeypatch):
 def _catalog(root: Path, *, tier_c_only: bool = False, published: bool = True) -> Path:
     root.mkdir()
     db = root / "catalog.sqlite3"
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         connection.executescript(
             """
             CREATE TABLE experience_catalog_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -174,7 +175,7 @@ def test_phase8_numeric_preflight_uses_full_catalog_interfaces(monkeypatch, tmp_
 
 def test_phase8_preflight_rejects_projection_without_persisted_versions(tmp_path: Path):
     root = _catalog(tmp_path / "p8", tier_c_only=True)
-    with sqlite3.connect(root / "catalog.sqlite3") as connection:
+    with closing(sqlite3.connect(root / "catalog.sqlite3")) as connection, connection:
         connection.execute("UPDATE experience_feature_projections SET projection_json=?", (json.dumps({"cohort": ["EURUSD", "INTRADAY", "M15", "experience-features.v1", "phase8-feature-extractor.v1"], "values": [0], "mask": [1]}),))
         connection.commit()
     with pytest.raises(Phase8PreflightError, match="projection"):
@@ -294,7 +295,7 @@ def test_loopback_guard_blocks_dns_and_request_object_and_allows_documented_pipe
 
 def test_phase8_preflight_rejects_missing_generation_metadata(tmp_path: Path):
     root = _catalog(tmp_path / "p8")
-    with sqlite3.connect(root / "catalog.sqlite3") as connection:
+    with closing(sqlite3.connect(root / "catalog.sqlite3")) as connection, connection:
         connection.execute("UPDATE experience_generations SET metadata_json='{}'")
         connection.commit()
     with pytest.raises(Phase8PreflightError, match="trust_policy_version"):
@@ -318,7 +319,7 @@ def test_real_phase8_generation_passes_preflight_with_tier_c_only(tmp_path: Path
             for timeframe in ("M1", "M5", "M15", "H1")
         },
     }
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection, connection:
         connection.execute(
             "UPDATE shadow_decisions SET snapshot_json=?", (json.dumps(snapshot),)
         )
@@ -502,7 +503,7 @@ def test_smoke_appends_one_metadata_only_audit_outside_source(tmp_path: Path):
         "reference_validation_status": "VALID",
     }
     _append_audit(audit_path, decision_id="d1", source_run_id="r1", snapshot=Snapshot(), result=result)
-    with sqlite3.connect(audit_path) as connection:
+    with closing(sqlite3.connect(audit_path)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM evidence_usage_audit").fetchone()[0] == 1
         row = connection.execute(
             "SELECT knowledge_query, knowledge_query_fingerprint, query_policy_version, available_knowledge_ids, evidence_refs_used FROM evidence_usage_audit"
@@ -603,7 +604,7 @@ def test_replay_smoke_can_write_phase9_audit_without_writing_phase56_decision(
         )
 
     assert source.read_bytes() == source_before
-    with sqlite3.connect(audit_path) as connection:
+    with closing(sqlite3.connect(audit_path)) as connection, connection:
         row = connection.execute(
             "SELECT decision_id, source_run_id, integration_status, bundle_status FROM evidence_usage_audit"
         ).fetchone()
