@@ -738,6 +738,31 @@ def test_unavailable_analysis_telemetry_persists_nulls_without_private_text(tmp_
     assert "completion" not in (run.metrics_json or "").casefold()
 
 
+def test_finalization_replaces_non_finite_nested_telemetry_with_null(tmp_path):
+    result = SimpleNamespace(
+        decision=_decision("run-non-finite-telemetry"),
+        elapsed_seconds=1.0,
+        metrics={
+            "telemetry_status": "AVAILABLE",
+            "llm_calls": 1,
+            "agents": {"market": {"elapsed_seconds": math.nan}},
+        },
+    )
+    harness = _Harness(tmp_path, runner_result=result)
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    run = harness.store.list_runs()[0]
+    assert json.loads(run.metrics_json or "{}") == {
+        "agents": {"market": {"elapsed_seconds": None}},
+        "llm_calls": 1,
+        "telemetry_status": "AVAILABLE",
+    }
+    assert "NaN" not in (run.metrics_json or "")
+
+
 def test_new_bar_during_analysis_is_terminally_skipped_and_not_queued(tmp_path):
     harness = _Harness(tmp_path, runner_result=_complete_run_result())
     harness.start()

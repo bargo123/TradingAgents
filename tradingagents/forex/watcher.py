@@ -196,6 +196,25 @@ def _safe_json_value(value: Any) -> Any:
     return str(value)
 
 
+def _safe_metrics_json_value(value: Any) -> Any:
+    """Make arbitrary callback telemetry strict-JSON-safe without failing a run."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _safe_metrics_json_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (tuple, list)):
+        return [_safe_metrics_json_value(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, int) and not isinstance(value, bool):
+        try:
+            json.dumps(value)
+        except (OverflowError, ValueError):
+            return None
+    return value
+
+
 def _accepts_keyword(callable_value: Any, keyword: str) -> bool | None:
     """Determine keyword support without retrying a callable on TypeError."""
 
@@ -1204,7 +1223,12 @@ class WatcherCoordinator:
             decision_reference_status=getattr(decision, "decision_reference_status", None),
             freshness_budget_seconds=self.config.freshness_budget_seconds,
             safe_config_json=safe_config,
-            metrics_json=json.dumps(dict(metrics), default=str, sort_keys=True),
+            metrics_json=json.dumps(
+                _safe_metrics_json_value(dict(metrics)),
+                allow_nan=False,
+                default=str,
+                sort_keys=True,
+            ),
         )
 
     def _finalize_completed(self, now: datetime) -> tuple[str | None, str | None]:
