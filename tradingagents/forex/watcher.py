@@ -154,6 +154,9 @@ _SAFE_CONFIG_KEYS = frozenset(
         "forex_evidence_statistics_horizon_seconds",
         "forex_evidence_knowledge_top_k",
         "forex_evidence_experience_top_k",
+        "global_news_article_limit",
+        "global_news_lookback_days",
+        "forex_global_news_queries",
     }
 )
 _CREDENTIAL_WORDS = ("key", "token", "secret", "password", "authorization", "credential")

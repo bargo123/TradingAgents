@@ -206,6 +206,9 @@ def test_safe_effective_config_preserves_evidence_policy_controls():
             "forex_evidence_statistics_horizon_seconds": 900,
             "forex_evidence_knowledge_top_k": 2,
             "forex_evidence_experience_top_k": 3,
+            "global_news_article_limit": 7,
+            "global_news_lookback_days": 3,
+            "forex_global_news_queries": ("rates", "employment"),
         }
     )
 
@@ -218,6 +221,9 @@ def test_safe_effective_config_preserves_evidence_policy_controls():
     assert safe["forex_evidence_statistics_horizon_seconds"] == 900
     assert safe["forex_evidence_knowledge_top_k"] == 2
     assert safe["forex_evidence_experience_top_k"] == 3
+    assert safe["global_news_article_limit"] == 7
+    assert safe["global_news_lookback_days"] == 3
+    assert safe["forex_global_news_queries"] == ["rates", "employment"]
     assert safe_effective_config({"forex_evidence_enabled": False}) != safe
 
 
