@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar, Mt5SymbolInfo
 from tradingagents.experience.features import FEATURE_NAMES_V1
 from tradingagents.experience.models import EvidenceRequest
@@ -76,6 +78,32 @@ def test_explicit_basis_and_horizon_are_forwarded():
 
 def test_tier_c_is_never_an_experience_item():
     assert all("TIER_C" not in tier.value for tier in EvidenceQueryPolicy().trust_tiers)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("knowledge_top_k", True),
+        ("experience_top_k", 1.0),
+        ("max_knowledge_items", "4"),
+        ("max_experience_items", None),
+        ("max_statistics_items", False),
+        ("max_rendered_characters", 6000.0),
+        ("evidence_timeout_seconds", True),
+        ("evidence_timeout_seconds", "10"),
+        ("statistics_horizon_seconds", True),
+        ("statistics_horizon_seconds", 900.0),
+        ("statistics_horizon_seconds", "900"),
+    ],
+)
+def test_query_policy_rejects_non_contract_numeric_types(field, value):
+    with pytest.raises(ValueError):
+        EvidenceQueryPolicy(**{field: value})
+
+
+def test_query_policy_requires_string_evaluation_basis_when_statistics_are_enabled():
+    with pytest.raises(ValueError):
+        EvidenceQueryPolicy(statistics_horizon_seconds=900, evaluation_basis=1)
 
 
 def test_canonical_query_is_fts_safe_and_returns_provenance_fixture():

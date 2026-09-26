@@ -58,6 +58,14 @@ class BrokerClockConfig:
     max_calibration_age_seconds: float = 3_600.0
 
     def __post_init__(self) -> None:
+        for value, name in (
+            (self.offset_min_seconds, "offset_min_seconds"),
+            (self.offset_max_seconds, "offset_max_seconds"),
+            (self.offset_step_seconds, "offset_step_seconds"),
+            (self.sample_count, "sample_count"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{name} must be an integer")
         if self.offset_min_seconds > self.offset_max_seconds:
             raise ValueError("offset_min_seconds must not exceed offset_max_seconds")
         if self.offset_step_seconds <= 0:
@@ -71,6 +79,8 @@ class BrokerClockConfig:
             (self.max_future_skew_seconds, "max_future_skew_seconds"),
             (self.max_calibration_age_seconds, "max_calibration_age_seconds"),
         ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be a number")
             if not math.isfinite(float(value)) or float(value) < 0:
                 raise ValueError(f"{name} must be finite and non-negative")
 
@@ -108,10 +118,18 @@ class Mt5BrokerClock:
     source: str | None = None
 
     def __post_init__(self) -> None:
-        if self.status not in {"CALIBRATED", "UNAVAILABLE", "AMBIGUOUS", "STALE_MARKET"}:
+        if not isinstance(self.status, str) or self.status not in {
+            "CALIBRATED",
+            "UNAVAILABLE",
+            "AMBIGUOUS",
+            "STALE_MARKET",
+        }:
             raise ValueError(f"unsupported broker clock status: {self.status!r}")
-        if self.offset_seconds is not None and not math.isfinite(float(self.offset_seconds)):
-            raise ValueError("offset_seconds must be finite")
+        if self.offset_seconds is not None:
+            if isinstance(self.offset_seconds, bool) or not isinstance(self.offset_seconds, (int, float)):
+                raise ValueError("offset_seconds must be numeric")
+            if not math.isfinite(float(self.offset_seconds)):
+                raise ValueError("offset_seconds must be finite")
         if self.status == "CALIBRATED":
             if self.offset_seconds is None or self.calibrated_at_utc is None:
                 raise ValueError("calibrated broker clock requires offset and calibrated_at_utc")
@@ -124,9 +142,11 @@ class Mt5BrokerClock:
             object.__setattr__(
                 self, "calibrated_at_utc", _utc(self.calibrated_at_utc, "calibrated_at_utc")
             )
-        if self.sample_count < 0:
+        if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 0:
             raise ValueError("sample_count must be non-negative")
         if self.max_residual_seconds is not None:
+            if isinstance(self.max_residual_seconds, bool) or not isinstance(self.max_residual_seconds, (int, float)):
+                raise ValueError("max_residual_seconds must be numeric")
             residual = float(self.max_residual_seconds)
             if not math.isfinite(residual) or residual < 0:
                 raise ValueError("max_residual_seconds must be finite and non-negative")

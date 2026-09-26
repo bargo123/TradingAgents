@@ -85,6 +85,24 @@ def test_read_only_active_lease_does_not_initialize_or_write(tmp_path):
     assert not path.exists()
 
 
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"lease_ttl_seconds": True},
+        {"lease_ttl_seconds": 10.5},
+        {"lease_ttl_seconds": "10"},
+        {"lease_ttl_seconds": 0},
+        {"busy_timeout_seconds": True},
+        {"busy_timeout_seconds": 5.5},
+        {"busy_timeout_seconds": "5"},
+        {"busy_timeout_seconds": 0},
+    ],
+)
+def test_watcher_store_rejects_non_contract_timeout_values(tmp_path, kwargs):
+    with pytest.raises(ValueError):
+        WatcherStore(tmp_path / "watch.db", **kwargs)
+
+
 def test_read_only_active_lease_reads_existing_owner_without_mutation(tmp_path):
     path = tmp_path / "watch.db"
     store = WatcherStore(path)

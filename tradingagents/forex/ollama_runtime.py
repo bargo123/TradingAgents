@@ -7,6 +7,7 @@ are scalar-only and never persist prompts, completions, or reasoning.
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import time
@@ -95,14 +96,25 @@ class DedicatedOllamaRuntime:
         probe_interval_seconds: float = 0.5,
         max_recovery_attempts: int = 2,
     ) -> None:
+        if isinstance(probe_attempts, bool) or not isinstance(probe_attempts, int) or probe_attempts <= 0:
+            raise ValueError("probe_attempts must be a positive integer")
+        if (
+            isinstance(probe_interval_seconds, bool)
+            or not isinstance(probe_interval_seconds, (int, float))
+            or not math.isfinite(float(probe_interval_seconds))
+            or probe_interval_seconds < 0
+        ):
+            raise ValueError("probe_interval_seconds must be finite and non-negative")
+        if isinstance(max_recovery_attempts, bool) or not isinstance(max_recovery_attempts, int) or max_recovery_attempts < 0:
+            raise ValueError("max_recovery_attempts must be a non-negative integer")
         self.config = config
         self.http = http
         self.process_launcher = process_launcher
         self.version_runner = version_runner
         self.sleep = sleep
-        self.probe_attempts = max(1, int(probe_attempts))
-        self.probe_interval_seconds = max(0.0, float(probe_interval_seconds))
-        self.max_recovery_attempts = max(0, int(max_recovery_attempts))
+        self.probe_attempts = probe_attempts
+        self.probe_interval_seconds = float(probe_interval_seconds)
+        self.max_recovery_attempts = max_recovery_attempts
         self._owned_process: Any | None = None
         self._verified_contexts: dict[str, int] = {}
         self._recovery_attempts = 0

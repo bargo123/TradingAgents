@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
@@ -155,16 +156,34 @@ class EvidenceQueryPolicy:
     evidence_timeout_seconds: float = 10.0
 
     def __post_init__(self) -> None:
-        for name in ("knowledge_top_k", "experience_top_k", "max_knowledge_items", "max_experience_items", "max_statistics_items", "max_rendered_characters"):
-            if getattr(self, name) <= 0:
+        for name in (
+            "knowledge_top_k",
+            "experience_top_k",
+            "max_knowledge_items",
+            "max_experience_items",
+            "max_statistics_items",
+            "max_rendered_characters",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be positive")
-        if self.evidence_timeout_seconds < 0:
+        timeout = self.evidence_timeout_seconds
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout))
+            or timeout < 0
+        ):
             raise ValueError("evidence_timeout_seconds must be non-negative")
         object.__setattr__(self, "trust_tiers", tuple(TrustTier(tier) for tier in self.trust_tiers))
         if any(tier not in (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED) for tier in self.trust_tiers):
             raise ValueError("trust_tiers contains an unapproved tier")
-        if self.statistics_horizon_seconds is not None and (self.statistics_horizon_seconds <= 0 or not self.evaluation_basis):
-            raise ValueError("statistics horizon requires a valid evaluation_basis")
+        if not isinstance(self.evaluation_basis, str) or not self.evaluation_basis.strip():
+            raise ValueError("evaluation_basis must be a non-empty string")
+        if self.statistics_horizon_seconds is not None:
+            horizon = self.statistics_horizon_seconds
+            if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon <= 0:
+                raise ValueError("statistics_horizon_seconds must be a positive integer")
 
     @staticmethod
     def _normal(value: Any) -> str:

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import math
 from types import SimpleNamespace
+
+import pytest
 
 from tradingagents.forex.ollama_runtime import DedicatedOllamaRuntime
 from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
@@ -40,6 +43,27 @@ class _Http:
             )
         self.loaded_model = kwargs["json"]["model"]
         return SimpleNamespace(raise_for_status=lambda: None, json=lambda: {"done": True})
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"probe_attempts": True},
+        {"probe_attempts": 1.5},
+        {"probe_attempts": "1"},
+        {"probe_interval_seconds": True},
+        {"probe_interval_seconds": "0.1"},
+        {"probe_interval_seconds": math.nan},
+        {"probe_interval_seconds": -1.0},
+        {"max_recovery_attempts": True},
+        {"max_recovery_attempts": 1.5},
+        {"max_recovery_attempts": "1"},
+        {"max_recovery_attempts": -1},
+    ],
+)
+def test_runtime_rejects_invalid_probe_and_recovery_controls(kwargs):
+    with pytest.raises(ValueError):
+        DedicatedOllamaRuntime(ForexShadowRuntimeConfig(), **kwargs)
 
 
 def test_dedicated_runtime_health_checks_models_and_context():

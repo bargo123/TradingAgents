@@ -236,13 +236,15 @@ class WatcherStore:
         provenance: Mapping[str, Any] | None = None,
     ) -> None:
         self.path = Path(path)
-        self.lease_ttl_seconds = int(lease_ttl_seconds)
-        self.busy_timeout_seconds = int(busy_timeout_seconds)
+        for value, name in (
+            (lease_ttl_seconds, "lease_ttl_seconds"),
+            (busy_timeout_seconds, "busy_timeout_seconds"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        self.lease_ttl_seconds = lease_ttl_seconds
+        self.busy_timeout_seconds = busy_timeout_seconds
         self.provenance = dict(provenance or {})
-        if self.lease_ttl_seconds <= 0:
-            raise ValueError("lease_ttl_seconds must be positive")
-        if self.busy_timeout_seconds <= 0:
-            raise ValueError("busy_timeout_seconds must be positive")
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)

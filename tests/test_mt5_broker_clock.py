@@ -131,6 +131,47 @@ def test_stale_calibration_is_rejected() -> None:
         clock.ensure_fresh(BASE, max_age_seconds=3600)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("offset_min_seconds", True),
+        ("offset_max_seconds", 50_400.0),
+        ("offset_step_seconds", 900.0),
+        ("sample_count", 1.0),
+        ("max_tick_age_seconds", True),
+        ("max_future_skew_seconds", "2"),
+        ("max_calibration_age_seconds", None),
+    ],
+)
+def test_broker_clock_config_rejects_non_contract_numeric_types(field, value) -> None:
+    with pytest.raises(ValueError):
+        BrokerClockConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"offset_seconds": "0"},
+        {"offset_seconds": True},
+        {"sample_count": True},
+        {"sample_count": 1.0},
+        {"max_residual_seconds": "0"},
+        {"max_residual_seconds": True},
+    ],
+)
+def test_broker_clock_rejects_coercible_provenance_types(kwargs) -> None:
+    base = {
+        "offset_seconds": 0,
+        "status": "CALIBRATED",
+        "calibrated_at_utc": BASE,
+        "sample_count": 1,
+        "max_residual_seconds": 0.0,
+    }
+    base.update(kwargs)
+    with pytest.raises(ValueError):
+        Mt5BrokerClock(**base)
+
+
 def test_production_clock_source_has_no_local_or_broker_specific_offset() -> None:
     source = Path(__file__).parents[1].joinpath(
         "tradingagents", "dataflows", "mt5", "clock.py"
