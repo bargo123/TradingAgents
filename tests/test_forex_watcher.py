@@ -973,6 +973,28 @@ def test_expired_dead_owner_reconciles_without_resubmitting_old_bucket(tmp_path)
     assert second.runner.calls == []
 
 
+def test_reconciliation_failure_fails_closed_before_new_analysis(tmp_path):
+    first = _Harness(tmp_path, runner_result=_complete_run_result())
+    first.start()
+    first.poll(_utc("2026-09-09T12:15:31Z"))
+    first.crash_without_finalizing()
+    first.store.force_expiry(_utc("2026-09-09T12:20:00Z"))
+
+    second = _Harness(tmp_path, process_alive=False)
+    second.store.reconcile_stale_runs = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        RuntimeError("reconciliation storage failure")
+    )
+
+    result = second.start(now=_utc("2026-09-09T14:00:00Z"))
+
+    assert result.status.name == "WATCHER_OPERATOR_REVIEW_REQUIRED"
+    assert second.coordinator.owner_token is None
+    assert second.runner.calls == []
+    summary = second.store.summary(read_only=True)
+    assert summary["lifecycle_status"] == "DEGRADED"
+    assert summary["last_error_code"] == "RECONCILIATION_FAILED"
+
+
 def test_soft_timeout_marks_slow_without_killing_runner(tmp_path):
     harness = _Harness(tmp_path, runner_result=_complete_run_result())
     harness.start()

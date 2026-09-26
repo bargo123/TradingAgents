@@ -1006,7 +1006,7 @@ class WatcherCoordinator:
         self._persist_circuits(now)
 
     def start(self, now: datetime | None = None):
-        from tradingagents.forex.watch_store import LeaseOwner, LeaseStatus
+        from tradingagents.forex.watch_store import LeaseOwner, LeaseResult, LeaseStatus
 
         now = _require_aware_utc(now or self.clock.now(), "now")
         self.store.initialize()
@@ -1036,6 +1036,17 @@ class WatcherCoordinator:
                     )
             except Exception as exc:  # recovery is fail-closed but startup can report it
                 self.store.set_error(owner.owner_token, "RECONCILIATION_FAILED", str(exc), now)
+                # Do not enter IDLE with an unresolved stale RUNNING row.  The
+                # lease was acquired only for this bounded recovery attempt;
+                # release it and require operator review before any new probe
+                # or analysis can begin.
+                self.store.release_lease(owner.owner_token, now, status="DEGRADED")
+                self.owner_token = None
+                self._owner = None
+                return LeaseResult(
+                    LeaseStatus.WATCHER_OPERATOR_REVIEW_REQUIRED,
+                    previous_owner_token=result.previous_owner_token,
+                )
         # Reconciliation may persist an operator-review circuit.  Reload once
         # before selecting the initial lifecycle state.
         persisted = self._load_persisted_state(now)
