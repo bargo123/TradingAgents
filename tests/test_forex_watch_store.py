@@ -312,6 +312,7 @@ def test_reconciliation_preserves_recovered_freshness_evidence(tmp_path):
     recovered = store.get_run(run.run_id)
     assert recovered.stale_by_completion is True
     assert recovered.freshness_budget_seconds == 900
+    assert store.summary()["last_analysis_completed_at"] == "2026-09-09T12:00:00Z"
 
 
 def test_reconciliation_preserves_runtime_alert_as_slow_success(tmp_path):

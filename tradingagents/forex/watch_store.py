@@ -1059,10 +1059,16 @@ class WatcherStore:
                         (_iso(now), "operator review required", _iso(now)),
                     )
                     actions.append("RECONCILIATION_AMBIGUOUS")
-            conn.execute(
-                "UPDATE forex_watcher_state SET current_run_id=NULL, current_opportunity_key=NULL, updated_at=? WHERE singleton_id=1",
-                (_iso(now),),
-            )
+            if actions:
+                conn.execute(
+                    "UPDATE forex_watcher_state SET current_run_id=NULL, current_opportunity_key=NULL, last_analysis_completed_at=?, updated_at=? WHERE singleton_id=1",
+                    (_iso(now), _iso(now)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE forex_watcher_state SET current_run_id=NULL, current_opportunity_key=NULL, updated_at=? WHERE singleton_id=1",
+                    (_iso(now),),
+                )
         return tuple(actions)
 
     def summary(self, now: datetime | None = None, *, read_only: bool = False) -> dict[str, Any]:
