@@ -408,3 +408,30 @@ def test_repeated_startup_failure_is_bounded_and_operator_visible():
     assert health.status == "UNAVAILABLE"
     assert len(launches) == 3
     assert health.recovery_attempts == 2
+
+
+def test_shutdown_handles_owned_process_termination_race_without_raising():
+    class Process:
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            raise OSError("process exited during terminate")
+
+        def wait(self, timeout=None):
+            raise TimeoutError("process did not exit")
+
+        def kill(self):
+            self.killed = True
+
+    runtime = DedicatedOllamaRuntime(ForexShadowRuntimeConfig())
+    process = Process()
+    runtime._owned_process = process
+
+    runtime.shutdown()
+
+    assert process.killed is True
+    assert runtime.dedicated_pid is None

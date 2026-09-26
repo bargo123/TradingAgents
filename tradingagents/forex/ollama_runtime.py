@@ -12,6 +12,7 @@ import os
 import subprocess
 import time
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import urlsplit
@@ -314,7 +315,8 @@ class DedicatedOllamaRuntime:
             return
         terminate = getattr(process, "terminate", None)
         if callable(terminate):
-            terminate()
+            with suppress(OSError, subprocess.SubprocessError, TimeoutError):
+                terminate()
         wait = getattr(process, "wait", None)
         try:
             if callable(wait):
