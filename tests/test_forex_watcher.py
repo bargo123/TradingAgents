@@ -512,6 +512,29 @@ def test_shutdown_finalizes_completed_analysis_before_releasing_lease(tmp_path):
     assert len(harness.runner.calls) == 1
 
 
+def test_finalization_preserves_claim_time_runtime_provenance(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.store.provenance = {
+        "safe_config_json": json.dumps(
+            {
+                "backend_url": "http://127.0.0.1:11435/v1",
+                "quick_think_llm": "qwen3.5:2b",
+                "deep_think_llm": "qwen3.5:4b",
+            },
+            sort_keys=True,
+        )
+    }
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    persisted = harness.store.list_runs()[0]
+    safe_config = json.loads(persisted.safe_config_json)
+    assert safe_config["backend_url"] == "http://127.0.0.1:11435/v1"
+    assert safe_config["deep_think_llm"] == "qwen3.5:4b"
+
+
 def test_unavailable_analysis_telemetry_persists_nulls_without_private_text(tmp_path):
     result = SimpleNamespace(
         decision=_decision("run-no-telemetry"),

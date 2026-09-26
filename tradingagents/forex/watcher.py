@@ -1038,7 +1038,21 @@ class WatcherCoordinator:
         metrics = getattr(result, "metrics", {})
         if not isinstance(metrics, Mapping):
             metrics = {}
-        safe_config = json.dumps(
+        # The claim-time provenance is authoritative: it includes supervisor
+        # runtime settings (endpoint, model identities, and bounded limits)
+        # that are not represented by WatcherConfig.  Do not reconstruct it
+        # from the scheduler config during finalization or persisted evidence
+        # will be silently relabeled.  Older/test rows may have the empty
+        # placeholder, so retain the bounded compatibility fallback.
+        claim_safe_config = getattr(run, "safe_config_json", None)
+        if isinstance(claim_safe_config, str) and claim_safe_config.strip() not in ("", "{}"):
+            try:
+                json.loads(claim_safe_config)
+            except (TypeError, ValueError):
+                claim_safe_config = None
+        else:
+            claim_safe_config = None
+        safe_config = claim_safe_config or json.dumps(
             safe_effective_config(asdict(self.config)), sort_keys=True
         )
         analysis_snapshot_timestamp = getattr(
