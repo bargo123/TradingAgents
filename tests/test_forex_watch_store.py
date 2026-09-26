@@ -314,6 +314,20 @@ def test_reconciliation_preserves_recovered_freshness_evidence(tmp_path):
     assert recovered.freshness_budget_seconds == 900
 
 
+def test_reconciliation_preserves_runtime_alert_as_slow_success(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    decision_store = ShadowDecisionStore(tmp_path / "shadow.db")
+    acquired = store.acquire_lease(owner(), NOW)
+    run = _insert_running_run(store, acquired.owner_token, source_run_id="slow-run")
+    store.mark_runtime_alert(acquired.owner_token, run.run_id, NOW + timedelta(seconds=901))
+    _record_decision(decision_store, source_run_id="slow-run")
+
+    actions = store.reconcile_stale_runs(acquired.owner_token, NOW, decision_store)
+
+    assert actions == ("DECISION_SAVED",)
+    assert store.get_run(run.run_id).run_status == "SUCCEEDED_SLOW"
+
+
 def test_reconciliation_abandons_zero_match_and_flags_multiple_matches(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     decision_store = ShadowDecisionStore(tmp_path / "shadow.db")

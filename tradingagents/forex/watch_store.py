@@ -1002,9 +1002,15 @@ class WatcherStore:
                             ).total_seconds()
                             > float(freshness_budget)
                         )
+                    recovered_status = (
+                        "SUCCEEDED_SLOW"
+                        if row["runtime_alert_at"] is not None
+                        else "SUCCEEDED"
+                    )
                     conn.execute(
-                        "UPDATE forex_watch_runs SET run_status='SUCCEEDED', completed_at=?, decision_id=?, resolved_symbol=?, decision_context_status=?, normalization_status=?, normalized_action=?, analysis_snapshot_timestamp=?, decision_completed_timestamp=?, analysis_latency_seconds=?, decision_reference_timestamp=?, decision_reference_status=?, decision_reference_delay_seconds=?, stale_by_completion=?, llm_provider=?, quick_model=?, deep_model=? WHERE run_id=?",
+                        "UPDATE forex_watch_runs SET run_status=?, completed_at=?, decision_id=?, resolved_symbol=?, decision_context_status=?, normalization_status=?, normalized_action=?, analysis_snapshot_timestamp=?, decision_completed_timestamp=?, analysis_latency_seconds=?, decision_reference_timestamp=?, decision_reference_status=?, decision_reference_delay_seconds=?, stale_by_completion=?, llm_provider=?, quick_model=?, deep_model=? WHERE run_id=?",
                         (
+                            recovered_status,
                             _iso(now),
                             decision.decision_id,
                             decision.resolved_symbol,
