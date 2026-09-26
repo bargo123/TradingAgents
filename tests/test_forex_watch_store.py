@@ -151,6 +151,34 @@ def test_partial_persisted_lease_fails_closed(tmp_path, column, value, message):
         store.read_only_active_lease(NOW)
 
 
+def test_active_lifecycle_without_owner_fails_closed(tmp_path):
+    path = tmp_path / "watch.db"
+    store = WatcherStore(path)
+    store.initialize()
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE forex_watcher_state SET lifecycle_status='ANALYZING' WHERE singleton_id=1"
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match="lifecycle"):
+        store.read_only_active_lease(NOW)
+
+
+def test_unowned_stopped_state_with_dangling_run_fails_closed(tmp_path):
+    path = tmp_path / "watch.db"
+    store = WatcherStore(path)
+    store.initialize()
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE forex_watcher_state SET current_run_id='run-1' WHERE singleton_id=1"
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match="state"):
+        store.read_only_active_lease(NOW)
+
+
 def test_read_only_summary_does_not_create_or_initialize_database(tmp_path):
     path = tmp_path / "missing.db"
     store = WatcherStore(path)

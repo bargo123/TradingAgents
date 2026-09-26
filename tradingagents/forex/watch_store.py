@@ -471,29 +471,31 @@ class WatcherStore:
 
     def _read_lease_row(self, conn: sqlite3.Connection) -> LeaseRecord | None:
         row = conn.execute(
-            "SELECT owner_token, owner_pid, owner_host, process_started_at, lease_acquired_at, heartbeat_at, lease_expires_at FROM forex_watcher_state WHERE singleton_id = 1"
+            "SELECT lifecycle_status, current_run_id, current_opportunity_key, owner_token, owner_pid, owner_host, process_started_at, lease_acquired_at, heartbeat_at, lease_expires_at FROM forex_watcher_state WHERE singleton_id = 1"
         ).fetchone()
         if row is None:
             return None
-        raw_values = tuple(row[index] for index in range(7))
+        raw_values = tuple(row[index] for index in range(3, 10))
         if all(value is None for value in raw_values):
+            if row[0] != "STOPPED" or row[1] is not None or row[2] is not None:
+                raise ValueError("malformed persisted watcher lease lifecycle/state")
             return None
-        if not isinstance(row[0], str) or not row[0].strip():
+        if not isinstance(row[3], str) or not row[3].strip():
             raise ValueError("malformed persisted watcher lease owner_token")
-        if not isinstance(row[2], str) or not row[2].strip():
+        if not isinstance(row[5], str) or not row[5].strip():
             raise ValueError("malformed persisted watcher lease host")
-        if any(row[index] in (None, "") for index in (3, 4, 5, 6)):
+        if any(row[index] in (None, "") for index in (6, 7, 8, 9)):
             raise ValueError("malformed persisted watcher lease timestamps")
         try:
-            values = tuple(_parse(row[index]) for index in (3, 4, 5, 6))
+            values = tuple(_parse(row[index]) for index in (6, 7, 8, 9))
         except (AttributeError, TypeError, ValueError) as exc:
             raise ValueError("malformed persisted watcher lease timestamps") from exc
         if any(value is None for value in values):
             raise ValueError("malformed persisted watcher lease timestamps")
         return LeaseRecord(
-            owner_token=row[0],
-            pid=row[1],
-            host=row[2] or "",
+            owner_token=row[3],
+            pid=row[4],
+            host=row[5] or "",
             process_started_at=values[0],  # type: ignore[arg-type]
             lease_acquired_at=values[1],  # type: ignore[arg-type]
             heartbeat_at=values[2],  # type: ignore[arg-type]
