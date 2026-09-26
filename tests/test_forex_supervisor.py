@@ -112,6 +112,49 @@ def test_supervisor_uses_bounded_runtime_then_existing_watcher():
     assert calls[-1][0][:2] == ["run", "--db-path"]
 
 
+def test_supervisor_shuts_down_owned_runtime_when_watcher_exits():
+    store = SimpleNamespace(active_lease=lambda _now: None)
+    calls = []
+
+    class Runtime:
+        def ensure_healthy(self):
+            calls.append("ensure")
+            return OllamaHealth(
+                "HEALTHY",
+                "http://127.0.0.1:11435",
+                "v",
+                ("qwen3.5:2b", "qwen3.5:4b"),
+                16384,
+            )
+
+        def prewarm(self):
+            calls.append("prewarm")
+            return {}
+
+        def health(self):
+            calls.append("health")
+            return OllamaHealth(
+                "HEALTHY",
+                "http://127.0.0.1:11435",
+                "v",
+                ("qwen3.5:2b", "qwen3.5:4b"),
+                16384,
+            )
+
+        def shutdown(self):
+            calls.append("shutdown")
+
+    runtime = Runtime()
+    supervisor = ForexSupervisor(
+        ForexShadowRuntimeConfig(),
+        runtime_factory=lambda _config: runtime,
+        store_factory=lambda _path: store,
+    )
+
+    assert supervisor.run(db_path="watch.db", watch_main=lambda *_a, **_k: 0) == 0
+    assert calls[-1] == "shutdown"
+
+
 def test_supervisor_never_starts_collector_before_ollama_is_healthy():
     store = SimpleNamespace(active_lease=lambda _now: None)
     watched = []

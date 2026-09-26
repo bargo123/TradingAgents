@@ -155,44 +155,49 @@ class ForexSupervisor:
             return 1
 
         runtime = self._runtime()
-        health = runtime.ensure_healthy()
-        if not health.healthy:
-            print(f"FOREX SUPERVISOR: OLLAMA_{health.error_code or health.status}")
-            return 1
-        if prewarm:
-            runtime.prewarm()
-            health = runtime.health()
+        try:
+            health = runtime.ensure_healthy()
             if not health.healthy:
                 print(f"FOREX SUPERVISOR: OLLAMA_{health.error_code or health.status}")
                 return 1
-
-        args = ["run", "--db-path", str(db_path)]
-        if terminal_path:
-            args.extend(["--terminal-path", terminal_path])
-        print("FOREX SUPERVISOR: HEALTHY")
-        print(f"PROVIDER: {self.runtime_config.provider}")
-        print(f"BACKEND: {self.runtime_config.backend_url}")
-        print(f"QUICK MODEL: {self.runtime_config.quick_model}")
-        print(f"DEEP MODEL: {self.runtime_config.deep_model}")
-        print(f"OLLAMA CONTEXT: {self.runtime_config.context_length}")
-        print("NO ORDER WILL BE SENT")
-        result = 0
-        for attempt in range(max_restarts + 1):
-            result = int(watch_main(args, runtime_config=self.runtime_config))
-            if result == 0 or attempt >= max_restarts:
-                return result
-            # A non-zero foreground exit is a bounded crash recovery signal.
-            # The watcher itself performs lease/process-identity reconciliation
-            # before it can claim another run; this loop never deletes rows or
-            # kills an active analysis.
-            time.sleep(max(0.0, min(float(restart_backoff_seconds), 60.0)))
-            health = runtime.health()
-            if not health.healthy:
-                health = runtime.ensure_healthy()
+            if prewarm:
+                runtime.prewarm()
+                health = runtime.health()
                 if not health.healthy:
-                    print("FOREX SUPERVISOR: OPERATOR_REVIEW_REQUIRED")
+                    print(f"FOREX SUPERVISOR: OLLAMA_{health.error_code or health.status}")
                     return 1
-        return result
+
+            args = ["run", "--db-path", str(db_path)]
+            if terminal_path:
+                args.extend(["--terminal-path", terminal_path])
+            print("FOREX SUPERVISOR: HEALTHY")
+            print(f"PROVIDER: {self.runtime_config.provider}")
+            print(f"BACKEND: {self.runtime_config.backend_url}")
+            print(f"QUICK MODEL: {self.runtime_config.quick_model}")
+            print(f"DEEP MODEL: {self.runtime_config.deep_model}")
+            print(f"OLLAMA CONTEXT: {self.runtime_config.context_length}")
+            print("NO ORDER WILL BE SENT")
+            result = 0
+            for attempt in range(max_restarts + 1):
+                result = int(watch_main(args, runtime_config=self.runtime_config))
+                if result == 0 or attempt >= max_restarts:
+                    return result
+                # A non-zero foreground exit is a bounded crash recovery signal.
+                # The watcher itself performs lease/process-identity reconciliation
+                # before it can claim another run; this loop never deletes rows or
+                # kills an active analysis.
+                time.sleep(max(0.0, min(float(restart_backoff_seconds), 60.0)))
+                health = runtime.health()
+                if not health.healthy:
+                    health = runtime.ensure_healthy()
+                    if not health.healthy:
+                        print("FOREX SUPERVISOR: OPERATOR_REVIEW_REQUIRED")
+                        return 1
+            return result
+        finally:
+            shutdown = getattr(runtime, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
 
 
 __all__ = ["ForexSupervisor"]

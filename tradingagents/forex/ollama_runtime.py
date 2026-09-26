@@ -329,6 +329,11 @@ class DedicatedOllamaRuntime:
             except (OSError, subprocess.SubprocessError, TimeoutError):
                 pass
 
+    def shutdown(self) -> None:
+        """Stop only the Ollama process started and owned by this runtime."""
+
+        self._stop_owned_server()
+
     def _wait_for_server(self) -> OllamaHealth:
         current = self.health()
         for _ in range(self.probe_attempts):
