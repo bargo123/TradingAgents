@@ -268,14 +268,14 @@ def test_loopback_guard_patches_connect_ex_and_rejects_unc():
     import socket
 
     with OfflineNetworkGuard() as guard:
-        with pytest.raises(NetworkAttempt):
-            socket.socket().connect_ex(("203.0.113.1", 9))
-        with pytest.raises(NetworkAttempt):
-            socket.socket().connect((r"\\server\share", 9))
+        with socket.socket() as sock, pytest.raises(NetworkAttempt):
+            sock.connect_ex(("203.0.113.1", 9))
+        with socket.socket() as sock, pytest.raises(NetworkAttempt):
+            sock.connect((r"\\server\share", 9))
         with pytest.raises(NetworkAttempt):
             urllib.request.urlopen("file:///secret")
-        with pytest.raises(NetworkAttempt):
-            socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"x", ("203.0.113.1", 9))
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock, pytest.raises(NetworkAttempt):
+            sock.sendto(b"x", ("203.0.113.1", 9))
     assert guard.external_network_attempts == 4
 
 
@@ -287,8 +287,8 @@ def test_loopback_guard_blocks_dns_and_request_object_and_allows_documented_pipe
             socket.getaddrinfo("198.51.100.4", 443)
         with pytest.raises(NetworkAttempt):
             urllib.request.urlopen(urllib.request.Request("https://198.51.100.4/"))
-        with pytest.raises((OSError, TypeError)):
-            socket.socket().connect(r"\\.\pipe\phase9-evidence")
+        with socket.socket() as sock, pytest.raises((OSError, TypeError)):
+            sock.connect(r"\\.\pipe\phase9-evidence")
     assert guard.external_network_attempts == 2
 
 
