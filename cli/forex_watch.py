@@ -246,7 +246,12 @@ def _print_banner() -> None:
 
 
 def _run_once(coordinator: Any) -> int:
-    result = coordinator.start()
+    try:
+        result = coordinator.start()
+    except Exception:
+        with suppress(Exception):
+            coordinator.shutdown()
+        raise
     if getattr(result, "status", None) is not LeaseStatus.ACQUIRED:
         print(f"FOREX WATCH ERROR: {getattr(result.status, 'value', result.status)}", file=sys.stderr)
         shutdown = getattr(coordinator, "shutdown", None)
@@ -322,7 +327,12 @@ def main(
             )
         if args.command == "once":
             return _run_once(coordinator)
-        result = coordinator.start()
+        try:
+            result = coordinator.start()
+        except Exception:
+            with suppress(Exception):
+                coordinator.shutdown()
+            raise
         if getattr(result, "status", None) is not LeaseStatus.ACQUIRED:
             print(f"FOREX WATCH ERROR: {getattr(result.status, 'value', result.status)}", file=sys.stderr)
             with suppress(Exception):

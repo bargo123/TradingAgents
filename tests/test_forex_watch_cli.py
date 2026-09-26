@@ -91,6 +91,26 @@ def test_once_propagates_active_analysis_failure(capsys, monkeypatch, tmp_path):
     assert "ANALYSIS_FAILED" in capsys.readouterr().err
 
 
+def test_once_shuts_down_coordinator_when_start_raises(capsys, monkeypatch, tmp_path):
+    calls = []
+
+    class FakeCoordinator:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def start(self):
+            raise RuntimeError("startup failure")
+
+        def shutdown(self):
+            calls.append("shutdown")
+
+    monkeypatch.setattr("cli.forex_watch.WatcherCoordinator", FakeCoordinator)
+
+    assert main(["once", "--db-path", str(tmp_path / "watch.db")]) == 1
+    assert calls == ["shutdown"]
+    assert "FOREX WATCH ERROR:" in capsys.readouterr().err
+
+
 def test_status_does_not_construct_mt5_or_llm(capsys, tmp_path):
     db_path = tmp_path / "watch.db"
     assert main(["status", "--db-path", str(db_path)]) == 0
