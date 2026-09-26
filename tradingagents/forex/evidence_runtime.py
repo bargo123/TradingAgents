@@ -10,7 +10,7 @@ import multiprocessing
 import sqlite3
 import time
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -52,6 +52,9 @@ from .evidence_context import (
 
 class EvidenceTimeout(TimeoutError):
     """The isolated evidence worker exceeded its configured deadline."""
+
+
+_WORKER_TERMINATION_GRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,6 +460,32 @@ def _factory_descriptor(factory: Callable[..., Any]) -> dict[str, str]:
     return {"module": module, "qualname": qualname}
 
 
+def _terminate_worker_bounded(process: Any) -> None:
+    """Terminate an evidence worker without allowing cleanup to hang."""
+
+    terminate = getattr(process, "terminate", None)
+    if callable(terminate):
+        with suppress(OSError, RuntimeError):
+            terminate()
+    join = getattr(process, "join", None)
+    if callable(join):
+        with suppress(OSError, RuntimeError):
+            join(_WORKER_TERMINATION_GRACE_SECONDS)
+    is_alive = getattr(process, "is_alive", None)
+    if not callable(is_alive) or not is_alive():
+        return
+    kill = getattr(process, "kill", None)
+    action = kill if callable(kill) else terminate
+    if callable(action):
+        with suppress(OSError, RuntimeError):
+            action()
+    if callable(join):
+        with suppress(OSError, RuntimeError):
+            join(_WORKER_TERMINATION_GRACE_SECONDS)
+    if callable(is_alive) and is_alive():
+        raise EvidenceTimeout("evidence worker survived bounded termination")
+
+
 def _resolve_factory(descriptor: Mapping[str, str]) -> Callable[..., Any]:
     value: Any = importlib.import_module(str(descriptor["module"]))
     for part in str(descriptor["qualname"]).split("."):
@@ -779,10 +808,7 @@ class EvidenceIntegrationService:
                 if not process.is_alive():
                     break
                 if time.monotonic() >= deadline:
-                    process.terminate()
-                    process.join()
-                    if process.is_alive():
-                        raise EvidenceTimeout("evidence worker survived termination")
+                    _terminate_worker_bounded(process)
                     raise EvidenceTimeout("evidence query exceeded timeout")
             if result is None:
                 if recv_conn.poll():
@@ -795,10 +821,7 @@ class EvidenceIntegrationService:
             remaining = max(0.0, deadline - time.monotonic())
             process.join(remaining)
             if process.is_alive():
-                process.terminate()
-                process.join()
-                if process.is_alive():
-                    raise EvidenceTimeout("evidence worker survived termination")
+                _terminate_worker_bounded(process)
             telemetry_value = (
                 result[2]
                 if result[0] == "ok" and len(result) > 2

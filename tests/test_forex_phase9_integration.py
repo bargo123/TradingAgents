@@ -413,12 +413,35 @@ class _HangingProcess(_ImmediateProcess):
         self._alive = True
 
 
+class _UncooperativeProcess(_HangingProcess):
+    def __init__(self, *, target, args):
+        super().__init__(target=target, args=args)
+        self.join_timeouts = []
+        self.killed = False
+
+    def terminate(self):
+        return None
+
+    def kill(self):
+        self.killed = True
+        self._alive = False
+
+    def join(self, timeout=None):
+        self.join_timeouts.append(timeout)
+        if timeout is None:
+            raise AssertionError("evidence cleanup must not join without a timeout")
+
+
 def _process_factory(*, target, args):
     return _ImmediateProcess(target=target, args=args)
 
 
 def _hanging_process_factory(*, target, args):
     return _HangingProcess(target=target, args=args)
+
+
+def _uncooperative_process_factory(*, target, args):
+    return _UncooperativeProcess(target=target, args=args)
 
 
 def test_real_spawn_query_uses_serializable_envelope_and_reaches_child(tmp_path: Path):
@@ -885,6 +908,27 @@ def test_timeout_terminates_all_evidence_workers():
     )
     service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert getattr(service, "active_evidence_workers", 0) == 0
+
+
+def test_timeout_cleanup_uses_bounded_join_for_uncooperative_worker():
+    service = EvidenceIntegrationService(
+        policy=EvidenceQueryPolicy(evidence_timeout_seconds=0),
+        orchestrator_factory=_empty_factory,
+        generation_provider=lambda: ("p7", "p8"),
+        provider_endpoint="http://127.0.0.1:11434",
+        process_factory=_uncooperative_process_factory,
+    )
+
+    context = service.retrieve(
+        _snapshot(),
+        resolved_symbol="EURUSD",
+        analysis_profile="INTRADAY",
+        analysis_timeframe="M5",
+    )
+
+    assert context.integration_status is EvidenceIntegrationStatus.FALLBACK
+    assert context.diagnostics["integration"]["code"] == "EVIDENCE_TIMEOUT"
+    assert service.active_evidence_workers == 0
 
 
 def test_timeout_does_not_write_or_start_maintenance(tmp_path: Path):
