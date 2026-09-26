@@ -995,6 +995,27 @@ def test_reference_poll_timeout_is_capped_by_remaining_freshness_budget() -> Non
     assert max_attempts == 21
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("forex_reference_poll_timeout_seconds", True),
+        ("forex_reference_poll_timeout_seconds", "5"),
+        ("forex_reference_poll_interval_seconds", True),
+        ("forex_reference_poll_interval_seconds", "0.25"),
+        ("forex_reference_poll_max_attempts", 2.5),
+        ("forex_reference_poll_max_attempts", "2"),
+        ("forex_reference_poll_max_attempts", True),
+        ("freshness_budget_seconds", "900"),
+        ("freshness_budget_seconds", True),
+    ],
+)
+def test_reference_poll_settings_reject_non_contract_types(key, value) -> None:
+    with pytest.raises(ValueError):
+        runner_module._reference_poll_settings(
+            {key: value}, ANALYSIS_TIMESTAMP, COMPLETION_TIMESTAMP
+        )
+
+
 def test_reference_poll_keeps_quote_validation_fail_closed() -> None:
     provider = SimpleNamespace(
         get_spread=lambda symbol: SimpleNamespace(

@@ -67,6 +67,7 @@ def test_runtime_config_rejects_invalid_provider_and_temperature_types(field, va
         "http://127.0.0.1:11435/v1?api_key=secret",
         "http://user:secret@127.0.0.1:11435/v1",
         "http://127.0.0.1/v1",
+        "http://127.0.0.1:0/v1",
     ],
 )
 def test_runtime_config_rejects_non_local_or_credential_bearing_endpoints(backend_url):

@@ -186,21 +186,31 @@ def _reference_poll_settings(
     completed_timestamp: datetime,
 ) -> tuple[float, float, int]:
     """Resolve and freshness-cap the bounded reference polling settings."""
+    timeout_value = config.get("forex_reference_poll_timeout_seconds", 5.0)
+    poll_interval_value = config.get("forex_reference_poll_interval_seconds", 0.25)
+    max_attempts_value = config.get("forex_reference_poll_max_attempts", 21)
+    freshness_budget_value = config.get("freshness_budget_seconds")
+    if (
+        isinstance(timeout_value, bool)
+        or not isinstance(timeout_value, (int, float))
+        or isinstance(poll_interval_value, bool)
+        or not isinstance(poll_interval_value, (int, float))
+        or isinstance(max_attempts_value, bool)
+        or not isinstance(max_attempts_value, int)
+        or (
+            freshness_budget_value is not None
+            and (
+                isinstance(freshness_budget_value, bool)
+                or not isinstance(freshness_budget_value, (int, float))
+            )
+        )
+    ):
+        raise ValueError("invalid reference quote polling configuration")
     try:
-        timeout_seconds = float(
-            config.get("forex_reference_poll_timeout_seconds", 5.0)
-        )
-        poll_interval_seconds = float(
-            config.get("forex_reference_poll_interval_seconds", 0.25)
-        )
-        max_attempts_value = config.get("forex_reference_poll_max_attempts", 21)
-        max_attempts = int(max_attempts_value)
-        freshness_budget_value = config.get("freshness_budget_seconds")
-        freshness_budget = (
-            None
-            if freshness_budget_value is None
-            else float(freshness_budget_value)
-        )
+        timeout_seconds = float(timeout_value)
+        poll_interval_seconds = float(poll_interval_value)
+        max_attempts = max_attempts_value
+        freshness_budget = None if freshness_budget_value is None else float(freshness_budget_value)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("invalid reference quote polling configuration") from exc
     if (
@@ -208,7 +218,6 @@ def _reference_poll_settings(
         or timeout_seconds < 0
         or not math.isfinite(poll_interval_seconds)
         or poll_interval_seconds < 0
-        or isinstance(max_attempts_value, bool)
         or max_attempts <= 0
         or (
             freshness_budget is not None

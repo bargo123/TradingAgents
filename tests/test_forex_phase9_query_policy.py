@@ -106,6 +106,12 @@ def test_query_policy_requires_string_evaluation_basis_when_statistics_are_enabl
         EvidenceQueryPolicy(statistics_horizon_seconds=900, evaluation_basis=1)
 
 
+@pytest.mark.parametrize("basis", ["", "UNKNOWN", "analysis_snapshot", 1])
+def test_query_policy_rejects_unsupported_evaluation_basis(basis):
+    with pytest.raises(ValueError):
+        EvidenceQueryPolicy(evaluation_basis=basis)
+
+
 def test_canonical_query_is_fts_safe_and_returns_provenance_fixture():
     """The deterministic query must be usable by the lexical Phase 7 seam."""
 

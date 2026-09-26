@@ -125,6 +125,7 @@ class ForexShadowRuntimeConfig:
             or endpoint.fragment
             or endpoint.path.rstrip("/") != "/v1"
             or endpoint_port is None
+            or endpoint_port <= 0
         ):
             raise ValueError(
                 "backend_url must be a credential-free loopback HTTP /v1 endpoint with an explicit port"

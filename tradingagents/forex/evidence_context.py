@@ -178,8 +178,10 @@ class EvidenceQueryPolicy:
         object.__setattr__(self, "trust_tiers", tuple(TrustTier(tier) for tier in self.trust_tiers))
         if any(tier not in (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED) for tier in self.trust_tiers):
             raise ValueError("trust_tiers contains an unapproved tier")
-        if not isinstance(self.evaluation_basis, str) or not self.evaluation_basis.strip():
-            raise ValueError("evaluation_basis must be a non-empty string")
+        if self.evaluation_basis not in {"ANALYSIS_SNAPSHOT", "DECISION_REFERENCE"}:
+            raise ValueError(
+                "evaluation_basis must be ANALYSIS_SNAPSHOT or DECISION_REFERENCE"
+            )
         if self.statistics_horizon_seconds is not None:
             horizon = self.statistics_horizon_seconds
             if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon <= 0:
