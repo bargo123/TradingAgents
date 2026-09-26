@@ -66,6 +66,11 @@ def _metric(metrics: Mapping[str, Any], key: str) -> Any:
     return value if value is not None else "unknown"
 
 
+def _read_only_lease(store: Any, now: datetime) -> Any:
+    reader = getattr(store, "read_only_active_lease", None)
+    return reader(now) if callable(reader) else store.active_lease(now)
+
+
 def _print_result(result: ShadowDecisionEvaluationResult | ShadowEvaluationBatchResult) -> None:
     decision = getattr(result, "decision", None)
     if decision is not None:
@@ -104,7 +109,7 @@ def main(
         db_path = Path(args.db_path)
         now = datetime.now(timezone.utc)
         watcher_store = WatcherStore(db_path)
-        lease = watcher_store.active_lease(now)
+        lease = _read_only_lease(watcher_store, now)
         if lease is not None and lease.lease_expires_at > now:
             print("FOREX EVALUATION ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
             return 1

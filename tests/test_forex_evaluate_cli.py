@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -76,6 +76,7 @@ def test_forex_evaluate_cli_labels_bases_and_reports_zero_llm_calls(capsys, tmp_
     assert "DECISION_REFERENCE STATUS: DATA_UNAVAILABLE" in output
     assert "LLM CALLS: 0" in output
     assert calls == [("construct", 45), ("decision-cli-001", "terminal.exe")]
+    assert not (tmp_path / "evaluate.db").exists()
 
 
 def test_forex_evaluate_cli_returns_nonzero_on_provider_failure(capsys) -> None:
@@ -145,6 +146,29 @@ def test_forex_evaluate_refuses_nonexpired_watcher_lease(capsys, tmp_path):
     result = main(
         ["--pending", "--db-path", str(db_path)],
         evaluator_factory=MustNotConstruct,
+    )
+
+    assert result == 1
+    assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err
+
+
+def test_forex_evaluate_lease_guard_prefers_read_only_probe(capsys, monkeypatch):
+    class Store:
+        def read_only_active_lease(self, _now):
+            return SimpleNamespace(
+                lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
+            )
+
+        def active_lease(self, _now):
+            raise AssertionError("evaluation guard must not initialize the writer store")
+
+    monkeypatch.setattr("cli.forex_evaluate.WatcherStore", lambda _path: Store())
+
+    result = main(
+        ["--pending", "--db-path", "watch.db"],
+        evaluator_factory=lambda **_: (_ for _ in ()).throw(
+            AssertionError("evaluator must not be constructed")
+        ),
     )
 
     assert result == 1
