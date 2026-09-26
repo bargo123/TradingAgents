@@ -650,13 +650,31 @@ def _telemetry(result: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         return {}
 
+    def is_safe_count_key(key: Any) -> bool:
+        canonical = "".join(character for character in str(key).casefold() if character.isalnum())
+        return canonical in {
+            "tokensin",
+            "tokensout",
+            "prompttokens",
+            "completiontokens",
+            "inputtokens",
+            "outputtokens",
+            "reasoningtokens",
+        }
+
     def redact(item: Any) -> Any:
         if isinstance(item, Mapping):
-            return {
-                key: redact(child)
-                for key, child in item.items()
-                if not any(token in str(key).lower() for token in ("prompt", "completion", "reasoning", "credential", "api_key"))
-            }
+            result: dict[Any, Any] = {}
+            for key, child in item.items():
+                if is_safe_count_key(key):
+                    if isinstance(child, bool) or not isinstance(child, (int, float)):
+                        continue
+                    if isinstance(child, float) and not math.isfinite(child):
+                        continue
+                    result[key] = child
+                elif not _privacy_forbidden(str(key)):
+                    result[key] = redact(child)
+            return result
         if isinstance(item, (tuple, list)):
             return type(item)(redact(child) for child in item)
         return item

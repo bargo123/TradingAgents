@@ -27,8 +27,8 @@ from scripts.phase9_evidence_smoke import (
 from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
-from tradingagents.forex.evidence_audit import EvidenceAuditStore
-from tradingagents.forex.evidence_replay import EvidenceReplayReport, _json_value
+from tradingagents.forex.evidence_audit import EvidenceAuditStore, _contains_forbidden
+from tradingagents.forex.evidence_replay import EvidenceReplayReport, _json_value, _telemetry
 
 
 def test_smoke_uses_local_ollama_model_defaults_and_env_overrides(monkeypatch):
@@ -685,3 +685,25 @@ def test_standalone_replay_privacy_is_recursive_and_separator_aware():
     encoded = json.dumps(payload).lower()
     assert all(token not in encoded for token in ("password", "api-key", "chain_of_thought", "chain-of-thought", "credential", "reasoning"))
     assert "object at" not in encoded
+
+
+def test_replay_telemetry_redacts_camel_case_credentials_but_keeps_counts():
+    class Result:
+        analysis_telemetry = {
+            "apiKey": "private-key",
+            "accessToken": "private-token",
+            "password": "private-password",
+            "tokens_in": 12,
+            "tokens_out": "not-a-count",
+            "safe_status": "AVAILABLE",
+        }
+
+    assert _telemetry(Result()) == {
+        "tokens_in": 12,
+        "safe_status": "AVAILABLE",
+    }
+
+
+@pytest.mark.parametrize("value", ["apiKey", "accessToken", "authorization", "secret", "bearer"])
+def test_audit_privacy_rejects_credential_variants(value):
+    assert _contains_forbidden(value)

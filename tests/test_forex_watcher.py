@@ -820,6 +820,22 @@ def test_event_sink_rejects_sensitive_key_variants():
     ]
 
 
+def test_event_sink_rejects_camel_case_credentials_but_keeps_token_counts():
+    events = []
+    sink = EventSink(events)
+
+    sink.emit(
+        "ANALYSIS_FAILED",
+        {
+            "apiKey": "private-key",
+            "access_token": "private-token",
+            "tokens_in": 12,
+        },
+    )
+
+    assert events == [{"event": "ANALYSIS_FAILED", "tokens_in": 12}]
+
+
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
 def test_event_sink_drops_non_finite_numeric_values(value):
     events = []

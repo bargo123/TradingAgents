@@ -18,9 +18,13 @@ _FORBIDDEN_WORDS = (
     "reasoning",
     "chain of thought",
     "api key",
+    "apikey",
     "password",
     "token",
     "credential",
+    "authorization",
+    "secret",
+    "bearer",
 )
 _DIAGNOSTIC_KEYS = {"diagnostics", "source_errors"}
 

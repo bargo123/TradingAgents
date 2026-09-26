@@ -259,6 +259,16 @@ def test_error_detail_redacts_token_content(tmp_path):
     assert store.summary(NOW)["last_error"] == "[redacted]"
 
 
+@pytest.mark.parametrize("detail", ["apiKey=private", "accessToken=private"])
+def test_error_detail_redacts_camel_case_credentials(tmp_path, detail):
+    store = WatcherStore(tmp_path / "watch.db")
+    acquired = store.acquire_lease(owner(), NOW)
+
+    store.set_error(acquired.owner_token, "ANALYSIS_FAILED", detail, NOW)
+
+    assert store.summary(NOW)["last_error"] == "[redacted]"
+
+
 def test_error_status_without_code_has_safe_read_only_fallback(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     store.initialize()

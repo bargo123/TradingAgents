@@ -154,12 +154,24 @@ _SENSITIVE_EVENT_KEY_FRAGMENTS = (
     "reasoning",
     "report",
     "prose",
-    "api_key",
+    "apikey",
     "secret",
     "password",
     "authorization",
     "credential",
 )
+_SENSITIVE_EVENT_TOKEN_KEYS = frozenset(
+    {"token", "accesstoken", "refreshtoken", "authtoken", "bearertoken", "tokenvalue"}
+)
+
+
+def _sensitive_event_key(key: Any) -> bool:
+    canonical = "".join(character for character in str(key).casefold() if character.isalnum())
+    return (
+        any(fragment in canonical for fragment in _SENSITIVE_EVENT_KEY_FRAGMENTS)
+        or canonical in _SENSITIVE_EVENT_TOKEN_KEYS
+        or canonical.endswith("token")
+    )
 
 
 def _safe_json_value(value: Any) -> Any:
@@ -768,7 +780,7 @@ class EventSink:
         safe = {"event": event}
         for key, value in dict(payload or {}).items():
             key_text = str(key).casefold()
-            if any(fragment in key_text for fragment in _SENSITIVE_EVENT_KEY_FRAGMENTS):
+            if _sensitive_event_key(key_text):
                 continue
             if isinstance(value, float) and not math.isfinite(value):
                 continue

@@ -59,7 +59,12 @@ def _safe_text(value: Any, limit: int = 500) -> str | None:
     if value is None:
         return None
     text = str(value).replace("\x00", " ").strip()
-    if any(word in text.casefold() for word in _SENSITIVE_ERROR_WORDS):
+    folded = text.casefold()
+    compact = "".join(character for character in folded if character.isalnum())
+    if any(
+        word in folded or word.replace("_", "") in compact
+        for word in _SENSITIVE_ERROR_WORDS
+    ):
         return "[redacted]"
     return text[:limit] if text else None
 
