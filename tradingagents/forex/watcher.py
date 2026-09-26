@@ -178,6 +178,7 @@ _SENSITIVE_EVENT_KEY_FRAGMENTS = (
 _SENSITIVE_EVENT_TOKEN_KEYS = frozenset(
     {"token", "accesstoken", "refreshtoken", "authtoken", "bearertoken", "tokenvalue"}
 )
+_SAFE_TELEMETRY_KEYS = frozenset({"reasoning_tokens", "reasoning_token_count"})
 
 
 def _sensitive_event_key(key: Any) -> bool:
@@ -217,6 +218,14 @@ def _safe_metrics_json_value(value: Any) -> Any:
         return {
             str(key): _safe_metrics_json_value(item)
             for key, item in value.items()
+            if (
+                str(key).casefold() in _SAFE_TELEMETRY_KEYS
+                and (item is None or (isinstance(item, (int, float)) and not isinstance(item, bool)))
+            )
+            or (
+                str(key).casefold() not in _SAFE_TELEMETRY_KEYS
+                and not _sensitive_event_key(key)
+            )
         }
     if isinstance(value, (tuple, list)):
         return [_safe_metrics_json_value(item) for item in value]

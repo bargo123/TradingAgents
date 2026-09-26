@@ -802,6 +802,41 @@ def test_finalization_replaces_non_finite_nested_telemetry_with_null(tmp_path):
     assert "NaN" not in (run.metrics_json or "")
 
 
+def test_finalization_drops_sensitive_nested_telemetry_fields(tmp_path):
+    result = SimpleNamespace(
+        decision=_decision("run-sensitive-nested-telemetry"),
+        elapsed_seconds=1.0,
+        metrics={
+            "telemetry_status": "AVAILABLE",
+            "llm_calls": 1,
+            "agents": {
+                "Trader": {
+                    "calls": 1,
+                    "prompt": "PRIVATE PROMPT",
+                    "completion": "PRIVATE COMPLETION",
+                    "reasoning": "PRIVATE REASONING",
+                    "reasoning_tokens": "PRIVATE REASONING TOKENS",
+                    "reasoning_token_count": 3,
+                }
+            },
+        },
+    )
+    harness = _Harness(tmp_path, runner_result=result)
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    payload = json.loads(harness.store.list_runs()[0].metrics_json or "{}")
+    assert payload["agents"]["Trader"]["calls"] == 1
+    assert "prompt" not in payload["agents"]["Trader"]
+    assert "completion" not in payload["agents"]["Trader"]
+    assert "reasoning" not in payload["agents"]["Trader"]
+    assert "reasoning_tokens" not in payload["agents"]["Trader"]
+    assert payload["agents"]["Trader"]["reasoning_token_count"] == 3
+    assert "PRIVATE" not in json.dumps(payload).upper()
+
+
 def test_new_bar_during_analysis_is_terminally_skipped_and_not_queued(tmp_path):
     harness = _Harness(tmp_path, runner_result=_complete_run_result())
     harness.start()
