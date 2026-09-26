@@ -194,6 +194,33 @@ def test_safe_effective_config_strips_backend_url_userinfo():
     assert "secret" not in repr(safe)
 
 
+def test_safe_effective_config_preserves_evidence_policy_controls():
+    safe = safe_effective_config(
+        {
+            "forex_evidence_enabled": True,
+            "forex_evidence_timeout_seconds": 12.5,
+            "forex_evidence_knowledge_artifact_root": r"C:\p7fast",
+            "forex_evidence_knowledge_embedding_model_path": r"C:\embeddings",
+            "forex_evidence_experience_artifact_root": r"C:\p8",
+            "forex_evidence_evaluation_basis": "DECISION_REFERENCE",
+            "forex_evidence_statistics_horizon_seconds": 900,
+            "forex_evidence_knowledge_top_k": 2,
+            "forex_evidence_experience_top_k": 3,
+        }
+    )
+
+    assert safe["forex_evidence_enabled"] is True
+    assert safe["forex_evidence_timeout_seconds"] == 12.5
+    assert safe["forex_evidence_knowledge_artifact_root"] == r"C:\p7fast"
+    assert safe["forex_evidence_knowledge_embedding_model_path"] == r"C:\embeddings"
+    assert safe["forex_evidence_experience_artifact_root"] == r"C:\p8"
+    assert safe["forex_evidence_evaluation_basis"] == "DECISION_REFERENCE"
+    assert safe["forex_evidence_statistics_horizon_seconds"] == 900
+    assert safe["forex_evidence_knowledge_top_k"] == 2
+    assert safe["forex_evidence_experience_top_k"] == 3
+    assert safe_effective_config({"forex_evidence_enabled": False}) != safe
+
+
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
 def test_safe_effective_config_rejects_non_finite_numbers(value):
     with pytest.raises(ValueError, match="finite"):

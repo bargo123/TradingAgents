@@ -145,6 +145,15 @@ _SAFE_CONFIG_KEYS = frozenset(
         "freshness_budget_seconds",
         "evaluation_interval_seconds",
         "evaluation_enabled",
+        "forex_evidence_enabled",
+        "forex_evidence_timeout_seconds",
+        "forex_evidence_knowledge_artifact_root",
+        "forex_evidence_knowledge_embedding_model_path",
+        "forex_evidence_experience_artifact_root",
+        "forex_evidence_evaluation_basis",
+        "forex_evidence_statistics_horizon_seconds",
+        "forex_evidence_knowledge_top_k",
+        "forex_evidence_experience_top_k",
     }
 )
 _CREDENTIAL_WORDS = ("key", "token", "secret", "password", "authorization", "credential")
