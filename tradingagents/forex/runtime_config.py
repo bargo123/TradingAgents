@@ -97,13 +97,17 @@ class ForexShadowRuntimeConfig:
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.provider, str) or self.provider.casefold() != "ollama":
+        if not isinstance(self.provider, str) or self.provider.strip().casefold() != "ollama":
             raise ValueError("forex shadow runtime provider must be ollama")
+        provider = self.provider.strip().casefold()
         for name in ("backend_url", "quick_model", "deep_model"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"{name} must be non-empty")
+        backend_url = self.backend_url.strip()
+        quick_model = self.quick_model.strip()
+        deep_model = self.deep_model.strip()
         try:
-            endpoint = urlsplit(self.backend_url)
+            endpoint = urlsplit(backend_url)
             hostname = endpoint.hostname
             is_loopback = hostname == "localhost"
             if hostname and not is_loopback:
@@ -125,6 +129,10 @@ class ForexShadowRuntimeConfig:
             raise ValueError(
                 "backend_url must be a credential-free loopback HTTP /v1 endpoint with an explicit port"
             )
+        object.__setattr__(self, "provider", provider)
+        object.__setattr__(self, "backend_url", backend_url)
+        object.__setattr__(self, "quick_model", quick_model)
+        object.__setattr__(self, "deep_model", deep_model)
         if (
             isinstance(self.temperature, bool)
             or not isinstance(self.temperature, (int, float))

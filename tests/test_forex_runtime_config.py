@@ -81,6 +81,20 @@ def test_runtime_config_accepts_custom_loopback_port_without_persisting_credenti
     assert "12345" in runtime.safe_dict()["backend_url"]
 
 
+def test_runtime_config_canonicalizes_validated_provider_endpoint_and_models():
+    runtime = ForexShadowRuntimeConfig(
+        provider=" OLLAMA ",
+        backend_url=" http://127.0.0.1:11435/v1 ",
+        quick_model=" qwen3.5:2b ",
+        deep_model=" qwen3.5:4b ",
+    )
+
+    assert runtime.provider == "ollama"
+    assert runtime.backend_url == "http://127.0.0.1:11435/v1"
+    assert runtime.quick_model == "qwen3.5:2b"
+    assert runtime.deep_model == "qwen3.5:4b"
+
+
 def test_additive_extra_settings_change_fingerprint_without_persisting_values():
     first = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "first-secret"})
     second = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "second-secret"})
