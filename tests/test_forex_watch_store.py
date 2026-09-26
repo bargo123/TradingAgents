@@ -238,7 +238,12 @@ def _insert_running_run(store: WatcherStore, owner_token: str, source_run_id: st
     )
 
 
-def _record_decision(decision_store: ShadowDecisionStore, source_run_id: str, executed=False):
+def _record_decision(
+    decision_store: ShadowDecisionStore,
+    source_run_id: str,
+    executed=False,
+    **changes,
+):
     decision = ShadowTradeDecision(
         decision_id=f"decision-{source_run_id}-{id(decision_store)}",
         created_at=NOW,
@@ -263,6 +268,8 @@ def _record_decision(decision_store: ShadowDecisionStore, source_run_id: str, ex
         executed=executed,
         decision_context_status="COMPLETE",
     )
+    if changes:
+        decision = replace(decision, **changes)
     decision_store.record(decision)
     return decision
 
@@ -279,6 +286,32 @@ def test_reconciliation_links_one_decision_and_never_reruns_old_key(tmp_path):
     assert actions == ("DECISION_SAVED",)
     assert store.get_run(run.run_id).decision_id == decision.decision_id
     assert store.get_opportunity(run.opportunity_key).status == "DECISION_SAVED"
+
+
+def test_reconciliation_preserves_recovered_freshness_evidence(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    decision_store = ShadowDecisionStore(tmp_path / "shadow.db")
+    acquired = store.acquire_lease(owner(), NOW)
+    run = _insert_running_run(store, acquired.owner_token, source_run_id="stale-run")
+    with sqlite3.connect(store.path) as conn:
+        conn.execute(
+            "UPDATE forex_watch_runs SET freshness_budget_seconds=900 WHERE run_id=?",
+            (run.run_id,),
+        )
+        conn.commit()
+    _record_decision(
+        decision_store,
+        source_run_id="stale-run",
+        decision_completed_timestamp=NOW + timedelta(seconds=901),
+        analysis_latency_seconds=901.0,
+    )
+
+    actions = store.reconcile_stale_runs(acquired.owner_token, NOW, decision_store)
+
+    assert actions == ("DECISION_SAVED",)
+    recovered = store.get_run(run.run_id)
+    assert recovered.stale_by_completion is True
+    assert recovered.freshness_budget_seconds == 900
 
 
 def test_reconciliation_abandons_zero_match_and_flags_multiple_matches(tmp_path):

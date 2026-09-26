@@ -988,6 +988,20 @@ class WatcherStore:
                 invalid_execution = any(getattr(item, "executed", True) is not False for item in matches)
                 if len(matches) == 1 and not invalid_execution:
                     decision = matches[0]
+                    stale_by_completion = row["stale_by_completion"]
+                    freshness_budget = row["freshness_budget_seconds"]
+                    if (
+                        decision.analysis_snapshot_timestamp is not None
+                        and decision.decision_completed_timestamp is not None
+                        and freshness_budget is not None
+                    ):
+                        stale_by_completion = int(
+                            (
+                                decision.decision_completed_timestamp
+                                - decision.analysis_snapshot_timestamp
+                            ).total_seconds()
+                            > float(freshness_budget)
+                        )
                     conn.execute(
                         "UPDATE forex_watch_runs SET run_status='SUCCEEDED', completed_at=?, decision_id=?, resolved_symbol=?, decision_context_status=?, normalization_status=?, normalized_action=?, analysis_snapshot_timestamp=?, decision_completed_timestamp=?, analysis_latency_seconds=?, decision_reference_timestamp=?, decision_reference_status=?, decision_reference_delay_seconds=?, stale_by_completion=?, llm_provider=?, quick_model=?, deep_model=? WHERE run_id=?",
                         (
@@ -1003,7 +1017,7 @@ class WatcherStore:
                             None if decision.decision_reference_timestamp is None else _iso(decision.decision_reference_timestamp),
                             decision.decision_reference_status,
                             decision.decision_reference_delay_seconds,
-                            None,
+                            stale_by_completion,
                             decision.llm_provider,
                             decision.quick_model,
                             decision.deep_model,
