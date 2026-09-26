@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Annotated
 
 from langchain_core.tools import tool
@@ -34,6 +35,12 @@ def get_forex_global_news(
     """Retrieve broad macro/global news without ticker or issuer context."""
     config = get_config()
     queries = config.get("forex_global_news_queries")
+    if (
+        isinstance(queries, (str, bytes))
+        or not isinstance(queries, Sequence)
+        or not any(str(query).strip() for query in queries)
+    ):
+        return MACRO_EVENT_UNAVAILABLE
     with forex_global_news_context(queries):
         result = route_to_vendor("get_global_news", curr_date, look_back_days, limit)
     return MACRO_EVENT_UNAVAILABLE if _unavailable_report(result) else str(result)

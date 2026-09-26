@@ -112,6 +112,21 @@ def test_forex_news_wrapper_uses_exact_unavailable_semantics(monkeypatch):
     )
 
 
+def test_forex_news_wrapper_fails_closed_when_safe_queries_are_missing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(forex_news, "get_config", lambda: {"forex_global_news_queries": []})
+    monkeypatch.setattr(
+        forex_news,
+        "route_to_vendor",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or "issuer earnings",
+    )
+
+    result = forex_news.get_forex_global_news.invoke({"curr_date": "2026-09-08"})
+
+    assert result == "MACRO/EVENT DATA UNAVAILABLE"
+    assert calls == []
+
+
 def test_forex_news_wrapper_preserves_broad_report_and_tool_name(monkeypatch):
     report = "## Global Market News\n\n### ECB policy outlook"
     monkeypatch.setattr(forex_news, "route_to_vendor", lambda *args, **kwargs: report)
