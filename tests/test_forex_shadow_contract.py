@@ -280,6 +280,27 @@ def test_shadow_decision_rejects_invalid_runtime_identity_fields(
         make_decision(**{field: value})
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("reference_bid", None),
+        ("reference_ask", None),
+        ("reference_mid", None),
+        ("spread", None),
+        ("spread_points", None),
+        ("reference_bid", "1.1"),
+        ("spread_points", True),
+        ("reference_ask", -1.0),
+        ("spread", -0.0001),
+    ),
+)
+def test_shadow_decision_rejects_invalid_required_quote_values(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError):
+        make_decision(**{field: value})
+
+
 def test_shadow_decision_requires_utc_timestamps() -> None:
     with pytest.raises(ValueError):
         make_decision(created_at=datetime(2026, 9, 8, 2, 0, tzinfo=timezone(timedelta(hours=2))))

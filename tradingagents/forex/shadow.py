@@ -479,6 +479,13 @@ class ShadowTradeDecision:
         else:
             _json_safe(self.snapshot_json)
         _json_safe(self.raw_portfolio_manager_result)
+        required_quote_fields = {
+            "reference_bid",
+            "reference_ask",
+            "reference_mid",
+            "spread",
+            "spread_points",
+        }
         for field_name in (
             "confidence",
             "reference_bid",
@@ -500,13 +507,35 @@ class ShadowTradeDecision:
             "outcome_alpha",
         ):
             value = getattr(self, field_name)
-            if isinstance(value, float) and not math.isfinite(value):
+            if value is None:
+                if field_name in required_quote_fields:
+                    raise ValueError(f"{field_name} must be a finite numeric value")
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{field_name} must be a finite numeric value")
+            if not math.isfinite(float(value)):
                 raise ValueError(f"{field_name} must be finite when provided")
+        for field_name in ("reference_bid", "reference_ask", "reference_mid"):
+            if getattr(self, field_name) <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        for field_name in ("spread", "spread_points"):
+            if getattr(self, field_name) < 0:
+                raise ValueError(f"{field_name} must be non-negative")
         for prefix in ("analysis_snapshot", "decision_reference"):
             bid = getattr(self, f"{prefix}_bid")
             ask = getattr(self, f"{prefix}_ask")
+            spread = getattr(self, f"{prefix}_spread")
+            spread_points = getattr(self, f"{prefix}_spread_points")
+            if bid is not None and bid <= 0:
+                raise ValueError(f"{prefix} bid must be positive")
+            if ask is not None and ask <= 0:
+                raise ValueError(f"{prefix} ask must be positive")
             if bid is not None and ask is not None and ask < bid:
                 raise ValueError(f"{prefix} ask must be greater than or equal to bid")
+            if spread is not None and spread < 0:
+                raise ValueError(f"{prefix} spread must be non-negative")
+            if spread_points is not None and spread_points < 0:
+                raise ValueError(f"{prefix} spread_points must be non-negative")
 
     @property
     def raw_portfolio_manager_result_json(self) -> str:
