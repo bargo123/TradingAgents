@@ -522,6 +522,29 @@ def test_get_bars_resolves_each_supported_timeframe(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("method", "kwargs"),
+    [
+        ("get_bars", {"count": True}),
+        ("get_bars", {"count": 1.0}),
+        ("get_bars", {"count": 0}),
+        ("get_bars", {"count": 1, "start_pos": True}),
+        ("get_bars", {"count": 1, "start_pos": -1}),
+        ("get_market_snapshot", {"count": True}),
+        ("get_market_snapshot", {"count": 1.0}),
+    ],
+)
+def test_history_requests_reject_non_integer_or_invalid_ranges(fake_api, method, kwargs):
+    provider = initialized_provider(fake_api)
+
+    with pytest.raises(Mt5DataError, match="integer|greater than zero|non-negative"):
+        if method == "get_bars":
+            provider.get_bars("USDJPY", "M5", **kwargs)
+        else:
+            provider.get_market_snapshot("USDJPY", **kwargs)
+
+
+@pytest.mark.unit
 def test_bars_account_and_spread_are_normalized(fake_api):
     provider = initialized_provider(fake_api)
     bars = provider.get_bars("USDJPY", "M5", 2)

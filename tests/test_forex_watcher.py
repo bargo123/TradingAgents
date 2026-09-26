@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,13 +42,26 @@ def test_watcher_defaults_are_forex_safe_and_single_slot(tmp_path):
     assert not hasattr(config, "max_symbols_per_interval")
 
 
+def test_watcher_config_canonicalizes_analysis_profile(tmp_path):
+    config = WatcherConfig(db_path=tmp_path / "watch.db", analysis_profile="  intraday  ")
+
+    assert config.analysis_profile == "INTRADAY"
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
         ("max_concurrent_analyses", 2),
+        ("max_concurrent_analyses", True),
+        ("max_concurrent_analyses", 1.0),
+        ("max_attempts_per_opportunity", True),
+        ("max_attempts_per_opportunity", 1.0),
         ("poll_interval_seconds", True),
         ("bar_close_settle_seconds", -1),
+        ("symbols", (None,)),
+        ("symbols", (123,)),
         ("analysts", ("market", "fundamentals")),
+        ("analysts", (123,)),
         ("schedule_timeframe", "H4"),
         ("schedule_timeframe", None),
         ("analysis_profile", None),
@@ -144,6 +158,12 @@ def test_safe_effective_config_excludes_credentials():
     assert safe["llm_provider"] == "openai"
     assert "api_key" not in safe
     assert "secret" not in repr(safe)
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_safe_effective_config_rejects_non_finite_numbers(value):
+    with pytest.raises(ValueError, match="finite"):
+        safe_effective_config({"temperature": value})
 
 
 def test_operation_gate_rejects_nested_or_concurrent_operation():

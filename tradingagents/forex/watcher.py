@@ -60,12 +60,17 @@ def _require_choice(value: Any, choices: set[str], name: str) -> None:
 
 
 def _normalize_symbol_tuple(values: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(values, (str, bytes)):
-        values = (values,)  # type: ignore[assignment]
+    if isinstance(values, bytes):
+        raise ValueError("symbols must contain strings")
+    if isinstance(values, str):
+        values = (values,)
     try:
-        result = tuple(str(value).strip().upper() for value in values)
+        raw_values = tuple(values)
     except TypeError as exc:
         raise ValueError("symbols must be a sequence") from exc
+    if any(not isinstance(value, str) for value in raw_values):
+        raise ValueError("symbols must contain strings")
+    result = tuple(value.strip().upper() for value in raw_values)
     if not result or any(not value for value in result):
         raise ValueError("symbols must contain at least one non-empty symbol")
     if len(set(result)) != len(result):
@@ -74,12 +79,17 @@ def _normalize_symbol_tuple(values: Sequence[str]) -> tuple[str, ...]:
 
 
 def _normalize_analyst_tuple(values: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(values, (str, bytes)):
-        values = tuple(part.strip() for part in str(values).split(","))
+    if isinstance(values, bytes):
+        raise ValueError("analysts must contain strings")
+    if isinstance(values, str):
+        values = tuple(part.strip() for part in values.split(","))
     try:
-        result = tuple(str(value).strip().lower() for value in values)
+        raw_values = tuple(values)
     except TypeError as exc:
         raise ValueError("analysts must be a sequence") from exc
+    if any(not isinstance(value, str) for value in raw_values):
+        raise ValueError("analysts must contain strings")
+    result = tuple(value.strip().lower() for value in raw_values)
     if not result or any(not value for value in result):
         raise ValueError("analysts must contain at least one name")
     if len(set(result)) != len(result):
@@ -150,7 +160,11 @@ def _safe_json_value(value: Any) -> Any:
         }
     if isinstance(value, (tuple, list)):
         return [_safe_json_value(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("configuration numbers must be finite")
+        return value
+    if isinstance(value, (str, int, bool)) or value is None:
         return value
     return str(value)
 
@@ -213,11 +227,13 @@ class WatcherConfig:
         object.__setattr__(self, "schedule_timeframe", timeframe)
         if not isinstance(self.analysis_profile, str):
             raise ValueError("analysis_profile must be a string")
-        _require_choice(self.analysis_profile, {"INTRADAY"}, "analysis_profile")
-        object.__setattr__(self, "analysis_profile", self.analysis_profile.upper())
+        analysis_profile = self.analysis_profile.strip().upper()
+        _require_choice(analysis_profile, {"INTRADAY"}, "analysis_profile")
+        object.__setattr__(self, "analysis_profile", analysis_profile)
         _require_positive_int(self.poll_interval_seconds, "poll_interval_seconds")
         _require_nonnegative_int(self.bar_close_settle_seconds, "bar_close_settle_seconds")
         _require_nonnegative_int(self.cooldown_seconds, "cooldown_seconds")
+        _require_positive_int(self.max_concurrent_analyses, "max_concurrent_analyses")
         if self.max_concurrent_analyses != 1:
             raise ValueError("max_concurrent_analyses must be exactly 1 in Phase 6 v1")
         _require_positive_int(self.analysis_timeout_seconds, "analysis_timeout_seconds")

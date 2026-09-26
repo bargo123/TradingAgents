@@ -639,6 +639,16 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
     assert provider.initialize_calls == 0
     assert provider.shutdown_calls == 0
 
+
+def test_runner_rejects_non_string_symbol_before_saved_snapshot_comparison(tmp_path):
+    runner, provider, _, _ = _make_runner(tmp_path, {"final_trade_decision": None})
+
+    with pytest.raises(ValueError, match="symbol must be a non-empty string"):
+        runner.analyze(symbol=None, snapshot=_snapshot(), analysis_date="2026-09-08")
+
+    assert provider.initialize_calls == 0
+    assert provider.shutdown_calls == 0
+
 # Phase 5 temporal/reference tests
 ANALYSIS_TIMESTAMP = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
 COMPLETION_TIMESTAMP = datetime(2026, 9, 8, 0, 0, 41, tzinfo=timezone.utc)

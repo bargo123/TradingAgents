@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+
+import pytest
 
 from cli.forex_supervisor import main
 from tradingagents.forex.ollama_runtime import OllamaHealth
@@ -10,6 +13,33 @@ from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
 from tradingagents.forex.supervisor import ForexSupervisor
 
 UTC = timezone.utc
+
+
+def test_supervisor_rejects_invalid_restart_controls_before_runtime_start():
+    constructed = []
+
+    class Runtime:
+        def ensure_healthy(self):
+            raise AssertionError("runtime must not start for invalid controls")
+
+    supervisor = ForexSupervisor(
+        runtime_factory=lambda _config: constructed.append(True) or Runtime(),
+        store_factory=lambda _path: SimpleNamespace(active_lease=lambda _now: None),
+    )
+
+    for kwargs in (
+        {"max_restarts": True},
+        {"max_restarts": 1.0},
+        {"max_restarts": -1},
+        {"restart_backoff_seconds": True},
+        {"restart_backoff_seconds": "1"},
+        {"restart_backoff_seconds": math.inf},
+        {"restart_backoff_seconds": -1.0},
+    ):
+        with pytest.raises(ValueError):
+            supervisor.run(db_path="watch.db", watch_main=lambda *a, **k: 0, **kwargs)
+
+    assert constructed == []
 
 
 def test_supervisor_refuses_active_watcher_before_ollama_start():

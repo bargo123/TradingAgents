@@ -659,6 +659,8 @@ class ForexShadowRunner:
         """Analyze one snapshot without constructing or writing a shadow store row."""
         if persist:
             raise ValueError("analyze() is non-persisting; use run() for normal shadow persistence")
+        selected_analysts = self.selected_analysts if analysts is None else tuple(analysts)
+        parsed_date = self._validate_inputs(symbol, count, analysis_date, selected_analysts)
         if snapshot is not None and not isinstance(snapshot, ForexMarketSnapshot):
             raise ValueError("snapshot must be a ForexMarketSnapshot")
         if snapshot is not None and symbol.casefold() != snapshot.symbol.casefold():
@@ -680,8 +682,6 @@ class ForexShadowRunner:
             if not isinstance(source_run_id, str) or not source_run_id.strip():
                 raise ValueError("source_run_id must be a non-empty string")
             source_run_id = source_run_id.strip()
-        selected_analysts = self.selected_analysts if analysts is None else tuple(analysts)
-        parsed_date = self._validate_inputs(symbol, count, analysis_date, selected_analysts)
         profile = resolve_forex_profile(analysis_profile)
         analysis_telemetry: dict[str, Any] = {}
         try:

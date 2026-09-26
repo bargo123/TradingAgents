@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -136,6 +137,16 @@ class ForexSupervisor:
         cannot be disturbed or duplicated.
         """
 
+        if isinstance(max_restarts, bool) or not isinstance(max_restarts, int) or max_restarts < 0:
+            raise ValueError("max_restarts must be a non-negative integer")
+        if (
+            isinstance(restart_backoff_seconds, bool)
+            or not isinstance(restart_backoff_seconds, (int, float))
+            or not math.isfinite(float(restart_backoff_seconds))
+            or restart_backoff_seconds < 0
+        ):
+            raise ValueError("restart_backoff_seconds must be a finite non-negative number")
+
         store = self.store_factory(Path(db_path))
         now = datetime.now(UTC)
         lease = _read_active_lease(store, now)
@@ -165,8 +176,6 @@ class ForexSupervisor:
         print(f"DEEP MODEL: {self.runtime_config.deep_model}")
         print(f"OLLAMA CONTEXT: {self.runtime_config.context_length}")
         print("NO ORDER WILL BE SENT")
-        if isinstance(max_restarts, bool) or max_restarts < 0:
-            raise ValueError("max_restarts must be non-negative")
         result = 0
         for attempt in range(max_restarts + 1):
             result = int(watch_main(args, runtime_config=self.runtime_config))

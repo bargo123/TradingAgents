@@ -46,6 +46,18 @@ _CURRENCY_CODES = frozenset(
 _SEPARATOR = re.compile(r"[._#-]")
 
 
+def _require_history_count(value: Any, name: str = "count") -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise Mt5DataError(f"{name} must be a positive integer")
+    return value
+
+
+def _require_start_position(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise Mt5DataError("start_pos must be a non-negative integer")
+    return value
+
+
 def _field(raw: Any, name: str, default: Any = None) -> Any:
     if raw is None:
         return default
@@ -376,14 +388,14 @@ class MT5Provider:
             raise Mt5DataError(f"Invalid tick data for {resolved!r}") from exc
 
     def get_bars(self, symbol: str, timeframe: str, count: int, start_pos: int = 0) -> tuple[Mt5Bar, ...]:
-        if count <= 0:
-            raise Mt5DataError("Bar count must be greater than zero")
+        count = _require_history_count(count, "bar count")
+        start_pos = _require_start_position(start_pos)
         resolved = self.ensure_symbol(symbol)
         return self._get_bars_resolved(resolved, timeframe, count, start_pos)
 
     def _get_bars_resolved(self, resolved: str, timeframe: str, count: int, start_pos: int = 0) -> tuple[Mt5Bar, ...]:
-        if count <= 0:
-            raise Mt5DataError("Bar count must be greater than zero")
+        count = _require_history_count(count, "bar count")
+        start_pos = _require_start_position(start_pos)
         rows = self._api.copy_rates_from_pos(resolved, resolve_timeframe(timeframe, self._api), start_pos, count)
         if rows is None:
             raise Mt5DataError(f"No bars available for {resolved!r}")
@@ -528,8 +540,7 @@ class MT5Provider:
     def get_market_snapshot(self, symbol: str, count: int = 100) -> ForexMarketSnapshot:
         """Capture a normalized, read-only multi-timeframe market snapshot."""
         self._require_connected()
-        if count <= 0:
-            raise Mt5DataError("Bar count must be greater than zero")
+        count = _require_history_count(count, "bar count")
         resolved = self.ensure_symbol(symbol)
         clock = self._broker_clock
         if clock is None:
