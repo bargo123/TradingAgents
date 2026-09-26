@@ -14,6 +14,7 @@ from tradingagents.forex.watch_store import WatcherStore
 from tradingagents.forex.watcher import (
     CircuitBreakers,
     CompletedBarSchedule,
+    EventSink,
     FrozenClock,
     LeaseHeartbeat,
     Mt5OperationBusy,
@@ -797,6 +798,34 @@ def test_lifecycle_events_are_allowlisted_and_redacted(tmp_path):
     }
     assert all("prompt" not in repr(event).lower() for event in harness.events)
     assert all("completion" not in repr(event).lower() for event in harness.events)
+
+
+def test_event_sink_rejects_sensitive_key_variants():
+    events = []
+    sink = EventSink(events)
+
+    sink.emit(
+        "ANALYSIS_FAILED",
+        {
+            "prompt_text": "private prompt",
+            "completion_text": "private completion",
+            "reasoning_details": "private reasoning",
+            "tokens_in": 12,
+            "safe_status": "FAILED",
+        },
+    )
+
+    assert events == [
+        {"event": "ANALYSIS_FAILED", "tokens_in": 12, "safe_status": "FAILED"}
+    ]
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_event_sink_drops_non_finite_numeric_values(value):
+    events = []
+    EventSink(events).emit("ANALYSIS_FINISHED", {"runtime_seconds": value})
+
+    assert events == [{"event": "ANALYSIS_FINISHED"}]
 
 
 def test_cooldown_selects_only_newest_current_candidate(tmp_path):

@@ -132,12 +132,52 @@ def test_malformed_persisted_lease_pid_fails_closed(tmp_path):
         store.read_only_active_lease(NOW)
 
 
+@pytest.mark.parametrize(
+    ("column", "value", "message"),
+    [("owner_token", "", "owner_token"), ("lease_expires_at", None, "lease")],
+)
+def test_partial_persisted_lease_fails_closed(tmp_path, column, value, message):
+    path = tmp_path / "watch.db"
+    store = WatcherStore(path)
+    store.acquire_lease(owner(), NOW)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            f"UPDATE forex_watcher_state SET {column}=? WHERE singleton_id=1",
+            (value,),
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match=message):
+        store.read_only_active_lease(NOW)
+
+
 def test_read_only_summary_does_not_create_or_initialize_database(tmp_path):
     path = tmp_path / "missing.db"
     store = WatcherStore(path)
 
     assert store.read_only_summary(NOW) == {}
     assert not path.exists()
+
+
+def test_initialize_schema_creation_is_atomic_on_ddl_failure(tmp_path):
+    path = tmp_path / "watch.db"
+    store = WatcherStore(path)
+    raw = sqlite3.connect(path)
+
+    def deny_indexes(action, *_args):
+        return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_CREATE_INDEX else sqlite3.SQLITE_OK
+
+    raw.set_authorizer(deny_indexes)
+    store._connect = lambda: raw
+
+    with pytest.raises(sqlite3.DatabaseError):
+        store.initialize()
+
+    with sqlite3.connect(path) as connection:
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    assert tables == []
 
 
 def test_read_only_summary_reads_without_initialization_or_mutation(tmp_path):
@@ -203,9 +243,18 @@ def test_error_detail_redacts_prompt_and_completion_content(tmp_path):
     store.set_error(
         acquired.owner_token,
         "ANALYSIS_FAILED",
-        "prompt=secret completion=private reasoning=hidden",
+        "prompt=secret completion=private reasoning=hidden token=credential",
         NOW,
     )
+
+    assert store.summary(NOW)["last_error"] == "[redacted]"
+
+
+def test_error_detail_redacts_token_content(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    acquired = store.acquire_lease(owner(), NOW)
+
+    store.set_error(acquired.owner_token, "ANALYSIS_FAILED", "bearer token value", NOW)
 
     assert store.summary(NOW)["last_error"] == "[redacted]"
 

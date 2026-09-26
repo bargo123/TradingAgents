@@ -24,6 +24,8 @@ _SENSITIVE_ERROR_WORDS = (
     "completion",
     "reasoning",
     "prose",
+    "token",
+    "bearer",
     "api_key",
     "secret",
     "password",
@@ -315,6 +317,7 @@ class WatcherStore:
         with self._transaction(immediate=True) as conn:
             conn.executescript(
                 """
+                BEGIN;
                 CREATE TABLE IF NOT EXISTS forex_watcher_state (
                     singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
                     lifecycle_status TEXT NOT NULL CHECK (
@@ -426,6 +429,7 @@ class WatcherStore:
                     ON forex_watch_runs(run_status, heartbeat_at);
                 CREATE INDEX IF NOT EXISTS idx_forex_watch_runs_decision
                     ON forex_watch_runs(decision_id);
+                COMMIT;
                 """
             )
             columns = {
@@ -464,11 +468,23 @@ class WatcherStore:
         row = conn.execute(
             "SELECT owner_token, owner_pid, owner_host, process_started_at, lease_acquired_at, heartbeat_at, lease_expires_at FROM forex_watcher_state WHERE singleton_id = 1"
         ).fetchone()
-        if row is None or not row[0] or not row[6]:
+        if row is None:
             return None
-        values = tuple(_parse(row[index]) for index in (3, 4, 5, 6))
+        raw_values = tuple(row[index] for index in range(7))
+        if all(value is None for value in raw_values):
+            return None
+        if not isinstance(row[0], str) or not row[0].strip():
+            raise ValueError("malformed persisted watcher lease owner_token")
+        if not isinstance(row[2], str) or not row[2].strip():
+            raise ValueError("malformed persisted watcher lease host")
+        if any(row[index] in (None, "") for index in (3, 4, 5, 6)):
+            raise ValueError("malformed persisted watcher lease timestamps")
+        try:
+            values = tuple(_parse(row[index]) for index in (3, 4, 5, 6))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("malformed persisted watcher lease timestamps") from exc
         if any(value is None for value in values):
-            return None
+            raise ValueError("malformed persisted watcher lease timestamps")
         return LeaseRecord(
             owner_token=row[0],
             pid=row[1],

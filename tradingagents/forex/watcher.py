@@ -148,6 +148,18 @@ _SAFE_CONFIG_KEYS = frozenset(
     }
 )
 _CREDENTIAL_WORDS = ("key", "token", "secret", "password", "authorization", "credential")
+_SENSITIVE_EVENT_KEY_FRAGMENTS = (
+    "prompt",
+    "completion",
+    "reasoning",
+    "report",
+    "prose",
+    "api_key",
+    "secret",
+    "password",
+    "authorization",
+    "credential",
+)
 
 
 def _safe_json_value(value: Any) -> Any:
@@ -755,10 +767,13 @@ class EventSink:
             raise ValueError(f"event is not allow-listed: {event}")
         safe = {"event": event}
         for key, value in dict(payload or {}).items():
-            if key.casefold() in {"prompt", "completion", "report", "reasoning", "prose"}:
+            key_text = str(key).casefold()
+            if any(fragment in key_text for fragment in _SENSITIVE_EVENT_KEY_FRAGMENTS):
+                continue
+            if isinstance(value, float) and not math.isfinite(value):
                 continue
             if isinstance(value, (str, int, float, bool)) or value is None:
-                safe[key] = value
+                safe[str(key)] = value
         self.target.append(safe)
 
 
