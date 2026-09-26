@@ -227,6 +227,15 @@ def test_initialize_post_check_failure_is_typed_and_shuts_down(fake_api):
     assert fake_api.shutdown_called is True
 
 
+def test_initialize_rejects_malformed_terminal_connected_flag(fake_api):
+    terminal = fake_api.terminal_info()
+    terminal.connected = "yes"
+    fake_api.terminal_info = lambda: terminal
+
+    with pytest.raises(Mt5InitializationError, match="terminal is not connected"):
+        MT5Provider(api=fake_api).initialize()
+
+
 @pytest.mark.unit
 def test_exact_symbol_match_wins_over_variants(fake_api):
     provider = initialized_provider(fake_api)

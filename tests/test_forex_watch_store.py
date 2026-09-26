@@ -117,6 +117,21 @@ def test_read_only_active_lease_reads_existing_owner_without_mutation(tmp_path):
     assert path.read_bytes() == before
 
 
+def test_malformed_persisted_lease_pid_fails_closed(tmp_path):
+    path = tmp_path / "watch.db"
+    store = WatcherStore(path)
+    store.acquire_lease(owner(), NOW)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE forex_watcher_state SET owner_pid=? WHERE singleton_id=1",
+            (123.5,),
+        )
+        conn.commit()
+
+    with pytest.raises(ValueError, match="pid"):
+        store.read_only_active_lease(NOW)
+
+
 def test_read_only_summary_does_not_create_or_initialize_database(tmp_path):
     path = tmp_path / "missing.db"
     store = WatcherStore(path)
@@ -179,6 +194,20 @@ def test_successful_evaluation_preserves_unrelated_error(tmp_path):
     summary = store.summary(NOW)
     assert summary["last_error_code"] == "ANALYSIS_FAILED"
     assert summary["last_error"] == "analysis failed"
+
+
+def test_error_detail_redacts_prompt_and_completion_content(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    acquired = store.acquire_lease(owner(), NOW)
+
+    store.set_error(
+        acquired.owner_token,
+        "ANALYSIS_FAILED",
+        "prompt=secret completion=private reasoning=hidden",
+        NOW,
+    )
+
+    assert store.summary(NOW)["last_error"] == "[redacted]"
 
 
 def test_error_status_without_code_has_safe_read_only_fallback(tmp_path):

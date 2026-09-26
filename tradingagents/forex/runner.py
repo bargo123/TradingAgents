@@ -318,11 +318,15 @@ def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
 
 
 def _failed_normalization(exc: Exception) -> ShadowNormalization:
+    failure_type = type(exc).__name__
     return ShadowNormalization(
         action=None,
         normalization_status="FAILED",
-        normalization_error=f"structured Portfolio Manager output could not be normalized: {exc}",
-        raw_result={"error": str(exc)},
+        normalization_error=(
+            "structured Portfolio Manager output could not be normalized "
+            f"(cause_type={failure_type})"
+        ),
+        raw_result={"error": "STRUCTURED_OUTPUT_REQUIRED", "status": "FAILED"},
     )
 
 

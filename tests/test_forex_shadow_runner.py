@@ -509,6 +509,18 @@ def test_runner_persists_failed_normalization_without_guessing(tmp_path):
     assert store.get(result.decision.decision_id).normalization_status == "FAILED"
 
 
+def test_unexpected_normalization_failure_does_not_persist_exception_text():
+    from tradingagents.forex.runner import _failed_normalization
+
+    result = _failed_normalization(ValueError("prompt=secret completion=private"))
+
+    assert result.action is None
+    assert result.normalization_status == "FAILED"
+    assert result.raw_result == {"error": "STRUCTURED_OUTPUT_REQUIRED", "status": "FAILED"}
+    assert "secret" not in (result.normalization_error or "")
+    assert "private" not in (result.normalization_error or "")
+
+
 def test_runner_persists_incomplete_context_status_without_relabeling_action(tmp_path):
     runner, provider, _, store = _make_runner(
         tmp_path,

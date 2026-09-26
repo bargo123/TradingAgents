@@ -281,6 +281,19 @@ def test_market_probe_result_validates_injected_quote_values():
         )
 
 
+def test_market_probe_result_rejects_numeric_text_without_coercion():
+    from tradingagents.forex.watcher import MarketProbeResult
+
+    with pytest.raises(ValueError, match="numeric"):
+        MarketProbeResult(
+            requested_symbol="EURUSD",
+            resolved_symbol="EURUSD",
+            timestamp=NOW,
+            bid="1.2",
+            ask="1.2002",
+        )
+
+
 class FakeHeartbeatStore:
     def __init__(self):
         self.renewals = 0
@@ -327,6 +340,47 @@ def test_heartbeat_uses_elapsed_monotonic_time_not_absolute_clock_value():
     assert store.runtime_alerts == 1
 
 
+def test_heartbeat_does_not_retry_internal_type_error():
+    class BrokenStore:
+        def __init__(self):
+            self.calls = 0
+
+        def heartbeat(self, owner_token, now, run_id=None):
+            self.calls += 1
+            raise TypeError("heartbeat implementation failure")
+
+    store = BrokenStore()
+    heartbeat = LeaseHeartbeat(
+        store=store,
+        owner_token="owner",
+        run_id="run",
+        timeout_seconds=7200,
+    )
+
+    with pytest.raises(TypeError, match="implementation failure"):
+        heartbeat.tick(NOW, 0.0)
+    assert store.calls == 1
+
+
+def test_outcome_coordinator_does_not_retry_internal_type_error():
+    class BrokenEvaluator:
+        def __init__(self):
+            self.calls = 0
+
+        def evaluate_pending(self, *, now, terminal_path=None):
+            self.calls += 1
+            raise TypeError("evaluator implementation failure")
+
+    from tradingagents.forex.watcher import OutcomeCoordinator
+
+    evaluator = BrokenEvaluator()
+    coordinator = OutcomeCoordinator(evaluator, terminal_path="terminal")
+
+    with pytest.raises(TypeError, match="implementation failure"):
+        coordinator.evaluate_pending(NOW)
+    assert evaluator.calls == 1
+
+
 def test_circuit_breakers_open_only_after_class_threshold_and_reset_independently(
     tmp_path,
 ):
@@ -345,6 +399,14 @@ def test_circuit_breakers_open_only_after_class_threshold_and_reset_independentl
     assert circuits.is_open is False
     assert circuits.record("analysis") is False
     assert circuits.counts["mt5"] == 0
+
+
+@pytest.mark.parametrize("bad", ["not-an-int", 1.5, True, -1])
+def test_circuit_breaker_restore_rejects_malformed_counts(tmp_path, bad):
+    circuits = CircuitBreakers(WatcherConfig(db_path=tmp_path / "watch.db"))
+
+    with pytest.raises(ValueError, match="counter"):
+        circuits.load({"mt5": bad})
 
 
 def test_mt5_failure_threshold_degrades_watcher_and_stops_new_claims(tmp_path):

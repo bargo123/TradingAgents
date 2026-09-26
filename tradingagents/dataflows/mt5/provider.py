@@ -203,7 +203,7 @@ class MT5Provider:
             raise Mt5InitializationError(
                 self._connection_error("MT5 post-initialization inspection failed")
             ) from exc
-        if terminal is None or not _field(terminal, "connected", False):
+        if terminal is None or _field(terminal, "connected", False) is not True:
             self._shutdown_after_failed_initialize()
             raise Mt5InitializationError(self._connection_error("MT5 terminal is not connected"))
         if account is None:
@@ -224,12 +224,19 @@ class MT5Provider:
             terminal, account = self._api.terminal_info(), self._api.account_info()
         except Exception:
             return False
-        return bool(terminal and _field(terminal, "connected", False) and account)
+        return bool(terminal and _field(terminal, "connected", False) is True and account)
 
     def _require_connected(self) -> None:
         if not self._initialized:
             raise Mt5NotConnectedError("MT5 provider has not been initialized")
-        if not self.is_connected():
+        try:
+            terminal = self._api.terminal_info()
+        except Exception as exc:
+            raise Mt5AccountDisconnectedError("MT5 terminal or account is disconnected") from exc
+        connected = _field(terminal, "connected", False)
+        if not isinstance(connected, bool):
+            raise Mt5DataError("Invalid MT5 terminal data")
+        if not connected or not self.is_connected():
             raise Mt5AccountDisconnectedError("MT5 terminal or account is disconnected")
 
     def _clock_now_utc(self) -> datetime:

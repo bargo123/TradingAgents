@@ -9,6 +9,7 @@ contracts as the collector is wired.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -21,6 +22,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
+from numbers import Real
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit, urlunsplit
@@ -168,6 +170,18 @@ def _safe_json_value(value: Any) -> Any:
     if isinstance(value, (str, int, bool)) or value is None:
         return value
     return str(value)
+
+
+def _accepts_keyword(callable_value: Any, keyword: str) -> bool | None:
+    """Determine keyword support without retrying a callable on TypeError."""
+
+    try:
+        parameters = inspect.signature(callable_value).parameters.values()
+    except (TypeError, ValueError):
+        return None
+    return keyword in {parameter.name for parameter in parameters} or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
 
 
 def safe_effective_config(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -482,11 +496,15 @@ class MarketProbeResult:
         object.__setattr__(
             self, "timestamp", _require_aware_utc(self.timestamp, "broker tick timestamp")
         )
-        try:
-            bid = float(self.bid)
-            ask = float(self.ask)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("probe quote must contain numeric bid and ask") from exc
+        if (
+            isinstance(self.bid, bool)
+            or isinstance(self.ask, bool)
+            or not isinstance(self.bid, Real)
+            or not isinstance(self.ask, Real)
+        ):
+            raise ValueError("probe quote must contain numeric bid and ask")
+        bid = float(self.bid)
+        ask = float(self.ask)
         if not math.isfinite(bid) or not math.isfinite(ask) or bid <= 0 or ask < bid:
             raise ValueError("probe quote must be finite, positive, and ask >= bid")
         object.__setattr__(self, "bid", bid)
@@ -499,9 +517,9 @@ class MarketProbeResult:
         timestamp = getattr(tick, "timestamp", None)
         timestamp = _require_aware_utc(timestamp, "broker tick timestamp")
         try:
-            bid = float(tick.bid)
-            ask = float(tick.ask)
-        except (AttributeError, TypeError, ValueError) as exc:
+            bid = tick.bid
+            ask = tick.ask
+        except AttributeError as exc:
             raise ValueError("probe quote must contain numeric bid and ask") from exc
         return cls(
             requested_symbol=str(requested_symbol).strip().upper(),
@@ -652,10 +670,10 @@ class LeaseHeartbeat:
         renew = getattr(self.store, "heartbeat", None) or getattr(self.store, "renew", None)
         if not callable(renew):
             raise RuntimeError("watcher store does not expose a lease heartbeat")
-        try:
-            renew(self.owner_token, now, run_id=self.run_id)
-        except TypeError:
+        if _accepts_keyword(renew, "run_id") is False:
             renew(self.owner_token, now)
+        else:
+            renew(self.owner_token, now, run_id=self.run_id)
         if self.sequence is not None:
             self.sequence.append("heartbeat")
         if self.run_id != self._tracked_run_id:
@@ -765,10 +783,11 @@ class OutcomeCoordinator:
         self.terminal_path = terminal_path
 
     def evaluate_pending(self, now: datetime) -> EvaluationRunEvidence:
-        try:
-            result = self.evaluator.evaluate_pending(now=now, terminal_path=self.terminal_path)
-        except TypeError:
-            result = self.evaluator.evaluate_pending(now=now)
+        evaluate = self.evaluator.evaluate_pending
+        if _accepts_keyword(evaluate, "terminal_path") is False:
+            result = evaluate(now=now)
+        else:
+            result = evaluate(now=now, terminal_path=self.terminal_path)
         errors = tuple(str(item) for item in getattr(result, "errors", ()) or ())
         metrics = getattr(result, "metrics", {})
         if not isinstance(metrics, Mapping):
@@ -831,11 +850,11 @@ class CircuitBreakers:
 
         for failure_class in self.counts:
             value = counts.get(failure_class, 0)
-            try:
-                value = int(value)
-            except (TypeError, ValueError):
-                value = 0
-            self.counts[failure_class] = max(0, value)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(
+                    f"circuit counter {failure_class} must be a non-negative integer"
+                )
+            self.counts[failure_class] = value
         self.open_reason = reason or None
         self.opened_at = None if opened_at is None else _require_aware_utc(opened_at, "circuit_opened_at")
 

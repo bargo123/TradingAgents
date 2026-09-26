@@ -19,6 +19,17 @@ if TYPE_CHECKING:
     from tradingagents.forex.watcher import ScheduledOpportunity
 
 _UTC = timezone.utc
+_SENSITIVE_ERROR_WORDS = (
+    "prompt",
+    "completion",
+    "reasoning",
+    "prose",
+    "api_key",
+    "secret",
+    "password",
+    "authorization",
+    "credential",
+)
 
 
 def _utc(value: datetime, name: str = "timestamp") -> datetime:
@@ -46,6 +57,8 @@ def _safe_text(value: Any, limit: int = 500) -> str | None:
     if value is None:
         return None
     text = str(value).replace("\x00", " ").strip()
+    if any(word in text.casefold() for word in _SENSITIVE_ERROR_WORDS):
+        return "[redacted]"
     return text[:limit] if text else None
 
 
@@ -100,6 +113,21 @@ class LeaseRecord:
     lease_acquired_at: datetime
     heartbeat_at: datetime
     lease_expires_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner_token, str) or not self.owner_token.strip():
+            raise ValueError("lease owner_token must be non-empty")
+        if isinstance(self.pid, bool) or not isinstance(self.pid, int) or self.pid <= 0:
+            raise ValueError("lease pid must be a positive integer")
+        if not isinstance(self.host, str) or not self.host.strip():
+            raise ValueError("lease host must be non-empty")
+        for name in (
+            "process_started_at",
+            "lease_acquired_at",
+            "heartbeat_at",
+            "lease_expires_at",
+        ):
+            object.__setattr__(self, name, _utc(getattr(self, name), name))
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,7 +471,7 @@ class WatcherStore:
             return None
         return LeaseRecord(
             owner_token=row[0],
-            pid=int(row[1]),
+            pid=row[1],
             host=row[2] or "",
             process_started_at=values[0],  # type: ignore[arg-type]
             lease_acquired_at=values[1],  # type: ignore[arg-type]

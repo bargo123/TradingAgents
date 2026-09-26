@@ -15,6 +15,7 @@ from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.features import FEATURE_NAMES_V1
 from tradingagents.experience.models import (
     EvidenceBundle,
+    EvidenceRequest,
     ExperienceQuery,
     ExperienceSearchResult,
     TrustTier,
@@ -34,7 +35,9 @@ from tradingagents.forex.evidence_runtime import (
     ReadonlyExperienceCatalog,
     ReadonlyKnowledgeCatalog,
     _bounded_diagnostic,
+    _child_query,
     _close_orchestrator,
+    _factory_descriptor,
     _validate_child_orchestrator,
     approved_readonly_component,
     approved_readonly_factory,
@@ -380,6 +383,18 @@ class _ImmediateProcess:
         self._alive = False
 
 
+class _CaptureConnection:
+    def __init__(self):
+        self.messages = []
+        self.closed = False
+
+    def send(self, value):
+        self.messages.append(value)
+
+    def close(self):
+        self.closed = True
+
+
 class _BoundProcess(_ImmediateProcess):
     def __init__(self, *, target, args, orchestrator):
         super().__init__(target=target, args=args)
@@ -478,7 +493,27 @@ def test_worker_failure_diagnostic_keeps_code_and_safe_exception_type():
 
     assert diagnostic["code"] == "ORCHESTRATOR_FAILURE"
     assert diagnostic["error_type"] == "RuntimeError"
-    assert "provider response" in diagnostic["message"]
+    assert diagnostic["message"] == ""
+    assert "prompt text" not in diagnostic["message"]
+
+
+def test_child_failure_does_not_transport_exception_text(tmp_path: Path):
+    connection = _CaptureConnection()
+    roots = _artifact_roots(tmp_path)
+    envelope = {
+        "request": EvidenceRequest().to_dict(),
+        "artifact_roots": roots,
+        "evidence_timeout_seconds": 1.0,
+    }
+
+    _child_query(connection, _factory_descriptor(_error_factory), envelope)
+
+    assert connection.closed
+    assert len(connection.messages) == 1
+    kind, error_type, detail, _telemetry = connection.messages[0]
+    assert kind == "error"
+    assert error_type == "RuntimeError"
+    assert detail == ""
 
 
 def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):

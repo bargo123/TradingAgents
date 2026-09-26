@@ -347,12 +347,15 @@ class ReadonlyExperienceCatalog(_ReadonlySQLite):
 
 
 def _bounded_diagnostic(code: str, detail: Any = "") -> dict[str, str]:
-    message = " ".join(str(detail).replace("\r", " ").replace("\n", " ").split())[:500]
+    message = ""
     diagnostic = {"code": str(code)[:100], "message": message}
     if isinstance(detail, BaseException):
         # Preserve a safe failure category for the parent smoke report without
         # copying provider messages that could contain request text.
         diagnostic["error_type"] = type(detail).__name__
+    else:
+        message = " ".join(str(detail).replace("\r", " ").replace("\n", " ").split())[:500]
+        diagnostic["message"] = message
     return diagnostic
 
 
@@ -524,7 +527,11 @@ def _child_query(send_conn: Any, factory_descriptor: Mapping[str, str], envelope
             "loopback_connection_attempts": int(getattr(guard, "loopback_connection_attempts", 0) or 0),
             "external_network_attempts": int(getattr(guard, "external_network_attempts", 0) or 0),
         }
-        send_conn.send((kind, type(exc).__name__, str(exc).replace("\r", " ").replace("\n", " ")[:500], telemetry))
+        # Do not transport provider exception text across the process boundary:
+        # it may contain prompt, completion, credential, or other sensitive
+        # request data.  The parent only needs the typed failure category to
+        # produce a fail-closed diagnostic.
+        send_conn.send((kind, type(exc).__name__, "", telemetry))
     finally:
         if orchestrator is not None:
             _close_orchestrator(orchestrator)
@@ -805,9 +812,9 @@ class EvidenceIntegrationService:
                 "external_network_attempts": int(telemetry.get("external_network_attempts", 0) or 0),
             }
             if result[0] == "timeout":
-                raise EvidenceTimeout(result[2])
+                raise EvidenceTimeout("evidence worker reported a timeout")
             if result[0] == "error":
-                raise RuntimeError(f"{result[1]}: {result[2]}")
+                raise RuntimeError(str(result[1]))
             payload = result[1]
             return payload if isinstance(payload, EvidenceBundle) else EvidenceBundle(**dict(payload))
         finally:
