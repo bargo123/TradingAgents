@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Sequence
 
 from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
@@ -34,26 +35,31 @@ def main(
     watch_main=None,
 ) -> int:
     args = build_parser().parse_args(argv)
-    supervisor = supervisor_factory(ForexShadowRuntimeConfig())
     if args.command == "status":
-        report = supervisor.status(args.db_path)
-        if args.json:
-            print(json.dumps(report, sort_keys=True, default=str))
-        else:
-            print("FOREX SUPERVISOR STATUS")
-            print(f"HEALTH: {report['health_level']}")
-            if report.get("health_reason"):
-                print(f"REASON: {report['health_reason']}")
-            ollama = report["ollama"]
-            print(f"OLLAMA: {ollama['status']} {ollama['endpoint']}")
-            print(f"CONTEXT: {ollama.get('context_length') or 'unknown'}")
-            print(f"WATCHER: {report['watcher'].get('lifecycle_status', 'STOPPED')}")
-            print("NO ORDER WILL BE SENT")
-        return 0 if report["health_level"] != "OPERATOR_REVIEW_REQUIRED" else 1
+        try:
+            supervisor = supervisor_factory(ForexShadowRuntimeConfig())
+            report = supervisor.status(args.db_path)
+            if args.json:
+                print(json.dumps(report, sort_keys=True, default=str))
+            else:
+                print("FOREX SUPERVISOR STATUS")
+                print(f"HEALTH: {report['health_level']}")
+                if report.get("health_reason"):
+                    print(f"REASON: {report['health_reason']}")
+                ollama = report["ollama"]
+                print(f"OLLAMA: {ollama['status']} {ollama['endpoint']}")
+                print(f"CONTEXT: {ollama.get('context_length') or 'unknown'}")
+                print(f"WATCHER: {report['watcher'].get('lifecycle_status', 'STOPPED')}")
+                print("NO ORDER WILL BE SENT")
+            return 0 if report["health_level"] != "OPERATOR_REVIEW_REQUIRED" else 1
+        except Exception as exc:
+            print(f"FOREX SUPERVISOR ERROR: {exc}", file=sys.stderr)
+            return 1
 
     if watch_main is None:
         from cli.forex_watch import main as watch_main
 
+    supervisor = supervisor_factory(ForexShadowRuntimeConfig())
     return supervisor.run(
         db_path=args.db_path,
         terminal_path=args.terminal_path,

@@ -282,22 +282,22 @@ def main(
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "status":
-        store = (store_factory or WatcherStore)(Path(args.db_path))
-        if args.probe:
-            now = datetime.now(timezone.utc)
-            lease = _read_only_lease(store, now)
-            if lease is not None and lease.lease_expires_at > now:
-                print("FOREX WATCH ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
-                return 1
-            try:
+        try:
+            store = (store_factory or WatcherStore)(Path(args.db_path))
+            if args.probe:
+                now = datetime.now(timezone.utc)
+                lease = _read_only_lease(store, now)
+                if lease is not None and lease.lease_expires_at > now:
+                    print("FOREX WATCH ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
+                    return 1
                 probe = ReadOnlyMarketProbe(_provider_factory)
                 for symbol in ("EURUSD",):
                     probe.probe(symbol)
-            except Exception as exc:
-                print(f"FOREX WATCH ERROR: {exc}", file=sys.stderr)
-                return 1
-        _print_status(_read_only_summary(store), args.json)
-        return 0
+            _print_status(_read_only_summary(store), args.json)
+            return 0
+        except Exception as exc:
+            print(f"FOREX WATCH ERROR: {exc}", file=sys.stderr)
+            return 1
     if args.command == "evaluate":
         from cli.forex_evaluate import main as evaluate_main
 

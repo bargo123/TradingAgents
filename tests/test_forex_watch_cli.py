@@ -100,6 +100,16 @@ def test_status_does_not_construct_mt5_or_llm(capsys, tmp_path):
     assert not db_path.exists()
 
 
+def test_status_reports_malformed_database_without_traceback(capsys, tmp_path):
+    db_path = tmp_path / "malformed.db"
+    db_path.write_bytes(b"not a sqlite database")
+
+    assert main(["status", "--db-path", str(db_path)]) == 1
+    captured = capsys.readouterr()
+    assert "FOREX WATCH ERROR:" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_status_prefers_read_only_summary(capsys, tmp_path):
     class Store:
         def read_only_summary(self):

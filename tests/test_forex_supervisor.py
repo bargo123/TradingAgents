@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+from cli.forex_supervisor import main
 from tradingagents.forex.ollama_runtime import OllamaHealth
 from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
 from tradingagents.forex.supervisor import ForexSupervisor
@@ -221,3 +223,17 @@ def test_supervisor_status_prefers_read_only_summary():
     ).status("watch.db")
 
     assert report["watcher_status"] == "IDLE"
+
+
+def test_supervisor_status_reports_database_error_without_traceback(capsys):
+    class Supervisor:
+        def status(self, _db_path):
+            raise sqlite3.DatabaseError("file is not a database")
+
+    assert main(
+        ["status", "--db-path", "broken.db"],
+        supervisor_factory=lambda _config: Supervisor(),
+    ) == 1
+    captured = capsys.readouterr()
+    assert "FOREX SUPERVISOR ERROR:" in captured.err
+    assert "Traceback" not in captured.err
