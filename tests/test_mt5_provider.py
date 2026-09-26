@@ -646,6 +646,36 @@ def test_malformed_tick_data_raises_typed_error(fake_api, field):
         provider.get_tick("USDJPY")
 
 
+def test_provider_rejects_numeric_text_without_coercion(fake_api):
+    provider = initialized_provider(fake_api)
+    tick = fake_api.symbol_info_tick("USDJPY")
+    tick.bid = "150.123"
+    fake_api.symbol_info_tick = lambda _name: tick
+
+    with pytest.raises(Mt5DataError, match="Invalid tick data"):
+        provider.get_tick("USDJPY")
+
+
+def test_provider_rejects_missing_position_symbol_without_coercion(fake_api):
+    provider = initialized_provider(fake_api)
+    fake_api.positions_get = lambda: (
+        SimpleNamespace(ticket=101, symbol=None, time=1_700_000_000),
+    )
+
+    with pytest.raises(Mt5DataError, match="Invalid MT5 position"):
+        provider.get_positions()
+
+
+@pytest.mark.parametrize("method", ["get_positions", "get_orders"])
+def test_provider_does_not_filter_malformed_symbol_records(fake_api, method):
+    provider = initialized_provider(fake_api)
+    record = SimpleNamespace(ticket=101, symbol=None, time=1_700_000_000)
+    setattr(fake_api, f"{method[4:]}_get", lambda: (record,))
+
+    with pytest.raises(Mt5DataError, match="Invalid MT5"):
+        getattr(provider, method)("USDJPY")
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize(("method", "record"), [
     ("get_positions", SimpleNamespace(ticket=None, symbol="USDJPY", time=1_700_000_000)),
@@ -656,6 +686,35 @@ def test_malformed_position_or_order_data_raises_typed_error(fake_api, method, r
     setattr(fake_api, f"{method[4:]}_get", lambda: (record,))
     with pytest.raises(Mt5DataError, match="Invalid MT5"):
         getattr(provider, method)()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("method", ["get_positions", "get_orders"])
+def test_provider_rejects_fractional_ticket_without_truncating(fake_api, method):
+    provider = initialized_provider(fake_api)
+    record = SimpleNamespace(ticket=101.5, symbol="USDJPY", time=1_700_000_000)
+    setattr(fake_api, f"{method[4:]}_get", lambda: (record,))
+
+    with pytest.raises(Mt5DataError, match="Invalid MT5"):
+        getattr(provider, method)()
+
+
+@pytest.mark.unit
+def test_provider_rejects_fractional_bar_volume_without_truncating(fake_api):
+    provider = initialized_provider(fake_api)
+    fake_api.copy_rates_from_pos = lambda *args: (
+        {
+            "time": 1_700_000_000,
+            "open": 150.123,
+            "high": 150.125,
+            "low": 150.122,
+            "close": 150.124,
+            "tick_volume": 10.5,
+        },
+    )
+
+    with pytest.raises(Mt5DataError, match="Invalid bar data"):
+        provider.get_bars("USDJPY", "M5", 1)
 
 
 @pytest.mark.unit
@@ -681,3 +740,55 @@ def test_none_mt5_collection_response_raises_typed_data_error(fake_api, method, 
     setattr(fake_api, api_method, lambda: None)
     with pytest.raises(Mt5DataError, match="transport unavailable"):
         getattr(provider, method)()
+
+
+def test_malformed_account_data_raises_typed_data_error(fake_api):
+    provider = initialized_provider(fake_api)
+    fake_api.account_info = lambda: SimpleNamespace(login=123, balance=float("nan"))
+
+    with pytest.raises(Mt5DataError, match="Invalid MT5 account"):
+        provider.get_account_info()
+
+
+@pytest.mark.parametrize(
+    "field_value",
+    [
+        {"build": 4000.5},
+        {"connected": "yes"},
+    ],
+)
+def test_malformed_terminal_data_raises_typed_data_error(fake_api, field_value):
+    provider = initialized_provider(fake_api)
+    terminal = provider._api.terminal_info()
+    for field, value in field_value.items():
+        setattr(terminal, field, value)
+    fake_api.terminal_info = lambda: terminal
+
+    with pytest.raises(Mt5DataError, match="Invalid MT5 terminal"):
+        provider.get_terminal_info()
+
+
+def test_malformed_symbol_data_raises_typed_data_error(fake_api):
+    provider = initialized_provider(fake_api)
+    fake_api.symbol_records = [SimpleNamespace(name=None, point="0.00001")]
+
+    with pytest.raises(Mt5DataError, match="Invalid MT5 symbol"):
+        provider.get_symbols()
+
+
+def test_symbol_resolution_does_not_ignore_malformed_symbol_records(fake_api):
+    provider = initialized_provider(fake_api)
+    fake_api.symbol_records = [SimpleNamespace(name=None), fake_api.symbol("EURUSD")]
+
+    with pytest.raises(Mt5DataError, match="Invalid MT5 symbol"):
+        provider.find_symbol("EURUSD")
+
+
+def test_malformed_spread_point_does_not_get_coerced(fake_api):
+    provider = initialized_provider(fake_api)
+    record = fake_api.symbol("EURUSD")
+    record.point = "0.00001"
+    fake_api.symbol_records = [record]
+
+    with pytest.raises(Mt5DataError, match="Invalid spread data"):
+        provider.get_spread("EURUSD")

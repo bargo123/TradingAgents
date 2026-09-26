@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import importlib
+import math
 import re
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from datetime import datetime, timezone
+from numbers import Real
 from typing import Any
 
 from .clock import (
@@ -320,29 +322,52 @@ class MT5Provider:
     def get_terminal_info(self) -> Mt5TerminalInfo:
         self._require_connected()
         raw = self._api.terminal_info()
-        return Mt5TerminalInfo(**{key: _field(raw, key) for key in Mt5TerminalInfo.__dataclass_fields__})
+        if raw is None:
+            raise Mt5DataError("Invalid MT5 terminal data")
+        try:
+            return Mt5TerminalInfo(**{key: _field(raw, key) for key in Mt5TerminalInfo.__dataclass_fields__})
+        except (TypeError, ValueError) as exc:
+            raise Mt5DataError("Invalid MT5 terminal data") from exc
 
     def get_account_info(self) -> Mt5AccountInfo:
         self._require_connected()
         raw = self._api.account_info()
         if raw is None:
             raise Mt5AccountDisconnectedError("MT5 account is not connected")
-        values = {key: _field(raw, key) for key in Mt5AccountInfo.__dataclass_fields__}
-        if values["free_margin"] is None:
-            values["free_margin"] = _field(raw, "margin_free")
-        return Mt5AccountInfo(**values)
+        try:
+            values = {key: _field(raw, key) for key in Mt5AccountInfo.__dataclass_fields__}
+            if values["free_margin"] is None:
+                values["free_margin"] = _field(raw, "margin_free")
+            return Mt5AccountInfo(**values)
+        except (TypeError, ValueError) as exc:
+            raise Mt5DataError("Invalid MT5 account data") from exc
 
     def get_symbols(self) -> tuple[Mt5SymbolInfo, ...]:
         self._require_connected()
         raw_symbols = self._symbols()
         fields = Mt5SymbolInfo.__dataclass_fields__
-        return tuple(Mt5SymbolInfo(**{key: _field(raw, key) for key in fields}) for raw in raw_symbols)
+        try:
+            return tuple(
+                Mt5SymbolInfo(**{key: _field(raw, key) for key in fields})
+                for raw in raw_symbols
+            )
+        except (TypeError, ValueError) as exc:
+            raise Mt5DataError("Invalid MT5 symbol data") from exc
 
     def find_symbol(self, symbol: str) -> str:
         self._require_connected()
         requested = str(symbol).strip().upper()
         records = self._symbols()
-        exact = [str(_field(raw, "name")) for raw in records if str(_field(raw, "name", "")).upper() == requested]
+        try:
+            names = []
+            for raw in records:
+                name = _field(raw, "name")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("symbol name must be a non-empty string")
+                names.append(name)
+        except (TypeError, ValueError) as exc:
+            raise Mt5DataError("Invalid MT5 symbol data") from exc
+        exact = [name for name in names if name.upper() == requested]
         if len(exact) == 1:
             return exact[0]
         if len(exact) > 1:
@@ -351,9 +376,9 @@ class MT5Provider:
             )
         base = _normalize_symbol_name(requested)
         candidates = [
-            str(_field(raw, "name"))
-            for raw in records
-            if _normalize_symbol_name(str(_field(raw, "name", "")).upper()) == base and base
+            name
+            for name in names
+            if _normalize_symbol_name(name.upper()) == base and base
         ]
         if len(candidates) == 1:
             return candidates[0]
@@ -382,8 +407,8 @@ class MT5Provider:
             return Mt5Tick(
                 symbol=resolved,
                 timestamp=_utc_timestamp(raw, prefer_msc=True, broker_clock=clock),
-                bid=float(_field(raw, "bid")),
-                ask=float(_field(raw, "ask")),
+                bid=_field(raw, "bid"),
+                ask=_field(raw, "ask"),
                 last=_field(raw, "last"),
                 volume=_field(raw, "volume"),
                 volume_real=_field(raw, "volume_real"),
@@ -407,7 +432,7 @@ class MT5Provider:
             clock = self._broker_clock
             if clock is None:
                 raise Mt5BrokerClockError("broker clock calibration is unavailable")
-            bars = tuple(Mt5Bar(timestamp=_utc_timestamp(row, broker_clock=clock), open=float(_field(row, "open")), high=float(_field(row, "high")), low=float(_field(row, "low")), close=float(_field(row, "close")), tick_volume=int(_field(row, "tick_volume")), spread=_field(row, "spread"), real_volume=_field(row, "real_volume")) for row in rows)
+            bars = tuple(Mt5Bar(timestamp=_utc_timestamp(row, broker_clock=clock), open=_field(row, "open"), high=_field(row, "high"), low=_field(row, "low"), close=_field(row, "close"), tick_volume=_field(row, "tick_volume"), spread=_field(row, "spread"), real_volume=_field(row, "real_volume")) for row in rows)
         except (TypeError, ValueError, OSError) as exc:
             raise Mt5DataError(f"Invalid bar data for {resolved!r}") from exc
         if not bars:
@@ -434,12 +459,13 @@ class MT5Provider:
         if raw_positions is None:
             raise self._failed_collection("positions_get")
         try:
-            return tuple(
-                Mt5Position(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw, broker_clock=clock))
-                for raw in raw_positions if resolved is None or str(_field(raw, "symbol")) == resolved
+            parsed = tuple(
+                Mt5Position(ticket=_field(raw, "ticket"), symbol=_field(raw, "symbol"), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw, broker_clock=clock))
+                for raw in raw_positions
             )
         except (TypeError, ValueError, OSError) as exc:
             raise Mt5DataError("Invalid MT5 position data") from exc
+        return tuple(item for item in parsed if resolved is None or item.symbol == resolved)
 
     def get_orders(self, symbol: str | None = None) -> tuple[Mt5Order, ...]:
         self._require_connected()
@@ -458,12 +484,13 @@ class MT5Provider:
         if raw_orders is None:
             raise self._failed_collection("orders_get")
         try:
-            return tuple(
-                Mt5Order(ticket=int(_field(raw, "ticket")), symbol=str(_field(raw, "symbol")), type=_field(raw, "type"), volume=_first_field(raw, "volume_current", "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp({"time": _first_field(raw, "time_setup", "time")}, broker_clock=clock))
-                for raw in raw_orders if resolved is None or str(_field(raw, "symbol")) == resolved
+            parsed = tuple(
+                Mt5Order(ticket=_field(raw, "ticket"), symbol=_field(raw, "symbol"), type=_field(raw, "type"), volume=_first_field(raw, "volume_current", "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp({"time": _first_field(raw, "time_setup", "time")}, broker_clock=clock))
+                for raw in raw_orders
             )
         except (TypeError, ValueError, OSError) as exc:
             raise Mt5DataError("Invalid MT5 order data") from exc
+        return tuple(item for item in parsed if resolved is None or item.symbol == resolved)
 
     def get_spread(self, symbol: str) -> Mt5Spread:
         resolved = self.ensure_symbol(symbol)
@@ -472,12 +499,14 @@ class MT5Provider:
         if info is None or point in (None, 0) or tick is None:
             raise Mt5DataError(f"Cannot calculate spread for {resolved!r}")
         try:
+            if isinstance(point, bool) or not isinstance(point, Real) or not math.isfinite(float(point)) or point <= 0:
+                raise ValueError("symbol point must be a positive finite number")
             clock = self._broker_clock
             if clock is None:
                 raise Mt5BrokerClockError("broker clock calibration is unavailable")
-            bid, ask = float(_field(tick, "bid")), float(_field(tick, "ask"))
+            bid, ask = _field(tick, "bid"), _field(tick, "ask")
             price = ask - bid
-            return Mt5Spread(resolved, bid, ask, price, price / float(point), _utc_timestamp(tick, prefer_msc=True, broker_clock=clock))
+            return Mt5Spread(resolved, bid, ask, price, price / point, _utc_timestamp(tick, prefer_msc=True, broker_clock=clock))
         except (TypeError, ValueError, OSError, ZeroDivisionError) as exc:
             raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
 
@@ -530,8 +559,8 @@ class MT5Provider:
                 Mt5Tick(
                     symbol=resolved,
                     timestamp=_utc_timestamp(row, prefer_msc=True, broker_clock=clock),
-                    bid=float(_field(row, "bid")),
-                    ask=float(_field(row, "ask")),
+                    bid=_field(row, "bid"),
+                    ask=_field(row, "ask"),
                     last=_field(row, "last"),
                     volume=_field(row, "volume"),
                     volume_real=_field(row, "volume_real"),

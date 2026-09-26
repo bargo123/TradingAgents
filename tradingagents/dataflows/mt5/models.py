@@ -54,6 +54,16 @@ class Mt5TerminalInfo:
     build: int | None = None
     connected: bool | None = None
 
+    def __post_init__(self) -> None:
+        for name in ("name", "company", "version"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _nonempty_text(value, name))
+        if self.build is not None:
+            object.__setattr__(self, "build", _nonnegative_integral(self.build, "build"))
+        if self.connected is not None and not isinstance(self.connected, bool):
+            raise ValueError("connected must be a bool when provided")
+
 @dataclass(frozen=True, slots=True)
 class Mt5AccountInfo:
     login: int | None = None

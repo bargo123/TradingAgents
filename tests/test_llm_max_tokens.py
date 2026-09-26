@@ -38,7 +38,7 @@ def test_coerce_rejects_booleans(bad):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("bad", ["abc", "1.5", None])
+@pytest.mark.parametrize("bad", ["abc", "1.5", 1.5, None])
 def test_coerce_rejects_non_integers(bad):
     with pytest.raises(ValueError, match="integer"):
         _coerce_max_tokens(bad)

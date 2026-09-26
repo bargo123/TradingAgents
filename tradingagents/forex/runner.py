@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +87,8 @@ def _fresh_reference_quote(
     values = (bid, ask, spread_price, points)
     if any(value is None for value in values):
         raise ValueError("fresh MT5 quote did not include a complete bid/ask/spread set")
+    if any(isinstance(value, bool) or not isinstance(value, Real) for value in values):
+        raise ValueError("fresh MT5 quote contains non-numeric values")
     try:
         bid = float(bid)
         ask = float(ask)
@@ -95,8 +98,15 @@ def _fresh_reference_quote(
         raise ValueError("fresh MT5 quote contains non-numeric values") from exc
     if not all(math.isfinite(value) for value in (bid, ask, spread_price, points)):
         raise ValueError("fresh MT5 quote contains non-finite values")
-    if ask < bid or spread_price < 0 or points < 0:
+    if bid <= 0 or ask <= 0 or ask < bid or spread_price < 0 or points < 0:
         raise ValueError("fresh MT5 quote contains invalid spread values")
+    if not math.isclose(
+        spread_price,
+        ask - bid,
+        rel_tol=1e-9,
+        abs_tol=1e-12,
+    ):
+        raise ValueError("fresh MT5 quote spread must equal ask minus bid")
     delay = (reference_timestamp - completed_timestamp).total_seconds()
     return {
         "timestamp": reference_timestamp,

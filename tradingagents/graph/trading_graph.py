@@ -5,6 +5,7 @@ import logging
 import os
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -68,10 +69,15 @@ def _coerce_max_retries(value):
     """
     if isinstance(value, bool):
         raise ValueError(f"llm_max_retries must be an integer, not a boolean: {value!r}")
-    try:
+    if isinstance(value, str):
+        try:
+            n = int(value.strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"llm_max_retries must be an integer, got {value!r}") from exc
+    elif isinstance(value, Integral):
         n = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"llm_max_retries must be an integer, got {value!r}") from exc
+    else:
+        raise ValueError(f"llm_max_retries must be an integer, got {value!r}")
     if n < 0:
         raise ValueError(f"llm_max_retries must be >= 0, got {n}")
     return n
@@ -81,10 +87,15 @@ def _coerce_max_tokens(value):
     """Validate a ``max_tokens`` value to a positive int (env vars are strings)."""
     if isinstance(value, bool):
         raise ValueError(f"max_tokens must be an integer, not a boolean: {value!r}")
-    try:
+    if isinstance(value, str):
+        try:
+            n = int(value.strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"max_tokens must be an integer, got {value!r}") from exc
+    elif isinstance(value, Integral):
         n = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"max_tokens must be an integer, got {value!r}") from exc
+    else:
+        raise ValueError(f"max_tokens must be an integer, got {value!r}")
     if n <= 0:
         raise ValueError(f"max_tokens must be > 0, got {n}")
     return n

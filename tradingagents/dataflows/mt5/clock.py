@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from numbers import Real
 from typing import Literal
 
 from .errors import Mt5BrokerClockError
@@ -33,10 +34,9 @@ def decode_mt5_epoch(value: object, *, milliseconds: bool = False) -> datetime:
 
     if isinstance(value, bool):
         raise ValueError("MT5 epoch must be numeric")
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("MT5 epoch must be numeric") from exc
+    if not isinstance(value, Real):
+        raise ValueError("MT5 epoch must be numeric")
+    numeric = float(value)
     if not math.isfinite(numeric):
         raise ValueError("MT5 epoch must be finite")
     if milliseconds:

@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -61,10 +62,14 @@ def _utc(value: Any, name: str) -> datetime:
 def _number(value: Any, name: str, *, integer: bool = False) -> float | int:
     if isinstance(value, bool):
         raise SnapshotReplayError(f"{name} must be numeric")
-    try:
-        parsed = int(value) if integer else float(value)
-    except (TypeError, ValueError) as exc:
-        raise SnapshotReplayError(f"{name} must be numeric") from exc
+    if integer:
+        if not isinstance(value, Integral):
+            raise SnapshotReplayError(f"{name} must be an integer")
+        parsed = int(value)
+    else:
+        if not isinstance(value, Real):
+            raise SnapshotReplayError(f"{name} must be numeric")
+        parsed = float(value)
     if isinstance(parsed, float) and not math.isfinite(parsed):
         raise SnapshotReplayError(f"{name} must be finite")
     return parsed

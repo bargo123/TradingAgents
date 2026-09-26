@@ -143,7 +143,7 @@ def _normalize_from_payload(
 ) -> ShadowNormalization:
     try:
         safe_payload = _json_safe(dict(payload))
-    except TypeError as exc:
+    except (TypeError, ValueError) as exc:
         return ShadowNormalization(
             action=None,
             normalization_status="FAILED",
@@ -544,6 +544,32 @@ class ShadowTradeDecision:
                 raise ValueError(f"{prefix} spread must be non-negative")
             if spread_points is not None and spread_points < 0:
                 raise ValueError(f"{prefix} spread_points must be non-negative")
+            if (
+                bid is not None
+                and ask is not None
+                and spread is not None
+                and not math.isclose(
+                    ask - bid,
+                    spread,
+                    rel_tol=1e-9,
+                    abs_tol=1e-12,
+                )
+            ):
+                raise ValueError(f"{prefix} spread must equal ask minus bid")
+        if not math.isclose(
+            self.reference_ask - self.reference_bid,
+            self.spread,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("reference spread must equal ask minus bid")
+        if not math.isclose(
+            (self.reference_bid + self.reference_ask) / 2,
+            self.reference_mid,
+            rel_tol=1e-9,
+            abs_tol=1e-12,
+        ):
+            raise ValueError("reference mid must equal bid/ask midpoint")
 
     @property
     def raw_portfolio_manager_result_json(self) -> str:

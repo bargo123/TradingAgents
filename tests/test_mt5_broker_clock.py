@@ -40,6 +40,11 @@ def test_decode_mt5_epoch_rejects_boolean_values() -> None:
         decode_mt5_epoch(True)
 
 
+def test_decode_mt5_epoch_rejects_numeric_text_without_coercion() -> None:
+    with pytest.raises(ValueError, match="numeric"):
+        decode_mt5_epoch("1700000000")
+
+
 def test_decode_mt5_epoch_milliseconds_preserves_precision() -> None:
     assert decode_mt5_epoch(1_700_000_000_123, milliseconds=True) == datetime(
         2023, 11, 14, 22, 13, 20, 123_000, tzinfo=UTC

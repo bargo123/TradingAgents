@@ -142,6 +142,22 @@ def test_saved_snapshot_codec_validates_row():
         SavedSnapshotCodec.from_source_row(mismatched)
 
 
+def test_saved_snapshot_codec_rejects_fractional_integer_fields_without_truncating():
+    payload = json.loads(_row()["snapshot_json"])
+    payload["candles"]["M1"][0]["tick_volume"] = 10.5
+
+    with pytest.raises(SnapshotReplayError, match="tick_volume.*integer"):
+        SavedSnapshotCodec.from_source_row({"snapshot_json": payload})
+
+
+def test_saved_snapshot_codec_rejects_numeric_strings_instead_of_coercing():
+    payload = json.loads(_row()["snapshot_json"])
+    payload["quote"]["bid"] = "1.1"
+
+    with pytest.raises(SnapshotReplayError, match="bid.*numeric"):
+        SavedSnapshotCodec.from_source_row({"snapshot_json": payload})
+
+
 def test_replay_uses_identical_snapshot_fingerprint(tmp_path: Path):
     calls: list[dict] = []
     runner = _FakeRunner(calls, generations=("p7", "p8"))

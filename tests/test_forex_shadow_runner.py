@@ -1037,6 +1037,48 @@ def test_reference_poll_keeps_quote_validation_fail_closed() -> None:
     assert isinstance(poll_error, ValueError)
 
 
+def test_reference_poll_rejects_spread_that_does_not_match_quote() -> None:
+    provider = SimpleNamespace(
+        get_spread=lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            bid=1.1004,
+            ask=1.1006,
+            price=0.0003,
+            points=30.0,
+            timestamp=COMPLETION_TIMESTAMP,
+        )
+    )
+    quote, telemetry, poll_error = _poll_reference(
+        provider,
+        clock=_ReferencePollClock(),
+    )
+
+    assert quote is None
+    assert telemetry["reference_status"] == "UNAVAILABLE"
+    assert isinstance(poll_error, ValueError)
+
+
+def test_reference_poll_rejects_numeric_text_without_coercion() -> None:
+    provider = SimpleNamespace(
+        get_spread=lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            bid="1.1004",
+            ask="1.1006",
+            price="0.0002",
+            points="20",
+            timestamp=COMPLETION_TIMESTAMP,
+        )
+    )
+    quote, telemetry, poll_error = _poll_reference(
+        provider,
+        clock=_ReferencePollClock(),
+    )
+
+    assert quote is None
+    assert telemetry["reference_status"] == "UNAVAILABLE"
+    assert isinstance(poll_error, ValueError)
+
+
 def test_reference_poll_rejects_non_utc_or_naive_broker_timestamps() -> None:
     provider = SimpleNamespace(
         get_spread=lambda symbol: SimpleNamespace(

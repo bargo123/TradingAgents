@@ -199,6 +199,16 @@ def test_normalization_rejects_conflicting_mapping_and_unknown_types() -> None:
     assert result.normalization_status == "FAILED"
 
 
+def test_normalization_non_json_safe_payload_fails_closed() -> None:
+    result = normalize_portfolio_manager_result(
+        {"rating": "Hold", "diagnostic_value": math.nan}
+    )
+
+    assert result.action is None
+    assert result.normalization_status == "FAILED"
+    assert "finite" in (result.normalization_error or "")
+
+
 def test_forex_normalization_rejects_stock_style_horizons() -> None:
     result = normalize_portfolio_manager_result(
         {
@@ -318,6 +328,27 @@ def test_shadow_decision_rejects_invalid_required_quote_values(
 ) -> None:
     with pytest.raises(ValueError):
         make_decision(**{field: value})
+
+
+def test_shadow_decision_rejects_inconsistent_analysis_quote_math() -> None:
+    with pytest.raises(ValueError, match="spread"):
+        make_decision(spread=0.0003)
+    with pytest.raises(ValueError, match="mid"):
+        make_decision(reference_mid=1.1000)
+
+
+def test_shadow_decision_rejects_inconsistent_decision_reference_quote_math() -> None:
+    completed = datetime(2026, 9, 8, 0, 0, 1, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="spread"):
+        make_decision(
+            decision_completed_timestamp=completed,
+            decision_reference_timestamp=completed,
+            decision_reference_bid=1.1004,
+            decision_reference_ask=1.1006,
+            decision_reference_spread=0.0003,
+            decision_reference_spread_points=3.0,
+            decision_reference_status="AVAILABLE",
+        )
 
 
 def test_shadow_decision_requires_utc_timestamps() -> None:
