@@ -813,8 +813,11 @@ class WatcherStore:
         evidence: RunEvidence | None = None,
         failure_code: str | None = None,
         failure_detail: str | None = None,
+        next_eligible_at: datetime | None = None,
     ) -> WatchRun:
         now = _utc(now, "now")
+        if next_eligible_at is not None:
+            next_eligible_at = _utc(next_eligible_at, "next_eligible_at")
         self.initialize()
         with self._transaction(immediate=True) as conn:
             self._require_owner(conn, owner_token)
@@ -876,10 +879,21 @@ class WatcherStore:
                 "UPDATE forex_watch_opportunities SET status=?, decision_id=?, updated_at=? WHERE opportunity_key=?",
                 (opportunity_status, decision_id, _iso(now), row["opportunity_key"]),
             )
-            conn.execute(
-                "UPDATE forex_watcher_state SET lifecycle_status=?, current_run_id=NULL, current_opportunity_key=NULL, last_analysis_completed_at=?, updated_at=? WHERE singleton_id=1",
-                ("DECISION_SAVED" if decision_id else "IDLE", _iso(now), _iso(now)),
-            )
+            if next_eligible_at is None:
+                conn.execute(
+                    "UPDATE forex_watcher_state SET lifecycle_status=?, current_run_id=NULL, current_opportunity_key=NULL, last_analysis_completed_at=?, updated_at=? WHERE singleton_id=1",
+                    ("DECISION_SAVED" if decision_id else "IDLE", _iso(now), _iso(now)),
+                )
+            else:
+                conn.execute(
+                    "UPDATE forex_watcher_state SET lifecycle_status=?, current_run_id=NULL, current_opportunity_key=NULL, last_analysis_completed_at=?, next_eligible_at=?, updated_at=? WHERE singleton_id=1",
+                    (
+                        "DECISION_SAVED" if decision_id else "IDLE",
+                        _iso(now),
+                        _iso(next_eligible_at),
+                        _iso(now),
+                    ),
+                )
         return self.get_run(run_id)
 
     def mark_runtime_alert(self, owner_token: str, run_id: str, now: datetime) -> None:
@@ -890,6 +904,22 @@ class WatcherStore:
             conn.execute(
                 "UPDATE forex_watch_runs SET runtime_alert_at=COALESCE(runtime_alert_at, ?) WHERE run_id=? AND run_status='RUNNING'",
                 (_iso(now), run_id),
+            )
+
+    def set_next_eligible_at(
+        self,
+        owner_token: str,
+        next_eligible_at: datetime,
+        now: datetime,
+    ) -> None:
+        now = _utc(now, "now")
+        next_eligible_at = _utc(next_eligible_at, "next_eligible_at")
+        self.initialize()
+        with self._transaction(immediate=True) as conn:
+            self._require_owner(conn, owner_token)
+            conn.execute(
+                "UPDATE forex_watcher_state SET next_eligible_at=?, updated_at=? WHERE singleton_id=1",
+                (_iso(next_eligible_at), _iso(now)),
             )
 
     def set_error(self, owner_token: str, code: str, detail: str | None, now: datetime) -> None:

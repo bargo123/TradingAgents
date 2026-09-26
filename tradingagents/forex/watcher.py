@@ -878,6 +878,9 @@ class WatcherCoordinator:
             reason=summary.get("circuit_reason"),
             opened_at=self._parse_optional_timestamp(summary.get("circuit_opened_at")),
         )
+        self._next_eligible_at = self._parse_optional_timestamp(
+            summary.get("next_eligible_at")
+        )
         return summary
 
     def _persist_circuits(self, now: datetime) -> None:
@@ -925,9 +928,15 @@ class WatcherCoordinator:
             try:
                 from tradingagents.forex.shadow import ShadowDecisionStore
 
-                self.store.reconcile_stale_runs(
+                recovery_actions = self.store.reconcile_stale_runs(
                     owner.owner_token, now, ShadowDecisionStore(self.config.db_path)
                 )
+                if "DECISION_SAVED" in recovery_actions:
+                    self.store.set_next_eligible_at(
+                        owner.owner_token,
+                        now + timedelta(seconds=self.config.cooldown_seconds),
+                        now,
+                    )
             except Exception as exc:  # recovery is fail-closed but startup can report it
                 self.store.set_error(owner.owner_token, "RECONCILIATION_FAILED", str(exc), now)
         # Reconciliation may persist an operator-review circuit.  Reload once
@@ -1095,7 +1104,15 @@ class WatcherCoordinator:
                 )
             )
             status = "SUCCEEDED_SLOW" if slow else "SUCCEEDED"
-            self.store.finalize_run(self.owner_token, run_id, now, status=status, evidence=evidence)
+            next_eligible_at = now + timedelta(seconds=self.config.cooldown_seconds)
+            self.store.finalize_run(
+                self.owner_token,
+                run_id,
+                now,
+                status=status,
+                evidence=evidence,
+                next_eligible_at=next_eligible_at,
+            )
             self._reset_failure("analysis", now)
             if evidence.decision_context_status == "COMPLETE":
                 self._reset_failure("incomplete", now)
@@ -1109,7 +1126,7 @@ class WatcherCoordinator:
                 self._record_failure("runtime", now)
             else:
                 self._reset_failure("runtime", now)
-            self._next_eligible_at = now + timedelta(seconds=self.config.cooldown_seconds)
+            self._next_eligible_at = next_eligible_at
             self.events.emit(
                 "ANALYSIS_FINISHED",
                 {"run_id": run_id, "decision_id": evidence.decision_id, "status": status},

@@ -471,6 +471,24 @@ def test_normal_poll_claims_one_current_opportunity_and_persists_decision(tmp_pa
     assert harness.store.decision_for_run(harness.store.list_runs()[0].run_id).executed is False
 
 
+def test_completion_persists_cooldown_for_restart_state(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    assert harness.store.summary()["next_eligible_at"] == "2026-09-09T12:16:32Z"
+    harness.shutdown()
+
+    restarted = _Harness(tmp_path, runner_result=_complete_run_result())
+    restarted.start(now=_utc("2026-09-09T12:15:40Z"))
+    cycle = restarted.poll(_utc("2026-09-09T12:15:40Z"))
+
+    assert cycle.skip_reasons == ("COOLDOWN",)
+    assert restarted.runner.calls == []
+
+
 def test_unavailable_analysis_telemetry_persists_nulls_without_private_text(tmp_path):
     result = SimpleNamespace(
         decision=_decision("run-no-telemetry"),
@@ -696,7 +714,8 @@ def test_expired_dead_owner_reconciles_without_resubmitting_old_bucket(tmp_path)
     result = second.start(now=_utc("2026-09-09T14:00:00Z"))
 
     assert result.status.name == "ACQUIRED"
-    assert second.store.list_runs()[0].run_status in {"ABANDONED", "SUCCEEDED"}
+    assert second.store.list_runs()[0].run_status == "SUCCEEDED"
+    assert second.store.summary()["next_eligible_at"] == "2026-09-09T14:01:00Z"
     assert second.runner.calls == []
 
 
