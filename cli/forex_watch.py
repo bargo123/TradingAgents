@@ -216,6 +216,16 @@ def _watcher_lease_is_active(
     return lease is not None and lease.lease_expires_at > now
 
 
+def _read_only_lease(store: Any, now: datetime) -> Any:
+    reader = getattr(store, "read_only_active_lease", None)
+    return reader(now) if callable(reader) else store.active_lease(now)
+
+
+def _read_only_summary(store: Any) -> dict[str, Any]:
+    reader = getattr(store, "read_only_summary", None)
+    return reader() if callable(reader) else store.summary()
+
+
 def _print_status(summary: dict[str, Any], as_json: bool) -> None:
     if as_json:
         print(json.dumps(summary, ensure_ascii=False, sort_keys=True, default=str))
@@ -275,7 +285,7 @@ def main(
         store = (store_factory or WatcherStore)(Path(args.db_path))
         if args.probe:
             now = datetime.now(timezone.utc)
-            lease = store.active_lease(now)
+            lease = _read_only_lease(store, now)
             if lease is not None and lease.lease_expires_at > now:
                 print("FOREX WATCH ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
                 return 1
@@ -286,7 +296,7 @@ def main(
             except Exception as exc:
                 print(f"FOREX WATCH ERROR: {exc}", file=sys.stderr)
                 return 1
-        _print_status(store.summary(), args.json)
+        _print_status(_read_only_summary(store), args.json)
         return 0
     if args.command == "evaluate":
         from cli.forex_evaluate import main as evaluate_main

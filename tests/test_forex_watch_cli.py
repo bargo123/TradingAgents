@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -92,10 +92,55 @@ def test_once_propagates_active_analysis_failure(capsys, monkeypatch, tmp_path):
 
 
 def test_status_does_not_construct_mt5_or_llm(capsys, tmp_path):
-    assert main(["status", "--db-path", str(tmp_path / "watch.db")]) == 0
+    db_path = tmp_path / "watch.db"
+    assert main(["status", "--db-path", str(db_path)]) == 0
     output = capsys.readouterr().out
     assert "WATCHER STATUS" in output
     assert "LLM CALLS: unknown" in output
+    assert not db_path.exists()
+
+
+def test_status_prefers_read_only_summary(capsys, tmp_path):
+    class Store:
+        def read_only_summary(self):
+            return {
+                "lifecycle_status": "STOPPED",
+                "lease_expires_at": None,
+                "current_run_id": None,
+                "evaluation_due_pending": False,
+                "database_path": str(tmp_path / "watch.db"),
+            }
+
+        def summary(self):
+            raise AssertionError("status must not initialize the writer store")
+
+    assert main(
+        ["status", "--db-path", str(tmp_path / "watch.db")],
+        store_factory=lambda _path: Store(),
+    ) == 0
+    assert "WATCHER STATUS" in capsys.readouterr().out
+
+
+def test_status_probe_prefers_read_only_lease(capsys, tmp_path, monkeypatch):
+    class Store:
+        def read_only_active_lease(self, _now):
+            return SimpleNamespace(
+                lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
+            )
+
+        def active_lease(self, _now):
+            raise AssertionError("status probe must not initialize the writer store")
+
+    monkeypatch.setattr(
+        "cli.forex_watch._provider_factory",
+        lambda: (_ for _ in ()).throw(AssertionError("probe must stop at active lease")),
+    )
+
+    assert main(
+        ["status", "--probe", "--db-path", str(tmp_path / "watch.db")],
+        store_factory=lambda _path: Store(),
+    ) == 1
+    assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err
 
 
 def test_status_probe_refuses_while_watcher_lease_is_valid(tmp_path, capsys):
