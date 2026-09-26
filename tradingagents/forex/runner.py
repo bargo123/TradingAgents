@@ -311,7 +311,11 @@ def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
             value = reported.get(key)
             if key == "agents" and isinstance(value, Mapping):
                 metrics[key] = dict(value)
-            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            elif (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ):
                 metrics[key] = value
         break
     return metrics

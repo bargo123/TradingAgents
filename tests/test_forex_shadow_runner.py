@@ -365,6 +365,31 @@ def test_runner_passes_callbacks_and_reports_llm_metrics(tmp_path):
     assert result.elapsed_seconds >= 0
 
 
+def test_callback_metrics_rejects_non_finite_aggregate_values():
+    callback = type(
+        "Callback",
+        (),
+        {
+            "get_stats": lambda self: {
+                "llm_calls": float("nan"),
+                "tool_calls": float("inf"),
+                "tokens_in": 123,
+                "tokens_out": float("-inf"),
+                "reasoning_tokens": 7,
+            }
+        },
+    )()
+
+    metrics = runner_module._callback_metrics([callback])
+
+    assert metrics["telemetry_status"] == "AVAILABLE"
+    assert metrics["llm_calls"] is None
+    assert metrics["tool_calls"] is None
+    assert metrics["tokens_in"] == 123
+    assert metrics["tokens_out"] is None
+    assert metrics["reasoning_tokens"] == 7
+
+
 def test_runner_resets_opt_in_reusable_callback_before_each_decision(tmp_path):
     class Callback:
         def __init__(self):
