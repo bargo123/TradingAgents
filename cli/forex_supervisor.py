@@ -60,13 +60,17 @@ def main(
         from cli.forex_watch import main as watch_main
 
     supervisor = supervisor_factory(ForexShadowRuntimeConfig())
-    return supervisor.run(
-        db_path=args.db_path,
-        terminal_path=args.terminal_path,
-        prewarm=not args.no_prewarm,
-        max_restarts=args.max_restarts,
-        watch_main=watch_main,
-    )
+    try:
+        return supervisor.run(
+            db_path=args.db_path,
+            terminal_path=args.terminal_path,
+            prewarm=not args.no_prewarm,
+            max_restarts=args.max_restarts,
+            watch_main=watch_main,
+        )
+    except Exception as exc:
+        print(f"FOREX SUPERVISOR ERROR: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
