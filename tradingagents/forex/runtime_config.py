@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import math
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -34,6 +35,25 @@ _RUNTIME_OWNED_CONFIG_KEYS = frozenset(
         "application_version",
     }
 )
+
+
+def _canonical_extra_json(value: Mapping[str, Any]) -> str:
+    """Serialize additive runtime extensions without retaining their values."""
+
+    def normalize(item: Any) -> Any:
+        if isinstance(item, Mapping):
+            if any(not isinstance(key, str) for key in item):
+                raise ValueError("extra mapping keys must be strings")
+            return {key: normalize(item[key]) for key in sorted(item)}
+        if isinstance(item, (list, tuple)):
+            return [normalize(child) for child in item]
+        if item is None or isinstance(item, (str, int, bool)):
+            return item
+        if isinstance(item, float) and math.isfinite(item):
+            return item
+        raise ValueError("extra values must be JSON-safe")
+
+    return json.dumps(normalize(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +92,7 @@ class ForexShadowRuntimeConfig:
             raise ValueError("thinking controls must be bools")
         if not isinstance(self.extra, Mapping):
             raise ValueError("extra must be a mapping")
+        _canonical_extra_json(self.extra)
         conflicting = sorted(_RUNTIME_OWNED_CONFIG_KEYS.intersection(self.extra))
         if conflicting:
             raise ValueError(
@@ -117,7 +138,7 @@ class ForexShadowRuntimeConfig:
         return config
 
     def safe_dict(self) -> dict[str, Any]:
-        return {
+        safe = {
             "provider": self.provider,
             "backend_url": self.backend_url,
             "quick_model": self.quick_model,
@@ -133,6 +154,11 @@ class ForexShadowRuntimeConfig:
             "collector_contract_version": self.collector_contract_version,
             "application_version": self.application_version,
         }
+        if self.extra:
+            safe["extra_fingerprint"] = hashlib.sha256(
+                _canonical_extra_json(self.extra).encode()
+            ).hexdigest()
+        return safe
 
     @property
     def fingerprint(self) -> str:

@@ -51,6 +51,16 @@ def test_runtime_owned_fields_cannot_be_overridden_by_extra():
         )
 
 
+def test_additive_extra_settings_change_fingerprint_without_persisting_values():
+    first = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "first-secret"})
+    second = ForexShadowRuntimeConfig(extra={"custom_runtime_setting": "second-secret"})
+
+    assert first.fingerprint != second.fingerprint
+    safe = json.dumps(first.safe_dict(), sort_keys=True)
+    assert "first-secret" not in safe
+    assert len(first.safe_dict()["extra_fingerprint"]) == 64
+
+
 def test_runtime_provenance_is_safe_and_source_attributable(tmp_path):
     calls = []
 
