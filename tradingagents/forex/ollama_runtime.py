@@ -301,7 +301,10 @@ class DedicatedOllamaRuntime:
             ["ollama", "serve"],
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
+            # No reader is attached to the child stderr stream.  Keeping a
+            # PIPE here can eventually block the long-lived server when its
+            # diagnostics fill the OS pipe buffer.
+            stderr=subprocess.DEVNULL,
         )
         self._verified_contexts.clear()
 

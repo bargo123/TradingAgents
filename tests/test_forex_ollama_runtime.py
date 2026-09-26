@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -332,6 +333,28 @@ def test_unavailable_server_starts_with_explicit_dedicated_environment():
     assert env["OLLAMA_CONTEXT_LENGTH"] == "16384"
     assert env["OLLAMA_MAX_LOADED_MODELS"] == "1"
     assert env["OLLAMA_NUM_PARALLEL"] == "1"
+
+
+def test_owned_server_does_not_leave_unread_stderr_pipe():
+    launches = []
+
+    class OfflineHttp:
+        def get(self, _url, **_kwargs):
+            raise OSError("offline")
+
+    def launch(command, **kwargs):
+        launches.append((command, kwargs))
+        return SimpleNamespace(poll=lambda: None)
+
+    runtime = DedicatedOllamaRuntime(
+        ForexShadowRuntimeConfig(),
+        http=OfflineHttp(),
+        process_launcher=launch,
+    )
+
+    runtime._start_owned_server()
+
+    assert launches[0][1]["stderr"] is subprocess.DEVNULL
 
 
 def test_unavailable_server_uses_configured_loopback_endpoint():
