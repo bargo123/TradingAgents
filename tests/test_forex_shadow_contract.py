@@ -283,6 +283,25 @@ def test_shadow_decision_rejects_invalid_runtime_identity_fields(
 @pytest.mark.parametrize(
     ("field", "value"),
     (
+        ("decision_id", None),
+        ("decision_id", ""),
+        ("decision_id", "  "),
+        ("decision_id", 1),
+        ("analysis_date", datetime(2026, 9, 8, tzinfo=timezone.utc)),
+        ("source_run_id", 1),
+        ("source_run_id", "  "),
+    ),
+)
+def test_shadow_decision_rejects_invalid_persistence_identity_fields(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError):
+        make_decision(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
         ("reference_bid", None),
         ("reference_ask", None),
         ("reference_mid", None),

@@ -98,6 +98,30 @@ def test_scheduled_opportunity_rejects_unsafe_identity_fields(field, value):
 
 
 @pytest.mark.parametrize(
+    ("bar_close_timestamp", "eligible_after"),
+    [
+        (NOW + timedelta(minutes=14), NOW + timedelta(minutes=14, seconds=30)),
+        (NOW + timedelta(minutes=15), NOW + timedelta(minutes=14, seconds=30)),
+    ],
+)
+def test_scheduled_opportunity_rejects_inconsistent_time_boundaries(
+    bar_close_timestamp, eligible_after
+):
+    from tradingagents.forex.watcher import ScheduledOpportunity
+
+    with pytest.raises(ValueError):
+        ScheduledOpportunity(
+            requested_symbol="EURUSD",
+            analysis_profile="INTRADAY",
+            schedule_timeframe="M15",
+            anchor_timestamp=NOW,
+            bar_close_timestamp=bar_close_timestamp,
+            eligible_after=eligible_after,
+            config_fingerprint="cfg",
+        )
+
+
+@pytest.mark.parametrize(
     "field,value",
     [
         ("timeframe", None),
@@ -157,6 +181,15 @@ def test_safe_effective_config_excludes_credentials():
 
     assert safe["llm_provider"] == "openai"
     assert "api_key" not in safe
+    assert "secret" not in repr(safe)
+
+
+def test_safe_effective_config_strips_backend_url_userinfo():
+    safe = safe_effective_config(
+        {"backend_url": "http://user:secret@127.0.0.1:11434/v1?token=also-secret"}
+    )
+
+    assert safe["backend_url"] == "http://127.0.0.1:11434/v1"
     assert "secret" not in repr(safe)
 
 

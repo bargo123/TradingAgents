@@ -333,6 +333,14 @@ class ShadowTradeDecision:
     def __post_init__(self) -> None:
         if self.executed is not False:
             raise ValueError("ShadowTradeDecision must always be created with executed=False")
+        if not isinstance(self.decision_id, str) or not self.decision_id.strip():
+            raise ValueError("decision_id must be a non-empty string")
+        if isinstance(self.analysis_date, datetime) or not isinstance(self.analysis_date, date):
+            raise ValueError("analysis_date must be a date")
+        if self.source_run_id is not None and (
+            not isinstance(self.source_run_id, str) or not self.source_run_id.strip()
+        ):
+            raise ValueError("source_run_id must be a non-empty string when provided")
         if self.normalization_status not in ("NORMALIZED", "FAILED"):
             raise ValueError("normalization_status must be NORMALIZED or FAILED")
         if self.decision_context_status not in ("COMPLETE", "INCOMPLETE"):

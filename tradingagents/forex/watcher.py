@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -183,8 +184,17 @@ def safe_effective_config(config: Mapping[str, Any] | None = None) -> dict[str, 
             continue
         if key == "backend_url" and isinstance(value, str):
             # A URL query may carry a bearer/API credential.  Preserve only
-            # the endpoint path and discard query/fragment data.
-            value = value.split("?", 1)[0].split("#", 1)[0]
+            # the endpoint path and discard query/fragment/userinfo data.
+            parsed = urlsplit(value)
+            if parsed.username is not None or parsed.password is not None:
+                host = parsed.hostname or ""
+                if ":" in host and not host.startswith("["):
+                    host = f"[{host}]"
+                if parsed.port is not None:
+                    host = f"{host}:{parsed.port}"
+                value = urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+            else:
+                value = value.split("?", 1)[0].split("#", 1)[0]
         safe[key] = _safe_json_value(value)
     return safe
 
@@ -346,6 +356,15 @@ class ScheduledOpportunity:
         object.__setattr__(self, "analyst_set", _normalize_analyst_tuple(self.analyst_set))
         for name in ("anchor_timestamp", "bar_close_timestamp", "eligible_after"):
             object.__setattr__(self, name, _require_aware_utc(getattr(self, name), name))
+        expected_bar_close = self.anchor_timestamp + timedelta(
+            seconds=_TIMEFRAME_SECONDS[self.schedule_timeframe]
+        )
+        if self.bar_close_timestamp != expected_bar_close:
+            raise ValueError(
+                "bar_close_timestamp must equal anchor_timestamp plus the schedule timeframe"
+            )
+        if self.eligible_after < self.bar_close_timestamp:
+            raise ValueError("eligible_after must not precede bar_close_timestamp")
         if not isinstance(self.config_fingerprint, str) or not self.config_fingerprint.strip():
             raise ValueError("scheduled opportunity config_fingerprint must be non-empty")
         expected_key = canonical_opportunity_key(self)

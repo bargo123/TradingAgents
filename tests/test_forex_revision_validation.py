@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from tradingagents.forex.evaluation import ShadowEvaluationStore, ShadowOutcomeEvaluation
 from tradingagents.forex.revision_validation import (
@@ -138,8 +138,8 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
         analysis_profile="INTRADAY",
         schedule_timeframe="M15",
         anchor_timestamp=NOW,
-        bar_close_timestamp=NOW,
-        eligible_after=NOW,
+        bar_close_timestamp=NOW + timedelta(minutes=15),
+        eligible_after=NOW + timedelta(minutes=15, seconds=30),
         config_fingerprint="cfg",
     )
     store.observe_opportunity(opportunity, NOW)

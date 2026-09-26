@@ -233,6 +233,15 @@ def test_summary_exposes_evaluation_quality_counts_without_training_labels(tmp_p
     assert "training_eligible" not in summary
 
 
+@pytest.mark.parametrize("counters", [{"mt5": 1.5}, {"analysis": True}, {"unknown": 1}])
+def test_update_circuit_rejects_invalid_counter_contract(tmp_path, counters):
+    store = WatcherStore(tmp_path / "watch.db")
+    acquired = store.acquire_lease(owner(), NOW)
+
+    with pytest.raises(ValueError):
+        store.update_circuit(acquired.owner_token, NOW, counters=counters)
+
+
 def _opportunity(key: str) -> ScheduledOpportunity:
     return ScheduledOpportunity(
         requested_symbol="EURUSD",

@@ -31,6 +31,8 @@ def _utc(value: datetime, name: str) -> datetime:
 def decode_mt5_epoch(value: object, *, milliseconds: bool = False) -> datetime:
     """Decode a literal MT5 epoch without consulting local timezone state."""
 
+    if isinstance(value, bool):
+        raise ValueError("MT5 epoch must be numeric")
     try:
         numeric = float(value)
     except (TypeError, ValueError) as exc:
@@ -130,9 +132,13 @@ class Mt5BrokerClock:
                 raise ValueError("offset_seconds must be numeric")
             if not math.isfinite(float(self.offset_seconds)):
                 raise ValueError("offset_seconds must be finite")
+        if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 0:
+            raise ValueError("sample_count must be non-negative")
         if self.status == "CALIBRATED":
             if self.offset_seconds is None or self.calibrated_at_utc is None:
                 raise ValueError("calibrated broker clock requires offset and calibrated_at_utc")
+            if self.sample_count <= 0:
+                raise ValueError("calibrated broker clock requires sample_count > 0")
             object.__setattr__(
                 self, "calibrated_at_utc", _utc(self.calibrated_at_utc, "calibrated_at_utc")
             )
@@ -142,8 +148,6 @@ class Mt5BrokerClock:
             object.__setattr__(
                 self, "calibrated_at_utc", _utc(self.calibrated_at_utc, "calibrated_at_utc")
             )
-        if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 0:
-            raise ValueError("sample_count must be non-negative")
         if self.max_residual_seconds is not None:
             if isinstance(self.max_residual_seconds, bool) or not isinstance(self.max_residual_seconds, (int, float)):
                 raise ValueError("max_residual_seconds must be numeric")
@@ -159,6 +163,13 @@ class Mt5BrokerClock:
     def ensure_fresh(self, now_utc: datetime, *, max_age_seconds: float) -> None:
         """Reject an unavailable, ambiguous, or aged calibration."""
 
+        if (
+            isinstance(max_age_seconds, bool)
+            or not isinstance(max_age_seconds, (int, float))
+            or not math.isfinite(float(max_age_seconds))
+            or float(max_age_seconds) < 0
+        ):
+            raise ValueError("max_age_seconds must be finite and non-negative")
         now = _utc(now_utc, "now_utc")
         if not self.is_calibrated or self.calibrated_at_utc is None:
             raise Mt5BrokerClockError(

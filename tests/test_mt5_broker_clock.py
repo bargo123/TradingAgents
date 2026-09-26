@@ -35,6 +35,11 @@ def test_decode_mt5_epoch_seconds_is_exact_utc() -> None:
     )
 
 
+def test_decode_mt5_epoch_rejects_boolean_values() -> None:
+    with pytest.raises(ValueError, match="numeric"):
+        decode_mt5_epoch(True)
+
+
 def test_decode_mt5_epoch_milliseconds_preserves_precision() -> None:
     assert decode_mt5_epoch(1_700_000_000_123, milliseconds=True) == datetime(
         2023, 11, 14, 22, 13, 20, 123_000, tzinfo=UTC
@@ -129,6 +134,37 @@ def test_stale_calibration_is_rejected() -> None:
 
     with pytest.raises(Mt5BrokerClockError, match="stale"):
         clock.ensure_fresh(BASE, max_age_seconds=3600)
+
+
+@pytest.mark.parametrize("max_age_seconds", [-1, float("nan"), float("inf"), True, "3600"])
+def test_clock_freshness_limit_is_fail_closed(max_age_seconds) -> None:
+    clock = Mt5BrokerClock(
+        offset_seconds=0,
+        status="CALIBRATED",
+        calibrated_at_utc=BASE,
+        server="Test",
+        symbol="EURUSD",
+        sample_count=1,
+        max_residual_seconds=0.1,
+        source="TEST",
+    )
+
+    with pytest.raises(ValueError):
+        clock.ensure_fresh(BASE, max_age_seconds=max_age_seconds)
+
+
+def test_calibrated_clock_requires_observation_samples() -> None:
+    with pytest.raises(ValueError, match="sample_count"):
+        Mt5BrokerClock(
+            offset_seconds=0,
+            status="CALIBRATED",
+            calibrated_at_utc=BASE,
+            server="Test",
+            symbol="EURUSD",
+            sample_count=0,
+            max_residual_seconds=0.0,
+            source="TEST",
+        )
 
 
 @pytest.mark.parametrize(

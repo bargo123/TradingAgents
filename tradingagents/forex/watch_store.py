@@ -953,6 +953,15 @@ class WatcherStore:
             "consecutive_normalization_failures": "normalization",
             "consecutive_runtime_exceeded": "runtime",
         }
+        if counters is not None:
+            if not isinstance(counters, Mapping):
+                raise ValueError("counters must be a mapping")
+            unknown = set(counters) - set(columns.values())
+            if unknown:
+                raise ValueError(f"unknown circuit counters: {', '.join(sorted(unknown))}")
+            for key, value in counters.items():
+                if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                    raise ValueError(f"circuit counter {key} must be a non-negative integer")
         with self._transaction(immediate=True) as conn:
             self._require_owner(conn, owner_token)
             assignments = ["updated_at=?"]

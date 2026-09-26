@@ -46,7 +46,7 @@ def _snapshot(bars: tuple[Mt5Bar, ...]) -> ForexMarketSnapshot:
         bid=1.1039,
         ask=1.1040,
         spread=0.0001,
-        spread_points=1.0,
+        spread_points=10.0,
         m1_candles=bars,
         m5_candles=bars,
         m15_candles=bars,

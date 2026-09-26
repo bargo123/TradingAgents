@@ -670,7 +670,7 @@ def _temporal_snapshot() -> ForexMarketSnapshot:
         bid=1.1,
         ask=1.1002,
         spread=0.0002,
-        spread_points=2.0,
+        spread_points=20.0,
         m1_candles=(bar,),
         m5_candles=(bar,),
         m15_candles=(bar,),
@@ -731,7 +731,7 @@ class _TemporalProvider:
             bid=1.1004,
             ask=1.1006,
             price=0.0002,
-            points=2.0,
+            points=20.0,
             timestamp=timestamp,
         )
 
@@ -807,7 +807,7 @@ def test_runner_persists_broker_timestamp_after_graph_without_extra_llm_call(
     assert decision.decision_reference_bid == pytest.approx(1.1004)
     assert decision.decision_reference_ask == pytest.approx(1.1006)
     assert decision.decision_reference_spread == pytest.approx(0.0002)
-    assert decision.decision_reference_spread_points == pytest.approx(2.0)
+    assert decision.decision_reference_spread_points == pytest.approx(20.0)
     assert decision.analysis_latency_seconds == pytest.approx(41.0)
     assert decision.decision_reference_delay_seconds == pytest.approx(1.25)
     assert decision.decision_reference_status == "AVAILABLE"
@@ -1044,7 +1044,7 @@ def test_reference_poll_rejects_non_utc_or_naive_broker_timestamps() -> None:
             bid=1.1004,
             ask=1.1006,
             price=0.0002,
-            points=2.0,
+            points=20.0,
             timestamp=COMPLETION_TIMESTAMP.replace(tzinfo=None),
         )
     )
@@ -1369,7 +1369,11 @@ def test_fallback_audit_never_claims_used(tmp_path):
 
 def test_fallback_context_identity_is_snapshot_specific():
     first_snapshot = _snapshot()
-    second_snapshot = replace(first_snapshot, bid=first_snapshot.bid + 0.001)
+    second_snapshot = replace(
+        first_snapshot,
+        bid=first_snapshot.bid + 0.001,
+        ask=first_snapshot.ask + 0.001,
+    )
     first = ForexShadowRunner._fallback_evidence_context(first_snapshot, "timeout")
     second = ForexShadowRunner._fallback_evidence_context(second_snapshot, "timeout")
     assert first.rendered_context_hash

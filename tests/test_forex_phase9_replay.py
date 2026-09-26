@@ -48,7 +48,7 @@ def _snapshot() -> ForexMarketSnapshot:
         bid=1.1,
         ask=1.1002,
         spread=0.0002,
-        spread_points=2.0,
+        spread_points=20.0,
         m1_candles=(bar,),
         m5_candles=(bar,),
         m15_candles=(bar,),
@@ -605,7 +605,11 @@ def test_replay_binds_to_source_decision_and_snapshot_bytes(tmp_path: Path):
     source_bytes = _row()["snapshot_json"].encode("utf-8")
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
     with pytest.raises(SnapshotReplayError, match="source"):
-        replay.run(replace(_snapshot(), bid=2.0), snapshot_bytes=source_bytes, config=config)
+        replay.run(
+            replace(_snapshot(), bid=2.0, ask=2.0002),
+            snapshot_bytes=source_bytes,
+            config=config,
+        )
 
     replay.run(None, snapshot_bytes=source_bytes, config=config)
 

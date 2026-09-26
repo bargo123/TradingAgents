@@ -234,6 +234,15 @@ def test_exact_symbol_match_wins_over_variants(fake_api):
 
 
 @pytest.mark.unit
+def test_duplicate_case_insensitive_exact_matches_raise_ambiguity(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("EURUSD"), fake_api.symbol("eurusd")]
+    provider = initialized_provider(fake_api)
+
+    with pytest.raises(Mt5SymbolAmbiguousError, match="EURUSD"):
+        provider.find_symbol("EURUSD")
+
+
+@pytest.mark.unit
 def test_normalized_variant_is_resolved_without_fixed_suffix_allowlist(fake_api):
     fake_api.symbol_records = [fake_api.symbol("EURUSD.raw")]
     provider = initialized_provider(fake_api)

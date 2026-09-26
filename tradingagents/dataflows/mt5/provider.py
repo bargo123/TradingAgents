@@ -343,8 +343,12 @@ class MT5Provider:
         requested = str(symbol).strip().upper()
         records = self._symbols()
         exact = [str(_field(raw, "name")) for raw in records if str(_field(raw, "name", "")).upper() == requested]
-        if exact:
+        if len(exact) == 1:
             return exact[0]
+        if len(exact) > 1:
+            raise Mt5SymbolAmbiguousError(
+                f"Ambiguous MT5 symbol {symbol!r}: {', '.join(exact)}"
+            )
         base = _normalize_symbol_name(requested)
         candidates = [
             str(_field(raw, "name"))
