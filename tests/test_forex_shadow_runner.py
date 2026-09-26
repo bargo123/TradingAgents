@@ -371,7 +371,7 @@ def test_callback_metrics_rejects_non_finite_aggregate_values():
         (),
         {
             "get_stats": lambda self: {
-                "llm_calls": float("nan"),
+                "llm_calls": 10**5000,
                 "tool_calls": float("inf"),
                 "tokens_in": 123,
                 "tokens_out": float("-inf"),

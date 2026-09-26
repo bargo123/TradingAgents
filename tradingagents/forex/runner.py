@@ -281,6 +281,14 @@ def _summary_without_evidence(value: Any) -> str:
     return _text(value)
 
 
+def _is_finite_metric(value: int | float) -> bool:
+    """Treat malformed callback numbers as unavailable, never as a run error."""
+    try:
+        return math.isfinite(value)
+    except (OverflowError, TypeError):
+        return False
+
+
 def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
     """Read optional callback statistics without making telemetry required."""
     metrics: dict[str, Any] = {
@@ -314,7 +322,7 @@ def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
             elif (
                 isinstance(value, (int, float))
                 and not isinstance(value, bool)
-                and math.isfinite(value)
+                and _is_finite_metric(value)
             ):
                 metrics[key] = value
         break
