@@ -157,6 +157,8 @@ _SAFE_CONFIG_KEYS = frozenset(
         "global_news_article_limit",
         "global_news_lookback_days",
         "forex_global_news_queries",
+        "data_vendors",
+        "tool_vendors",
     }
 )
 _CREDENTIAL_WORDS = ("key", "token", "secret", "password", "authorization", "credential")

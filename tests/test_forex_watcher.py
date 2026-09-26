@@ -209,6 +209,8 @@ def test_safe_effective_config_preserves_evidence_policy_controls():
             "global_news_article_limit": 7,
             "global_news_lookback_days": 3,
             "forex_global_news_queries": ("rates", "employment"),
+            "data_vendors": {"news_data": "yfinance", "macro_data": "fred"},
+            "tool_vendors": {"get_global_news": "yfinance"},
         }
     )
 
@@ -224,6 +226,8 @@ def test_safe_effective_config_preserves_evidence_policy_controls():
     assert safe["global_news_article_limit"] == 7
     assert safe["global_news_lookback_days"] == 3
     assert safe["forex_global_news_queries"] == ["rates", "employment"]
+    assert safe["data_vendors"] == {"news_data": "yfinance", "macro_data": "fred"}
+    assert safe["tool_vendors"] == {"get_global_news": "yfinance"}
     assert safe_effective_config({"forex_evidence_enabled": False}) != safe
 
 
