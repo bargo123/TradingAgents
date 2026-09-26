@@ -625,6 +625,31 @@ def test_due_evaluation_during_analysis_is_deferred_then_runs_before_next_probe(
     assert finished.evaluation_due_pending is False
 
 
+def test_evaluation_error_status_persists_safe_error_reason(tmp_path):
+    harness = _Harness(tmp_path, runner_result=_complete_run_result())
+
+    class ErrorEvaluator:
+        def evaluate_pending(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(
+                status="ERROR",
+                errors=("MT5 historical read failed",),
+                metrics={"llm_calls": 0},
+            )
+
+    harness.coordinator.outcomes.evaluator = ErrorEvaluator()
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.poll(_utc("2026-09-09T12:16:32Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:30:32Z"))
+
+    summary = harness.store.summary()
+    assert summary["last_evaluation_status"] == "ERROR"
+    assert summary["last_error_code"] == "EVALUATION_FAILED"
+    assert summary["last_error"] == "MT5 historical read failed"
+
+
 def test_no_probe_or_evaluator_or_provider_creation_while_analyzing(tmp_path):
     harness = _Harness(tmp_path, runner_result=_complete_run_result())
     harness.start()

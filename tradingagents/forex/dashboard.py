@@ -303,6 +303,11 @@ def derive_health(snapshot: DashboardSnapshot) -> tuple[str, tuple[str, ...]]:
     watcher = snapshot.watcher
     if watcher.get("circuit_reason"):
         degraded.append(f"circuit: {watcher['circuit_reason']}")
+    if watcher.get("last_evaluation_status") == "ERROR":
+        degraded.append(
+            "evaluation failed: "
+            + str(watcher.get("last_error_code") or "EVALUATION_FAILED")
+        )
     latest = snapshot.recent_decisions[0] if snapshot.recent_decisions else None
     if latest is not None:
         if latest.get("normalization") == "FAILED":

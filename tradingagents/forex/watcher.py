@@ -1145,7 +1145,14 @@ class WatcherCoordinator:
             return None
         with self.gate.acquire("evaluator"):
             evidence = self.outcomes.evaluate_pending(now)
-        self.store.clear_evaluation_due(self.owner_token, now, evidence.status)
+        error_detail = evidence.errors[0] if evidence.errors else None
+        self.store.clear_evaluation_due(
+            self.owner_token,
+            now,
+            evidence.status,
+            error_code="EVALUATION_FAILED" if evidence.errors else None,
+            error_detail=error_detail,
+        )
         self._last_evaluation_at = now
         event = "EVALUATION_FAILED" if evidence.errors else "EVALUATION_FINISHED"
         self.events.emit(event, {"status": evidence.status, "llm_calls": 0})

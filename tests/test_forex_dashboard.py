@@ -314,6 +314,23 @@ def test_data_unavailable_decision_does_not_count_as_fully_evaluated(tmp_path: P
     assert snapshot.training_readiness["data_unavailable_evaluations"] == 1
 
 
+def test_evaluation_error_is_visible_in_dashboard_health(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "UPDATE forex_watcher_state SET last_evaluation_status=?, last_error_code=?, last_error=? WHERE singleton_id=1",
+            ("ERROR", "EVALUATION_FAILED", "historical read failed"),
+        )
+        conn.commit()
+
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+
+    assert snapshot.health == "DEGRADED"
+    assert "evaluation failed: EVALUATION_FAILED" in snapshot.health_reasons
+
+
 def test_dashboard_defers_final_corpus_eligibility(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     ShadowDecisionStore(path).record(_decision("deferred"))

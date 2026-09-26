@@ -132,6 +132,36 @@ def test_evaluation_due_flag_is_fenced_and_persisted(tmp_path):
         store.mark_evaluation_due("stale-token", NOW)
 
 
+def test_successful_evaluation_clears_previous_evaluation_error(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    acquired = store.acquire_lease(owner(), NOW)
+
+    store.set_error(
+        acquired.owner_token,
+        "EVALUATION_FAILED",
+        "historical read failed",
+        NOW,
+    )
+    store.clear_evaluation_due(acquired.owner_token, NOW, "OK")
+
+    summary = store.summary(NOW)
+    assert summary["last_evaluation_status"] == "OK"
+    assert summary["last_error_code"] is None
+    assert summary["last_error"] is None
+
+
+def test_successful_evaluation_preserves_unrelated_error(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    acquired = store.acquire_lease(owner(), NOW)
+
+    store.set_error(acquired.owner_token, "ANALYSIS_FAILED", "analysis failed", NOW)
+    store.clear_evaluation_due(acquired.owner_token, NOW, "OK")
+
+    summary = store.summary(NOW)
+    assert summary["last_error_code"] == "ANALYSIS_FAILED"
+    assert summary["last_error"] == "analysis failed"
+
+
 def test_schema_is_idempotent_and_preserves_phase5_tables(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     store.initialize()

@@ -616,15 +616,35 @@ class WatcherStore:
                 (_iso(now),),
             )
 
-    def clear_evaluation_due(self, owner_token: str, now: datetime, status: str) -> None:
+    def clear_evaluation_due(
+        self,
+        owner_token: str,
+        now: datetime,
+        status: str,
+        *,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+    ) -> None:
         now = _utc(now, "now")
         self.initialize()
         with self._transaction(immediate=True) as conn:
             self._require_owner(conn, owner_token)
-            conn.execute(
-                "UPDATE forex_watcher_state SET evaluation_due_pending=0, last_evaluation_at=?, last_evaluation_status=?, updated_at=? WHERE singleton_id=1",
-                (_iso(now), _safe_text(status, 80), _iso(now)),
-            )
+            if status == "ERROR":
+                conn.execute(
+                    "UPDATE forex_watcher_state SET evaluation_due_pending=0, last_evaluation_at=?, last_evaluation_status=?, last_error_code=?, last_error=?, updated_at=? WHERE singleton_id=1",
+                    (
+                        _iso(now),
+                        _safe_text(status, 80),
+                        _safe_text(error_code or "EVALUATION_FAILED", 100),
+                        _safe_text(error_detail),
+                        _iso(now),
+                    ),
+                )
+            else:
+                conn.execute(
+                    "UPDATE forex_watcher_state SET evaluation_due_pending=0, last_evaluation_at=?, last_evaluation_status=?, last_error_code=CASE WHEN last_error_code='EVALUATION_FAILED' THEN NULL ELSE last_error_code END, last_error=CASE WHEN last_error_code='EVALUATION_FAILED' THEN NULL ELSE last_error END, updated_at=? WHERE singleton_id=1",
+                    (_iso(now), _safe_text(status, 80), _iso(now)),
+                )
 
     def observe_opportunity(self, opportunity: ScheduledOpportunity, now: datetime) -> WatchOpportunity:
         now = _utc(now, "now")
