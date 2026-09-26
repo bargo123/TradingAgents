@@ -219,6 +219,25 @@ class StatsCallbackHandler(BaseCallbackHandler):
             metrics["reasoning_tokens"] += reasoning_tokens
             metrics["elapsed_seconds"] += elapsed
 
+    def _close_error_run(self, run_id: Any) -> None:
+        """Close a failed span without retaining exception or response content."""
+        key = _run_key(run_id)
+        if key is None:
+            return
+        with self._lock:
+            self._active_runs.pop(key, None)
+            self._completed_runs.add(key)
+
+    def on_llm_error(self, error: BaseException, run_id: Any = None, **kwargs: Any) -> None:
+        """Close failed LLM spans without persisting the exception payload."""
+        self._close_error_run(run_id)
+
+    def on_chat_model_error(
+        self, error: BaseException, run_id: Any = None, **kwargs: Any
+    ) -> None:
+        """Close failed chat-model spans without retaining model output."""
+        self._close_error_run(run_id)
+
     def on_tool_start(
         self,
         serialized: dict[str, Any],

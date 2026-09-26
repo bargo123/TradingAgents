@@ -140,6 +140,31 @@ def test_stats_reset_starts_a_new_shadow_run_window():
     assert stats["agents"]["Trader"]["calls"] == 1
 
 
+def test_stats_llm_error_closes_run_and_suppresses_late_end():
+    handler = StatsCallbackHandler()
+    with agent_context("Trader", SimpleNamespace(model_name="quick-model")):
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"},
+            [[]],
+            run_id="run-error",
+            invocation_params={"model": "quick-model"},
+        )
+        handler.on_llm_error(RuntimeError("provider failed"), run_id="run-error")
+        handler.on_llm_end(_response(), run_id="run-error")
+        handler.on_chat_model_start(
+            {"name": "ChatOpenAI"},
+            [[]],
+            run_id="run-error",
+            invocation_params={"model": "quick-model"},
+        )
+
+    stats = handler.get_stats()
+    assert stats["llm_calls"] == 1
+    assert stats["tokens_in"] == 0
+    assert stats["tokens_out"] == 0
+    assert stats["agents"] == {}
+
+
 def _bare_graph(config, mode="forex_mt5"):
     graph = object.__new__(TradingAgentsGraph)
     graph.config = config
