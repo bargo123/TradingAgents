@@ -159,6 +159,7 @@ _SAFE_CONFIG_KEYS = frozenset(
         "forex_global_news_queries",
         "data_vendors",
         "tool_vendors",
+        "checkpoint_enabled",
     }
 )
 _CREDENTIAL_WORDS = ("key", "token", "secret", "password", "authorization", "credential")

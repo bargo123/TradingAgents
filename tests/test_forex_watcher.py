@@ -211,6 +211,7 @@ def test_safe_effective_config_preserves_evidence_policy_controls():
             "forex_global_news_queries": ("rates", "employment"),
             "data_vendors": {"news_data": "yfinance", "macro_data": "fred"},
             "tool_vendors": {"get_global_news": "yfinance"},
+            "checkpoint_enabled": True,
         }
     )
 
@@ -228,6 +229,7 @@ def test_safe_effective_config_preserves_evidence_policy_controls():
     assert safe["forex_global_news_queries"] == ["rates", "employment"]
     assert safe["data_vendors"] == {"news_data": "yfinance", "macro_data": "fred"}
     assert safe["tool_vendors"] == {"get_global_news": "yfinance"}
+    assert safe["checkpoint_enabled"] is True
     assert safe_effective_config({"forex_evidence_enabled": False}) != safe
 
 
