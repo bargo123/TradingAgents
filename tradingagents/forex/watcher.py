@@ -212,23 +212,42 @@ def _safe_json_value(value: Any) -> Any:
     return str(value)
 
 
-def _safe_metrics_json_value(value: Any) -> Any:
+def _safe_metrics_json_value(value: Any, _seen: set[int] | None = None) -> Any:
     """Make arbitrary callback telemetry strict-JSON-safe without failing a run."""
+    if _seen is None:
+        _seen = set()
     if isinstance(value, Mapping):
-        return {
-            str(key): _safe_metrics_json_value(item)
-            for key, item in value.items()
-            if (
-                str(key).casefold() in _SAFE_TELEMETRY_KEYS
-                and (item is None or (isinstance(item, (int, float)) and not isinstance(item, bool)))
-            )
-            or (
-                str(key).casefold() not in _SAFE_TELEMETRY_KEYS
-                and not _sensitive_event_key(key)
-            )
-        }
+        identity = id(value)
+        if identity in _seen:
+            return None
+        _seen.add(identity)
+        try:
+            return {
+                str(key): _safe_metrics_json_value(item, _seen)
+                for key, item in value.items()
+                if (
+                    str(key).casefold() in _SAFE_TELEMETRY_KEYS
+                    and (
+                        item is None
+                        or (isinstance(item, (int, float)) and not isinstance(item, bool))
+                    )
+                )
+                or (
+                    str(key).casefold() not in _SAFE_TELEMETRY_KEYS
+                    and not _sensitive_event_key(key)
+                )
+            }
+        finally:
+            _seen.remove(identity)
     if isinstance(value, (tuple, list)):
-        return [_safe_metrics_json_value(item) for item in value]
+        identity = id(value)
+        if identity in _seen:
+            return None
+        _seen.add(identity)
+        try:
+            return [_safe_metrics_json_value(item, _seen) for item in value]
+        finally:
+            _seen.remove(identity)
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if isinstance(value, int) and not isinstance(value, bool):

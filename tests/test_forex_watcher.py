@@ -837,6 +837,28 @@ def test_finalization_drops_sensitive_nested_telemetry_fields(tmp_path):
     assert "PRIVATE" not in json.dumps(payload).upper()
 
 
+def test_finalization_handles_cyclic_nested_telemetry(tmp_path):
+    cyclic: dict[str, object] = {}
+    cyclic["self"] = cyclic
+    result = SimpleNamespace(
+        decision=_decision("run-cyclic-telemetry"),
+        elapsed_seconds=1.0,
+        metrics={
+            "telemetry_status": "AVAILABLE",
+            "llm_calls": 1,
+            "agents": {"Trader": cyclic},
+        },
+    )
+    harness = _Harness(tmp_path, runner_result=result)
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    payload = json.loads(harness.store.list_runs()[0].metrics_json or "{}")
+    assert payload["agents"]["Trader"]["self"] is None
+
+
 def test_new_bar_during_analysis_is_terminally_skipped_and_not_queued(tmp_path):
     harness = _Harness(tmp_path, runner_result=_complete_run_result())
     harness.start()
