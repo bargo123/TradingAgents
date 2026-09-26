@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 import tradingagents.default_config as default_config
 from tradingagents.forex.runtime_config import (
     ForexShadowRuntimeConfig,
@@ -31,6 +33,22 @@ def test_runtime_config_is_explicit_and_does_not_depend_on_shell_environment():
     assert config["forex_deep_thinking"] is True
     assert runtime.context_length == 16384
     assert len(runtime.fingerprint) == 64
+
+
+def test_runtime_owned_fields_cannot_be_overridden_by_extra():
+    with pytest.raises(ValueError, match="runtime-owned configuration"):
+        ForexShadowRuntimeConfig(
+            extra={
+                "llm_provider": "openai",
+                "backend_url": "http://127.0.0.1:11434/v1",
+                "quick_think_llm": "other-quick-model",
+                "deep_think_llm": "other-deep-model",
+                "forex_quick_max_tokens": 1,
+                "forex_pm_max_tokens": 1,
+                "forex_quick_thinking": True,
+                "forex_deep_thinking": False,
+            }
+        )
 
 
 def test_runtime_provenance_is_safe_and_source_attributable(tmp_path):

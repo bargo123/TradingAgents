@@ -17,6 +17,24 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+_RUNTIME_OWNED_CONFIG_KEYS = frozenset(
+    {
+        "llm_provider",
+        "backend_url",
+        "quick_think_llm",
+        "deep_think_llm",
+        "temperature",
+        "max_tokens",
+        "forex_quick_max_tokens",
+        "forex_pm_max_tokens",
+        "forex_quick_thinking",
+        "forex_deep_thinking",
+        "prompt_config_version",
+        "collector_contract_version",
+        "application_version",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ForexShadowRuntimeConfig:
@@ -52,6 +70,14 @@ class ForexShadowRuntimeConfig:
                 raise ValueError(f"{name} must be a positive integer")
         if not isinstance(self.quick_thinking, bool) or not isinstance(self.deep_thinking, bool):
             raise ValueError("thinking controls must be bools")
+        if not isinstance(self.extra, Mapping):
+            raise ValueError("extra must be a mapping")
+        conflicting = sorted(_RUNTIME_OWNED_CONFIG_KEYS.intersection(self.extra))
+        if conflicting:
+            raise ValueError(
+                "extra cannot override runtime-owned configuration: "
+                + ", ".join(conflicting)
+            )
 
     @property
     def ollama_base_url(self) -> str:
@@ -84,6 +110,9 @@ class ForexShadowRuntimeConfig:
                 "application_version": self.application_version,
             }
         )
+        # ``extra`` is an additive extension point only.  Runtime-owned
+        # provider/model/budget/thinking fields are rejected in __post_init__
+        # rather than silently weakening the dedicated shadow contract.
         config.update(dict(self.extra))
         return config
 
