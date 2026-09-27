@@ -13,7 +13,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from .evidence_context import EvidenceReferenceRejectionReason
+from .evidence_context import (
+    EvidenceAuditStatus,
+    EvidenceBundleStatus,
+    EvidenceIntegrationStatus,
+    EvidenceReferenceRejectionReason,
+    EvidenceUseStatus,
+)
 
 _FORBIDDEN_WORDS = (
     "prompt",
@@ -113,6 +119,13 @@ def _rejection_sequence(value: Any) -> tuple[Any, ...]:
     return values
 
 
+def _closed_status(value: Any, enum_type: type[Enum], name: str) -> str:
+    try:
+        return enum_type(value).value
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an allowed status") from exc
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceUsageAudit:
     decision_id: str
@@ -151,6 +164,13 @@ class EvidenceUsageAudit:
     audit_schema_version: str = "phase9.v1"
 
     def __post_init__(self) -> None:
+        for name, enum_type in (
+            ("integration_status", EvidenceIntegrationStatus),
+            ("bundle_status", EvidenceBundleStatus),
+            ("evidence_use_status", EvidenceUseStatus),
+            ("evidence_audit_status", EvidenceAuditStatus),
+        ):
+            object.__setattr__(self, name, _closed_status(getattr(self, name), enum_type, name))
         if self.as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")
         for field in (

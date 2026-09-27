@@ -110,6 +110,20 @@ def test_audit_rejects_closed_rejection_reason_violation(reason):
         audit(evidence_refs_rejected=({"ref": "K1", "reason": reason},))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("integration_status", "BOGUS"),
+        ("bundle_status", "BOGUS"),
+        ("evidence_use_status", "BOGUS"),
+        ("evidence_audit_status", "BOGUS"),
+    ],
+)
+def test_audit_rejects_unknown_status_values(field, value):
+    with pytest.raises((TypeError, ValueError), match=field):
+        audit(**{field: value})
+
+
 def test_audit_is_append_only(tmp_path):
     store = EvidenceAuditStore(tmp_path / "audit.sqlite3")
     store.initialize()
