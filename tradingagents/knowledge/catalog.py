@@ -717,6 +717,8 @@ class KnowledgeCatalog:
             self._validate_generation(generation)
         if not ready_document_ids and generation is not None:
             raise ValueError("an active generation requires its ready document population")
+        if generation is None and ready_document_ids:
+            raise ValueError("ready documents require an active generation")
         with self._write() as connection:
             for document_id in ready_document_ids:
                 if document_id in documents_by_id:

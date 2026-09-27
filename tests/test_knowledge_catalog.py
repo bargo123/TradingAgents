@@ -378,6 +378,33 @@ def test_publish_generation_rejects_unknown_ready_document_atomically(tmp_path):
     assert catalog.active_generation() is None
 
 
+def test_publish_generation_rejects_ready_documents_without_generation(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("ee" * 32)
+    catalog.register_document(make_parsed_document(document_id=document_id, source_hash="ee" * 32))
+    summary = IngestionRunSummary(
+        run_id="run-ready-without-generation",
+        state="SUCCEEDED",
+        counts={},
+        source_count=1,
+        document_count=1,
+        chunk_count=0,
+    )
+
+    with pytest.raises(ValueError, match="active generation"):
+        catalog.publish_generation(
+            None,
+            documents_by_id={},
+            component_fingerprints={},
+            chunks_by_document={},
+            aliases=(),
+            removed_resource_ids=(),
+            ready_document_ids=(document_id,),
+            summary=summary,
+        )
+
+
 def test_generation_registry_rejects_invalid_pair_and_preserves_previous_active_generation(tmp_path):
     catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
     catalog.initialize()
