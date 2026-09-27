@@ -155,6 +155,21 @@ def test_historical_query_allows_tombstones_but_requires_completion_before_cutof
     assert result.excluded_counts["as_of"] == 1
 
 
+def test_historical_query_excludes_malformed_tombstone_metadata():
+    malformed = row("malformed") | {
+        "tombstoned": "false",
+        "currently_tombstoned": "false",
+    }
+    service = ExperienceQueryService([malformed], profile=profile())
+
+    result = service.search(
+        ExperienceQuery(query_state(), as_of=datetime(2026, 1, 2, tzinfo=UTC))
+    )
+
+    assert result.hits == ()
+    assert result.excluded_counts["tombstone"] == 1
+
+
 def test_tier_c_numeric_similarity_is_rejected():
     with pytest.raises(ValueError, match="Tier C"):
         ExperienceQueryService(

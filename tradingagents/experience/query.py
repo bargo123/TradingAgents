@@ -155,6 +155,7 @@ class ExperienceQueryService:
             trust_tier = _trust_tier(row)
             aliases = _get(row, "source_aliases", {}) or {}
             tombstone_flag = _flag(row, "tombstoned", False)
+            tombstone_metadata_invalid = tombstone_flag is None
             aliases_valid = isinstance(aliases, Mapping)
             tombstoned = tombstone_flag is not False or not aliases_valid or (
                 bool(aliases)
@@ -163,7 +164,9 @@ class ExperienceQueryService:
                     for v in aliases.values()
                 )
             )
-            if query.symbol and _get(row, "symbol", _get(row, "resolved_symbol")) != query.symbol:
+            if tombstone_metadata_invalid:
+                reason = "tombstone"
+            elif query.symbol and _get(row, "symbol", _get(row, "resolved_symbol")) != query.symbol:
                 reason = "symbol"
             elif query.analysis_profile and _get(row, "analysis_profile") != query.analysis_profile:
                 reason = "profile"
@@ -314,7 +317,7 @@ class ExperienceQueryService:
                 similarity_profile_version=_get(
                     by_id[h.experience_id], "similarity_profile_version"
                 ),
-                currently_tombstoned=bool(_get(by_id[h.experience_id], "tombstoned", False))
+                currently_tombstoned=_flag(by_id[h.experience_id], "tombstoned", False) is True
                 or (
                     bool(_get(by_id[h.experience_id], "source_aliases", {}))
                     and not any(
