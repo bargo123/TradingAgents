@@ -4,6 +4,7 @@ import json
 import sqlite3
 import sys
 import time
+from contextlib import closing
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -403,9 +404,12 @@ class _BoundProcess(_ImmediateProcess):
     def start(self):
         from tradingagents.experience.models import EvidenceRequest
 
-        request = EvidenceRequest(**dict(self.args[2]["request"]))
-        bundle = self.orchestrator.query(request)
-        self.args[0].send(("ok", bundle.to_dict()))
+        try:
+            request = EvidenceRequest(**dict(self.args[2]["request"]))
+            bundle = self.orchestrator.query(request)
+            self.args[0].send(("ok", bundle.to_dict()))
+        finally:
+            _close_orchestrator(self.orchestrator)
 
 
 class _HangingProcess(_ImmediateProcess):
@@ -598,10 +602,13 @@ def test_child_guard_treats_approved_embedding_provider_as_read_only_leaf(tmp_pa
     orchestrator.knowledge_service.embedder = _OpaqueEmbeddingProvider()
     orchestrator.knowledge_service.vector_reader.backend = type("OpaqueVectorBackend", (), {})()
 
-    _validate_child_orchestrator(
-        orchestrator,
-        ReadonlyEvidenceRuntimeConfiguration(tuple(sorted(roots.items()))),
-    )
+    try:
+        _validate_child_orchestrator(
+            orchestrator,
+            ReadonlyEvidenceRuntimeConfiguration(tuple(sorted(roots.items()))),
+        )
+    finally:
+        _close_orchestrator(orchestrator)
 
 
 @pytest.mark.parametrize("factory", [_nested_writer_dependency_factory, _nested_untyped_dependency_factory])
@@ -653,11 +660,11 @@ def test_phase8_profile_and_cohort_models_are_immutable(tmp_path: Path):
         market_state=_feature_state(1.0), trust="TIER_A_HIGH_TRUST",
     )
     writer.store_feature_projection(record.experience_id, dict(record.market_state))
-    catalog = ReadonlyExperienceCatalog(roots["experience"])
-    profile = next(iter(catalog.profiles.values()))
-    assert isinstance(profile.cohort, NormalizationCohortV1)
-    with pytest.raises(FrozenInstanceError):
-        profile.population_count = 99
+    with ReadonlyExperienceCatalog(roots["experience"]) as catalog:
+        profile = next(iter(catalog.profiles.values()))
+        assert isinstance(profile.cohort, NormalizationCohortV1)
+        with pytest.raises(FrozenInstanceError):
+            profile.population_count = 99
 
 
 def test_spawn_process_args_contain_no_callable_closures(tmp_path: Path):
@@ -766,24 +773,24 @@ def test_populated_phase7_readonly_adapter_matches_published_generation(tmp_path
     artifact = tmp_path / "published-vector.bin"
     artifact.write_bytes(b"published-read-only-artifact")
     artifact_before = artifact.read_bytes()
-    with sqlite3.connect(tmp_path / "catalog.sqlite3") as db:
+    with closing(sqlite3.connect(tmp_path / "catalog.sqlite3")) as db, db:
         spec = EmbeddingSpec().to_dict()
         db.execute("INSERT INTO knowledge_index_generations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("g1", "vector/g1", "keyword/g1", json.dumps(spec), "fts5-v1", "{}", "index-v1", "pop", "identity", 1, 1, 1, 1, "VALIDATED", None, None, "{}", 1))
         db.execute("INSERT INTO knowledge_documents VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", ("doc", "hash", "{}", "parser", "1", "cfg", "PARSED", 1, 1, 1, "g1", "pop", "{}", None, "", ""))
         db.execute("INSERT INTO knowledge_resources VALUES (?,?,?,?,?,?,?,?,?,?,?)", ("res", None, None, None, "hash", None, None, "PARSED", None, "", ""))
         db.execute("INSERT INTO knowledge_aliases VALUES (?,?,?,?,?,?)", ("res", "doc", "hash", "CURRENT", None, ""))
-    readonly = ReadonlyKnowledgeCatalog(tmp_path)
-    assert readonly.active_generation().generation_id == writer.active_generation().generation_id
-    assert readonly.document_is_retrieval_ready("doc") == writer.document_is_retrieval_ready("doc") is True
-    query_service = KnowledgeQueryService(
-        _ReadonlyVectorReader(),
-        _ReadonlyLexicalReader(),
-        readonly,
-        _ReadonlyEmbeddingProvider(),
-    )
-    assert query_service.search(KnowledgeQuery(text="published evidence")) == ()
-    assert readonly.active_generation().embedding_spec.to_dict() == EmbeddingSpec().to_dict()
-    assert artifact.read_bytes() == artifact_before
+    with ReadonlyKnowledgeCatalog(tmp_path) as readonly:
+        assert readonly.active_generation().generation_id == writer.active_generation().generation_id
+        assert readonly.document_is_retrieval_ready("doc") == writer.document_is_retrieval_ready("doc") is True
+        query_service = KnowledgeQueryService(
+            _ReadonlyVectorReader(),
+            _ReadonlyLexicalReader(),
+            readonly,
+            _ReadonlyEmbeddingProvider(),
+        )
+        assert query_service.search(KnowledgeQuery(text="published evidence")) == ()
+        assert readonly.active_generation().embedding_spec.to_dict() == EmbeddingSpec().to_dict()
+        assert artifact.read_bytes() == artifact_before
 
 
 class _QueryReader:
@@ -945,24 +952,24 @@ def test_timeout_does_not_write_or_start_maintenance(tmp_path: Path):
 
 def test_readonly_knowledge_catalog_uses_mode_ro(tmp_path: Path):
     db = tmp_path / "catalog.sqlite3"
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         connection.execute("CREATE TABLE knowledge_index_generations (is_active INTEGER, generation_id TEXT, vector_location TEXT, lexical_location TEXT, embedding_spec_json TEXT, lexical_index_version TEXT, lexical_tokenizer_settings_json TEXT, index_version TEXT, population_hash TEXT, population_identity TEXT, document_count INTEGER, chunk_count INTEGER, vector_ready INTEGER, lexical_ready INTEGER, status TEXT, created_at TEXT, activated_at TEXT, component_versions_json TEXT)")
-    catalog = ReadonlyKnowledgeCatalog(tmp_path)
-    assert catalog.active_generation() is None
-    with pytest.raises(sqlite3.OperationalError):
-        catalog._connection.execute("CREATE TABLE forbidden (x INTEGER)")
+    with ReadonlyKnowledgeCatalog(tmp_path) as catalog:
+        assert catalog.active_generation() is None
+        with pytest.raises(sqlite3.OperationalError):
+            catalog._connection.execute("CREATE TABLE forbidden (x INTEGER)")
 
 
 def test_readonly_experience_catalog_uses_mode_ro(tmp_path: Path):
     db = tmp_path / "catalog.sqlite3"
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection, connection:
         connection.execute("CREATE TABLE experience_records (experience_id TEXT PRIMARY KEY, source_decision_id TEXT, source_database_id TEXT, source_decision_fingerprint TEXT, source_run_id TEXT, symbol TEXT, requested_symbol TEXT, analysis_profile TEXT, analysis_timeframe TEXT, analysis_snapshot_timestamp TEXT, decision_completed_timestamp TEXT, decision_reference_timestamp TEXT, market_state_json TEXT, decision_evidence_json TEXT, provenance_json TEXT, trust TEXT, tombstoned INTEGER, source_evaluation_fingerprints_json TEXT)")
         connection.execute("CREATE TABLE experience_source_aliases (source_database_id TEXT, source_decision_id TEXT, accepted_fingerprint TEXT, experience_id TEXT, state TEXT, observed_at TEXT, scan_status TEXT)")
         connection.execute("CREATE TABLE experience_feature_projections (experience_id TEXT, feature_schema_version TEXT, projection_json TEXT NOT NULL)")
-    catalog = ReadonlyExperienceCatalog(tmp_path)
-    assert catalog.active_records() == ()
-    with pytest.raises(sqlite3.OperationalError):
-        catalog._connection.execute("CREATE TABLE forbidden (x INTEGER)")
+    with ReadonlyExperienceCatalog(tmp_path) as catalog:
+        assert catalog.active_records() == ()
+        with pytest.raises(sqlite3.OperationalError):
+            catalog._connection.execute("CREATE TABLE forbidden (x INTEGER)")
 
 
 def test_readonly_catalog_context_manager_closes_owned_handle(tmp_path: Path):
@@ -1032,12 +1039,14 @@ def test_close_orchestrator_continues_after_one_close_failure():
 
 def test_readonly_experience_adapter_matches_phase8_reader_semantics(tmp_path: Path):
     sqlite3.connect(tmp_path / "catalog.sqlite3").close()
-    assert ReadonlyExperienceCatalog(tmp_path).historical_records() == ()
+    with ReadonlyExperienceCatalog(tmp_path) as catalog:
+        assert catalog.historical_records() == ()
 
 
 def test_readonly_knowledge_adapter_matches_published_generation_semantics(tmp_path: Path):
     sqlite3.connect(tmp_path / "catalog.sqlite3").close()
-    assert ReadonlyKnowledgeCatalog(tmp_path).document_is_retrieval_ready("missing") is False
+    with ReadonlyKnowledgeCatalog(tmp_path) as catalog:
+        assert catalog.document_is_retrieval_ready("missing") is False
 
 
 def test_query_embedding_spec_mismatch_fails_closed():

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -159,7 +160,7 @@ def test_schema_is_idempotent_and_contains_only_knowledge_catalog_tables(tmp_pat
     catalog.initialize()
     catalog.initialize()
 
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         tables = {
             row[0]
             for row in connection.execute(

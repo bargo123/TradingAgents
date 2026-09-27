@@ -1,5 +1,6 @@
 import hashlib
 import sqlite3
+from contextlib import closing
 from copy import deepcopy
 from datetime import datetime, timezone
 
@@ -37,7 +38,7 @@ def test_audit_schema_contains_required_metadata(tmp_path):
     store = EvidenceAuditStore(tmp_path / "audit.sqlite3")
     store.initialize()
     store.append(audit())
-    with sqlite3.connect(tmp_path / "audit.sqlite3") as db:
+    with closing(sqlite3.connect(tmp_path / "audit.sqlite3")) as db, db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(evidence_usage_audit)")}
     assert {"decision_id", "source_run_id", "rendered_context", "rendered_context_hash", "as_of",
             "integration_status", "bundle_status", "evidence_refs_used", "diagnostics"} <= columns

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -151,7 +152,7 @@ def test_hosted_provider_with_statistics_falls_back_without_leakage():
 
 def test_enabled_evidence_reads_leave_source_and_catalog_immutable(tmp_path: Path):
     source = tmp_path / "phase6.db"
-    with sqlite3.connect(source) as db:
+    with closing(sqlite3.connect(source)) as db, db:
         db.execute("CREATE TABLE shadow_trade_decisions (decision_id TEXT, action TEXT)")
         db.execute("INSERT INTO shadow_trade_decisions VALUES ('d1', 'HOLD')")
         db.commit()
@@ -167,7 +168,7 @@ def test_enabled_evidence_reads_leave_source_and_catalog_immutable(tmp_path: Pat
         sqlite3.connect(catalog).close()
         roots[name] = root
         before_bytes[catalog] = catalog.read_bytes()
-        with sqlite3.connect(catalog) as db:
+        with closing(sqlite3.connect(catalog)) as db, db:
             before_catalog_state[catalog] = (
                 db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall(),
                 db.execute("SELECT name, type FROM sqlite_master ORDER BY name").fetchall(),
@@ -186,10 +187,10 @@ def test_enabled_evidence_reads_leave_source_and_catalog_immutable(tmp_path: Pat
     service.retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
     assert {path: path.read_bytes() for path in before_bytes} == before_bytes
     for catalog, (schema, rows) in before_catalog_state.items():
-        with sqlite3.connect(catalog) as db:
+        with closing(sqlite3.connect(catalog)) as db, db:
             assert db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall() == schema
             assert db.execute("SELECT name, type FROM sqlite_master ORDER BY name").fetchall() == rows
-    with sqlite3.connect(source) as db:
+    with closing(sqlite3.connect(source)) as db, db:
         assert db.execute("SELECT * FROM shadow_trade_decisions").fetchall() == before_rows
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall() == before_schema
 
@@ -268,7 +269,7 @@ def test_enabled_normal_runner_writes_one_shadow_row_and_audit_only_to_runtime(t
         evidence_enabled=True,
         persist=False,
     )
-    with sqlite3.connect(source) as db:
+    with closing(sqlite3.connect(source)) as db, db:
         assert db.execute("SELECT COUNT(*) FROM shadow_decisions").fetchone()[0] == 1
         assert "evidence" not in " ".join(row[1] for row in db.execute("PRAGMA table_info(shadow_decisions)"))
     assert Evidence.calls == 2
@@ -300,11 +301,11 @@ def test_no_mt5_mutation_api_is_called():
 
 def test_phase5_shadow_schema_is_unchanged(tmp_path: Path):
     database = tmp_path / "shadow.sqlite3"
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db, db:
         db.execute("CREATE TABLE shadow_trade_decisions (decision_id TEXT, action TEXT)")
         before = db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall()
     _service(enabled=False).retrieve(_snapshot(), resolved_symbol="EURUSD", analysis_profile="INTRADAY", analysis_timeframe="M5")
-    with sqlite3.connect(database) as db:
+    with closing(sqlite3.connect(database)) as db, db:
         assert db.execute("SELECT sql FROM sqlite_master ORDER BY name").fetchall() == before
 
 

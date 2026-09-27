@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from contextlib import suppress
+from contextlib import closing, suppress
 from unittest.mock import patch
 
 from tests.fixtures.experience_source_db import create_source_db
@@ -50,7 +50,7 @@ def test_later_import_appends_newly_observed_evaluation_for_unchanged_decision(t
     importer = ExperienceImporter(catalog)
 
     importer.import_sources((source,))
-    with sqlite3.connect(source) as db:
+    with closing(sqlite3.connect(source)) as db, db:
         db.execute("UPDATE shadow_decision_evaluations SET evaluation_status='COMPLETE'")
         db.commit()
 
@@ -123,7 +123,7 @@ def test_import_publishes_canonical_feature_projection_metadata(tmp_path):
             for timeframe in ("M1", "M5", "M15", "H1")
         },
     }
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection, connection:
         connection.execute(
             "UPDATE shadow_decisions SET snapshot_json=?", (json.dumps(snapshot),)
         )
@@ -131,7 +131,7 @@ def test_import_publishes_canonical_feature_projection_metadata(tmp_path):
     ExperienceImporter(catalog).import_sources((source,))
     experience_id = catalog.active_records()[0].experience_id
 
-    with sqlite3.connect(catalog.database_path) as connection:
+    with closing(sqlite3.connect(catalog.database_path)) as connection, connection:
         schema_version, projection_json = connection.execute(
             "SELECT feature_schema_version, projection_json "
             "FROM experience_feature_projections WHERE experience_id=?",

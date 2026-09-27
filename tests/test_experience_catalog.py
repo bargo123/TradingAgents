@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -63,7 +64,7 @@ def test_catalog_has_phase8_tables_and_diagnostics_are_bounded(catalog: Experien
     catalog.record_failed_scan(
         "db-a", "SOURCE_DATABASE_UNAVAILABLE", detail="secret report\nshould not be indexed"
     )
-    with sqlite3.connect(catalog.database_path) as db:
+    with closing(sqlite3.connect(catalog.database_path)) as db, db:
         tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert {
             "experience_sources",

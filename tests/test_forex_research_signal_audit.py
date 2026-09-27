@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from tradingagents.forex.research_signal_audit import (
 
 def _init_db(tmp_path: Path) -> Path:
     path = tmp_path / "research-signal.db"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.executescript(
             """
             CREATE TABLE shadow_decisions (
@@ -79,7 +80,7 @@ def _metrics(
 
 def test_research_signal_audit_reports_availability_and_path(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
             ("d1", "HOLD", "HOLD", "FINAL TRANSACTION PROPOSAL: **HOLD**", "COMPLETE", "NORMALIZED"),
@@ -105,7 +106,7 @@ def test_research_signal_audit_reports_availability_and_path(tmp_path: Path) -> 
 
 def test_research_signal_audit_does_not_treat_missing_recommendation_as_hold(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
             ("d1", "HOLD", None, "FINAL TRANSACTION PROPOSAL: **HOLD**", "COMPLETE", "NORMALIZED"),
@@ -124,7 +125,7 @@ def test_research_signal_audit_does_not_treat_missing_recommendation_as_hold(tmp
 
 def test_research_signal_audit_attributes_timeframe_pattern_to_recommendation(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
             ("d1", "HOLD", "HOLD", "FINAL TRANSACTION PROPOSAL: **HOLD**", "COMPLETE", "NORMALIZED"),
@@ -147,7 +148,7 @@ def test_research_signal_audit_attributes_timeframe_pattern_to_recommendation(tm
 
 def test_research_signal_audit_keeps_missing_timeframes_nullable(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
             ("d1", "HOLD", "HOLD", "FINAL TRANSACTION PROPOSAL: **HOLD**", "COMPLETE", "NORMALIZED"),
@@ -172,7 +173,7 @@ def test_research_signal_audit_keeps_missing_timeframes_nullable(tmp_path: Path)
 
 def test_research_signal_audit_requires_read_contract(tmp_path: Path) -> None:
     path = tmp_path / "invalid.db"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE shadow_decisions (decision_id TEXT)")
 
     with pytest.raises(ResearchSignalAuditSchemaError):

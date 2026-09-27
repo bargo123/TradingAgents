@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -59,7 +60,7 @@ def test_evaluate_remains_pending_before_shortest_approved_horizon(monkeypatch, 
     config = _config(tmp_path, mode="evaluate")
     config.db_path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
-    with sqlite3.connect(config.db_path) as db:
+    with closing(sqlite3.connect(config.db_path)) as db, db:
         db.execute(
             "CREATE TABLE shadow_decisions (decision_id TEXT, analysis_snapshot_timestamp TEXT, decision_reference_timestamp TEXT)"
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -187,7 +188,7 @@ def test_replay_does_not_change_source_schema_or_rows(tmp_path: Path):
     replay = SavedSnapshotReplay(runner_factory=lambda **_: _FakeRunner([], generations=("p7", "p8")), generation_provider=lambda: ("p7", "p8"))
     replay.run(SavedSnapshotCodec.from_source_row(_row()), snapshot_bytes=_source_bytes(), config=config)
     assert config.source_database_path.read_bytes() == before
-    with sqlite3.connect(config.source_database_path) as conn:
+    with closing(sqlite3.connect(config.source_database_path)) as conn, conn:
         assert conn.execute("SELECT COUNT(*) FROM shadow_decisions").fetchone()[0] == 1
 
 

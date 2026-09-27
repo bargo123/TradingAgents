@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 
@@ -121,7 +122,7 @@ def test_malformed_persisted_lease_pid_fails_closed(tmp_path):
     path = tmp_path / "watch.db"
     store = WatcherStore(path)
     store.acquire_lease(owner(), NOW)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "UPDATE forex_watcher_state SET owner_pid=? WHERE singleton_id=1",
             (123.5,),
@@ -140,7 +141,7 @@ def test_partial_persisted_lease_fails_closed(tmp_path, column, value, message):
     path = tmp_path / "watch.db"
     store = WatcherStore(path)
     store.acquire_lease(owner(), NOW)
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             f"UPDATE forex_watcher_state SET {column}=? WHERE singleton_id=1",
             (value,),
@@ -155,7 +156,7 @@ def test_active_lifecycle_without_owner_fails_closed(tmp_path):
     path = tmp_path / "watch.db"
     store = WatcherStore(path)
     store.initialize()
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "UPDATE forex_watcher_state SET lifecycle_status='ANALYZING' WHERE singleton_id=1"
         )
@@ -169,7 +170,7 @@ def test_unowned_stopped_state_with_dangling_run_fails_closed(tmp_path):
     path = tmp_path / "watch.db"
     store = WatcherStore(path)
     store.initialize()
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "UPDATE forex_watcher_state SET current_run_id='run-1' WHERE singleton_id=1"
         )
@@ -201,7 +202,7 @@ def test_initialize_schema_creation_is_atomic_on_ddl_failure(tmp_path):
     with pytest.raises(sqlite3.DatabaseError):
         store.initialize()
 
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection, connection:
         tables = connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
@@ -300,7 +301,7 @@ def test_error_detail_redacts_camel_case_credentials(tmp_path, detail):
 def test_error_status_without_code_has_safe_read_only_fallback(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     store.initialize()
-    with sqlite3.connect(store.path) as conn:
+    with closing(sqlite3.connect(store.path)) as conn, conn:
         conn.execute(
             "UPDATE forex_watcher_state SET last_evaluation_status='ERROR', last_error_code=NULL, last_error=NULL WHERE singleton_id=1"
         )
@@ -436,7 +437,7 @@ def test_reconciliation_preserves_recovered_freshness_evidence(tmp_path):
     decision_store = ShadowDecisionStore(tmp_path / "shadow.db")
     acquired = store.acquire_lease(owner(), NOW)
     run = _insert_running_run(store, acquired.owner_token, source_run_id="stale-run")
-    with sqlite3.connect(store.path) as conn:
+    with closing(sqlite3.connect(store.path)) as conn, conn:
         conn.execute(
             "UPDATE forex_watch_runs SET freshness_budget_seconds=900 WHERE run_id=?",
             (run.run_id,),

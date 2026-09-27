@@ -4,6 +4,7 @@ import json
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from pathlib import Path
 
 from scripts.phase10_dataset_smoke import main
@@ -37,7 +38,7 @@ def test_smoke_harness_reports_actual_source_fingerprints_for_empty_build(
 ) -> None:
     """An empty eligible set still proves which immutable sources were read."""
     artifacts = make_real_fixtures(tmp_path)
-    with sqlite3.connect(artifacts["source"]) as db:
+    with closing(sqlite3.connect(artifacts["source"])) as db, db:
         db.execute(
             "UPDATE shadow_decisions SET action=NULL, normalization_status='FAILED', "
             "decision_context_status='INCOMPLETE'"

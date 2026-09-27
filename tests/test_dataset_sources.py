@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 
 import pytest
@@ -34,8 +35,10 @@ def test_phase56_read_is_query_only_and_converts_utc(tmp_path):
         2026, 1, 1, tzinfo=timezone.utc
     )
     assert result.query_only is True
-    with pytest.raises(sqlite3.OperationalError):
-        ReadonlyPhase56Source(path).connection_for_test().execute("CREATE TABLE x(a)")
+    with closing(ReadonlyPhase56Source(path).connection_for_test()) as connection, pytest.raises(
+        sqlite3.OperationalError
+    ):
+        connection.execute("CREATE TABLE x(a)")
 
 
 def test_phase56_retains_null_action_and_large_snapshot_for_eligibility(tmp_path):
@@ -48,7 +51,7 @@ def test_phase56_retains_null_action_and_large_snapshot_for_eligibility(tmp_path
         "features": {"M5": {"return_over_bars": 0.1}},
         "diagnostic_padding": "x" * 5000,
     }
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "UPDATE shadow_decisions SET action=NULL, snapshot_json=?, trader_summary=?",
             (json.dumps(snapshot), "private reasoning output"),
@@ -81,7 +84,7 @@ def test_phase56_public_adapter_carries_authoritative_source_fingerprints(tmp_pa
 
 def test_phase56_recomputes_fingerprints_when_input_identity_columns_are_bad(tmp_path):
     path = create_source_db(tmp_path / "source.db")
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("ALTER TABLE shadow_decisions ADD COLUMN source_decision_fingerprint TEXT")
         db.execute("ALTER TABLE shadow_decision_evaluations ADD COLUMN source_evaluation_fingerprint TEXT")
         db.execute("UPDATE shadow_decisions SET source_decision_fingerprint='BAD'")
@@ -113,7 +116,7 @@ def test_phase56_recomputes_fingerprints_when_input_identity_columns_are_bad(tmp
 
 def test_phase56_authoritative_identity_keeps_phase8_join_matching(tmp_path):
     path = create_source_db(tmp_path / "source.db")
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("ALTER TABLE shadow_decisions ADD COLUMN source_decision_fingerprint TEXT")
         db.execute("ALTER TABLE shadow_decision_evaluations ADD COLUMN source_evaluation_fingerprint TEXT")
         db.execute("UPDATE shadow_decisions SET source_decision_fingerprint='BAD'")
@@ -165,7 +168,7 @@ def test_optional_missing_audit_is_unavailable(tmp_path):
 
 def test_phase56_requires_complete_contract_columns(tmp_path):
     path = tmp_path / "drift.db"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE shadow_decisions (decision_id TEXT)")
         db.execute("CREATE TABLE shadow_decision_evaluations (decision_id TEXT)")
     with pytest.raises(SourceSchemaIncompatibleError):
@@ -174,7 +177,7 @@ def test_phase56_requires_complete_contract_columns(tmp_path):
 
 def test_phase8_requires_columns_on_each_required_table(tmp_path):
     path = tmp_path / "catalog.sqlite3"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         for table in (
             "experience_records",
             "experience_source_aliases",
@@ -190,7 +193,7 @@ def test_phase8_adapter_derives_version_provenance_from_catalog_contract(tmp_pat
     from tradingagents.datasets.sources import _PHASE8_REQUIRED
 
     path = tmp_path / "catalog.sqlite3"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         for table, columns in _PHASE8_REQUIRED.items():
             db.execute(f'CREATE TABLE "{table}" (' + ", ".join(f'"{column}" TEXT' for column in columns) + ")")
         record_values = dict.fromkeys(_PHASE8_REQUIRED["experience_records"], "")
@@ -217,7 +220,7 @@ def test_phase8_adapter_derives_version_provenance_from_catalog_contract(tmp_pat
 
 def test_audit_retains_policy_fingerprints_and_rejects_incomplete_schema(tmp_path):
     path = tmp_path / "audit.sqlite3"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute("CREATE TABLE evidence_usage_audit (decision_id TEXT, source_run_id TEXT)")
     with pytest.raises(SourceSchemaIncompatibleError):
         ReadonlyPhase9AuditSource(path).read()
@@ -260,7 +263,7 @@ def test_phase9_public_adapter_rejects_oversized_array_strings_before_bounding(t
     values["decision_id"] = "decision-1"
     values["source_run_id"] = "run-1"
     values["available_knowledge_ids"] = json.dumps(["x" * 501])
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "CREATE TABLE evidence_usage_audit ("
             + ", ".join(f'"{column}" TEXT' for column in columns)
@@ -357,7 +360,7 @@ def test_phase9_read_normalizes_audit_timestamp_and_array_fields(tmp_path):
     values[columns.index("source_errors")] = json.dumps({"phase7": "unavailable"})
     values[columns.index("selected_counts")] = json.dumps({"knowledge": 2, "experience": 0, "statistics": 1})
     values[columns.index("dropped_counts")] = json.dumps({"knowledge": 0, "experience": 1, "statistics": 0})
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "CREATE TABLE evidence_usage_audit ("
             + ", ".join(f'"{column}" TEXT' for column in columns)

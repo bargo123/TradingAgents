@@ -20,6 +20,12 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _timestamp_value(value: Any) -> Any:
+    """Return a SQLite-safe timestamp without using deprecated adapters."""
+
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
 def _json(value: Any) -> str:
     return json.dumps(value or {}, sort_keys=True, separators=(",", ":"), default=str)
 
@@ -165,8 +171,8 @@ class ExperienceCatalog:
                         kwargs.get("analysis_profile"),
                         kwargs.get("analysis_timeframe"),
                         timestamp.isoformat(),
-                        kwargs.get("decision_completed_timestamp"),
-                        kwargs.get("decision_reference_timestamp"),
+                        _timestamp_value(kwargs.get("decision_completed_timestamp")),
+                        _timestamp_value(kwargs.get("decision_reference_timestamp")),
                         _json(kwargs.get("market_state")),
                         _json(kwargs.get("decision_evidence")),
                         _json(kwargs.get("provenance")),

@@ -5,6 +5,7 @@ import json
 import math
 import sqlite3
 import sys
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -111,7 +112,7 @@ def test_normalization_uses_exact_portfolio_rating_vocabulary_only() -> None:
 def test_phase5_shadow_schema_has_no_phase9_columns(tmp_path: Path) -> None:
     store = ShadowDecisionStore(tmp_path / "schema.db")
     store.initialize()
-    with sqlite3.connect(store.path) as db:
+    with closing(sqlite3.connect(store.path)) as db, db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(shadow_decisions)")}
     assert columns.isdisjoint(
         {
@@ -126,13 +127,13 @@ def test_phase5_shadow_schema_has_no_phase9_columns(tmp_path: Path) -> None:
 
 def test_shadow_schema_adds_nullable_research_recommendation_column(tmp_path: Path) -> None:
     path = tmp_path / "legacy-shadow.db"
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "CREATE TABLE shadow_decisions (decision_id TEXT PRIMARY KEY, resolved_symbol TEXT, analysis_date TEXT)"
         )
     store = ShadowDecisionStore(path)
     store.initialize()
-    with sqlite3.connect(path) as db:
+    with closing(sqlite3.connect(path)) as db, db:
         columns = {row[1]: row[3] for row in db.execute("PRAGMA table_info(shadow_decisions)")}
         assert columns["research_manager_recommendation"] == 0
         db.execute(
@@ -503,7 +504,7 @@ def test_store_round_trip_preserves_context_integrity_status(tmp_path: Path) -> 
 
 def test_store_migrates_legacy_schema_with_incomplete_default(tmp_path: Path) -> None:
     path = tmp_path / "legacy-shadow.db"
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute(
             "CREATE TABLE shadow_decisions ("
             "decision_id TEXT PRIMARY KEY, "
@@ -513,7 +514,7 @@ def test_store_migrates_legacy_schema_with_incomplete_default(tmp_path: Path) ->
     store = ShadowDecisionStore(path)
     store.initialize()
 
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         columns = {
             row[1]: row[4]
             for row in conn.execute("PRAGMA table_info(shadow_decisions)")
@@ -526,7 +527,7 @@ def test_store_rejects_invalid_future_evaluation_status_via_sql(
 ) -> None:
     store = ShadowDecisionStore(tmp_path / "shadow.db")
     store.initialize()
-    with pytest.raises(sqlite3.IntegrityError), sqlite3.connect(store.path) as conn:
+    with closing(sqlite3.connect(store.path)) as conn, conn, pytest.raises(sqlite3.IntegrityError):
         conn.execute(
             """
                 INSERT INTO shadow_decisions (
@@ -602,7 +603,7 @@ def test_store_rejects_invalid_future_evaluation_status_via_sql(
                 None,
             ),
         )
-    with sqlite3.connect(store.path) as conn:
+    with closing(sqlite3.connect(store.path)) as conn, conn:
         conn.execute(
             """
             INSERT INTO shadow_decisions (

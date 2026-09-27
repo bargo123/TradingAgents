@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def test_null_action_large_snapshot_is_normalization_exclusion_not_source_failur
         "features": {"M5": {"return_over_bars": 0.1}},
         "diagnostic_padding": "x" * 5000,
     }
-    with sqlite3.connect(artifacts["source"]) as db:
+    with closing(sqlite3.connect(artifacts["source"])) as db, db:
         db.execute(
             "UPDATE shadow_decisions SET action=NULL, snapshot_json=?",
             (json.dumps(snapshot),),
