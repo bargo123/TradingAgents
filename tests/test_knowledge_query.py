@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -259,6 +260,31 @@ def test_missing_projection_metadata_fails_closed_before_retrieval():
     )
     service = query_harness(dense_reader=reader)
 
+    with pytest.raises(IncompatibleIndexGeneration):
+        service.search(KnowledgeQuery(text="OFI"))
+
+
+def test_candidate_from_stale_projection_generation_fails_closed():
+    stale = replace(make_chunk(), projection_generation="gen-old")
+    service = query_harness(
+        dense=({"chunk_id": stale.chunk_id, "semantic_score": 0.9, "rank": 1, "chunk": stale},)
+    )
+    with pytest.raises(IncompatibleIndexGeneration):
+        service.search(KnowledgeQuery(text="OFI"))
+
+
+def test_candidate_from_stale_projection_population_fails_closed():
+    service = query_harness(
+        dense=(
+            {
+                "chunk_id": "chunk-a",
+                "semantic_score": 0.9,
+                "rank": 1,
+                "projection_population_hash": "pop-old",
+                "chunk": make_chunk(),
+            },
+        )
+    )
     with pytest.raises(IncompatibleIndexGeneration):
         service.search(KnowledgeQuery(text="OFI"))
 

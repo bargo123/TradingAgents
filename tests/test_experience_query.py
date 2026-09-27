@@ -158,6 +158,14 @@ def test_action_filter_is_applied_after_identity_gates_without_changing_scores()
     assert filtered.excluded_counts["action"] == 1
 
 
+def test_nested_decision_evidence_action_is_exposed_on_hit():
+    nested = row("nested") | {"decision_evidence": {"chosen_action": "SELL"}}
+    service = ExperienceQueryService([nested], profile=profile())
+    result = service.search(ExperienceQuery(query_state(), action_filter="SELL"))
+    assert [hit.experience_id for hit in result.hits] == ["nested"]
+    assert result.hits[0].action == "SELL"
+
+
 def test_query_market_state_cohort_must_match_selected_profile():
     service = ExperienceQueryService([row("good")], profile=profile())
     result = service.search(

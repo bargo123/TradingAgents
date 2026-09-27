@@ -85,6 +85,12 @@ class OutcomeStatsCalculator:
 
     @staticmethod
     def _availability(snapshot: Mapping[str, Any]) -> datetime | None:
+        # ``observed_at`` is the Phase 8 catalog observation boundary.  When
+        # present, source-side evaluation timestamps must not make a snapshot
+        # visible before the catalog actually retained it.
+        observed = _utc(snapshot.get("observed_at"))
+        if observed is not None:
+            return observed
         return (
             _utc(snapshot.get("recovered_from_unavailable_at"))
             or _utc(snapshot.get("evaluated_at"))

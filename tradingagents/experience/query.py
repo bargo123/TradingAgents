@@ -235,7 +235,7 @@ class ExperienceQueryService:
                     by_id[h.experience_id], "trust_tier", _get(by_id[h.experience_id], "trust")
                 ),
                 market_state=_get(by_id[h.experience_id], "market_state", {}),
-                action=_get(by_id[h.experience_id], "action"),
+                action=_action(by_id[h.experience_id]),
                 provenance=_get(by_id[h.experience_id], "provenance", {}),
                 feature_schema_version=_get(by_id[h.experience_id], "feature_schema_version"),
                 similarity_profile_version=_get(

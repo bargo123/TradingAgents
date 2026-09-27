@@ -89,8 +89,27 @@ def _candidate(item: Any, cls: type[DenseCandidate] | type[LexicalCandidate], ra
     return cls(chunk_id=chunk.chunk_id, rank=rank, score=0.0, chunk=chunk, metadata=chunk.to_dict())
 
 
-def _allowed(candidate: Any, request: KnowledgeQuery, catalog: Any) -> bool:
+def _allowed(
+    candidate: Any,
+    request: KnowledgeQuery,
+    catalog: Any,
+    *,
+    expected_generation_id: str,
+    expected_population_hash: str,
+) -> bool:
     chunk = candidate.chunk
+    metadata = candidate.metadata if isinstance(candidate.metadata, Mapping) else {}
+    chunk_extra = getattr(chunk, "extra", {}) if chunk is not None else {}
+    candidate_generation = (
+        metadata.get("projection_generation")
+        or (chunk_extra.get("projection_generation") if isinstance(chunk_extra, Mapping) else None)
+        or getattr(chunk, "projection_generation", None)
+    )
+    if candidate_generation is not None and str(candidate_generation) != expected_generation_id:
+        raise IncompatibleIndexGeneration("candidate projection generation is not active")
+    candidate_population = metadata.get("projection_population_hash")
+    if candidate_population is not None and str(candidate_population) != expected_population_hash:
+        raise IncompatibleIndexGeneration("candidate projection population is not active")
     document_id = str(getattr(chunk, "document_id", "") if chunk is not None else candidate.metadata.get("document_id", ""))
     if request.document_ids and document_id not in request.document_ids:
         return False
@@ -256,8 +275,28 @@ class KnowledgeQueryService:
         lexical = tuple(_candidate(item, LexicalCandidate, index) for index, item in enumerate(
             _call_search(self.lexical_reader, request.text, request, limit), 1
         ))
-        dense = tuple(item for item in dense if _allowed(item, request, self.catalog))
-        lexical = tuple(item for item in lexical if _allowed(item, request, self.catalog))
+        dense = tuple(
+            item
+            for item in dense
+            if _allowed(
+                item,
+                request,
+                self.catalog,
+                expected_generation_id=generation.generation_id,
+                expected_population_hash=generation.population_hash,
+            )
+        )
+        lexical = tuple(
+            item
+            for item in lexical
+            if _allowed(
+                item,
+                request,
+                self.catalog,
+                expected_generation_id=generation.generation_id,
+                expected_population_hash=generation.population_hash,
+            )
+        )
         fused = reciprocal_rank_fuse(dense, lexical)
         ranked = self.reranker.rerank(request, fused)
         hits: list[KnowledgeHit] = []

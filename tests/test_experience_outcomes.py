@@ -125,6 +125,53 @@ def test_genuine_prior_unavailable_snapshot_is_used_before_recovery():
     assert result.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
 
 
+def test_historical_selection_uses_phase8_observation_time() -> None:
+    """Source timestamps cannot make an unobserved catalog state visible."""
+
+    record = _record(
+        "observed-late",
+        snapshots=(
+            _complete(
+                "prior",
+                evaluation_status="DATA_UNAVAILABLE",
+                evaluated_at="2026-01-02T10:01:00Z",
+                observation_timestamp="2026-01-02T10:00:00Z",
+                observed_at="2026-01-02T13:00:00Z",
+                unavailable_reason="NO_QUOTES",
+            ),
+            _complete(
+                "recovered",
+                evaluated_at="2026-01-02T10:02:00Z",
+                observation_timestamp="2026-01-02T10:00:00Z",
+                observed_at="2026-01-02T15:00:00Z",
+                recovered_from_unavailable_at="2026-01-02T15:00:00Z",
+            ),
+        ),
+    )
+
+    before_import = OutcomeStatsCalculator((record,)).calculate(
+        OutcomeStatsRequest(
+            ("observed-late",),
+            "ANALYSIS_SNAPSHOT",
+            300,
+            as_of=utc("2026-01-02T12:00:00Z"),
+        )
+    )
+    assert before_import.excluded_counts["EVALUATION_NOT_YET_AVAILABLE"] == 1
+    assert before_import.excluded_counts.get("DATA_UNAVAILABLE", 0) == 0
+
+    after_prior_import = OutcomeStatsCalculator((record,)).calculate(
+        OutcomeStatsRequest(
+            ("observed-late",),
+            "ANALYSIS_SNAPSHOT",
+            300,
+            as_of=utc("2026-01-02T14:00:00Z"),
+        )
+    )
+    assert after_prior_import.excluded_counts["DATA_UNAVAILABLE"] == 1
+    assert after_prior_import.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
+
+
 def test_directional_counterfactuals_include_hold_and_expose_distribution_summary():
     result = calculator().calculate(OutcomeStatsRequest(("hold-exp",), "ANALYSIS_SNAPSHOT", 300))
     assert result.buy.net_points == (4.0,)
