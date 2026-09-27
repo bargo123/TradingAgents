@@ -274,9 +274,22 @@ class EvidenceUsageAudit:
         object.__setattr__(self, "retrieval_count", _non_negative_int(self.retrieval_count, "retrieval_count"))
         object.__setattr__(self, "retrieval_latency_seconds", _non_negative_float(self.retrieval_latency_seconds, "retrieval_latency_seconds"))
         object.__setattr__(self, "builder_latency_seconds", _non_negative_float(self.builder_latency_seconds, "builder_latency_seconds"))
+        for name in (
+            "knowledge_generation_id",
+            "experience_generation_id",
+            "query_normalization_fingerprint",
+            "knowledge_query_fingerprint",
+            "query_policy_version",
+        ):
+            object.__setattr__(self, name, _optional_text(getattr(self, name), name))
         object.__setattr__(self, "provider", _optional_text(self.provider, "provider"))
         object.__setattr__(self, "model", _optional_text(self.model, "model"))
-        object.__setattr__(self, "audit_schema_version", _optional_text(self.audit_schema_version, "audit_schema_version"))
+        audit_schema_version = _optional_text(
+            self.audit_schema_version, "audit_schema_version"
+        )
+        if audit_schema_version is None:
+            raise TypeError("audit_schema_version must be non-empty")
+        object.__setattr__(self, "audit_schema_version", audit_schema_version)
         for field in (
             "available_knowledge_ids",
             "available_experience_ids",

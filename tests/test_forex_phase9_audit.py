@@ -91,7 +91,12 @@ def test_audit_rejects_malformed_mapping_fields(field, value):
         ("builder_latency_seconds", "slow"),
         ("provider", 123),
         ("model", []),
+        ("knowledge_generation_id", False),
+        ("experience_generation_id", 0),
+        ("query_normalization_fingerprint", []),
+        ("knowledge_query_fingerprint", ""),
         ("audit_schema_version", ""),
+        ("audit_schema_version", None),
     ],
 )
 def test_audit_rejects_malformed_scalar_metadata(field, value):
