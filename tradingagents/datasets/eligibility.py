@@ -480,7 +480,7 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
     # ``context_integrity`` is derived by the adapter for the Phase 9 audit
     # schema, which persists component source statuses instead of that field.
     required_audit = ("evidence_use_status", "evidence_audit_status", "evidence_refs_used", "evidence_refs_rejected")
-    if any(name not in audit for name in required_audit) or str(_get(audit, "evidence_audit_status", "")).upper() != "VALID":
+    if any(name not in audit for name in required_audit) or _get(audit, "evidence_audit_status", "") != "VALID":
         reasons.add(DatasetExclusionReason.CITATION_INVALID)
     if audit and all(name in audit for name in required_audit):
         available = set(_get(audit, "available_knowledge_ids", ()) or ()) | set(_get(audit, "available_experience_ids", ()) or ()) | set(_get(audit, "available_statistics_ids", ()) or ())

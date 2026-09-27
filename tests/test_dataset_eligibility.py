@@ -51,6 +51,23 @@ def test_valid_tier_a_complete_observation_is_eligible(tmp_path):
     assert result.reasons == ()
 
 
+def test_noncanonical_audit_status_is_ineligible(tmp_path):
+    observation = _joined(tmp_path)
+    audit = dict(observation.fields["audit"])
+    audit["evidence_audit_status"] = "valid"
+    observation = observation.__class__(
+        observation.decision,
+        observation.evaluation,
+        observation.evidence,
+        {**observation.fields, "audit": audit},
+    )
+
+    result = classify_observation(observation, _config(tmp_path))
+
+    assert not result.eligible
+    assert DatasetExclusionReason.CITATION_INVALID in result.reasons
+
+
 def test_malformed_evaluation_mapping_cannot_coerce_false_to_true(tmp_path):
     observation = _joined(tmp_path)
     fields = dict(observation.fields)
