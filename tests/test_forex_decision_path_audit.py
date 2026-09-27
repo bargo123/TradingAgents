@@ -228,6 +228,25 @@ def test_hold_origins_and_outcomes_are_broken_down_by_transition(tmp_path: Path)
     assert report.all_population.outcome_by_transition["HOLD->HOLD"]["positive_directional_count"] == 1
 
 
+def test_noncanonical_evaluation_action_is_not_promoted_by_casefolding(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    _decision(path, "lower-evaluation-action")
+    _full_eval(path, "lower-evaluation-action")
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decision_evaluations SET selected_action='hold' WHERE decision_id=?",
+            ("lower-evaluation-action",),
+        )
+
+    report = audit_decision_path(path)
+
+    assert report.all_population.fully_evaluated_source_eligible_count == 0
+    assert all(
+        values["samples"] == 0
+        for values in report.all_population.outcome_by_transition.values()
+    )
+
+
 def test_research_to_trader_suppression_and_outcome_join(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     _decision(path, "research-buy-trader-hold", trader_action="HOLD", research_recommendation="BUY")

@@ -431,7 +431,9 @@ def _load_evaluations(
             status=status,
             source_context_eligible=_is_true(row["source_context_eligible"]),
             selected_action=(
-                str(row["selected_action"]).upper() if row["selected_action"] is not None else None
+                row["selected_action"]
+                if row["selected_action"] in {"BUY", "SELL", "HOLD"}
+                else None
             ),
             buy_net_points=_finite(row["buy_net_points"]),
             sell_net_points=_finite(row["sell_net_points"]),
