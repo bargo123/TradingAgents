@@ -853,7 +853,12 @@ class WatcherStore:
                     provenance.get("git_commit"),
                     None
                     if provenance.get("working_tree_dirty") is None
-                    else int(bool(provenance.get("working_tree_dirty"))),
+                    else int(
+                        _db_bool(
+                            provenance.get("working_tree_dirty"),
+                            "working_tree_dirty",
+                        )
+                    ),
                     provenance.get("collector_contract_version", "forex-watch.v1"),
                     provenance.get("config_fingerprint", row["config_fingerprint"]),
                     provenance.get("safe_config_json", "{}"),

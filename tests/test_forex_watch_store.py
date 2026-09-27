@@ -374,6 +374,17 @@ def test_new_runs_persist_runtime_provenance_at_claim(tmp_path):
     assert persisted.safe_config_json.startswith("{")
 
 
+def test_claim_rejects_malformed_working_tree_provenance(tmp_path):
+    store = WatcherStore(
+        tmp_path / "watch.db",
+        provenance={"working_tree_dirty": "false"},
+    )
+    acquired = store.acquire_lease(owner(), NOW)
+
+    with pytest.raises(ValueError, match="working_tree_dirty"):
+        _insert_running_run(store, acquired.owner_token, source_run_id="bad-provenance")
+
+
 def test_summary_exposes_evaluation_quality_counts_without_training_labels(tmp_path):
     summary = WatcherStore(tmp_path / "watch.db").summary(NOW)
 
