@@ -403,10 +403,14 @@ class OutcomeStatistics(Serializable):
                 )
             ),
         )
+        # Zero is a meaningful result when every candidate was excluded.  Do
+        # not replace an explicit zero with the denominator via truthiness.
+        object.__setattr__(self, "eligible_count", self.eligible_count)
         object.__setattr__(
-            self, "eligible_count", self.eligible_count or self.eligible_sample_denominator
+            self,
+            "requested_basis",
+            self.requested_basis if self.requested_basis is not None else self.evaluation_basis,
         )
-        object.__setattr__(self, "requested_basis", self.requested_basis or self.evaluation_basis)
         object.__setattr__(
             self,
             "requested_horizon_seconds",

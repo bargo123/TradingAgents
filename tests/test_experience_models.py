@@ -106,6 +106,18 @@ def test_request_and_statistics_contracts_accept_defaults() -> None:
     assert OutcomeStatistics().eligible_sample_denominator == 0
 
 
+def test_outcome_statistics_preserves_explicit_zero_eligible_count() -> None:
+    result = OutcomeStatistics(eligible_sample_denominator=7, eligible_count=0)
+
+    assert result.eligible_count == 0
+
+
+def test_outcome_statistics_preserves_explicit_requested_basis() -> None:
+    result = OutcomeStatistics(evaluation_basis="ANALYSIS_SNAPSHOT", requested_basis="")
+
+    assert result.requested_basis == ""
+
+
 @pytest.mark.parametrize("value", [[], False, 0])
 def test_search_result_rejects_malformed_excluded_counts(value: object) -> None:
     with pytest.raises(ValueError, match="excluded_counts"):
