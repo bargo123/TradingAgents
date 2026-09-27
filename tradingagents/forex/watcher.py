@@ -1491,7 +1491,14 @@ class WatcherCoordinator:
                 probe_result = self.probe.probe(candidate.requested_symbol)
         except Exception as exc:
             reason = "MT5_UNAVAILABLE"
-            self.store.record_skip(owner_token, candidate.opportunity_key, reason, now, str(exc))
+            detail = str(exc)
+            self.store.record_skip(owner_token, candidate.opportunity_key, reason, now, detail)
+            # Keep the circuit fail-closed while exposing the bounded, redacted
+            # preflight failure in watcher status.  ``WatchStore.set_error``
+            # applies the existing sensitive-text filter; a telemetry write
+            # failure must not mask the original MT5 failure.
+            with suppress(Exception):
+                self.store.set_error(owner_token, reason, detail, now)
             self._record_failure("mt5", now)
             skipped_keys.append(candidate.opportunity_key)
             skip_reasons.append(reason)

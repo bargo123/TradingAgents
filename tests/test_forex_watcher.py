@@ -481,6 +481,8 @@ def test_mt5_failure_threshold_degrades_watcher_and_stops_new_claims(tmp_path):
     second = harness.poll(_utc("2026-09-09T12:30:31Z"))
 
     assert first.error_code == "MT5_UNAVAILABLE"
+    assert harness.store.summary()["last_error_code"] == "MT5_UNAVAILABLE"
+    assert harness.store.summary()["last_error"] == "MT5 unavailable"
     assert between.lifecycle_status == "DEGRADED"
     assert between.error_code == "CIRCUIT_BREAKER"
     assert second.error_code == "CIRCUIT_BREAKER"
