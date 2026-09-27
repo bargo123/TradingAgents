@@ -164,16 +164,14 @@ def _require_columns(connection: sqlite3.Connection, table: str, required: set[s
 
 
 def _canonical_recommendation(value: Any) -> str | None:
-    if isinstance(value, str):
-        value = value.strip().upper()
-        if value in RESEARCH_RECOMMENDATIONS:
-            return value
+    if isinstance(value, str) and value in RESEARCH_RECOMMENDATIONS:
+        return value
     return None
 
 
 def _canonical_action(value: Any) -> str:
-    if isinstance(value, str) and value.strip().upper() in {"BUY", "HOLD", "SELL"}:
-        return value.strip().upper()
+    if isinstance(value, str) and value in {"BUY", "HOLD", "SELL"}:
+        return value
     return UNAVAILABLE
 
 

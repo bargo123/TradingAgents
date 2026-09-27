@@ -123,6 +123,25 @@ def test_research_signal_audit_does_not_treat_missing_recommendation_as_hold(tmp
     assert report.observations[0].research_recommendation is None
 
 
+def test_research_signal_audit_does_not_promote_noncanonical_case(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
+            ("d1", "hold", "buy", "FINAL TRANSACTION PROPOSAL: **hold**", "COMPLETE", "NORMALIZED"),
+        )
+        db.execute(
+            "INSERT INTO forex_watch_runs VALUES (?, ?, ?, ?)",
+            ("r1", "d1", "SUCCEEDED", _metrics()),
+        )
+
+    report = audit_research_signals(path)
+
+    assert report.recommendation_counts["UNAVAILABLE"] == 1
+    assert report.observations[0].research_recommendation is None
+    assert report.observations[0].portfolio_manager_action == "UNAVAILABLE"
+
+
 def test_research_signal_audit_rejects_malformed_artifact_presence(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     metrics = json.loads(_metrics())
