@@ -992,6 +992,30 @@ def test_worker_start_failure_terminates_partially_started_process():
     assert service.active_evidence_workers == 0
 
 
+def test_child_guard_rejects_projection_paths_outside_knowledge_root(tmp_path: Path, monkeypatch):
+    roots = _artifact_roots(tmp_path)
+    orchestrator = _typed_orchestrator(
+        ReadonlyEvidenceRuntimeConfiguration(tuple(sorted(roots.items())))
+    )
+    generation = IndexGeneration(
+        generation_id="g1",
+        vector_location=tmp_path / "outside" / "vectors",
+        lexical_location=tmp_path / "outside" / "keyword.sqlite3",
+        embedding_spec=EmbeddingSpec(),
+        population_hash="pop",
+        vector_ready=True,
+        lexical_ready=True,
+        status="VALIDATED",
+    )
+    monkeypatch.setattr(orchestrator.knowledge_service.catalog, "active_generation", lambda: generation)
+
+    with pytest.raises(TypeError, match="projection path"):
+        _validate_child_orchestrator(
+            orchestrator,
+            ReadonlyEvidenceRuntimeConfiguration(tuple(sorted(roots.items()))),
+        )
+
+
 def test_timeout_does_not_write_or_start_maintenance(tmp_path: Path):
     service = EvidenceIntegrationService(
         policy=EvidenceQueryPolicy(evidence_timeout_seconds=0),

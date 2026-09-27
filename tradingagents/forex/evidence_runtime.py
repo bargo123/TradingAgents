@@ -100,6 +100,17 @@ def _database_path(root: str | Path) -> Path:
     return path if path.name == "catalog.sqlite3" else path / "catalog.sqlite3"
 
 
+def _path_within(path: str | Path, root: str | Path) -> bool:
+    """Return whether a resolved projection path remains under its artifact root."""
+
+    try:
+        candidate = Path(path).expanduser().resolve()
+        boundary = Path(root).expanduser().resolve()
+        return candidate == boundary or boundary in candidate.parents
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+
+
 class _ReadonlySQLite:
     def __init__(self, root: str | Path):
         self.database_path = _database_path(root).resolve()
@@ -712,6 +723,14 @@ def _validate_child_orchestrator(
             allowed = root if root.name == "catalog.sqlite3" else root / "catalog.sqlite3"
             if database_path.resolve() != allowed:
                 raise TypeError("read-only catalog is outside the configured artifact root")
+        generation = knowledge_catalog.active_generation()
+        if generation is not None:
+            knowledge_root = Path(roots["knowledge"])
+            if knowledge_root.name == "catalog.sqlite3":
+                knowledge_root = knowledge_root.parent
+            for location in (generation.vector_path, generation.lexical_path):
+                if not _path_within(location, knowledge_root):
+                    raise TypeError("read-only projection path is outside the configured artifact root")
 
 
 class EvidenceIntegrationService:
