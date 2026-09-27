@@ -41,7 +41,10 @@ class EligibilityResult:
 
     def __post_init__(self):
         object.__setattr__(self, "reasons", tuple(self.reasons))
-        object.__setattr__(self, "details", MappingProxyType(dict(self.details or {})))
+        details = {} if self.details is None else self.details
+        if not isinstance(details, Mapping):
+            raise TypeError("details must be a mapping")
+        object.__setattr__(self, "details", MappingProxyType(dict(details)))
 
     @property
     def exclusion(self) -> DatasetExclusion | None:

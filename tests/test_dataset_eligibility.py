@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from tradingagents.datasets.eligibility import (
     EligibilityResult,
     classify_observation,
@@ -15,6 +17,12 @@ from tradingagents.datasets.models import (
 from tradingagents.datasets.sources import SourceReadResult
 
 UTC = timezone.utc
+
+
+@pytest.mark.parametrize("details", [[], False, 0, ""])
+def test_eligibility_details_reject_falsey_malformed_mapping(details):
+    with pytest.raises(TypeError, match="details"):
+        EligibilityResult(False, details=details)
 
 
 def _config(tmp_path, **filters):
