@@ -228,8 +228,8 @@ def _source_text(value: Any, name: str) -> str:
     return value
 
 
-def _phase8_required_text(value: Any, name: str) -> str:
-    """Validate a required Phase 8 identity before bounding source data."""
+def _required_source_text(value: Any, name: str) -> str:
+    """Validate a required source identity before bounding source data."""
     if not isinstance(value, str) or not value.strip():
         raise SourceReadError(f"{name} must be a non-empty string")
     return value
@@ -389,7 +389,7 @@ def _related(
     for row in db.execute(query, (experience_id,)):
         raw_item = dict(zip(names, row, strict=True))
         validated = {
-            key: _phase8_required_text(raw_item.get(key), key)
+            key: _required_source_text(raw_item.get(key), key)
             for key in required_text_keys
         }
         item = {
@@ -517,6 +517,7 @@ class ReadonlyPhase56Source(_Readonly):
             for row in cur:
                 raw_item = dict(zip(names, row, strict=True))
                 _normalize_row(raw_item)
+                decision_id = _required_source_text(raw_item.get("decision_id"), "decision_id")
                 source_run_id = _source_text(raw_item.get("source_run_id"), "source_run_id")
                 requested_symbol = _source_text(raw_item.get("requested_symbol"), "requested_symbol")
                 resolved_symbol = _source_text(raw_item.get("resolved_symbol"), "resolved_symbol")
@@ -534,6 +535,7 @@ class ReadonlyPhase56Source(_Readonly):
                     if k not in _DECISION_PROSE_FIELDS
                 }
                 _normalize_row(item)
+                item["decision_id"] = decision_id
                 item["source_decision_fingerprint"] = decision_fp
                 if snapshot_diagnostic:
                     item["snapshot_json_diagnostic"] = snapshot_diagnostic
@@ -573,9 +575,14 @@ class ReadonlyPhase56Source(_Readonly):
             for row in cur:
                 raw_item = dict(zip(names, row, strict=True))
                 _normalize_row(raw_item)
+                evaluation_identity = {
+                    field: _required_source_text(raw_item.get(field), field)
+                    for field in ("decision_id", "evaluation_basis", "evaluation_status")
+                }
                 evaluation_fp = source_evaluation_fingerprint(_identity_row(raw_item))
                 item = {k: _bounded(v) for k, v in raw_item.items()}
                 _normalize_row(item)
+                item.update(evaluation_identity)
                 item["source_evaluation_fingerprint"] = evaluation_fp
                 did, basis, horizon, status = (
                     item.pop("decision_id"),
@@ -638,7 +645,7 @@ class ReadonlyExperienceSource(_Readonly):
                 ]
                 raw_item = dict(zip(names, row, strict=True))
                 required_identity = {
-                    field: _phase8_required_text(raw_item.get(field), field)
+                    field: _required_source_text(raw_item.get(field), field)
                     for field in (
                         "experience_id",
                         "source_decision_id",

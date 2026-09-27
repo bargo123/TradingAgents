@@ -64,6 +64,30 @@ def test_phase56_rejects_non_text_identity_metadata_without_string_coercion(tmp_
         ReadonlyPhase56Source(path).read()
 
 
+def test_phase56_rejects_non_text_decision_id_without_string_coercion(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decisions SET decision_id=CAST(? AS BLOB)",
+            (0,),
+        )
+
+    with pytest.raises(SourceReadError, match="decision_id"):
+        ReadonlyPhase56Source(path).read()
+
+
+def test_phase56_rejects_non_text_evaluation_identity_without_string_coercion(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decision_evaluations SET evaluation_basis=CAST(? AS BLOB)",
+            (0,),
+        )
+
+    with pytest.raises(SourceReadError, match="evaluation_basis"):
+        ReadonlyPhase56Source(path).read()
+
+
 def test_phase56_retains_null_action_and_large_snapshot_for_eligibility(tmp_path):
     path = create_source_db(tmp_path / "source.db")
     snapshot = {
