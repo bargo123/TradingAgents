@@ -32,6 +32,17 @@ _OUTCOME_FIELDS = (
 def _get(value: Any, name: str, default: Any = None) -> Any:
     return value.get(name, default) if isinstance(value, Mapping) else getattr(value, name, default)
 
+
+def _optional_mapping(container: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """Read optional metadata without treating malformed falsey values as absent."""
+    value = container.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    return value
+
+
 def _plain(value: Any) -> Any:
     if is_dataclass(value):
         return {f.name: _plain(getattr(value, f.name)) for f in fields(value)}
@@ -296,9 +307,9 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     jf = dict(observation.fields)
     if jf.get("duplicate") or jf.get("duplicate_non_evaluation") or jf.get("duplicate_evaluation_keys"):
         raise ValueError("duplicate observation")
-    record = jf.get("experience") or {}
-    audit = jf.get("audit") or {}
-    source_fingerprints = jf.get("source_fingerprints") or {}
+    record = _optional_mapping(jf, "experience")
+    audit = _optional_mapping(jf, "audit")
+    source_fingerprints = _optional_mapping(jf, "source_fingerprints")
     dfp = _get(d, "fields", {}).get("source_decision_fingerprint") or record.get("source_decision_fingerprint")
     basis = _get(ev, "evaluation_basis")
     horizon = _get(ev, "horizon_seconds")
@@ -307,7 +318,13 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
         raise ValueError("canonical identity/provenance incomplete")
     identity = {"decision_id": d.decision_id, "basis": basis, "horizon_seconds": horizon, "source_decision_fingerprint": dfp, "policy_version": policy}
     example_id = "ex_" + _digest(identity)
-    snapshot = _snapshot(_get(d, "fields", {}).get("snapshot_json") or record.get("market_state") or {}, d.resolved_symbol, d.analysis_snapshot_timestamp)
+    decision_fields = _get(d, "fields", {})
+    snapshot_value = decision_fields.get("snapshot_json")
+    if snapshot_value is None:
+        snapshot_value = record.get("market_state")
+    if snapshot_value is None:
+        snapshot_value = {}
+    snapshot = _snapshot(snapshot_value, d.resolved_symbol, d.analysis_snapshot_timestamp)
     # Keep Phase 9 bounded: IDs/status/hash only; never rendered evidence text.
     used = tuple(_get(evidence, "refs_used", ()) or ())
     rejected_entries = tuple(_get(evidence, "refs_rejected", ()) or ())
@@ -332,9 +349,14 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     reasons = tuple(_get(eligibility, "reasons", ()))
     if any((x.value if isinstance(x, DatasetExclusionReason) else str(x)) not in {r.value for r in DatasetExclusionReason} for x in reasons):
         raise ValueError("unknown exclusion reason")
-    phase8_prov = record.get("provenance") or {}
+    phase8_prov = record.get("provenance")
+    if phase8_prov is None:
+        phase8_prov = {}
     phase8_prov = _phase8_provenance(phase8_prov)
-    phase8_eval_fps = _phase8_evaluation_fingerprints(record.get("source_evaluation_fingerprints") or {})
+    phase8_eval_fps = record.get("source_evaluation_fingerprints")
+    if phase8_eval_fps is None:
+        phase8_eval_fps = {}
+    phase8_eval_fps = _phase8_evaluation_fingerprints(phase8_eval_fps)
     phase9_audit = _phase9_metadata(audit, ef)
     phase56_value = source_fingerprints.get("phase56")
     phase56_fingerprint = _source_fingerprint("phase56", phase56_value)
