@@ -910,9 +910,18 @@ class ForexShadowRunner:
             initial_state = graph.propagator.create_initial_state(
                 resolved_symbol, parsed_date.isoformat(), **initial_kwargs
             )
-            graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
-            graph_args = dict(graph_args or {})
-            graph_args_config = dict(graph_args.get("config", {}))
+            raw_graph_args = graph.propagator.get_graph_args(callbacks=callback_list)
+            if raw_graph_args is None:
+                raw_graph_args = {}
+            if not isinstance(raw_graph_args, Mapping):
+                raise TypeError("graph args must be a mapping")
+            graph_args = dict(raw_graph_args)
+            raw_graph_args_config = graph_args.get("config")
+            if raw_graph_args_config is None:
+                raw_graph_args_config = {}
+            if not isinstance(raw_graph_args_config, Mapping):
+                raise TypeError("graph args config must be a mapping")
+            graph_args_config = dict(raw_graph_args_config)
             graph_args_config["forex_evidence_enabled"] = effective_evidence_enabled
             graph_args_config["forex_evidence_context_hash"] = context_hash
             graph_args["config"] = graph_args_config

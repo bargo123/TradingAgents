@@ -249,6 +249,19 @@ def test_runner_fetches_one_snapshot_and_persists_normalized_decision(tmp_path):
     assert result.decision.valid_until == result.decision.snapshot_timestamp + timedelta(seconds=3600)
 
 
+@pytest.mark.parametrize("malformed_graph_args", [[], {"config": []}])
+def test_runner_rejects_malformed_graph_argument_mappings(tmp_path, malformed_graph_args):
+    runner, _, graph, _ = _make_runner(tmp_path, {})
+    graph.propagator.get_graph_args = lambda callbacks=None: malformed_graph_args
+
+    with pytest.raises(TypeError, match="graph args"):
+        runner.analyze(
+            symbol="EURUSDm",
+            snapshot=_snapshot(),
+            analysis_date="2026-09-08",
+        )
+
+
 def test_runner_does_not_construct_graph_when_broker_clock_is_unavailable(tmp_path):
     provider = _FakeProvider(_snapshot())
 
