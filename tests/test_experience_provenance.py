@@ -35,6 +35,15 @@ def test_evaluation_fingerprint_is_not_string_coerced(value) -> None:
         validate_evaluation_provenance({"evaluation_fingerprint": value})
 
 
+@pytest.mark.parametrize("value", [False, 1, [], {}])
+def test_training_eligibility_reason_is_not_string_coerced(value) -> None:
+    with pytest.raises(ProvenanceViolationError, match="eligibility reason"):
+        build_evaluation_provenance("eval-fp", training_eligibility_reason=value)
+
+    with pytest.raises(ProvenanceViolationError, match="eligibility reason"):
+        validate_evaluation_provenance({"training_eligibility_reason": value})
+
+
 def test_catalog_snapshot_retains_provenance_and_status(tmp_path) -> None:
     catalog = ExperienceCatalog(tmp_path / "experience")
     catalog.append_evaluation_snapshot(

@@ -25,7 +25,15 @@ def build_evaluation_provenance(
             raise ProvenanceViolationError("training_eligible must be boolean")
         result["training_eligible"] = training_eligible
     if training_eligibility_reason is not None:
-        result["training_eligibility_reason"] = str(training_eligibility_reason)[:256]
+        if (
+            not isinstance(training_eligibility_reason, str)
+            or not training_eligibility_reason.strip()
+            or len(training_eligibility_reason) > 256
+        ):
+            raise ProvenanceViolationError(
+                "training eligibility reason must be non-empty text"
+            )
+        result["training_eligibility_reason"] = training_eligibility_reason
     result.update(fields)
     return result
 
@@ -41,6 +49,14 @@ def validate_evaluation_provenance(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ProvenanceViolationError("evaluation fingerprint must be non-empty text")
     if "training_eligible" in result and not isinstance(result["training_eligible"], bool):
         raise ProvenanceViolationError("training_eligible must be boolean")
+    if "training_eligibility_reason" in result and (
+        not isinstance(result["training_eligibility_reason"], str)
+        or not result["training_eligibility_reason"].strip()
+        or len(result["training_eligibility_reason"]) > 256
+    ):
+        raise ProvenanceViolationError(
+            "training eligibility reason must be non-empty text"
+        )
     # The catalog supplies the row fingerprint when callers pass only the
     # optional provenance fields.
     return result
