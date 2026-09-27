@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 
 from tradingagents.forex.evaluation import ShadowEvaluationStore, ShadowOutcomeEvaluation
@@ -303,3 +305,15 @@ def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):
     assert report["latency_bottlenecks"][0]["agent"] == "Portfolio Manager"
     assert report["stage_elapsed_seconds"] == {"Portfolio Manager": 5.0}
     assert db_path.read_bytes() == before
+
+    lower_path = tmp_path / "watch-lower.db"
+    lower_path.write_bytes(before)
+    with closing(sqlite3.connect(lower_path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decisions SET research_manager_recommendation='buy'"
+        )
+
+    lower_report = validate_revision(lower_path, "abc123")
+
+    assert lower_report["research_recommendations"] == {"UNAVAILABLE": 1}
+    assert lower_report["portfolio_manager_actions"] == {"HOLD": 1}

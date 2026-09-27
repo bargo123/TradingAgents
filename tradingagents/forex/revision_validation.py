@@ -13,11 +13,21 @@ from statistics import median
 from typing import Any
 from urllib.parse import quote
 
-from .decision_path_audit import extract_trader_action
+from .decision_path_audit import (
+    RESEARCH_RECOMMENDATIONS,
+    TRADING_ACTIONS,
+    extract_trader_action,
+)
 
 
 class RevisionValidationError(RuntimeError):
     """The requested revision cannot be validated from the source DB."""
+
+
+def _canonical_or_unavailable(value: Any, allowed: tuple[str, ...]) -> str:
+    """Report only exact persisted enum values; quarantine everything else."""
+
+    return value if isinstance(value, str) and value in allowed else "UNAVAILABLE"
 
 
 def _safe_nonnegative_float(value: Any) -> float | None:
@@ -253,7 +263,8 @@ def validate_revision(db_path: str | Path, commit: str) -> dict[str, Any]:
     status_counts = Counter(str(row["run_status"]) for row in rows)
     reference_counts = Counter(str(row["decision_reference_status"] or "UNAVAILABLE") for row in rows)
     research_counts = Counter(
-        str(row["research_manager_recommendation"] or "UNAVAILABLE") for row in rows
+        _canonical_or_unavailable(row["research_manager_recommendation"], RESEARCH_RECOMMENDATIONS)
+        for row in rows
     )
     trader_counts = Counter(
         extract_trader_action(row["trader_summary"])
@@ -261,12 +272,14 @@ def validate_revision(db_path: str | Path, commit: str) -> dict[str, Any]:
         else "UNAVAILABLE"
         for row in rows
     )
-    pm_counts = Counter(str(row["persisted_action"] or "UNAVAILABLE") for row in rows)
+    pm_counts = Counter(
+        _canonical_or_unavailable(row["persisted_action"], TRADING_ACTIONS) for row in rows
+    )
     runtimes = [float(row["runtime_seconds"]) for row in rows if row["runtime_seconds"] is not None]
     transitions = Counter(
-        f"{row['research_manager_recommendation'] or 'UNAVAILABLE'}"
+        f"{_canonical_or_unavailable(row['research_manager_recommendation'], RESEARCH_RECOMMENDATIONS)}"
         f"->{extract_trader_action(row['trader_summary']) if row['trader_summary'] else 'UNAVAILABLE'}"
-        f"->{row['persisted_action'] or 'UNAVAILABLE'}"
+        f"->{_canonical_or_unavailable(row['persisted_action'], TRADING_ACTIONS)}"
         for row in rows
     )
     stage_timings: Counter[str] = Counter()
