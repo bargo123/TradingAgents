@@ -224,11 +224,15 @@ class ReadonlyExperienceCatalog(_ReadonlySQLite):
 
     @staticmethod
     def _json(value: str | None) -> dict[str, Any]:
-        try:
-            payload = json.loads(value or "{}")
-        except (TypeError, ValueError, json.JSONDecodeError):
+        if value is None or value == "":
             return {}
-        return dict(payload) if isinstance(payload, Mapping) else {}
+        try:
+            payload = json.loads(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("catalog JSON is invalid") from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError("catalog JSON must be a mapping")
+        return dict(payload)
 
     def _load_projection_rows(self) -> dict[str, dict[str, Any]]:
         try:

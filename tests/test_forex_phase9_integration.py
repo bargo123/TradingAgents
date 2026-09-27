@@ -1169,6 +1169,12 @@ def test_readonly_experience_adapter_matches_phase8_reader_semantics(tmp_path: P
         assert catalog.historical_records() == ()
 
 
+@pytest.mark.parametrize("value", ["[", "[]"])
+def test_readonly_experience_catalog_rejects_malformed_json(value: str):
+    with pytest.raises(ValueError, match="catalog JSON"):
+        ReadonlyExperienceCatalog._json(value)
+
+
 def test_readonly_knowledge_adapter_matches_published_generation_semantics(tmp_path: Path):
     sqlite3.connect(tmp_path / "catalog.sqlite3").close()
     with ReadonlyKnowledgeCatalog(tmp_path) as catalog:
