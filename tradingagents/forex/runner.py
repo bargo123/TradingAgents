@@ -506,7 +506,9 @@ class ForexShadowRunner:
         # Keep programmatic/CLI overrides partial and non-secret while still
         # supplying every setting required by TradingAgentsGraph.
         self.config = dict(DEFAULT_CONFIG)
-        self.config.update(config or {})
+        if config is not None and not isinstance(config, Mapping):
+            raise ValueError("config must be a mapping")
+        self.config.update({} if config is None else config)
         self.store = store or ShadowDecisionStore(
             Path(self.config.get("data_cache_dir", "data_cache"))
             / "shadow_decisions.db"

@@ -544,6 +544,12 @@ def test_runner_merges_partial_runtime_config_with_graph_defaults():
     assert runner.config["max_debate_rounds"] >= 0
 
 
+@pytest.mark.parametrize("config", [[], "", 0, False])
+def test_runner_rejects_non_mapping_runtime_config(config):
+    with pytest.raises(ValueError, match="config must be a mapping"):
+        ForexShadowRunner(config=config)
+
+
 def test_runner_rejects_ambiguous_evidence_config_boolean():
     assert ForexShadowRunner._evidence_is_enabled({"forex_evidence_enabled": False}) is False
     assert ForexShadowRunner._evidence_is_enabled({"forex_evidence_enabled": True}) is True
