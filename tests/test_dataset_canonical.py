@@ -259,6 +259,28 @@ def test_explicit_falsey_canonical_metadata_is_not_treated_as_absent(field, valu
         canonicalize(joined, EligibilityResult(True, details={"decision_id": "d1"}))
 
 
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_malformed_decision_fingerprint_cannot_fallback_to_experience(value):
+    o = obs()
+    decision = o.decision.__class__(
+        o.decision.decision_id,
+        o.decision.analysis_snapshot_timestamp,
+        o.decision.decision_completed_timestamp,
+        source_run_id=o.decision.source_run_id,
+        requested_symbol=o.decision.requested_symbol,
+        resolved_symbol=o.decision.resolved_symbol,
+        analysis_profile=o.decision.analysis_profile,
+        analysis_timeframe=o.decision.analysis_timeframe,
+        action=o.decision.action,
+        fields={**o.decision.fields, "source_decision_fingerprint": value},
+    )
+    with pytest.raises(ValueError, match="decision fingerprint"):
+        canonicalize(
+            o.__class__(decision, o.evaluation, o.evidence, o.fields),
+            EligibilityResult(True, details={"decision_id": "d1"}),
+        )
+
+
 def test_arbitrary_phase8_provenance_is_rejected():
     o = obs()
     bad = {**o.fields, 'experience': {**o.fields['experience'], 'provenance': {'notes': 'arbitrary prose'}}}

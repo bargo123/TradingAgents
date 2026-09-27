@@ -43,6 +43,20 @@ def _optional_mapping(container: Mapping[str, Any], name: str) -> Mapping[str, A
     return value
 
 
+def _optional_text(value: Any, name: str) -> str | None:
+    """Validate optional provenance text without coercing falsey values."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _first_text(primary: Any, fallback: Any, name: str) -> str | None:
+    selected = _optional_text(primary, name)
+    return selected if selected is not None else _optional_text(fallback, name)
+
+
 def _plain(value: Any) -> Any:
     if is_dataclass(value):
         return {f.name: _plain(getattr(value, f.name)) for f in fields(value)}
@@ -310,7 +324,14 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
     record = _optional_mapping(jf, "experience")
     audit = _optional_mapping(jf, "audit")
     source_fingerprints = _optional_mapping(jf, "source_fingerprints")
-    dfp = _get(d, "fields", {}).get("source_decision_fingerprint") or record.get("source_decision_fingerprint")
+    decision_fields = _get(d, "fields", {})
+    if not isinstance(decision_fields, Mapping):
+        raise ValueError("decision fields must be a mapping")
+    dfp = _first_text(
+        decision_fields.get("source_decision_fingerprint"),
+        record.get("source_decision_fingerprint"),
+        "source decision fingerprint",
+    )
     basis = _get(ev, "evaluation_basis")
     horizon = _get(ev, "horizon_seconds")
     policy = record.get("trust_policy_version", "")
@@ -318,7 +339,6 @@ def canonicalize(result: Any, eligibility: Any | None = None) -> CanonicalExampl
         raise ValueError("canonical identity/provenance incomplete")
     identity = {"decision_id": d.decision_id, "basis": basis, "horizon_seconds": horizon, "source_decision_fingerprint": dfp, "policy_version": policy}
     example_id = "ex_" + _digest(identity)
-    decision_fields = _get(d, "fields", {})
     snapshot_value = decision_fields.get("snapshot_json")
     if snapshot_value is None:
         snapshot_value = record.get("market_state")
