@@ -57,6 +57,16 @@ class EvidenceTimeout(TimeoutError):
 _WORKER_TERMINATION_GRACE_SECONDS = 1.0
 
 
+def _db_bool(value: Any, name: str) -> bool:
+    """Decode read-only catalog flags without accepting truthy text."""
+
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{name} must be boolean 0/1")
+
+
 @dataclass(frozen=True, slots=True)
 class ReadonlyEvidenceRuntimeConfiguration:
     """Serializable child configuration; it contains paths, never services."""
@@ -166,8 +176,8 @@ class ReadonlyKnowledgeCatalog(_ReadonlySQLite):
                 "population_identity": row["population_identity"],
                 "document_count": row["document_count"],
                 "chunk_count": row["chunk_count"],
-                "vector_ready": bool(row["vector_ready"]),
-                "lexical_ready": bool(row["lexical_ready"]),
+                "vector_ready": _db_bool(row["vector_ready"], "vector_ready"),
+                "lexical_ready": _db_bool(row["lexical_ready"], "lexical_ready"),
                 "status": row["status"],
                 "created_at": row["created_at"],
                 "activated_at": row["activated_at"],

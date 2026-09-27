@@ -30,6 +30,16 @@ def _json(value: Any) -> str:
     return json.dumps(value or {}, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _db_bool(value: Any, name: str) -> bool:
+    """Decode SQLite boolean flags without truthiness coercion."""
+
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{name} must be boolean 0/1")
+
+
 class ExperienceCatalog:
     """Owns only ``artifact_root/catalog.sqlite3`` and never opens source DBs."""
 
@@ -289,7 +299,7 @@ class ExperienceCatalog:
             row = db.execute(
                 "SELECT tombstoned FROM experience_records WHERE experience_id=?", (experience_id,)
             ).fetchone()
-            return bool(row[0]) if row else False
+            return _db_bool(row[0], "tombstoned") if row else False
 
     def mark_alias_removed(
         self, source_database_id: str, decision_id: str, fingerprint: str

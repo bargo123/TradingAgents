@@ -1038,6 +1038,48 @@ def test_readonly_knowledge_catalog_uses_mode_ro(tmp_path: Path):
             catalog._connection.execute("CREATE TABLE forbidden (x INTEGER)")
 
 
+def test_readonly_knowledge_catalog_rejects_malformed_generation_flags(tmp_path: Path):
+    db = tmp_path / "catalog.sqlite3"
+    with closing(sqlite3.connect(db)) as connection, connection:
+        connection.execute(
+            "CREATE TABLE knowledge_index_generations ("
+            "is_active INTEGER, generation_id TEXT, vector_location TEXT, "
+            "lexical_location TEXT, embedding_spec_json TEXT, "
+            "lexical_index_version TEXT, lexical_tokenizer_settings_json TEXT, "
+            "index_version TEXT, population_hash TEXT, population_identity TEXT, "
+            "document_count INTEGER, chunk_count INTEGER, vector_ready, lexical_ready, "
+            "status TEXT, created_at TEXT, activated_at TEXT, component_versions_json TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO knowledge_index_generations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                1,
+                "g1",
+                "vector",
+                "lexical",
+                json.dumps({"model_id": "m", "dimensions": 1}),
+                "fts5-v1",
+                "{}",
+                "index-v1",
+                "population",
+                "identity",
+                1,
+                1,
+                "false",
+                1,
+                "VALIDATED",
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+                "{}",
+            ),
+        )
+
+    with ReadonlyKnowledgeCatalog(tmp_path) as catalog, pytest.raises(
+        ValueError, match="vector_ready"
+    ):
+        catalog.active_generation()
+
+
 def test_readonly_experience_catalog_uses_mode_ro(tmp_path: Path):
     db = tmp_path / "catalog.sqlite3"
     with closing(sqlite3.connect(db)) as connection, connection:

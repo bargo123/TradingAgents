@@ -45,6 +45,18 @@ def test_last_alias_removal_tombstones_but_failed_scan_does_not(catalog: Experie
     assert catalog.is_tombstoned(record.experience_id) is True
 
 
+def test_malformed_tombstone_flag_fails_closed(catalog: ExperienceCatalog) -> None:
+    record = catalog.upsert_source_alias("db-a", decision_id="d1", fingerprint="fp1")
+    with closing(sqlite3.connect(catalog.database_path)) as db, db:
+        db.execute(
+            "UPDATE experience_records SET tombstoned=? WHERE experience_id=?",
+            ("false", record.experience_id),
+        )
+
+    with pytest.raises(ValueError, match="tombstoned"):
+        catalog.is_tombstoned(record.experience_id)
+
+
 def test_conflicting_fingerprint_is_quarantined(catalog: ExperienceCatalog) -> None:
     catalog.upsert_source_alias("db-a", "d1", "fp1")
     with pytest.raises(SourceDecisionConflictError):
