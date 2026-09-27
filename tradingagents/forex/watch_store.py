@@ -322,7 +322,12 @@ class WatcherStore:
                 raise ValueError(f"{name} must be a positive integer")
         self.lease_ttl_seconds = lease_ttl_seconds
         self.busy_timeout_seconds = busy_timeout_seconds
-        self.provenance = dict(provenance or {})
+        if provenance is None:
+            self.provenance = {}
+        elif not isinstance(provenance, Mapping):
+            raise ValueError("provenance must be a mapping")
+        else:
+            self.provenance = dict(provenance)
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)

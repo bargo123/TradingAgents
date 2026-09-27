@@ -104,6 +104,12 @@ def test_watcher_store_rejects_non_contract_timeout_values(tmp_path, kwargs):
         WatcherStore(tmp_path / "watch.db", **kwargs)
 
 
+@pytest.mark.parametrize("provenance", [[], "", 0, False])
+def test_watcher_store_rejects_non_mapping_provenance(tmp_path, provenance):
+    with pytest.raises(ValueError, match="provenance"):
+        WatcherStore(tmp_path / "watch.db", provenance=provenance)
+
+
 def test_read_only_active_lease_reads_existing_owner_without_mutation(tmp_path):
     path = tmp_path / "watch.db"
     store = WatcherStore(path)
