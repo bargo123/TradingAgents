@@ -634,10 +634,13 @@ class ForexShadowRunner:
             knowledge_top_k=int(config.get("forex_evidence_knowledge_top_k", 10)),
             experience_top_k=int(config.get("forex_evidence_experience_top_k", 50)),
         )
-        roots = config.get(
-            "forex_evidence_artifact_roots",
-            config.get("evidence_artifact_roots", {}),
-        )
+        roots = config.get("forex_evidence_artifact_roots")
+        if roots is None:
+            roots = config.get("evidence_artifact_roots")
+        if roots is not None and not isinstance(roots, Mapping):
+            raise TypeError("artifact_roots must be a mapping")
+        if roots is None:
+            roots = {}
         if not roots:
             roots = {
                 key: config[key]
@@ -661,7 +664,7 @@ class ForexShadowRunner:
             orchestrator_factory=config.get("evidence_orchestrator_factory"),
             generation_provider=config.get("evidence_generation_provider", (None, None)),
             provider_endpoint=config.get("backend_url"),
-            artifact_roots=roots if isinstance(roots, Mapping) else {},
+            artifact_roots=roots,
         )
 
     def _default_evidence_audit_store_factory(self, **kwargs: Any) -> EvidenceAuditStore:

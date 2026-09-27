@@ -1494,6 +1494,18 @@ def test_evidence_factory_failure_falls_back_and_persists(tmp_path):
     assert store.get(result.decision.decision_id) is not None
 
 
+@pytest.mark.parametrize("value", [[], False, 0, ""])
+def test_default_evidence_factory_rejects_falsey_malformed_artifact_roots(value):
+    runner = ForexShadowRunner(
+        provider_factory=lambda: None,
+        graph_factory=lambda **_kwargs: None,
+        config={"forex_evidence_artifact_roots": value},
+    )
+
+    with pytest.raises(TypeError, match="artifact_roots"):
+        runner._default_evidence_service_factory(config=runner.config)
+
+
 def test_invalid_evidence_context_becomes_fallback(tmp_path):
     invalid = EvidenceContext(
         integration_status=EvidenceIntegrationStatus.INJECTED,
