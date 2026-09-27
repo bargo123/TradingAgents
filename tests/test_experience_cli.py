@@ -177,3 +177,24 @@ def test_stats_omitted_trust_uses_tier_a(monkeypatch, tmp_path):
     )
     cli._run(args)
     assert captured["request"].trust_tiers == (cli.TrustTier.TIER_A_HIGH_TRUST,)
+
+
+def test_list_trust_filter_matches_enum_value(tmp_path):
+    from tradingagents.experience import cli
+    from tradingagents.experience.catalog import ExperienceCatalog
+
+    catalog = ExperienceCatalog(tmp_path)
+    catalog.upsert_source_alias("db-1", "d-1", "fp-1")
+    args = cli.build_parser().parse_args(
+        [
+            "list",
+            "--artifact-root",
+            str(tmp_path),
+            "--trust-tier",
+            "TIER_A_HIGH_TRUST",
+        ]
+    )
+
+    records = cli._run(args)
+
+    assert [record.source_decision_id for record in records] == ["d-1"]

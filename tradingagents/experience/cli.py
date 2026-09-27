@@ -259,7 +259,12 @@ def _run(args: argparse.Namespace) -> Any:
             if args.state == "active"
             else catalog.active_records() + catalog.historical_records()
         )
-        return [r for r in records if not args.trust_tier or str(r.trust) == args.trust_tier]
+        return [
+            r
+            for r in records
+            if not args.trust_tier
+            or str(getattr(r.trust, "value", r.trust)) == args.trust_tier
+        ]
     if command == "show":
         if catalog is None:
             return None
