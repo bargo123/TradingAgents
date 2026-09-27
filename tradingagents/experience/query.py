@@ -164,7 +164,7 @@ class ExperienceQueryService:
                     for v in aliases.values()
                 )
             )
-            if tombstone_metadata_invalid:
+            if tombstone_metadata_invalid or not aliases_valid:
                 reason = "tombstone"
             elif query.symbol and _get(row, "symbol", _get(row, "resolved_symbol")) != query.symbol:
                 reason = "symbol"
