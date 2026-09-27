@@ -17,6 +17,7 @@ from .config import ExperienceConfig
 from .errors import (
     ExperienceImportLockedError,
     FeatureExtractionIncompleteError,
+    ProvenanceViolationError,
     SourceDecisionConflictError,
 )
 from .features import extract_market_state
@@ -39,6 +40,22 @@ def _primary_source_value(row: dict[str, Any], primary: str, fallback: str) -> A
 def _source_symbol(row: dict[str, Any]) -> Any:
     value = _primary_source_value(row, "resolved_symbol", "symbol")
     return "UNKNOWN" if value is None else value
+
+
+def _evaluation_fingerprint(value: dict[str, Any]) -> str:
+    """Select an evaluation identity without bypassing malformed fields."""
+    for name in ("source_evaluation_fingerprint", "fingerprint"):
+        if name not in value:
+            continue
+        candidate = value[name]
+        if candidate is None or candidate == "":
+            continue
+        if not isinstance(candidate, str) or not candidate.strip():
+            raise ProvenanceViolationError(
+                f"{name} must be a non-empty evaluation fingerprint"
+            )
+        return candidate
+    return source_evaluation_fingerprint(value)
 
 
 @dataclass(frozen=True)
@@ -114,11 +131,7 @@ class ExperienceImporter:
             evaluation_decision_id = evaluation.get("decision_id")
             if not isinstance(evaluation_decision_id, str) or evaluation_decision_id != decision_id:
                 continue
-            efp = (
-                evaluation.get("source_evaluation_fingerprint")
-                or evaluation.get("fingerprint")
-                or source_evaluation_fingerprint(evaluation)
-            )
+            efp = _evaluation_fingerprint(evaluation)
             ep = build_evaluation_provenance(
                 efp,
                 source_database_id=source_id,

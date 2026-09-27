@@ -5,6 +5,8 @@ import sqlite3
 from contextlib import closing, suppress
 from unittest.mock import patch
 
+import pytest
+
 from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.config import (
@@ -16,7 +18,7 @@ from tradingagents.experience.config import (
     STATISTICS_POLICY_VERSION,
     TRUST_POLICY_VERSION,
 )
-from tradingagents.experience.errors import ExperienceImportLockedError
+from tradingagents.experience.errors import ExperienceImportLockedError, ProvenanceViolationError
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
 
 
@@ -155,6 +157,35 @@ def test_malformed_primary_timestamp_is_not_replaced_by_legacy_value(tmp_path):
     assert report.failed_scan_count == 1
     assert report.indexed_count == 0
     assert catalog.active_records() == ()
+
+
+def test_malformed_evaluation_fingerprint_does_not_fallback_to_legacy(tmp_path):
+    class _Catalog:
+        artifact_root = tmp_path / "artifact"
+
+        def append_evaluation_snapshot(self, *args, **kwargs):
+            return True
+
+    snapshot = type(
+        "Snapshot",
+        (),
+        {
+            "evaluations": (
+                {
+                    "decision_id": "d1",
+                    "source_evaluation_fingerprint": False,
+                    "fingerprint": "legacy-fingerprint",
+                },
+            ),
+            "source_snapshot_fingerprint": "snapshot-fingerprint",
+        },
+    )()
+    record = type("Record", (), {"experience_id": "exp1"})()
+
+    with pytest.raises(ProvenanceViolationError, match="evaluation fingerprint"):
+        ExperienceImporter(_Catalog())._append_evaluations(
+            record, snapshot, "d1", "source-db"
+        )
 
 
 def test_lock_collision_does_not_create_staging(tmp_path):
