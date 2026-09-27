@@ -19,6 +19,7 @@ from .models import (
     ExperienceQuery,
     ExperienceSearchResult,
     OrchestrationProvenance,
+    OutcomeStatistics,
     OutcomeStatsRequest,
     TrustTier,
 )
@@ -59,6 +60,17 @@ class EvidenceOrchestrator:
             raise TypeError("experience search result must be an iterable of ExperienceHit values") from exc
         return ExperienceSearchResult(values)
 
+    @staticmethod
+    def _knowledge_results(value: Any) -> tuple[Any, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, (str, bytes, bytearray, Mapping)):
+            raise TypeError("knowledge search result must be an iterable of hits")
+        try:
+            return tuple(value)
+        except TypeError as exc:
+            raise TypeError("knowledge search result must be an iterable of hits") from exc
+
     def query(self, request: EvidenceRequest) -> EvidenceBundle:
         if not isinstance(request, EvidenceRequest):
             raise TypeError("query expects an EvidenceRequest")
@@ -80,7 +92,7 @@ class EvidenceOrchestrator:
                     content_types=request.content_types,
                     document_ids=request.document_ids,
                 )
-                knowledge = tuple(self.knowledge_service.search(knowledge_query) or ())
+                knowledge = self._knowledge_results(self.knowledge_service.search(knowledge_query))
                 source_status["knowledge"] = "COMPLETE"
             except Exception as exc:  # service boundary: return typed source status
                 source_status["knowledge"] = "FAILED"
@@ -126,7 +138,10 @@ class EvidenceOrchestrator:
                     trust_tiers=tiers,
                     as_of=request.as_of,
                 )
-                statistics = self.statistics_calculator.calculate(stats_request)
+                candidate_statistics = self.statistics_calculator.calculate(stats_request)
+                if not isinstance(candidate_statistics, OutcomeStatistics):
+                    raise TypeError("statistics calculator must return OutcomeStatistics")
+                statistics = candidate_statistics
                 source_status["statistics"] = "COMPLETE"
             except Exception as exc:
                 source_status["statistics"] = "FAILED"

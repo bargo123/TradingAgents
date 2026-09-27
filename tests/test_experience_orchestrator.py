@@ -119,3 +119,37 @@ def test_malformed_experience_service_result_is_failed_not_empty():
     assert bundle.status == "FAILED"
     assert bundle.source_status["experience"] == "FAILED"
     assert bundle.errors[0].source == "experience"
+
+
+def test_malformed_knowledge_service_result_is_failed_not_empty():
+    class MalformedKnowledge:
+        def search(self, _query):
+            return False
+
+    bundle = EvidenceOrchestrator(MalformedKnowledge(), Experience(), Stats()).query(
+        EvidenceRequest(research_question="OFI")
+    )
+
+    assert bundle.status == "FAILED"
+    assert bundle.source_status["knowledge"] == "FAILED"
+    assert bundle.errors[0].source == "knowledge"
+
+
+def test_malformed_statistics_result_is_failed_not_complete():
+    class MalformedStats:
+        def calculate(self, _request):
+            return False
+
+    bundle = EvidenceOrchestrator(
+        Knowledge(), Experience([ExperienceHit("exp-1")]), MalformedStats()
+    ).query(
+        EvidenceRequest(
+            market_state={"x": 1},
+            evaluation_basis="ANALYSIS_SNAPSHOT",
+            horizon_seconds=300,
+        )
+    )
+
+    assert bundle.status == "PARTIAL"
+    assert bundle.source_status["statistics"] == "FAILED"
+    assert bundle.errors[0].source == "statistics"
