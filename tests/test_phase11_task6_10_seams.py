@@ -28,9 +28,10 @@ def test_provenance_rejects_mutable_revision(tmp_path: Path) -> None:
 
 
 def test_qlora_cpu_fails_without_full_precision_fallback(monkeypatch) -> None:
+    torch = pytest.importorskip("torch")
     from tradingagents.finetuning.qlora import QloraCapabilityError, check_qlora_capability
 
-    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(QloraCapabilityError, match="GPU_REQUIRED"):
         check_qlora_capability()
 

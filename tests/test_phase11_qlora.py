@@ -17,9 +17,10 @@ def test_qlora_config_is_strict_nf4_double_quant() -> None:
 
 
 def test_cpu_is_gpu_required_and_never_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch = pytest.importorskip("torch")
     from tradingagents.finetuning.qlora import QloraCapabilityError, check_qlora_capability
 
-    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     with pytest.raises(QloraCapabilityError, match="GPU_REQUIRED"):
         check_qlora_capability()
     assert "bitsandbytes" not in sys.modules
