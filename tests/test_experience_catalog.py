@@ -58,6 +58,18 @@ def test_source_decision_fingerprint_must_be_non_empty_text(catalog, value) -> N
         catalog.upsert_source_alias("db-a", decision_id="bad-fingerprint", fingerprint=value)
 
 
+@pytest.mark.parametrize("field", ["symbol", "source_run_id", "requested_symbol", "analysis_profile"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_alias_metadata_rejects_non_text_values(catalog, field, value) -> None:
+    with pytest.raises((TypeError, ValueError), match=field):
+        catalog.upsert_source_alias(
+            "db-a",
+            decision_id=f"bad-{field}",
+            fingerprint="fp1",
+            **{field: value},
+        )
+
+
 @pytest.mark.parametrize("value", [False, 0, [], ""])
 def test_evaluation_fingerprint_must_be_non_empty_text(catalog, value) -> None:
     with pytest.raises((TypeError, ValueError), match="fingerprint"):
@@ -202,6 +214,18 @@ def test_publish_generation_is_atomic_and_readable(catalog: ExperienceCatalog) -
 def test_publish_generation_rejects_malformed_generation_id(catalog, value) -> None:
     with pytest.raises((TypeError, ValueError), match="generation_id"):
         catalog.publish_generation(value, population_fingerprint="pop-1")
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_publish_generation_rejects_malformed_population_fingerprint(catalog, value) -> None:
+    with pytest.raises((TypeError, ValueError), match="population_fingerprint"):
+        catalog.publish_generation("gen-1", population_fingerprint=value)
+
+
+@pytest.mark.parametrize("metadata", [False, 0, [], ""])
+def test_publish_generation_rejects_malformed_metadata(catalog, metadata) -> None:
+    with pytest.raises((TypeError, ValueError), match="JSON object"):
+        catalog.publish_generation("gen-1", population_fingerprint="pop-1", metadata=metadata)
 
 
 @pytest.mark.parametrize("field", ["source_database_id", "canonical_path", "source_fingerprint", "source_schema_fingerprint"])

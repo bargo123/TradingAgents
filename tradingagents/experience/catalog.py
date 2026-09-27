@@ -55,6 +55,14 @@ def _required_text(value: Any, name: str) -> str:
     return value
 
 
+def _optional_text(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 256:
+        raise TypeError(f"{name} must be text or None")
+    return value
+
+
 def _json(value: Any) -> str:
     if value is None:
         value = {}
@@ -193,6 +201,26 @@ class ExperienceCatalog:
         source_database_id = _required_text(source_database_id, "source_database_id")
         decision_id = _required_text(decision_id, "decision_id")
         fingerprint = _required_text(fingerprint, "fingerprint")
+        symbol = _required_text(kwargs.get("symbol", "UNKNOWN"), "symbol")
+        optional_text = {
+            field: _optional_text(kwargs.get(field), field)
+            for field in (
+                "source_run_id",
+                "requested_symbol",
+                "analysis_profile",
+                "analysis_timeframe",
+            )
+        }
+        raw_trust = kwargs.get("trust", TrustTier.TIER_A_HIGH_TRUST.value)
+        if isinstance(raw_trust, TrustTier):
+            trust = raw_trust.value
+        elif isinstance(raw_trust, str):
+            try:
+                trust = TrustTier(raw_trust).value
+            except ValueError as exc:
+                raise ValueError("trust must be a valid TrustTier") from exc
+        else:
+            raise TypeError("trust must be a TrustTier or string")
         now = _now()
         experience_id = self._experience_id(decision_id)
         in_transaction = self._transaction_connection is not None
@@ -226,11 +254,11 @@ class ExperienceCatalog:
                         decision_id,
                         source_database_id,
                         fingerprint,
-                        kwargs.get("source_run_id"),
-                        kwargs.get("symbol", "UNKNOWN"),
-                        kwargs.get("requested_symbol"),
-                        kwargs.get("analysis_profile"),
-                        kwargs.get("analysis_timeframe"),
+                        optional_text["source_run_id"],
+                        symbol,
+                        optional_text["requested_symbol"],
+                        optional_text["analysis_profile"],
+                        optional_text["analysis_timeframe"],
                         timestamp.isoformat(),
                         _optional_timestamp_value(
                             kwargs.get("decision_completed_timestamp"),
@@ -243,7 +271,7 @@ class ExperienceCatalog:
                         _json(kwargs.get("market_state")),
                         _json(kwargs.get("decision_evidence")),
                         _json(kwargs.get("provenance")),
-                        str(kwargs.get("trust", TrustTier.TIER_A_HIGH_TRUST.value)),
+                        trust,
                         0,
                         _json({}),
                     ),
@@ -483,17 +511,21 @@ class ExperienceCatalog:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         generation_id = _required_text(generation_id, "generation_id")
+        if not isinstance(population_fingerprint, str):
+            raise TypeError("population_fingerprint must be text")
+        metadata_value = {} if metadata is None else metadata
+        metadata_json = _json(metadata_value)
         payload = {
             "generation_id": generation_id,
             "population_fingerprint": population_fingerprint,
-            "metadata": metadata or {},
+            "metadata": metadata_value,
             "published_at": _now(),
         }
         with self._connect() as db:
             db.execute("UPDATE experience_generations SET active=0")
             db.execute(
                 "INSERT OR REPLACE INTO experience_generations VALUES (?,?,?,?,1)",
-                (generation_id, population_fingerprint, _json(metadata), payload["published_at"]),
+                (generation_id, population_fingerprint, metadata_json, payload["published_at"]),
             )
         return payload
 
