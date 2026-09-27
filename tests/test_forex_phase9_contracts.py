@@ -191,6 +191,41 @@ def test_statistics_status_defaults_to_not_requested():
     assert EvidenceContext().statistics_status == "NOT_REQUESTED"
 
 
+@pytest.mark.parametrize("field", ["version", "statistics_status", "budget_policy_version"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_evidence_context_rejects_non_text_metadata(field, value):
+    with pytest.raises(ValueError, match=field):
+        EvidenceContext(**{field: value})
+
+
+def test_evidence_context_rejects_invalid_query_object():
+    with pytest.raises(ValueError, match="knowledge_query"):
+        EvidenceContext(knowledge_query=False)
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_evidence_context_rejects_non_text_rendered_context(value):
+    with pytest.raises(ValueError, match="rendered_context"):
+        EvidenceContext(rendered_context=value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "knowledge_generation_id",
+        "experience_generation_id",
+        "query_normalization_fingerprint",
+        "knowledge_query_fingerprint",
+        "knowledge_query_policy_version",
+        "rendered_context_hash",
+    ],
+)
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_evidence_context_rejects_non_text_optional_metadata(field, value):
+    with pytest.raises(ValueError, match=field):
+        EvidenceContext(**{field: value})
+
+
 def test_collection_entries_are_deeply_immutable():
     context = EvidenceContext(
         knowledge_items=({"nested": {"items": [1]}},),

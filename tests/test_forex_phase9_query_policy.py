@@ -112,6 +112,13 @@ def test_query_policy_rejects_unsupported_evaluation_basis(basis):
         EvidenceQueryPolicy(evaluation_basis=basis)
 
 
+@pytest.mark.parametrize("field", ["query_policy_version", "budget_policy_version"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_query_policy_rejects_non_text_version_fields(field, value):
+    with pytest.raises(ValueError, match=field):
+        EvidenceQueryPolicy(**{field: value})
+
+
 def test_canonical_query_is_fts_safe_and_returns_provenance_fixture():
     """The deterministic query must be usable by the lexical Phase 7 seam."""
 

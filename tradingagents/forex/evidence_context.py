@@ -106,6 +106,12 @@ def _utc(value: datetime, name: str = "as_of") -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _metadata_text(value: Any, name: str, *, max_length: int = 256) -> str:
+    if not isinstance(value, str) or len(value) > max_length:
+        raise ValueError(f"{name} must be text")
+    return value
+
+
 def _freeze_items(values: Any) -> tuple[Any, ...]:
     """Freeze arbitrary item entries while preserving canonical contract items."""
     return tuple(value if isinstance(value, CanonicalEvidenceItem) else _freeze(value) for value in values)
@@ -162,6 +168,8 @@ class EvidenceQueryPolicy:
     evidence_timeout_seconds: float = 10.0
 
     def __post_init__(self) -> None:
+        for name in ("query_policy_version", "budget_policy_version"):
+            _metadata_text(getattr(self, name), name)
         for name in (
             "knowledge_top_k",
             "experience_top_k",
@@ -603,6 +611,25 @@ class EvidenceContext:
     budget_policy_version: str = "v1"
 
     def __post_init__(self) -> None:
+        for name in ("version", "statistics_status", "budget_policy_version"):
+            _metadata_text(getattr(self, name), name)
+        for name in (
+            "knowledge_generation_id",
+            "experience_generation_id",
+            "query_normalization_fingerprint",
+            "knowledge_query_fingerprint",
+            "knowledge_query_policy_version",
+            "rendered_context_hash",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                _metadata_text(value, name)
+        if self.knowledge_query is not None and not isinstance(
+            self.knowledge_query, CanonicalKnowledgeQuery
+        ):
+            raise ValueError("knowledge_query must be CanonicalKnowledgeQuery")
+        if not isinstance(self.rendered_context, str):
+            raise ValueError("rendered_context must be text")
         object.__setattr__(self, "integration_status", EvidenceIntegrationStatus(self.integration_status))
         object.__setattr__(self, "bundle_status", EvidenceBundleStatus(self.bundle_status))
         object.__setattr__(self, "as_of", _utc(self.as_of))

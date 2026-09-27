@@ -13,6 +13,7 @@ from tradingagents.experience.models import (
     ExperienceQuery,
     ExperienceRecord,
     ExperienceSearchResult,
+    OrchestrationProvenance,
     OutcomeDirectionStatistics,
     OutcomeHoldStatistics,
     OutcomeStatistics,
@@ -299,6 +300,19 @@ def test_evidence_bundle_rejects_invalid_status(value: object) -> None:
 def test_evidence_bundle_rejects_scalar_collections(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         EvidenceBundle(**{field: "not-a-sequence"})
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_orchestration_provenance_rejects_non_text_fingerprint(value: object) -> None:
+    with pytest.raises(ValueError, match="query_normalization_fingerprint"):
+        OrchestrationProvenance(query_normalization_fingerprint=value)
+
+
+@pytest.mark.parametrize("field", ["knowledge_requested", "experience_requested"])
+@pytest.mark.parametrize("value", [0, 1, "true", [], {}])
+def test_orchestration_provenance_rejects_non_boolean_flags(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        OrchestrationProvenance(**{field: value})
 
 
 def test_evaluation_status_includes_ineligible() -> None:

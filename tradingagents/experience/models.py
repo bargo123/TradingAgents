@@ -732,3 +732,13 @@ class OrchestrationProvenance(Serializable):
     query_normalization_fingerprint: str | None = None
     knowledge_requested: bool = False
     experience_requested: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "query_normalization_fingerprint",
+            _optional_text(self.query_normalization_fingerprint, "query_normalization_fingerprint"),
+        )
+        for name in ("knowledge_requested", "experience_requested"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"{name} must be boolean")
