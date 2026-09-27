@@ -11,6 +11,8 @@ from tradingagents.experience.models import (
     ExperienceQuery,
     ExperienceRecord,
     ExperienceSearchResult,
+    OutcomeDirectionStatistics,
+    OutcomeHoldStatistics,
     OutcomeStatistics,
     OutcomeStatsRequest,
     TrustTier,
@@ -96,6 +98,42 @@ def test_training_eligibility_is_only_provenance() -> None:
 def test_request_and_statistics_contracts_accept_defaults() -> None:
     assert EvidenceRequest().as_of is None
     assert OutcomeStatistics().eligible_sample_denominator == 0
+
+
+@pytest.mark.parametrize("value", [[], False, 0])
+def test_search_result_rejects_malformed_excluded_counts(value: object) -> None:
+    with pytest.raises(ValueError, match="excluded_counts"):
+        ExperienceSearchResult(excluded_counts=value)
+
+
+@pytest.mark.parametrize("field", ["mfe_quantiles", "mae_quantiles"])
+@pytest.mark.parametrize("value", [[], False, 0])
+def test_direction_statistics_reject_malformed_quantile_mappings(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        OutcomeDirectionStatistics(**{field: value})
+
+
+@pytest.mark.parametrize("value", [[], False, 0])
+def test_hold_statistics_reject_malformed_counterfactual_mapping(value: object) -> None:
+    with pytest.raises(ValueError, match="best_counterfactual_counts"):
+        OutcomeHoldStatistics(best_counterfactual_counts=value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["excluded_counts", "source_evaluation_fingerprints", "exclusions_by_status", "exclusions_by_tier"],
+)
+@pytest.mark.parametrize("value", [[], False, 0])
+def test_outcome_statistics_reject_malformed_mappings(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        OutcomeStatistics(**{field: value})
+
+
+@pytest.mark.parametrize("field", ["source_status", "provenance"])
+@pytest.mark.parametrize("value", [[], False, 0])
+def test_evidence_bundle_rejects_malformed_mappings(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        EvidenceBundle(**{field: value})
 
 
 def test_evaluation_status_includes_ineligible() -> None:

@@ -97,6 +97,14 @@ def _freeze(value: Any) -> Any:
     return value
 
 
+def _mapping_or_empty(value: Any, name: str) -> Mapping:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    return value
+
+
 def _reject_reserved(value: Any) -> None:
     if isinstance(value, Mapping):
         if "training_eligible" in value or "training_eligibility_reason" in value:
@@ -266,7 +274,7 @@ class ExperienceSearchResult(Serializable):
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "hits", tuple(self.hits))
-        object.__setattr__(self, "excluded_counts", _freeze(self.excluded_counts or {}))
+        object.__setattr__(self, "excluded_counts", _freeze(_mapping_or_empty(self.excluded_counts, "excluded_counts")))
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,8 +329,8 @@ class OutcomeDirectionStatistics(Serializable):
         object.__setattr__(self, "net_points", tuple(self.net_points))
         object.__setattr__(self, "mfe_points", tuple(self.mfe_points))
         object.__setattr__(self, "mae_points", tuple(self.mae_points))
-        object.__setattr__(self, "mfe_quantiles", _freeze(self.mfe_quantiles or {}))
-        object.__setattr__(self, "mae_quantiles", _freeze(self.mae_quantiles or {}))
+        object.__setattr__(self, "mfe_quantiles", _freeze(_mapping_or_empty(self.mfe_quantiles, "mfe_quantiles")))
+        object.__setattr__(self, "mae_quantiles", _freeze(_mapping_or_empty(self.mae_quantiles, "mae_quantiles")))
 
     @property
     def positive_count(self) -> int:
@@ -351,7 +359,9 @@ class OutcomeHoldStatistics(Serializable):
             self, "missed_sell_opportunity_points", tuple(self.missed_sell_opportunity_points)
         )
         object.__setattr__(
-            self, "best_counterfactual_counts", _freeze(self.best_counterfactual_counts or {})
+            self, "best_counterfactual_counts", _freeze(
+                _mapping_or_empty(self.best_counterfactual_counts, "best_counterfactual_counts")
+            )
         )
 
     @property
@@ -380,11 +390,15 @@ class OutcomeStatistics(Serializable):
     hold: OutcomeHoldStatistics = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "excluded_counts", _freeze(self.excluded_counts or {}))
+        object.__setattr__(self, "excluded_counts", _freeze(_mapping_or_empty(self.excluded_counts, "excluded_counts")))
         object.__setattr__(
             self,
             "source_evaluation_fingerprints",
-            _freeze(self.source_evaluation_fingerprints or {}),
+            _freeze(
+                _mapping_or_empty(
+                    self.source_evaluation_fingerprints, "source_evaluation_fingerprints"
+                )
+            ),
         )
         object.__setattr__(
             self, "eligible_count", self.eligible_count or self.eligible_sample_denominator
@@ -397,8 +411,16 @@ class OutcomeStatistics(Serializable):
             if self.requested_horizon_seconds is not None
             else self.horizon_seconds,
         )
-        object.__setattr__(self, "exclusions_by_status", _freeze(self.exclusions_by_status or {}))
-        object.__setattr__(self, "exclusions_by_tier", _freeze(self.exclusions_by_tier or {}))
+        object.__setattr__(
+            self,
+            "exclusions_by_status",
+            _freeze(_mapping_or_empty(self.exclusions_by_status, "exclusions_by_status")),
+        )
+        object.__setattr__(
+            self,
+            "exclusions_by_tier",
+            _freeze(_mapping_or_empty(self.exclusions_by_tier, "exclusions_by_tier")),
+        )
         object.__setattr__(self, "buy", self.buy or OutcomeDirectionStatistics())
         object.__setattr__(self, "sell", self.sell or OutcomeDirectionStatistics())
         object.__setattr__(self, "hold", self.hold or OutcomeHoldStatistics())
@@ -477,8 +499,12 @@ class EvidenceBundle(Serializable):
     def __post_init__(self) -> None:
         object.__setattr__(self, "knowledge", tuple(self.knowledge))
         object.__setattr__(self, "experience", tuple(self.experience))
-        object.__setattr__(self, "source_status", _freeze(self.source_status or {}))
-        object.__setattr__(self, "provenance", _freeze(self.provenance or {}))
+        object.__setattr__(
+            self, "source_status", _freeze(_mapping_or_empty(self.source_status, "source_status"))
+        )
+        object.__setattr__(
+            self, "provenance", _freeze(_mapping_or_empty(self.provenance, "provenance"))
+        )
 
 
 @dataclass(frozen=True, slots=True)
