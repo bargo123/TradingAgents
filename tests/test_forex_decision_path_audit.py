@@ -247,6 +247,16 @@ def test_noncanonical_evaluation_action_is_not_promoted_by_casefolding(tmp_path:
     )
 
 
+def test_noncanonical_persisted_final_action_is_not_promoted_by_casefolding(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    _decision(path, "lower-final-action", final_action="hold")
+
+    report = audit_decision_path(path)
+
+    assert report.all_population.transition_matrix["HOLD->FINAL_ACTION_UNAVAILABLE"]["count"] == 1
+    assert report.all_population.transition_matrix["HOLD->HOLD"]["count"] == 0
+
+
 def test_research_to_trader_suppression_and_outcome_join(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     _decision(path, "research-buy-trader-hold", trader_action="HOLD", research_recommendation="BUY")

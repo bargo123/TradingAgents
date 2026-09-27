@@ -105,8 +105,8 @@ def extract_trader_action(trader_summary: Any) -> str:
 
 
 def _action_from_persisted(value: Any) -> str:
-    if isinstance(value, str) and value.upper() in TRADING_ACTIONS:
-        return value.upper()
+    if isinstance(value, str) and value in TRADING_ACTIONS:
+        return value
     return FINAL_ACTION_UNAVAILABLE
 
 
