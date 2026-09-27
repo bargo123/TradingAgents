@@ -81,6 +81,7 @@ def test_malformed_individual_timeframe_section_has_typed_diagnostic(decision_ro
 @pytest.mark.parametrize(
     "quote",
     [
+        {"bid": True, "ask": 1.00001, "spread_points": 1},
         {"bid": 0.0, "ask": 1.1, "spread_points": 10},
         {"bid": 1.2, "ask": 1.1, "spread_points": 10},
         {"bid": 1.1, "ask": 1.1001, "spread_points": -1},

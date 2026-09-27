@@ -77,6 +77,8 @@ def _timestamp(value: Any) -> datetime:
 
 
 def _finite(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
     try:
         number = float(value)
         return number if math.isfinite(number) else None
