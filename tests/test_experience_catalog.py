@@ -202,3 +202,17 @@ def test_publish_generation_is_atomic_and_readable(catalog: ExperienceCatalog) -
 def test_publish_generation_rejects_malformed_generation_id(catalog, value) -> None:
     with pytest.raises((TypeError, ValueError), match="generation_id"):
         catalog.publish_generation(value, population_fingerprint="pop-1")
+
+
+@pytest.mark.parametrize("field", ["source_database_id", "canonical_path", "source_fingerprint", "source_schema_fingerprint"])
+@pytest.mark.parametrize("value", [False, 0, [], {}, ""])
+def test_register_source_rejects_malformed_identity(field, value, catalog) -> None:
+    kwargs = {
+        "source_database_id": "db-1",
+        "canonical_path": "C:/source.db",
+        "source_fingerprint": "source-fp",
+        "source_schema_fingerprint": "schema-fp",
+    }
+    kwargs[field] = value
+    with pytest.raises((TypeError, ValueError), match=field):
+        catalog.register_source(**kwargs)

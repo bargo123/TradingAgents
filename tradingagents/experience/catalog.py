@@ -523,6 +523,12 @@ class ExperienceCatalog:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Record an immutable source observation for importer audit."""
+        source_database_id = _required_text(source_database_id, "source_database_id")
+        canonical_path = _required_text(canonical_path, "canonical_path")
+        source_fingerprint = _required_text(source_fingerprint, "source_fingerprint")
+        source_schema_fingerprint = _required_text(
+            source_schema_fingerprint, "source_schema_fingerprint"
+        )
         with self._connect() as db:
             db.execute(
                 "INSERT OR REPLACE INTO experience_sources VALUES (?,?,?,?,?,?)",
