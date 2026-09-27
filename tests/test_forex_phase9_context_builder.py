@@ -162,6 +162,22 @@ def test_builder_rejects_non_mapping_provenance():
         build_context(bundle(knowledge=[malformed]))
 
 
+@pytest.mark.parametrize("value", [False, []])
+def test_builder_rejects_falsy_non_numeric_scores(value):
+    malformed = item("KNOWLEDGE", "k", "text")
+    malformed.score = value
+    malformed.similarity_score = value
+    with pytest.raises(ValueError, match="score"):
+        build_context(bundle(knowledge=[malformed]))
+
+
+def test_builder_rejects_non_mapping_metadata_even_when_empty():
+    malformed = item("KNOWLEDGE", "k", "text")
+    malformed.metadata = []
+    with pytest.raises(ValueError, match="metadata"):
+        build_context(bundle(knowledge=[malformed]))
+
+
 def test_builder_is_publicly_exported():
     import tradingagents.forex.evidence_context as module
     assert "Phase9EvidenceContextBuilder" in module.__all__

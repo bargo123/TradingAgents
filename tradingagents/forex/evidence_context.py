@@ -693,7 +693,9 @@ class Phase9EvidenceContextBuilder:
             raise ValueError(f"{kind.value} authoritative identifier must be a non-empty string")
         authoritative_id = authoritative_value
         score = _field(value, "score", _field(value, "similarity_score", 0.0))
-        metadata = _field(value, "metadata", _field(value, "extra", {})) or {}
+        metadata = _field(value, "metadata", _field(value, "extra", {}))
+        if metadata is None:
+            metadata = {}
         text = _field(value, "text", "")
         content_type = _field(value, "content_type", "")
         if not isinstance(text, str) or not text.strip():
@@ -706,7 +708,7 @@ class Phase9EvidenceContextBuilder:
             authoritative_id=authoritative_id,
             text=text,
             content_type=content_type,
-            score=float(score or 0.0),
+            score=score,
             provenance=cls._provenance(value, kind, authoritative_id),
             metadata=metadata,
         )
