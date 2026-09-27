@@ -33,6 +33,7 @@ from tradingagents.forex.evidence_replay import (
     SavedSnapshotReplay,
     SnapshotReplayError,
     _fingerprint,
+    _generation,
     _source_has_transient,
     _source_row,
 )
@@ -130,6 +131,33 @@ def _source_bytes() -> bytes:
 @pytest.mark.parametrize("value", [[], False, 0, ""])
 def test_replay_config_rejects_malformed_mapping_fields(tmp_path: Path, field: str, value):
     with pytest.raises((TypeError, ValueError), match=field):
+        replace(_config(tmp_path), **{field: value})
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_generation_metadata_does_not_fallback_over_explicit_malformed_value(value):
+    with pytest.raises(SnapshotReplayError, match="phase7"):
+        _generation(
+            {
+                "phase7": value,
+                "phase7_generation_id": "p7",
+                "phase8": "p8",
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "pinned_phase7_generation_id",
+        "pinned_phase8_generation_id",
+        "phase7_generation_id",
+        "phase8_generation_id",
+    ],
+)
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_replay_config_rejects_malformed_generation_id(field, value, tmp_path: Path):
+    with pytest.raises(ValueError, match=field):
         replace(_config(tmp_path), **{field: value})
 
 

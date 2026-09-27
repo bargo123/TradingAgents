@@ -278,6 +278,17 @@ class EvidenceReplayConfig:
         if not isinstance(self.source_decision_id, str) or not self.source_decision_id.strip():
             raise ValueError("source_decision_id must be non-empty")
         object.__setattr__(self, "analysts", tuple(self.analysts))
+        for field in (
+            "pinned_phase7_generation_id",
+            "pinned_phase8_generation_id",
+            "phase7_generation_id",
+            "phase8_generation_id",
+        ):
+            object.__setattr__(
+                self,
+                field,
+                _generation_identifier(getattr(self, field), field),
+            )
         for field in ("models", "model_settings"):
             value = getattr(self, field)
             if value is None:
@@ -290,11 +301,19 @@ class EvidenceReplayConfig:
 
     @property
     def phase7_generation(self) -> str | None:
-        return self.pinned_phase7_generation_id or self.phase7_generation_id
+        return (
+            self.pinned_phase7_generation_id
+            if self.pinned_phase7_generation_id is not None
+            else self.phase7_generation_id
+        )
 
     @property
     def phase8_generation(self) -> str | None:
-        return self.pinned_phase8_generation_id or self.phase8_generation_id
+        return (
+            self.pinned_phase8_generation_id
+            if self.pinned_phase8_generation_id is not None
+            else self.phase8_generation_id
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -516,14 +535,35 @@ def _source_has_transient(path: str | Path) -> bool:
         connection.close()
 
 
+def _generation_identifier(value: Any, name: str) -> str | None:
+    """Validate one generation identifier without coercing malformed values."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SnapshotReplayError(f"{name} must be a non-empty string")
+    return value
+
+
 def _generation(value: Any) -> tuple[str | None, str | None]:
     if isinstance(value, Mapping):
+        def select(names: tuple[str, ...], label: str) -> str | None:
+            for name in names:
+                if name not in value:
+                    continue
+                candidate = _generation_identifier(value[name], f"{label}.{name}")
+                if candidate is not None:
+                    return candidate
+            return None
+
         return (
-            value.get("phase7") or value.get("phase7_generation_id") or value.get("knowledge_generation_id"),
-            value.get("phase8") or value.get("phase8_generation_id") or value.get("experience_generation_id"),
+            select(("phase7", "phase7_generation_id", "knowledge_generation_id"), "phase7"),
+            select(("phase8", "phase8_generation_id", "experience_generation_id"), "phase8"),
         )
     if isinstance(value, (tuple, list)) and len(value) >= 2:
-        return (None if value[0] is None else str(value[0]), None if value[1] is None else str(value[1]))
+        return (
+            _generation_identifier(value[0], "phase7"),
+            _generation_identifier(value[1], "phase8"),
+        )
     return (None, None)
 
 
