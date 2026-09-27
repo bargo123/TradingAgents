@@ -60,7 +60,8 @@ class OutcomeStatsCalculator:
 
     def _record_snapshots(self, record: Any) -> tuple[dict[str, Any], ...]:
         if self._snapshots is not None:
-            return tuple(self._snapshots(str(_get(record, "experience_id"))))
+            values = self._snapshots(str(_get(record, "experience_id")))
+            return tuple(value for value in values if isinstance(value, Mapping))
         snapshots = _get(record, "outcome_snapshots", None)
         if snapshots is None:
             snapshots = _get(record, "evaluation_snapshots", None)
@@ -87,7 +88,7 @@ class OutcomeStatsCalculator:
                         dict(value, evaluation_basis=basis, horizon_seconds=parsed_horizon)
                     )
                 snapshots = tuple(normalized)
-        return tuple(snapshots or ())
+        return tuple(value for value in (snapshots or ()) if isinstance(value, Mapping))
 
     @staticmethod
     def _availability(snapshot: Mapping[str, Any]) -> datetime | None:

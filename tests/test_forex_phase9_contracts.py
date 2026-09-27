@@ -1,4 +1,5 @@
 import json
+import math
 from collections import deque
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
@@ -156,6 +157,12 @@ def test_collection_entries_are_deeply_immutable():
         context.experience_items[0][0]["x"] = 9
     with pytest.raises(TypeError):
         context.statistics_items[0]["values"][0] = 9
+
+
+@pytest.mark.parametrize("score", [math.nan, math.inf, -math.inf])
+def test_canonical_evidence_item_rejects_non_finite_scores(score):
+    with pytest.raises(ValueError, match="score must be finite"):
+        CanonicalEvidenceItem("k1", "KNOWLEDGE", "auth", "text", "rule", score, {})
 
 
 def test_contracts_are_json_serializable():

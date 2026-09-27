@@ -129,7 +129,10 @@ def _utc(value: Any) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, str):
-        value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError, OverflowError):
+            return None
     if (
         not isinstance(value, datetime)
         or value.tzinfo is None
@@ -162,15 +165,22 @@ def _cohort(row: Any) -> NormalizationCohortV1 | None:
         return None
 
 
+def _trust_tier(row: Any) -> TrustTier | None:
+    value = _value(row, "trust_tier", _value(row, "trust", TrustTier.TIER_C_DIAGNOSTIC_ONLY))
+    try:
+        return TrustTier(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _eligible(
     row: Any, cohort: NormalizationCohortV1, tiers: tuple[TrustTier, ...], as_of: datetime | None
 ) -> bool:
+    trust_tier = _trust_tier(row)
     if (
         _cohort(row) != cohort
-        or TrustTier(
-            _value(row, "trust_tier", _value(row, "trust", TrustTier.TIER_C_DIAGNOSTIC_ONLY))
-        )
-        not in tiers
+        or trust_tier is None
+        or trust_tier not in tiers
     ):
         return False
     provenance = _value(row, "provenance", {}) or {}
@@ -209,14 +219,22 @@ def _vectors(rows: Sequence[Any], names: tuple[str, ...]) -> tuple[list[list[flo
         else:
             row_values = list(values)
             row_mask = list(mask) if mask is not None else [True] * len(row_values)
-            if len(row_values) != len(names):
+            if len(row_values) != len(names) or len(row_mask) != len(names):
                 continue
-        vectors.append(
-            [
-                float(v) if m and math.isfinite(float(v)) else math.nan
-                for v, m in zip(row_values, row_mask, strict=False)
-            ]
-        )
+        if any(not isinstance(present, bool) for present in row_mask):
+            continue
+        normalized: list[float] = []
+        malformed = False
+        for value, present in zip(row_values, row_mask, strict=False):
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                malformed = True
+                break
+            normalized.append(number if present and math.isfinite(number) else math.nan)
+        if malformed:
+            continue
+        vectors.append(normalized)
         selected.append(row)
     return vectors, selected
 

@@ -296,6 +296,15 @@ class CanonicalEvidenceItem:
         object.__setattr__(self, "source_kind", EvidenceSourceKind(self.source_kind))
         if not self.authoritative_id:
             raise ValueError("authoritative_id must be non-empty")
+        if isinstance(self.score, bool):
+            raise ValueError("score must be finite")
+        try:
+            score = float(self.score)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("score must be finite") from None
+        if not math.isfinite(score):
+            raise ValueError("score must be finite")
+        object.__setattr__(self, "score", score)
         object.__setattr__(self, "provenance", _freeze(self.provenance or {}))
         object.__setattr__(self, "metadata", _freeze(self.metadata or {}))
 

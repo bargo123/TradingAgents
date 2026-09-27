@@ -178,6 +178,20 @@ def test_malformed_mapping_snapshot_horizon_fails_closed_without_crashing():
     assert result.excluded_counts["EVALUATION_NOT_AVAILABLE"] == 1
 
 
+def test_malformed_snapshot_entries_fail_closed_without_crashing():
+    record = _record(
+        "exp-with-malformed-snapshot",
+        snapshots=(None, "not-a-mapping", 42),
+    )
+
+    result = OutcomeStatsCalculator((record,)).calculate(
+        OutcomeStatsRequest(("exp-with-malformed-snapshot",), "ANALYSIS_SNAPSHOT", 300)
+    )
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["EVALUATION_NOT_AVAILABLE"] == 1
+
+
 def test_malformed_record_trust_fails_closed_without_crashing():
     record = _record(
         "exp-with-malformed-trust",

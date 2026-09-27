@@ -47,6 +47,7 @@ def test_zero_iqr_uses_mad_then_versioned_fallback():
     profile = build_profile(
         rows, cohort=COHORT, trust_tiers=(TrustTier.TIER_A_HIGH_TRUST,), as_of=None
     )
+    assert profile.population_count == len(rows)
     assert profile.scales["spread_points"] == profile.mad_scales["spread_points"]
     assert profile.fallback_policy_version == "mad-then-feature-fallback.v1"
 
@@ -114,6 +115,53 @@ def test_tier_c_and_invalid_historical_rows_are_not_numeric():
     with pytest.raises(ValueError):
         build_profile([diagnostic], COHORT, (TrustTier.TIER_C_DIAGNOSTIC_ONLY,), None)
     profile = build_profile([diagnostic], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+    assert profile.population_count == 0
+
+
+def test_malformed_row_trust_is_excluded_without_crashing():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when, tier="NOT_A_TRUST_TIER")
+
+    profile = build_profile([malformed], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+
+    assert profile.population_count == 0
+
+
+def test_malformed_historical_timestamp_is_excluded_without_crashing():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when) | {"analysis_snapshot_timestamp": "not-a-timestamp"}
+
+    profile = build_profile(
+        [malformed], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), datetime(2026, 1, 2, tzinfo=UTC)
+    )
+
+    assert profile.population_count == 0
+
+
+def test_malformed_feature_value_is_excluded_without_crashing():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when) | {"values": ("not-a-number",) + (0.0,) * (len(FEATURE_NAMES_V1) - 1)}
+
+    profile = build_profile([malformed], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+
+    assert profile.population_count == 0
+
+
+def test_malformed_feature_mask_is_excluded_without_crashing():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when) | {"mask": (True,)}
+
+    profile = build_profile([malformed], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+
+    assert profile.population_count == 0
+
+
+def test_non_boolean_feature_mask_is_excluded_without_crashing():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when) | {"mask": ("yes",) * len(FEATURE_NAMES_V1)}
+
+    profile = build_profile([malformed], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+
     assert profile.population_count == 0
 
 

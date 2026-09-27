@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -100,6 +101,43 @@ class ExperienceQueryService:
             return cls._cohort(row)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _query_vector(
+        values: Any, mask: Any, expected_len: int
+    ) -> tuple[tuple[float, ...], tuple[bool, ...]] | None:
+        """Normalize a query vector before handing it to NumPy similarity."""
+
+        if isinstance(values, (str, bytes, bytearray, Mapping)) or isinstance(
+            mask, (str, bytes, bytearray, Mapping)
+        ):
+            return None
+        try:
+            raw_values = tuple(values)
+            raw_mask = tuple(mask)
+        except (TypeError, ValueError):
+            return None
+        if len(raw_values) != expected_len or len(raw_mask) != expected_len:
+            return None
+        normalized_values: list[float] = []
+        normalized_mask: list[bool] = []
+        for value, present in zip(raw_values, raw_mask, strict=True):
+            if not isinstance(present, bool):
+                return None
+            if value is None:
+                if present:
+                    return None
+                normalized_values.append(float("nan"))
+            else:
+                try:
+                    number = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    return None
+                if present and not math.isfinite(number):
+                    return None
+                normalized_values.append(number if math.isfinite(number) else float("nan"))
+            normalized_mask.append(present)
+        return tuple(normalized_values), tuple(normalized_mask)
 
     def search(self, query: ExperienceQuery) -> ExperienceSearchResult:
         if TrustTier.TIER_C_DIAGNOSTIC_ONLY in query.trust_tiers:
@@ -239,6 +277,15 @@ class ExperienceQueryService:
         if values is None:
             values = [state.get(n) for n in profile.feature_order]
             mask = [v is not None for v in values]
+        normalized_vector = self._query_vector(values, mask, len(profile.feature_order))
+        if normalized_vector is None:
+            exclusions["query_vector_invalid"] = 1
+            return ExperienceSearchResult(
+                candidate_count=len(rows),
+                excluded_counts=exclusions,
+                active_generation_id=self.generation_id,
+            )
+        values, mask = normalized_vector
         cohort = self._cohort(eligible[0])
         hits = self.index.search(
             values, mask, [str(_get(r, "experience_id")) for r in eligible], query.top_k, profile

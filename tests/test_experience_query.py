@@ -120,6 +120,19 @@ def test_query_profile_inference_skips_malformed_first_cohort():
     assert result.excluded_counts["cohort"] == 1
 
 
+def test_query_excludes_malformed_numeric_vector_without_crashing():
+    service = ExperienceQueryService([row("good")], profile=profile())
+
+    result = service.search(
+        ExperienceQuery(
+            query_state(values="not-a-vector", mask="not-a-mask")
+        )
+    )
+
+    assert result.hits == ()
+    assert result.excluded_counts["query_vector_invalid"] == 1
+
+
 def test_historical_query_allows_tombstones_but_requires_completion_before_cutoff():
     service = ExperienceQueryService(
         [row("gone", tombstoned=True), row("future", completed=datetime(2026, 1, 3, tzinfo=UTC))],
