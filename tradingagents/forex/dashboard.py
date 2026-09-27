@@ -100,6 +100,16 @@ def _is_true(value: Any) -> bool:
     return value is True or value == 1 or value == "1" or value == "true"
 
 
+def _db_bool(value: Any) -> bool | None:
+    """Decode persisted SQLite flags without treating arbitrary text as false."""
+
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _percentile(values: Iterable[float], percentile: float) -> float | None:
     ordered = sorted(float(value) for value in values)
     if not ordered:
@@ -175,8 +185,16 @@ def _decision_run_map(runs: Iterable[Mapping[str, Any]]) -> dict[str, Mapping[st
     return {decision_id: _preferred_run(rows) for decision_id, rows in grouped.items()}
 
 
-def _runtime_stale(decision: Mapping[str, Any], run: Mapping[str, Any] | None) -> int:
-    return _int(_row_value(decision, "stale_by_completion", default=_row_value(run or {}, "stale_by_completion")))
+def _runtime_stale(decision: Mapping[str, Any], run: Mapping[str, Any] | None) -> int | None:
+    run = run or {}
+    if "stale_by_completion" in decision and decision["stale_by_completion"] is not None:
+        raw = decision["stale_by_completion"]
+    else:
+        raw = run.get("stale_by_completion")
+    if raw is None:
+        return 0
+    parsed = _db_bool(raw)
+    return int(parsed) if parsed is not None else None
 
 
 def _decision_status(

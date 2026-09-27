@@ -202,6 +202,24 @@ def test_invalid_decision_is_excluded_from_valid_collection(tmp_path: Path, kwar
     assert snapshot.valid_collection_decisions == 0
 
 
+def test_malformed_stale_flag_is_excluded_from_valid_collection(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    ShadowDecisionStore(path).record(_decision("malformed-stale"))
+    _insert_run(path, "malformed-stale")
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE forex_watch_runs SET stale_by_completion=? WHERE run_id=?",
+            ("false", "run-malformed-stale"),
+        )
+
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+
+    assert snapshot.valid_collection_decisions == 0
+
+
 def test_action_distribution_and_latency_percentiles_are_deterministic(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     for index, action in enumerate(("BUY", "SELL", "HOLD")):
