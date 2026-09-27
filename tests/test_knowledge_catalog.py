@@ -134,6 +134,22 @@ def test_remove_last_alias_deactivates_default_view_but_keeps_rows(tmp_path):
     assert catalog.get_alias("res_only").relation is AliasRelation.REMOVED
 
 
+def test_commit_alias_rejects_source_hash_mismatch_without_changing_alias(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("aa" * 32)
+    catalog.register_document(make_parsed_document(document_id=document_id, source_hash="aa" * 32))
+    catalog.commit_alias("res_only", document_id, "aa" * 32, AliasRelation.CURRENT)
+
+    with pytest.raises(ValueError, match="source_hash"):
+        catalog.commit_alias("res_only", document_id, "bb" * 32, AliasRelation.CURRENT)
+
+    alias = catalog.get_alias("res_only")
+    resource = next(item for item in catalog.list_resources() if item.resource_id == "res_only")
+    assert alias is not None and alias.source_hash == "aa" * 32
+    assert resource is not None and resource.source_hash == "aa" * 32
+
+
 def test_changed_duplicate_and_failed_change_preserve_other_alias(tmp_path):
     catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
     catalog.initialize()

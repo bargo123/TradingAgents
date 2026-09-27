@@ -531,10 +531,13 @@ class KnowledgeCatalog:
             old = connection.execute(
                 "SELECT document_id FROM knowledge_aliases WHERE resource_id = ?", (resource_id,)
             ).fetchone()
-            if connection.execute(
-                "SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)
-            ).fetchone() is None:
+            document = connection.execute(
+                "SELECT source_hash FROM knowledge_documents WHERE document_id = ?", (document_id,)
+            ).fetchone()
+            if document is None:
                 raise ValueError(f"unknown document_id: {document_id}")
+            if source_hash != document["source_hash"]:
+                raise ValueError("alias source_hash does not match document source_hash")
             timestamp = _now()
             connection.execute(
                 """INSERT INTO knowledge_aliases
