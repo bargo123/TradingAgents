@@ -658,13 +658,18 @@ class ExperienceCatalog:
     def store_feature_projection(
         self, experience_id: str, projection: Any, schema_version: str = "experience-features.v1"
     ) -> None:
+        experience_id = _required_text(experience_id, "experience_id")
+        schema_version = _required_text(schema_version, "schema_version")
+        if not isinstance(projection, Mapping):
+            raise TypeError("projection must be a mapping")
+        projection_json = _json(projection)
         with self._connect() as db:
             db.execute(
                 "DELETE FROM experience_feature_projections WHERE experience_id=?", (experience_id,)
             )
             db.execute(
                 "INSERT INTO experience_feature_projections VALUES (?,?,?)",
-                (experience_id, schema_version, _json(projection)),
+                (experience_id, schema_version, projection_json),
             )
 
 

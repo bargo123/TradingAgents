@@ -206,6 +206,19 @@ def test_record_import_event_rejects_malformed_event_type(catalog, value) -> Non
         catalog.record_import_event(value)
 
 
+@pytest.mark.parametrize("value", [False, 0, [], {}, ""])
+def test_store_feature_projection_rejects_malformed_experience_id(catalog, value) -> None:
+    with pytest.raises((TypeError, ValueError), match="experience_id"):
+        catalog.store_feature_projection(value, {})
+
+
+@pytest.mark.parametrize("projection", [False, 0, [], ""])
+def test_store_feature_projection_requires_mapping(catalog, projection) -> None:
+    record = catalog.upsert_source_alias("db-a", decision_id="projection", fingerprint="fp1")
+    with pytest.raises((TypeError, ValueError), match="projection"):
+        catalog.store_feature_projection(record.experience_id, projection)
+
+
 def test_orphaned_import_run_is_marked_interrupted_once(catalog: ExperienceCatalog) -> None:
     catalog.record_import_event("RUNNING", detail={"run_id": "stale-run"})
     catalog.record_import_event("RUNNING", detail={"run_id": "finished-run"})
