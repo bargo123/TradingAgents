@@ -298,6 +298,30 @@ def test_historical_selection_uses_phase8_observation_time() -> None:
     assert after_prior_import.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
 
 
+def test_malformed_observed_at_does_not_fallback_to_source_timestamp() -> None:
+    record = _record(
+        "malformed-observed-at",
+        snapshots=(
+            _complete(
+                "bad-observed-at",
+                observed_at="not-a-timestamp",
+                evaluated_at="2026-01-01T13:00:00Z",
+            ),
+        ),
+    )
+    result = OutcomeStatsCalculator((record,)).calculate(
+        OutcomeStatsRequest(
+            ("malformed-observed-at",),
+            "ANALYSIS_SNAPSHOT",
+            300,
+            as_of=utc("2026-01-02T00:00:00Z"),
+        )
+    )
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["EVALUATION_NOT_YET_AVAILABLE"] == 1
+
+
 def test_directional_counterfactuals_include_hold_and_expose_distribution_summary():
     result = calculator().calculate(OutcomeStatsRequest(("hold-exp",), "ANALYSIS_SNAPSHOT", 300))
     assert result.buy.net_points == (4.0,)
