@@ -250,6 +250,21 @@ def test_malformed_persisted_evaluation_due_flag_fails_closed(tmp_path):
         store.summary(NOW)
 
 
+def test_malformed_persisted_lifecycle_status_fails_closed(tmp_path):
+    path = tmp_path / "lifecycle-status.db"
+    store = WatcherStore(path)
+    store.initialize()
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE forex_watcher_state SET lifecycle_status=? WHERE singleton_id=1",
+            ("BROKEN",),
+        )
+
+    with pytest.raises(ValueError, match="lifecycle_status"):
+        store.summary(NOW)
+
+
 @pytest.mark.parametrize("column", ["stale_by_completion", "working_tree_dirty"])
 def test_malformed_persisted_run_boolean_fails_closed(tmp_path, column):
     path = tmp_path / "run-flags.db"

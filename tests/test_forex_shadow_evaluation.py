@@ -16,6 +16,7 @@ from tradingagents.forex.evaluation import (
     ShadowDecisionEvaluationResult,
     ShadowEvaluationBatchResult,
     ShadowEvaluationStore,
+    ShadowOutcomeEvaluation,
     ShadowOutcomeEvaluator,
     build_horizon_evaluation,
     decision_source_eligibility,
@@ -241,6 +242,35 @@ def test_public_status_literals_remain_closed() -> None:
         "DATA_UNAVAILABLE",
         "INELIGIBLE",
     )
+
+
+def test_evaluation_store_rejects_malformed_persisted_action(tmp_path: Path) -> None:
+    store = ShadowEvaluationStore(tmp_path / "malformed-action.db")
+    record = ShadowOutcomeEvaluation(
+        decision_id="decision-eval-001",
+        resolved_symbol="EURUSDm",
+        evaluation_basis="ANALYSIS_SNAPSHOT",
+        horizon_seconds=300,
+        evaluation_version="phase5.v1",
+        market_data_source="MT5",
+        source_context_eligible=True,
+        training_eligible=None,
+        training_eligibility_reason="DEFERRED_TO_CORPUS_BUILDER",
+        target_timestamp=ANCHOR + timedelta(seconds=300),
+        evaluation_status="PENDING",
+        created_at=ANCHOR,
+    )
+    store.upsert([record])
+
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            "UPDATE shadow_decision_evaluations SET selected_action=? WHERE decision_id=?",
+            ("WAIT", record.decision_id),
+        )
+
+    with pytest.raises(ValueError, match="selected_action"):
+        store.get(record.decision_id, "ANALYSIS_SNAPSHOT", 300)
 
 
 def _record(

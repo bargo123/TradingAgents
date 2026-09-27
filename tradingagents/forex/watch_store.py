@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -77,7 +77,32 @@ def _db_bool(value: Any, name: str) -> bool:
     raise ValueError(f"{name} must be boolean 0/1")
 
 
-def _db_choice(value: Any, name: str, choices: set[str], *, optional: bool = False) -> str | None:
+_LIFECYCLE_STATUSES = frozenset(
+    {
+        "STOPPED",
+        "STARTING",
+        "IDLE",
+        "CHECK_MARKET",
+        "START_ANALYSIS",
+        "ANALYZING",
+        "DECISION_SAVED",
+        "DEGRADED",
+        "STOPPING",
+    }
+)
+_OPPORTUNITY_STATUSES = frozenset(
+    {"ELIGIBLE", "RUNNING", "DECISION_SAVED", "SKIPPED", "FAILED", "ABANDONED"}
+)
+_RUN_STATUSES = frozenset({"RUNNING", "SUCCEEDED", "SUCCEEDED_SLOW", "FAILED", "ABANDONED"})
+
+
+def _db_choice(
+    value: Any,
+    name: str,
+    choices: Collection[str],
+    *,
+    optional: bool = False,
+) -> str | None:
     """Decode constrained SQLite status text without accepting unknown values."""
 
     if value is None and optional:
@@ -1212,18 +1237,18 @@ class WatcherStore:
             conn = self._connect()
         with closing(conn) as conn, conn:
             state = conn.execute("SELECT * FROM forex_watcher_state WHERE singleton_id=1").fetchone()
-            counts = {
-                row["status"]: row["count"]
-                for row in conn.execute(
-                    "SELECT status, COUNT(*) AS count FROM forex_watch_opportunities GROUP BY status"
-                ).fetchall()
-            }
-            run_counts = {
-                row["run_status"]: row["count"]
-                for row in conn.execute(
-                    "SELECT run_status, COUNT(*) AS count FROM forex_watch_runs GROUP BY run_status"
-                ).fetchall()
-            }
+            counts = {}
+            for row in conn.execute(
+                "SELECT status, COUNT(*) AS count FROM forex_watch_opportunities GROUP BY status"
+            ).fetchall():
+                status = _db_choice(row["status"], "status", _OPPORTUNITY_STATUSES)
+                counts[status] = row["count"]
+            run_counts = {}
+            for row in conn.execute(
+                "SELECT run_status, COUNT(*) AS count FROM forex_watch_runs GROUP BY run_status"
+            ).fetchall():
+                run_status = _db_choice(row["run_status"], "run_status", _RUN_STATUSES)
+                run_counts[run_status] = row["count"]
             skipped_counts = {
                 str(row["skip_reason"]): int(row["count"])
                 for row in conn.execute(
@@ -1337,6 +1362,12 @@ class WatcherStore:
             if state is not None
             else {}
         )
+        if result:
+            result["lifecycle_status"] = _db_choice(
+                result.get("lifecycle_status"),
+                "lifecycle_status",
+                _LIFECYCLE_STATUSES,
+            )
         if result.get("last_evaluation_status") == "ERROR" and not result.get(
             "last_error_code"
         ):
@@ -1407,7 +1438,7 @@ class WatcherStore:
             status=_db_choice(
                 row["status"],
                 "status",
-                {"ELIGIBLE", "RUNNING", "DECISION_SAVED", "SKIPPED", "FAILED", "ABANDONED"},
+                _OPPORTUNITY_STATUSES,
             ),
             skip_reason=row["skip_reason"],
             skip_detail=row["skip_detail"],
@@ -1431,7 +1462,7 @@ class WatcherStore:
             run_status=_db_choice(
                 row["run_status"],
                 "run_status",
-                {"RUNNING", "SUCCEEDED", "SUCCEEDED_SLOW", "FAILED", "ABANDONED"},
+                _RUN_STATUSES,
             ), requested_symbol=row["requested_symbol"],
             resolved_symbol=row["resolved_symbol"], started_at=values["started_at"],
             heartbeat_at=values["heartbeat_at"], runtime_alert_at=values["runtime_alert_at"],

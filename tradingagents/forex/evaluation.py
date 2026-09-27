@@ -169,6 +169,12 @@ class ShadowOutcomeEvaluation:
     previous_unavailable_reason: str | None = None
 
     def __post_init__(self) -> None:
+        for name in ("decision_id", "resolved_symbol", "evaluation_version"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if self.market_data_source != "MT5":
+            raise ValueError("market_data_source must be MT5")
         if self.evaluation_basis not in _BASIS_VALUES:
             raise ValueError(f"unsupported evaluation basis: {self.evaluation_basis!r}")
         if self.evaluation_status not in _STATUS_VALUES:
@@ -185,6 +191,22 @@ class ShadowOutcomeEvaluation:
             raise ValueError("Phase 5 must defer training eligibility")
         if self.training_eligibility_reason not in _TRAINING_REASONS:
             raise ValueError("unsupported training eligibility reason")
+        if self.selected_action not in (None, "BUY", "SELL", "HOLD"):
+            raise ValueError("selected_action must be BUY, SELL, HOLD, or None")
+        if self.best_counterfactual_action not in (None, "BUY", "SELL", "TIE"):
+            raise ValueError("best_counterfactual_action must be BUY, SELL, TIE, or None")
+        if self.observation_lag_ms is not None and (
+            isinstance(self.observation_lag_ms, bool)
+            or not isinstance(self.observation_lag_ms, int)
+            or self.observation_lag_ms < 0
+        ):
+            raise ValueError("observation_lag_ms must be a non-negative integer")
+        if self.digits is not None and (
+            isinstance(self.digits, bool)
+            or not isinstance(self.digits, int)
+            or self.digits < 0
+        ):
+            raise ValueError("digits must be a non-negative integer")
         for name in (
             "target_timestamp",
             "observation_timestamp",
@@ -225,6 +247,8 @@ class ShadowOutcomeEvaluation:
         ):
             value = getattr(self, name)
             if value is not None:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"{name} must be numeric")
                 _finite(value, name)
         if (
             self.evaluation_status == "COMPLETE"

@@ -503,8 +503,11 @@ class ShadowTradeDecision:
             _parse_utc_datetime(self.outcome_resolved_at)
         if self.snapshot_json is None:
             object.__setattr__(self, "snapshot_json", {})
-        else:
-            _json_safe(self.snapshot_json)
+        if not isinstance(self.snapshot_json, Mapping):
+            raise ValueError("snapshot_json must be a mapping")
+        if not isinstance(self.raw_portfolio_manager_result, Mapping):
+            raise ValueError("raw_portfolio_manager_result must be a mapping")
+        _json_safe(self.snapshot_json)
         _json_safe(self.raw_portfolio_manager_result)
         required_quote_fields = {
             "reference_bid",

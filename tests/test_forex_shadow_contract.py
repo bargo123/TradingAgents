@@ -506,6 +506,23 @@ def test_store_rejects_malformed_persisted_executed_flag(
         store.get(decision.decision_id)
 
 
+@pytest.mark.parametrize("column", ["raw_portfolio_manager_result", "snapshot_json"])
+def test_store_rejects_non_mapping_json_payloads(tmp_path: Path, column: str) -> None:
+    store = ShadowDecisionStore(tmp_path / f"malformed-{column}.db")
+    decision = make_decision()
+    store.record(decision)
+
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            f"UPDATE shadow_decisions SET {column}=? WHERE decision_id=?",
+            (json.dumps(["not", "a", "mapping"]), decision.decision_id),
+        )
+
+    with pytest.raises(ValueError, match=f"{column} must be a mapping"):
+        store.get(decision.decision_id)
+
+
 def test_store_round_trip_preserves_profile_and_validity(tmp_path: Path) -> None:
     store = ShadowDecisionStore(tmp_path / "shadow.db")
     timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
