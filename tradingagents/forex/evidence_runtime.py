@@ -108,9 +108,15 @@ class _ReadonlySQLite:
 
     def _open(self) -> sqlite3.Connection:
         uri = f"file:{self.database_path.as_posix()}?mode=ro"
-        connection = sqlite3.connect(uri, uri=True)
-        connection.row_factory = sqlite3.Row
-        return connection
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(uri, uri=True)
+            connection.row_factory = sqlite3.Row
+            return connection
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
 
     @contextmanager
     def _read(self):

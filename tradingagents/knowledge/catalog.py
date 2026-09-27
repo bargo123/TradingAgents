@@ -85,11 +85,17 @@ class KnowledgeCatalog:
         self.path = Path(path)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=_BUSY_TIMEOUT_MS / 1000)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
-        return connection
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(self.path, timeout=_BUSY_TIMEOUT_MS / 1000)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+            return connection
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
 
     @contextmanager
     def _write(self) -> Iterator[sqlite3.Connection]:

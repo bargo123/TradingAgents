@@ -395,11 +395,14 @@ class _Readonly:
     def _open(self):
         if not self.path.is_file():
             raise SourceDatabaseUnavailableError(f"source database is unavailable: {self.path}")
+        db = None
         try:
             db = sqlite3.connect(self.sqlite_uri, uri=True)
             db.execute("PRAGMA query_only=ON")
             return db
         except sqlite3.Error as exc:
+            if db is not None:
+                db.close()
             raise SourceDatabaseUnavailableError(str(exc)) from exc
 
     @staticmethod

@@ -283,26 +283,38 @@ class WatcherStore:
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.path, timeout=self.busy_timeout_seconds)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_seconds * 1000}")
-        return conn
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(self.path, timeout=self.busy_timeout_seconds)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_seconds * 1000}")
+            return conn
+        except Exception:
+            if conn is not None:
+                conn.close()
+            raise
 
     def _read_only_connect(self) -> sqlite3.Connection | None:
         resolved = self.path.expanduser().resolve()
         if not resolved.is_file():
             return None
         uri_path = quote(resolved.as_posix(), safe="/:\\")
-        conn = sqlite3.connect(
-            f"file:{uri_path}?mode=ro",
-            uri=True,
-            timeout=0,
-            check_same_thread=False,
-        )
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA query_only = ON")
-        return conn
+        conn: sqlite3.Connection | None = None
+        try:
+            conn = sqlite3.connect(
+                f"file:{uri_path}?mode=ro",
+                uri=True,
+                timeout=0,
+                check_same_thread=False,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            return conn
+        except Exception:
+            if conn is not None:
+                conn.close()
+            raise
 
     @contextmanager
     def _transaction(self, *, immediate: bool = False):
@@ -525,11 +537,14 @@ class WatcherStore:
             return None
         uri_path = quote(resolved.as_posix(), safe="/:\\")
         uri = f"file:{uri_path}?mode=ro"
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(uri, uri=True, timeout=0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA query_only=ON")
         except sqlite3.Error:
+            if conn is not None:
+                conn.close()
             raise
         try:
             table = conn.execute(

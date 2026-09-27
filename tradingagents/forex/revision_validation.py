@@ -196,12 +196,15 @@ def _connect(path: Path) -> sqlite3.Connection:
     if not resolved.is_file():
         raise RevisionValidationError(f"database does not exist: {resolved}")
     uri = "file:" + quote(resolved.as_posix(), safe="/:\\") + "?mode=ro"
+    conn: sqlite3.Connection | None = None
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=5, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA query_only=ON")
         return conn
     except sqlite3.Error as exc:
+        if conn is not None:
+            conn.close()
         raise RevisionValidationError(f"read-only database open failed: {exc}") from exc
 
 

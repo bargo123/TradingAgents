@@ -51,9 +51,15 @@ class ExperienceCatalog:
 
         @contextmanager
         def standalone():
-            connection = sqlite3.connect(self.database_path)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys=ON")
+            connection: sqlite3.Connection | None = None
+            try:
+                connection = sqlite3.connect(self.database_path)
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys=ON")
+            except Exception:
+                if connection is not None:
+                    connection.close()
+                raise
             try:
                 yield connection
                 connection.commit()
@@ -68,9 +74,15 @@ class ExperienceCatalog:
         if self._transaction_connection is not None:
             yield self._transaction_connection
             return
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(self.database_path)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
         self._transaction_connection = connection
         try:
             yield connection

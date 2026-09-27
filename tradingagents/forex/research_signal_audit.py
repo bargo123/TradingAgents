@@ -121,6 +121,7 @@ def _readonly_connection(path: Path, busy_timeout_seconds: float) -> sqlite3.Con
     uri = "file:" + quote(resolved.as_posix(), safe="/:\\") + "?mode=ro"
     last_error: Exception | None = None
     for attempt in range(3):
+        connection: sqlite3.Connection | None = None
         try:
             connection = sqlite3.connect(
                 uri,
@@ -133,6 +134,8 @@ def _readonly_connection(path: Path, busy_timeout_seconds: float) -> sqlite3.Con
             connection.execute("PRAGMA query_only=ON")
             return connection
         except sqlite3.Error as exc:
+            if connection is not None:
+                connection.close()
             last_error = exc
             if attempt < 2:
                 time.sleep(0.05 * (attempt + 1))

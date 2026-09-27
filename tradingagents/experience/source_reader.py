@@ -196,10 +196,15 @@ class ReadonlySourceReader:
 
     def _open(self) -> sqlite3.Connection:
         if self._connection is None:
+            connection: sqlite3.Connection | None = None
             try:
-                self._connection = sqlite3.connect(self.sqlite_uri, uri=True)
-                self._connection.execute("PRAGMA query_only=ON")
+                connection = sqlite3.connect(self.sqlite_uri, uri=True)
+                connection.execute("PRAGMA query_only=ON")
+                self._connection = connection
             except sqlite3.Error as exc:
+                if connection is not None:
+                    connection.close()
+                self._connection = None
                 raise SourceDatabaseUnavailableError(str(exc)) from exc
         return self._connection
 

@@ -127,6 +127,7 @@ def _read_only_connection(path: Path, busy_timeout_seconds: float) -> sqlite3.Co
     if not resolved.is_file():
         raise DashboardReadError(f"database does not exist: {resolved}")
     uri = f"file:{resolved.as_posix()}?mode=ro"
+    connection: sqlite3.Connection | None = None
     try:
         connection = sqlite3.connect(
             uri,
@@ -139,6 +140,8 @@ def _read_only_connection(path: Path, busy_timeout_seconds: float) -> sqlite3.Co
         connection.execute("PRAGMA query_only = ON")
         return connection
     except sqlite3.Error as exc:
+        if connection is not None:
+            connection.close()
         raise DashboardReadError(f"database read unavailable: {exc}") from exc
 
 
