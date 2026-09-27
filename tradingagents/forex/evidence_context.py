@@ -107,9 +107,9 @@ def _utc(value: datetime, name: str = "as_of") -> datetime:
 
 
 def _metadata_text(value: Any, name: str, *, max_length: int = 256) -> str:
-    if not isinstance(value, str) or len(value) > max_length:
+    if not isinstance(value, str) or not value.strip() or len(value) > max_length:
         raise ValueError(f"{name} must be text")
-    return value
+    return value.strip()
 
 
 def _freeze_items(values: Any) -> tuple[Any, ...]:
@@ -169,7 +169,7 @@ class EvidenceQueryPolicy:
 
     def __post_init__(self) -> None:
         for name in ("query_policy_version", "budget_policy_version"):
-            _metadata_text(getattr(self, name), name)
+            object.__setattr__(self, name, _metadata_text(getattr(self, name), name))
         for name in (
             "knowledge_top_k",
             "experience_top_k",
@@ -612,7 +612,7 @@ class EvidenceContext:
 
     def __post_init__(self) -> None:
         for name in ("version", "statistics_status", "budget_policy_version"):
-            _metadata_text(getattr(self, name), name)
+            object.__setattr__(self, name, _metadata_text(getattr(self, name), name))
         for name in (
             "knowledge_generation_id",
             "experience_generation_id",
@@ -623,7 +623,7 @@ class EvidenceContext:
         ):
             value = getattr(self, name)
             if value is not None:
-                _metadata_text(value, name)
+                object.__setattr__(self, name, _metadata_text(value, name))
         if self.knowledge_query is not None and not isinstance(
             self.knowledge_query, CanonicalKnowledgeQuery
         ):

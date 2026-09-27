@@ -113,7 +113,7 @@ def test_query_policy_rejects_unsupported_evaluation_basis(basis):
 
 
 @pytest.mark.parametrize("field", ["query_policy_version", "budget_policy_version"])
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "", "   "])
 def test_query_policy_rejects_non_text_version_fields(field, value):
     with pytest.raises(ValueError, match=field):
         EvidenceQueryPolicy(**{field: value})

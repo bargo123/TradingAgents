@@ -192,7 +192,7 @@ def test_statistics_status_defaults_to_not_requested():
 
 
 @pytest.mark.parametrize("field", ["version", "statistics_status", "budget_policy_version"])
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "", "   "])
 def test_evidence_context_rejects_non_text_metadata(field, value):
     with pytest.raises(ValueError, match=field):
         EvidenceContext(**{field: value})
@@ -220,7 +220,7 @@ def test_evidence_context_rejects_non_text_rendered_context(value):
         "rendered_context_hash",
     ],
 )
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "", "   "])
 def test_evidence_context_rejects_non_text_optional_metadata(field, value):
     with pytest.raises(ValueError, match=field):
         EvidenceContext(**{field: value})
