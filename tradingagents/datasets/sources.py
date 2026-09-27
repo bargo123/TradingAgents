@@ -205,6 +205,35 @@ def _normalize_row(item: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+def _source_bool(value: Any, name: str) -> bool:
+    """Accept only SQLite boolean representations; never truthiness-coerce text."""
+    if value is None:
+        # Legacy Phase 5/6 rows may have a nullable column.  Missing source
+        # eligibility is unsafe to treat as eligible, so preserve the row but
+        # fail closed at the eligibility gate.
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool) and value in (0, 1):
+        return bool(value)
+    raise SourceReadError(f"{name} must be a boolean")
+
+
+def _source_horizon(value: Any) -> int:
+    """Normalize legacy SQLite TEXT horizons without accepting arbitrary values."""
+    if isinstance(value, bool):
+        raise SourceReadError("horizon_seconds must be a positive integer")
+    if isinstance(value, int):
+        parsed = value
+    elif isinstance(value, str) and value.isdecimal():
+        parsed = int(value)
+    else:
+        raise SourceReadError("horizon_seconds must be a positive integer")
+    if parsed <= 0:
+        raise SourceReadError("horizon_seconds must be a positive integer")
+    return parsed
+
+
 def _identity_row(item: dict[str, Any]) -> dict[str, Any]:
     """Return the normalized source facts used to derive a row identity.
 
@@ -519,13 +548,17 @@ class ReadonlyPhase56Source(_Readonly):
                     item.pop("horizon_seconds"),
                     item.pop("evaluation_status"),
                 )
+                source_context_eligible = _source_bool(
+                    item.pop("source_context_eligible", True),
+                    "source_context_eligible",
+                )
                 evaluations.append(
                     EvaluationObservation(
                         did,
-                        str(basis),
-                        int(horizon),
-                        str(status),
-                        bool(item.pop("source_context_eligible", True)),
+                        basis,
+                        horizon,
+                        status,
+                        source_context_eligible,
                         item,
                     )
                 )
@@ -611,6 +644,9 @@ class ReadonlyExperienceSource(_Readonly):
                 for snapshot in snapshots:
                     snapshot["evaluation"] = _decode_phase8_object(snapshot.pop("evaluation_json"))
                     snapshot["provenance"] = _decode_phase8_object(snapshot.pop("provenance_json"))
+                    snapshot["horizon_seconds"] = _source_horizon(
+                        snapshot.get("horizon_seconds")
+                    )
                 for projection in projections:
                     projection["projection"] = _decode_phase8_object(projection.pop("projection_json"))
                 # The Phase 8 v1 catalog intentionally stores the experience

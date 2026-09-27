@@ -151,6 +151,11 @@ def _value(row: Any, name: str, default: Any = None) -> Any:
     return value
 
 
+def _flag(row: Any, name: str, default: bool) -> bool | None:
+    value = row.get(name, default) if isinstance(row, Mapping) else getattr(row, name, default)
+    return value if isinstance(value, bool) else None
+
+
 def _cohort(row: Any) -> NormalizationCohortV1 | None:
     value = _value(row, "cohort")
     if value is None:
@@ -183,18 +188,28 @@ def _eligible(
         or trust_tier not in tiers
     ):
         return False
-    provenance = _value(row, "provenance", {}) or {}
-    provenance_ok = _value(
+    provenance = _value(row, "provenance", {})
+    if provenance is not None and not isinstance(provenance, Mapping):
+        return False
+    provenance = provenance or {}
+    provenance_ok = _flag(
         row,
         "provenance_valid",
         provenance.get("valid", True) if isinstance(provenance, Mapping) else True,
     )
-    conflict = _value(row, "conflict", _value(row, "source_conflict", False))
-    if not _value(row, "accepted", True) or conflict or not provenance_ok:
+    if isinstance(row, Mapping):
+        conflict_name = "conflict" if "conflict" in row else "source_conflict"
+    else:
+        conflict_name = "conflict" if hasattr(row, "conflict") else "source_conflict"
+    conflict = _flag(row, conflict_name, False)
+    accepted = _flag(row, "accepted", True)
+    if accepted is not True or provenance_ok is not True or conflict is not False:
         return False
     if not (_value(row, "feature_fingerprint", _value(row, "fingerprint", ""))):
         return False
     aliases = _value(row, "source_aliases", {}) or {}
+    if not isinstance(aliases, Mapping):
+        return False
     if as_of is None:
         return any(
             str(v) == "CURRENT" or getattr(v, "value", None) == "CURRENT" for v in aliases.values()

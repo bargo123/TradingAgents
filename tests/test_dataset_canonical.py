@@ -42,6 +42,11 @@ def test_canonical_rejects_ineligible_and_forbidden_recursive():
  with pytest.raises(ValueError):
   canonicalize({'nested': {'prompt': 'hello'}}, EligibilityResult(True, details={'decision_id': 'd1'}))
 
+
+def test_canonical_rejects_string_eligibility_without_truthiness_coercion():
+ with pytest.raises(ValueError, match="eligible"):
+  canonicalize((obs(), {"eligible": "false"}))
+
 def test_duplicate_rejected():
  o = obs()
  o = o.__class__(o.decision, o.evaluation, o.evidence, {**o.fields, 'duplicate': True})

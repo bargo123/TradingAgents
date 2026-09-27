@@ -54,6 +54,17 @@ def test_zero_and_small_populations_are_explicitly_insufficient():
     assert assign_splits([example(i, i) for i in range(2)]).status == "INSUFFICIENT_DATA"
 
 
+@pytest.mark.parametrize("horizon", [True, "300", 0, -1, None])
+def test_split_rejects_malformed_horizon_without_coercion(horizon):
+    rows = [
+        example(1, 1, run="r1", horizon=horizon),
+        example(2, 2, run="r2"),
+        example(3, 3, run="r3"),
+    ]
+    with pytest.raises(ValueError, match="horizon"):
+        assign_splits(rows)
+
+
 @pytest.mark.parametrize("group_count", [3, 4])
 def test_populations_that_cannot_fill_all_partitions_are_insufficient(group_count):
     result = assign_splits([example(i, i, run=f"r{i}") for i in range(group_count)])

@@ -108,6 +108,17 @@ def test_query_excludes_malformed_record_cohort_without_crashing():
     assert result.excluded_counts["cohort"] == 1
 
 
+@pytest.mark.parametrize("field", ["accepted", "provenance_valid", "conflict"])
+def test_query_excludes_non_boolean_provenance_flags_without_coercion(field):
+    malformed = row("malformed") | {field: "false"}
+    service = ExperienceQueryService([row("good"), malformed], profile=profile())
+
+    result = service.search(ExperienceQuery(query_state()))
+
+    assert [hit.experience_id for hit in result.hits] == ["good"]
+    assert result.excluded_counts["provenance"] == 1
+
+
 def test_query_profile_inference_skips_malformed_first_cohort():
     service = ExperienceQueryService(
         [row("malformed") | {"cohort": "not-a-cohort"}, row("good")],

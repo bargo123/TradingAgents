@@ -12,6 +12,7 @@ from .models import CanonicalExampleV1, SplitAssignment
 SPLIT_STATUS_COMPLETE = "COMPLETE"
 SPLIT_STATUS_INSUFFICIENT_DATA = "INSUFFICIENT_DATA"
 _SPLITS = ("train", "validation", "test")
+_MISSING = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,12 +71,19 @@ def _group_id(example: Any) -> str:
     return f"run:{run}" if run else f"decision:{decision}"
 
 
+def _horizon(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("horizon_seconds must be a positive integer")
+    return value
+
+
 def _sort_key(example: Any) -> tuple[str, str, str, int, str]:
     decision = str(_mapping_value(example, "decision", "decision_id", ""))
     basis = str(_mapping_value(example, "outcome", "evaluation_basis", ""))
-    horizon = _mapping_value(example, "outcome", "horizon_seconds", 0)
+    raw_horizon = _mapping_value(example, "outcome", "horizon_seconds", _MISSING)
+    horizon = 0 if raw_horizon is _MISSING else _horizon(raw_horizon)
     example_id = str(_value(example, "example_id", ""))
-    return (_timestamp_key(_timestamp(example)), decision, basis, int(horizon), example_id)
+    return (_timestamp_key(_timestamp(example)), decision, basis, horizon, example_id)
 
 
 def _allocation(group_count: int) -> tuple[int, int, int]:

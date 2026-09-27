@@ -177,6 +177,31 @@ def test_non_boolean_mapping_feature_mask_is_excluded_without_coercion():
     assert profile.population_count == 0
 
 
+@pytest.mark.parametrize("field", ["accepted", "provenance_valid"])
+def test_non_boolean_provenance_flags_are_excluded_without_coercion(field):
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when) | {field: "false"}
+
+    profile = build_profile([malformed], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+
+    assert profile.population_count == 0
+
+
+def test_malformed_aliases_and_provenance_are_excluded_without_crashing():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed_aliases = row(1.0, when) | {"source_aliases": "CURRENT"}
+    malformed_provenance = row(1.0, when) | {"provenance": "valid"}
+
+    profile = build_profile(
+        [malformed_aliases, malformed_provenance],
+        COHORT,
+        (TrustTier.TIER_A_HIGH_TRUST,),
+        None,
+    )
+
+    assert profile.population_count == 0
+
+
 def test_query_fingerprint_contains_policy_and_cutoff():
     when = datetime(2026, 1, 1, tzinfo=UTC)
     profile = build_profile([row(1.0, when)], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)

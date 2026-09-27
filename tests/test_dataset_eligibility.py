@@ -51,6 +51,50 @@ def test_valid_tier_a_complete_observation_is_eligible(tmp_path):
     assert result.reasons == ()
 
 
+def test_malformed_evaluation_mapping_cannot_coerce_false_to_true(tmp_path):
+    observation = _joined(tmp_path)
+    fields = dict(observation.fields)
+    evaluation = dict(fields["evaluations"][0])
+    evaluation["source_context_eligible"] = "false"
+    fields["evaluations"] = (evaluation,)
+    malformed = observation.__class__(
+        observation.decision, observation.evaluation, observation.evidence, fields
+    )
+
+    result = classify_observation(malformed, _config(tmp_path))
+
+    assert not result.eligible
+    assert DatasetExclusionReason.OUTCOME_UNAVAILABLE in result.reasons
+
+
+def test_malformed_evaluation_mapping_cannot_coerce_horizon(tmp_path):
+    observation = _joined(tmp_path)
+    fields = dict(observation.fields)
+    evaluation = dict(fields["evaluations"][0])
+    evaluation["horizon_seconds"] = "300"
+    fields["evaluations"] = (evaluation,)
+    malformed = observation.__class__(
+        observation.decision, observation.evaluation, observation.evidence, fields
+    )
+
+    result = classify_observation(malformed, _config(tmp_path))
+
+    assert not result.eligible
+    assert DatasetExclusionReason.OUTCOME_UNAVAILABLE in result.reasons
+
+
+def test_source_availability_does_not_truthiness_coerce_text(tmp_path):
+    observation = _joined(tmp_path)
+    source = SourceReadResult(
+        decisions=(observation.decision,),
+        evaluations=(observation.evaluation,),
+        available="false",
+    )
+    joined = join_observations(source, SourceReadResult(), SourceReadResult())
+
+    assert joined[0].fields["source_available"] is False
+
+
 def test_missing_graph_artifact_is_incomplete_even_when_top_level_context_complete(tmp_path):
     observation = _joined(tmp_path)
     audit = dict(observation.fields["audit"])

@@ -16,6 +16,11 @@ def _get(row: Any, name: str, default: Any = None) -> Any:
     return row.get(name, default) if isinstance(row, Mapping) else getattr(row, name, default)
 
 
+def _flag(row: Any, name: str, default: bool) -> bool | None:
+    value = row.get(name, default) if isinstance(row, Mapping) else getattr(row, name, default)
+    return value if isinstance(value, bool) else None
+
+
 def _utc(v):
     if isinstance(v, str):
         try:
@@ -149,7 +154,9 @@ class ExperienceQueryService:
             reason = None
             trust_tier = _trust_tier(row)
             aliases = _get(row, "source_aliases", {}) or {}
-            tombstoned = bool(_get(row, "tombstoned", False)) or (
+            tombstone_flag = _flag(row, "tombstoned", False)
+            aliases_valid = isinstance(aliases, Mapping)
+            tombstoned = tombstone_flag is not False or not aliases_valid or (
                 bool(aliases)
                 and not any(
                     str(v) == "CURRENT" or getattr(v, "value", None) == "CURRENT"
@@ -170,9 +177,9 @@ class ExperienceQueryService:
             ):
                 reason = "trust_tier"
             elif (
-                not _get(row, "accepted", True)
-                or _get(row, "conflict", False)
-                or not _get(row, "provenance_valid", True)
+                _flag(row, "accepted", True) is not True
+                or _flag(row, "conflict", False) is not False
+                or _flag(row, "provenance_valid", True) is not True
             ):
                 reason = "provenance"
             elif query.action_filter is not None and _action(row) != query.action_filter:

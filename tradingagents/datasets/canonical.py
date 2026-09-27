@@ -109,7 +109,8 @@ def _pair(result: Any, eligibility: Any | None) -> tuple[JoinedObservation, Any]
         result = _get(result, "observation", result)
     if not isinstance(result, JoinedObservation):
         raise ValueError("canonicalize requires JoinedObservation")
-    if eligibility is None or not bool(_get(eligibility, "eligible", False)):
+    eligible = _get(eligibility, "eligible", False) if eligibility is not None else False
+    if not isinstance(eligible, bool) or not eligible:
         raise ValueError("observation is not eligible")
     return result, eligibility
 

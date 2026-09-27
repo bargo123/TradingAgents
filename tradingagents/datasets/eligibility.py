@@ -117,6 +117,8 @@ def _evaluation_fingerprint(evaluation: Any) -> str:
 
 def _with_evaluation_fingerprint(evaluation: Any):
     """Attach a deterministic source evaluation identity to adapter facts."""
+    if not isinstance(evaluation, EvaluationObservation):
+        return None
     fields = dict(_get(evaluation, "fields", {}) or {})
     if fields.get("source_evaluation_fingerprint") or fields.get("fingerprint"):
         return evaluation
@@ -155,19 +157,37 @@ def _source_fingerprint(result: Any) -> dict[str, Any] | None:
     return dict(fingerprint)
 
 
-def _evaluation_contract(value: Any) -> Any:
+def _horizon(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _availability(value: Any, default: bool = True) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return False
+
+
+def _evaluation_contract(value: Any) -> EvaluationObservation | None:
+    """Normalize an adapter value without coercing malformed source facts."""
     if isinstance(value, Mapping):
-        return _with_evaluation_fingerprint(
-            EvaluationObservation(
-                str(value.get("decision_id")),
-                str(value.get("evaluation_basis")),
-                int(value.get("horizon_seconds")),
-                str(value.get("evaluation_status")),
-                bool(value.get("source_context_eligible")),
+        try:
+            value = EvaluationObservation(
+                value.get("decision_id"),
+                value.get("evaluation_basis"),
+                value.get("horizon_seconds"),
+                value.get("evaluation_status"),
+                value.get("source_context_eligible"),
                 value.get("fields", {}),
             )
-        )
-    return value
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, EvaluationObservation):
+        return None
+    return _with_evaluation_fingerprint(value)
 
 
 def _graph_artifacts_complete(audit: Any) -> bool:
@@ -200,12 +220,14 @@ def _enrich_evaluation(evaluation: Any, record: Any) -> Any:
     if not snapshots:
         return evaluation
     basis = _get(evaluation, "evaluation_basis")
-    horizon = int(_get(evaluation, "horizon_seconds", 0) or 0)
+    horizon = _horizon(_get(evaluation, "horizon_seconds"))
+    if horizon is None:
+        return evaluation
     matching = tuple(
         snapshot
         for snapshot in snapshots
         if _get(snapshot, "evaluation_basis") == basis
-        and int(_get(snapshot, "horizon_seconds", 0) or 0) == horizon
+        and _horizon(_get(snapshot, "horizon_seconds")) == horizon
     )
     if not matching:
         return evaluation
@@ -270,14 +292,15 @@ def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[Joined
     evaluations = tuple(_get(phase56, "evaluations", ()) or ())
     records = tuple(_get(experience, "records", ()) or ())
     audits = tuple(_get(audit, "audits", ()) or ())
-    unavailable = not bool(_get(audit, "available", True))
+    unavailable = not _availability(_get(audit, "available", True))
     recs = defaultdict(list)
     for row in records:
         recs[_key(_get(row, "source_decision_id", _get(row, "decision_id")), _get(row, "source_run_id"), _get(row, "source_decision_fingerprint"))].append(row)
     evals = defaultdict(list)
     for row in evaluations:
-        row = _with_evaluation_fingerprint(row)
-        evals[str(_get(row, "decision_id"))].append(row)
+        row = _evaluation_contract(row)
+        if row is not None:
+            evals[str(_get(row, "decision_id"))].append(row)
     auds = defaultdict(list)
     for row in audits:
         auds[_key(_get(row, "decision_id"), _get(row, "source_run_id"))].append(row)
@@ -303,7 +326,7 @@ def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[Joined
             ev,
             key=lambda x: (
                 _get(x, "evaluation_basis", ""),
-                int(_get(x, "horizon_seconds", 0) or 0),
+                _horizon(_get(x, "horizon_seconds")) or -1,
                 _evaluation_fingerprint(x),
             ),
         )
@@ -312,7 +335,7 @@ def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[Joined
             (
                 _get(x, "decision_id"),
                 _get(x, "evaluation_basis"),
-                int(_get(x, "horizon_seconds", 0) or 0),
+                _horizon(_get(x, "horizon_seconds")) or -1,
             )
             for x in ev
         )
@@ -377,7 +400,7 @@ def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[Joined
             "duplicate_evaluation_keys": duplicate_evaluation_keys,
             "evaluations": tuple(_evaluation_metadata(x) for x in ev),
             "audit_unavailable": unavailable,
-            "source_available": bool(_get(phase56, "available", True)),
+            "source_available": _availability(_get(phase56, "available", True)),
         }
         out.append(JoinedObservation(decision, evaluation, evidence, metadata))
     return tuple(out)
@@ -391,13 +414,24 @@ def classify_observation(observation: JoinedObservation, config: DatasetConfig) 
     audit = joined_fields.get("audit") or {}
     reasons: set[DatasetExclusionReason] = set()
     candidates = tuple(joined_fields.get("evaluations") or ())
+    basis_candidates = tuple(
+        ev for ev in candidates
+        if _get(ev, "evaluation_basis") == config.evaluation_basis
+    )
     requested = tuple(
         ev
-        for ev in candidates
-        if _get(ev, "evaluation_basis") == config.evaluation_basis
-        and int(_get(ev, "horizon_seconds", 0) or 0) == config.horizon_seconds
+        for ev in basis_candidates
+        if _horizon(_get(ev, "horizon_seconds")) == config.horizon_seconds
     )
-    ev = _evaluation_contract(requested[0]) if requested else observation.evaluation
+    if requested:
+        ev = _evaluation_contract(requested[0])
+    elif candidates:
+        # Evaluation metadata is authoritative when present.  Do not fall
+        # back to a second evaluation object if every candidate is malformed
+        # or targets another basis/horizon; that would hide source drift.
+        ev = None
+    else:
+        ev = observation.evaluation
     duplicate_requested = len(requested) > 1
     if joined_fields.get("duplicate_non_evaluation") or duplicate_requested:
         reasons.add(DatasetExclusionReason.DUPLICATE)

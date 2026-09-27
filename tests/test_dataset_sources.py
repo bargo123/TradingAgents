@@ -41,6 +41,17 @@ def test_phase56_read_is_query_only_and_converts_utc(tmp_path):
         connection.execute("CREATE TABLE x(a)")
 
 
+def test_phase56_rejects_non_boolean_source_context_eligibility(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decision_evaluations SET source_context_eligible='false'"
+        )
+
+    with pytest.raises(SourceReadError, match="source_context_eligible"):
+        ReadonlyPhase56Source(path).read()
+
+
 def test_phase56_retains_null_action_and_large_snapshot_for_eligibility(tmp_path):
     path = create_source_db(tmp_path / "source.db")
     snapshot = {

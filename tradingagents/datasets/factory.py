@@ -233,16 +233,25 @@ def _effective_observation(observation: JoinedObservation, eligibility: Any, con
     for item in observation.fields.get("evaluations", ()):
         if not isinstance(item, Mapping):
             continue
-        if item.get("evaluation_basis") != basis or int(item.get("horizon_seconds", 0) or 0) != horizon:
+        item_horizon = item.get("horizon_seconds")
+        if (
+            item.get("evaluation_basis") != basis
+            or isinstance(item_horizon, bool)
+            or not isinstance(item_horizon, int)
+            or item_horizon != horizon
+        ):
             continue
-        selected = EvaluationObservation(
-            str(item.get("decision_id")),
-            str(item.get("evaluation_basis")),
-            int(item.get("horizon_seconds")),
-            str(item.get("evaluation_status")),
-            bool(item.get("source_context_eligible")),
-            item.get("fields", {}),
-        )
+        try:
+            selected = EvaluationObservation(
+                item.get("decision_id"),
+                item.get("evaluation_basis"),
+                item.get("horizon_seconds"),
+                item.get("evaluation_status"),
+                item.get("source_context_eligible"),
+                item.get("fields", {}),
+            )
+        except (TypeError, ValueError):
+            continue
         return replace(observation, evaluation=selected)
     return observation
 
