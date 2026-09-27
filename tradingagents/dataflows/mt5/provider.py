@@ -185,8 +185,14 @@ class MT5Provider:
         return raw_symbols
 
     def _shutdown_after_failed_initialize(self) -> None:
-        with suppress(Exception):
-            self._api.shutdown()
+        try:
+            with suppress(Exception):
+                self._api.shutdown()
+        finally:
+            # A failed reconnect must not leave the previous lifecycle's
+            # connection or broker-clock calibration usable.
+            self._initialized = False
+            self._broker_clock = None
 
     def initialize(self) -> bool:
         api = self._load_api()

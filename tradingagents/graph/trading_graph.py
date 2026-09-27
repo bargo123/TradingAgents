@@ -3,7 +3,8 @@
 import json
 import logging
 import os
-from contextlib import contextmanager
+import sys
+from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta
 from numbers import Integral
 from pathlib import Path
@@ -567,23 +568,40 @@ class TradingAgentsGraph:
         lived only inside ``propagate`` and the CLI streamed the checkpointer-less
         graph, making the flag a no-op.
         """
+        previous_resuming = getattr(self, "_resuming", False)
         self._resuming = False
         if not self.config.get("checkpoint_enabled"):
             return None
+        plain_graph = self.graph
         signature = self._run_signature(asset_type)
-        self._checkpointer_ctx = get_checkpointer(self.config["data_cache_dir"], company_name)
-        saver = self._checkpointer_ctx.__enter__()
-        self.graph = self.workflow.compile(checkpointer=saver)
+        checkpoint_context = get_checkpointer(self.config["data_cache_dir"], company_name)
+        self._checkpointer_ctx = checkpoint_context
+        entered = False
+        try:
+            saver = checkpoint_context.__enter__()
+            entered = True
+            self.graph = self.workflow.compile(checkpointer=saver)
 
-        step = checkpoint_step(
-            self.config["data_cache_dir"], company_name, str(trade_date), signature
-        )
-        self._resuming = step is not None
-        if step is not None:
-            logger.info("Resuming from step %d for %s on %s", step, company_name, trade_date)
-        else:
-            logger.info("Starting fresh for %s on %s", company_name, trade_date)
-        return thread_id(company_name, str(trade_date), signature)
+            step = checkpoint_step(
+                self.config["data_cache_dir"], company_name, str(trade_date), signature
+            )
+            self._resuming = step is not None
+            if step is not None:
+                logger.info("Resuming from step %d for %s on %s", step, company_name, trade_date)
+            else:
+                logger.info("Starting fresh for %s on %s", company_name, trade_date)
+            return thread_id(company_name, str(trade_date), signature)
+        except BaseException:
+            # A failed setup/lookup must not leave a live SQLite saver or a
+            # checkpointer-bound graph behind for a later invocation.
+            error_info = sys.exc_info()
+            if entered:
+                with suppress(Exception):
+                    checkpoint_context.__exit__(*error_info)
+            self._checkpointer_ctx = None
+            self.graph = plain_graph
+            self._resuming = previous_resuming
+            raise
 
     def checkpoint_input(self, init_state):
         """The value to stream/invoke: ``None`` to resume an existing checkpoint,
@@ -597,11 +615,21 @@ class TradingAgentsGraph:
 
     def end_checkpoint(self):
         """Restore the plain uncheckpointed graph after a checkpointed run."""
-        if self._checkpointer_ctx is not None:
-            self._checkpointer_ctx.__exit__(None, None, None)
-            self._checkpointer_ctx = None
-            self.graph = self.workflow.compile()
-        self._resuming = False
+        checkpoint_context = self._checkpointer_ctx
+        if checkpoint_context is not None:
+            cleanup_failed_during_primary_error = sys.exc_info()[0] is not None
+            try:
+                try:
+                    checkpoint_context.__exit__(None, None, None)
+                except Exception:
+                    if not cleanup_failed_during_primary_error:
+                        raise
+            finally:
+                self._checkpointer_ctx = None
+                self.graph = self.workflow.compile()
+                self._resuming = False
+        else:
+            self._resuming = False
 
     @contextmanager
     def checkpoint_scope(self, company_name, trade_date, asset_type: str = "stock"):

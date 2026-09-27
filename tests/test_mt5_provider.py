@@ -254,6 +254,21 @@ def test_initialize_exception_shuts_down_partial_api_start(fake_api):
     assert fake_api.shutdown_called is True
 
 
+def test_failed_reinitialize_clears_previous_connection_state(fake_api):
+    provider = initialized_provider(fake_api)
+    assert provider.is_connected() is True
+    assert provider.broker_clock is not None
+
+    fake_api.initialize_result = False
+    fake_api.error = (10004, "terminal unavailable")
+
+    with pytest.raises(Mt5InitializationError, match="terminal unavailable"):
+        provider.initialize()
+
+    assert provider.is_connected() is False
+    assert provider.broker_clock is None
+
+
 @pytest.mark.unit
 def test_initialize_post_check_failure_is_typed_and_shuts_down(fake_api):
     def terminal_info_failure():

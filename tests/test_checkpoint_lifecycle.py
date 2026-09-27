@@ -144,6 +144,74 @@ def test_begin_returns_thread_id_and_recompiles():
 
 
 @pytest.mark.unit
+def test_begin_failure_closes_context_and_restores_plain_graph(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        g = _bare_graph(tmp)
+        plain = g.graph
+
+        def fail_checkpoint_step(*_args, **_kwargs):
+            raise RuntimeError("checkpoint lookup failure")
+
+        monkeypatch.setattr(
+            "tradingagents.graph.trading_graph.checkpoint_step",
+            fail_checkpoint_step,
+        )
+
+        with pytest.raises(RuntimeError, match="checkpoint lookup failure"):
+            g.begin_checkpoint("AAPL", "2026-05-08", "stock")
+
+        assert g._checkpointer_ctx is None
+        assert g.graph is plain
+        assert g._resuming is False
+
+
+@pytest.mark.unit
+def test_end_failure_restores_plain_graph_state():
+    with tempfile.TemporaryDirectory() as tmp:
+        g = _bare_graph(tmp)
+        g.begin_checkpoint("AAPL", "2026-05-08", "stock")
+        context = g._checkpointer_ctx
+        assert context is not None
+        original_exit = context.__exit__
+
+        def fail_exit(*args):
+            original_exit(*args)
+            raise RuntimeError("checkpoint close failure")
+
+        context.__exit__ = fail_exit
+        with pytest.raises(RuntimeError, match="checkpoint close failure"):
+            g.end_checkpoint()
+
+        assert g._checkpointer_ctx is None
+        assert g._resuming is False
+        # A restored graph has no checkpointer configured.
+        assert g.graph is not None
+
+
+@pytest.mark.unit
+def test_end_failure_does_not_mask_active_graph_error():
+    with tempfile.TemporaryDirectory() as tmp:
+        g = _bare_graph(tmp)
+        g.begin_checkpoint("AAPL", "2026-05-08", "stock")
+        context = g._checkpointer_ctx
+        assert context is not None
+        original_exit = context.__exit__
+
+        def fail_exit(*args):
+            original_exit(*args)
+            raise RuntimeError("checkpoint close failure")
+
+        context.__exit__ = fail_exit
+        with pytest.raises(RuntimeError, match="graph failure"):
+            try:
+                raise RuntimeError("graph failure")
+            finally:
+                g.end_checkpoint()
+
+        assert g._checkpointer_ctx is None
+
+
+@pytest.mark.unit
 def test_checkpoint_input_is_none_only_when_resuming():
     global _should_crash
     with tempfile.TemporaryDirectory() as tmp:
