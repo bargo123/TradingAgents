@@ -306,6 +306,40 @@ def _is_finite_metric(value: int | float) -> bool:
         return False
 
 
+_SAFE_AGENT_METRIC_KEYS = frozenset(
+    {"model", "calls", "tokens_in", "tokens_out", "reasoning_tokens", "elapsed_seconds"}
+)
+_SAFE_AGENT_NUMERIC_KEYS = _SAFE_AGENT_METRIC_KEYS - {"model"}
+
+
+def _safe_agent_metrics(value: Any) -> dict[str, dict[str, Any]]:
+    """Keep only bounded scalar agent telemetry from an external callback."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    safe: dict[str, dict[str, Any]] = {}
+    for raw_name, raw_metrics in value.items():
+        if not isinstance(raw_name, str) or not raw_name.strip() or not isinstance(raw_metrics, Mapping):
+            continue
+        name = raw_name.strip()[:120]
+        current: dict[str, Any] = {}
+        model = raw_metrics.get("model")
+        if isinstance(model, str) and model.strip():
+            current["model"] = model.strip()[:160]
+        for key in _SAFE_AGENT_NUMERIC_KEYS:
+            numeric = raw_metrics.get(key)
+            if (
+                isinstance(numeric, (int, float))
+                and not isinstance(numeric, bool)
+                and numeric >= 0
+                and _is_finite_metric(numeric)
+            ):
+                current[key] = numeric
+        if current:
+            safe[name] = current
+    return safe
+
+
 def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
     """Read optional callback statistics without making telemetry required."""
     metrics: dict[str, Any] = {
@@ -335,7 +369,7 @@ def _callback_metrics(callbacks: Sequence[Any]) -> dict[str, Any]:
                 continue
             value = reported.get(key)
             if key == "agents" and isinstance(value, Mapping):
-                metrics[key] = dict(value)
+                metrics[key] = _safe_agent_metrics(value)
             elif (
                 isinstance(value, (int, float))
                 and not isinstance(value, bool)

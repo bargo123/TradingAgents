@@ -283,6 +283,35 @@ def test_context_integrity_rejects_non_text_report_artifacts():
     assert {"market", "news"}.issubset(result["missing"])
 
 
+def test_context_integrity_rejects_invalid_portfolio_rating():
+    state = {
+        "market_report": "MARKET_REPORT",
+        "news_report": "NEWS_REPORT",
+        "investment_debate_state": {
+            "history": "Bull Analyst: BULL\nBear Analyst: BEAR",
+            "bull_history": "Bull Analyst: BULL",
+            "bear_history": "Bear Analyst: BEAR",
+        },
+        "investment_plan": "RM_PLAN",
+        "trader_investment_plan": "FINAL TRANSACTION PROPOSAL: **HOLD**",
+        "risk_debate_state": {
+            "history": "Aggressive Analyst: AGGRESSIVE\nConservative Analyst: CONSERVATIVE\nNeutral Analyst: NEUTRAL",
+            "aggressive_history": "Aggressive Analyst: AGGRESSIVE",
+            "conservative_history": "Conservative Analyst: CONSERVATIVE",
+            "neutral_history": "Neutral Analyst: NEUTRAL",
+        },
+        "portfolio_manager_raw_result": {"rating": "NOT_A_RATING"},
+        "final_trade_decision": "PM_RESULT",
+    }
+
+    result = evaluate_context_integrity(state)
+
+    assert result["status"] == "INCOMPLETE"
+    assert "portfolio_manager" in result["missing"]
+    assert result["artifacts"]["portfolio_manager"]["present"] is False
+    assert result["artifacts"]["signals"]["portfolio_manager_rating"] is None
+
+
 def test_instrumented_state_trace_contains_metadata_only():
     state = {"market_report": "PRIVATE REPORT CONTENT"}
 

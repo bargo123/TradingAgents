@@ -156,10 +156,12 @@ class ExperienceQueryService:
             aliases = _get(row, "source_aliases", {}) or {}
             tombstone_flag = _flag(row, "tombstoned", False)
             tombstone_metadata_invalid = tombstone_flag is None
-            aliases_valid = isinstance(aliases, Mapping)
+            # A record without any source alias has no auditable current or
+            # historical provenance.  Treat it as malformed metadata rather
+            # than allowing it into similarity results.
+            aliases_valid = isinstance(aliases, Mapping) and bool(aliases)
             tombstoned = tombstone_flag is not False or not aliases_valid or (
-                bool(aliases)
-                and not any(
+                not any(
                     str(v) == "CURRENT" or getattr(v, "value", None) == "CURRENT"
                     for v in aliases.values()
                 )

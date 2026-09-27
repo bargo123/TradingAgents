@@ -182,6 +182,16 @@ def test_historical_query_excludes_malformed_alias_metadata():
     assert result.excluded_counts["tombstone"] == 1
 
 
+def test_query_excludes_empty_alias_metadata():
+    malformed = row("empty-aliases") | {"source_aliases": {}}
+    service = ExperienceQueryService([malformed], profile=profile())
+
+    result = service.search(ExperienceQuery(query_state()))
+
+    assert result.hits == ()
+    assert result.excluded_counts["tombstone"] == 1
+
+
 def test_tier_c_numeric_similarity_is_rejected():
     with pytest.raises(ValueError, match="Tier C"):
         ExperienceQueryService(

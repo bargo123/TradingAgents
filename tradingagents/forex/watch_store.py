@@ -77,6 +77,16 @@ def _db_bool(value: Any, name: str) -> bool:
     raise ValueError(f"{name} must be boolean 0/1")
 
 
+def _db_choice(value: Any, name: str, choices: set[str], *, optional: bool = False) -> str | None:
+    """Decode constrained SQLite status text without accepting unknown values."""
+
+    if value is None and optional:
+        return None
+    if not isinstance(value, str) or value not in choices:
+        raise ValueError(f"{name} must be one of {', '.join(sorted(choices))}")
+    return value
+
+
 class LeaseStatus(Enum):
     ACQUIRED = "ACQUIRED"
     WATCHER_ALREADY_RUNNING = "WATCHER_ALREADY_RUNNING"
@@ -1394,7 +1404,11 @@ class WatcherStore:
             bar_close_timestamp=_parse(row["bar_close_timestamp"]),  # type: ignore[arg-type]
             eligible_after=_parse(row["eligible_after"]),  # type: ignore[arg-type]
             config_fingerprint=row["config_fingerprint"],
-            status=row["status"],
+            status=_db_choice(
+                row["status"],
+                "status",
+                {"ELIGIBLE", "RUNNING", "DECISION_SAVED", "SKIPPED", "FAILED", "ABANDONED"},
+            ),
             skip_reason=row["skip_reason"],
             skip_detail=row["skip_detail"],
             run_id=row["run_id"],
@@ -1414,18 +1428,44 @@ class WatcherStore:
         return WatchRun(
             run_id=row["run_id"], opportunity_key=row["opportunity_key"],
             attempt_number=int(row["attempt_number"]), owner_token=row["owner_token"],
-            run_status=row["run_status"], requested_symbol=row["requested_symbol"],
+            run_status=_db_choice(
+                row["run_status"],
+                "run_status",
+                {"RUNNING", "SUCCEEDED", "SUCCEEDED_SLOW", "FAILED", "ABANDONED"},
+            ), requested_symbol=row["requested_symbol"],
             resolved_symbol=row["resolved_symbol"], started_at=values["started_at"],
             heartbeat_at=values["heartbeat_at"], runtime_alert_at=values["runtime_alert_at"],
             completed_at=values["completed_at"], decision_id=row["decision_id"],
             source_run_id=row["source_run_id"], failure_code=row["failure_code"],
-            failure_detail=row["failure_detail"], decision_context_status=row["decision_context_status"],
-            normalization_status=row["normalization_status"], normalized_action=row["normalized_action"],
+            failure_detail=row["failure_detail"],
+            decision_context_status=_db_choice(
+                row["decision_context_status"],
+                "decision_context_status",
+                {"COMPLETE", "INCOMPLETE"},
+                optional=True,
+            ),
+            normalization_status=_db_choice(
+                row["normalization_status"],
+                "normalization_status",
+                {"NORMALIZED", "FAILED"},
+                optional=True,
+            ),
+            normalized_action=_db_choice(
+                row["normalized_action"],
+                "normalized_action",
+                {"BUY", "SELL", "HOLD"},
+                optional=True,
+            ),
             analysis_snapshot_timestamp=values["analysis_snapshot_timestamp"],
             decision_completed_timestamp=values["decision_completed_timestamp"],
             analysis_latency_seconds=row["analysis_latency_seconds"],
             decision_reference_timestamp=values["decision_reference_timestamp"],
-            decision_reference_status=row["decision_reference_status"],
+            decision_reference_status=_db_choice(
+                row["decision_reference_status"],
+                "decision_reference_status",
+                {"AVAILABLE", "UNAVAILABLE", "INVALID_TEMPORAL"},
+                optional=True,
+            ),
             decision_reference_delay_seconds=row["decision_reference_delay_seconds"],
             stale_by_completion=None
             if row["stale_by_completion"] is None

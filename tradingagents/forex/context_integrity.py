@@ -41,7 +41,20 @@ _PM_RATINGS = {"Buy", "Overweight", "Hold", "Underweight", "Sell"}
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
-    return value if isinstance(value, Mapping) else {}
+    if isinstance(value, Mapping):
+        return value
+    # Graph test doubles and some provider integrations may retain the
+    # validated Pydantic object instead of its serialized mapping.  Treat that
+    # object as the already-validated structured payload without coercing
+    # arbitrary objects or persisting any of its text fields.
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump(mode="python")
+        except TypeError:
+            dumped = model_dump()
+        return dumped if isinstance(dumped, Mapping) else {}
+    return {}
 
 
 def _text(value: Any) -> str:
@@ -102,7 +115,10 @@ def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
     # A failed PM marker is evidence of an attempted node, not a complete
     # normal PM artifact.
     raw_pm_mapping = _mapping(raw_pm)
-    raw_pm_valid = bool(raw_pm_mapping.get("rating"))
+    raw_pm_valid = raw_pm_mapping.get("rating") in _PM_RATINGS
+    raw_pm_supplied = bool(raw_pm_mapping) or (
+        isinstance(raw_pm, str) and bool(raw_pm.strip())
+    ) or (raw_pm is not None and not isinstance(raw_pm, (Mapping, str)))
     final_pm_text = _text(final_pm).strip()
     final_pm_valid = bool(final_pm_text) and final_pm_text != "FOREX_PORTFOLIO_MANAGER_FAILED"
 
@@ -159,7 +175,11 @@ def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
         },
         "portfolio_manager": {
             "field": "portfolio_manager_raw_result/final_trade_decision",
-            "present": raw_pm_valid or final_pm_valid,
+            # When a raw structured payload is supplied, its canonical rating
+            # must be valid as well as the rendered decision.  Otherwise an
+            # invalid model payload paired with arbitrary rendered text could
+            # masquerade as a complete PM artifact.
+            "present": final_pm_valid and (not raw_pm_supplied or raw_pm_valid),
             "raw": raw_pm_metric,
             "raw_rating_present": raw_pm_valid,
             "final": {

@@ -391,6 +391,40 @@ def test_callback_metrics_rejects_non_finite_aggregate_values():
     assert metrics["reasoning_tokens"] == 7
 
 
+def test_callback_metrics_keep_only_safe_agent_scalars():
+    callback = type(
+        "Callback",
+        (),
+        {
+            "get_stats": lambda self: {
+                "llm_calls": 1,
+                "agents": {
+                    "Trader": {
+                        "model": "qwen3.5:4b",
+                        "calls": 1,
+                        "tokens_in": 10,
+                        "tokens_out": 5,
+                        "elapsed_seconds": 2.5,
+                        "result": "PRIVATE MODEL OUTPUT",
+                    }
+                },
+            }
+        },
+    )()
+
+    metrics = runner_module._callback_metrics([callback])
+
+    assert metrics["agents"] == {
+        "Trader": {
+            "model": "qwen3.5:4b",
+            "calls": 1,
+            "tokens_in": 10,
+            "tokens_out": 5,
+            "elapsed_seconds": 2.5,
+        }
+    }
+
+
 def test_runner_resets_opt_in_reusable_callback_before_each_decision(tmp_path):
     class Callback:
         def __init__(self):

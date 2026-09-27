@@ -267,6 +267,32 @@ def test_malformed_persisted_run_boolean_fails_closed(tmp_path, column):
         store.get_run(run.run_id)
 
 
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("run_status", "BROKEN"),
+        ("decision_context_status", "UNKNOWN"),
+        ("normalization_status", "UNKNOWN"),
+        ("normalized_action", "WAIT"),
+        ("decision_reference_status", "UNKNOWN"),
+    ],
+)
+def test_malformed_persisted_run_status_fields_fail_closed(tmp_path, column, value):
+    path = tmp_path / "run-status.db"
+    store = WatcherStore(path)
+    acquired = store.acquire_lease(owner(), NOW)
+    run = _insert_running_run(store, acquired.owner_token, source_run_id=f"bad-{column}")
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            f"UPDATE forex_watch_runs SET {column}=? WHERE run_id=?",
+            (value, run.run_id),
+        )
+
+    with pytest.raises(ValueError, match=column):
+        store.get_run(run.run_id)
+
+
 def test_successful_evaluation_clears_previous_evaluation_error(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     acquired = store.acquire_lease(owner(), NOW)
