@@ -52,6 +52,18 @@ def test_phase56_rejects_non_boolean_source_context_eligibility(tmp_path):
         ReadonlyPhase56Source(path).read()
 
 
+def test_phase56_rejects_non_text_identity_metadata_without_string_coercion(tmp_path):
+    path = create_source_db(tmp_path / "source.db")
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decisions SET source_run_id=CAST(? AS BLOB)",
+            (0,),
+        )
+
+    with pytest.raises(SourceReadError, match="source_run_id"):
+        ReadonlyPhase56Source(path).read()
+
+
 def test_phase56_retains_null_action_and_large_snapshot_for_eligibility(tmp_path):
     path = create_source_db(tmp_path / "source.db")
     snapshot = {

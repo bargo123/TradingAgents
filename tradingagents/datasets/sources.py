@@ -219,6 +219,15 @@ def _source_bool(value: Any, name: str) -> bool:
     raise SourceReadError(f"{name} must be a boolean")
 
 
+def _source_text(value: Any, name: str) -> str:
+    """Preserve nullable source text without coercing malformed scalars."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise SourceReadError(f"{name} must be text")
+    return value
+
+
 def _source_horizon(value: Any) -> int:
     """Normalize legacy SQLite TEXT horizons without accepting arbitrary values."""
     if isinstance(value, bool):
@@ -489,6 +498,11 @@ class ReadonlyPhase56Source(_Readonly):
             for row in cur:
                 raw_item = dict(zip(names, row, strict=True))
                 _normalize_row(raw_item)
+                source_run_id = _source_text(raw_item.get("source_run_id"), "source_run_id")
+                requested_symbol = _source_text(raw_item.get("requested_symbol"), "requested_symbol")
+                resolved_symbol = _source_text(raw_item.get("resolved_symbol"), "resolved_symbol")
+                analysis_profile = _source_text(raw_item.get("analysis_profile"), "analysis_profile")
+                analysis_timeframe = _source_text(raw_item.get("analysis_timeframe"), "analysis_timeframe")
                 # Phase 5/6 does not persist the Phase 8 identity columns.  Derive
                 # them from the complete normalized source row before removing
                 # adapter-only identity fields below, matching the Phase 8
@@ -524,11 +538,11 @@ class ReadonlyPhase56Source(_Readonly):
                         ts,
                         completed,
                         fields=item,
-                        source_run_id=str(item.pop("source_run_id", "")),
-                        requested_symbol=str(item.pop("requested_symbol", "")),
-                        resolved_symbol=str(item.pop("resolved_symbol", "")),
-                        analysis_profile=str(item.pop("analysis_profile", "")),
-                        analysis_timeframe=str(item.pop("analysis_timeframe", "")),
+                        source_run_id=source_run_id,
+                        requested_symbol=requested_symbol,
+                        resolved_symbol=resolved_symbol,
+                        analysis_profile=analysis_profile,
+                        analysis_timeframe=analysis_timeframe,
                         action=action,
                     )
                 )
