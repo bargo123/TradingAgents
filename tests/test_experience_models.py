@@ -118,6 +118,15 @@ def test_outcome_statistics_preserves_explicit_requested_basis() -> None:
     assert result.requested_basis == ""
 
 
+@pytest.mark.parametrize("field", ["buy", "sell", "hold"])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "malformed"])
+def test_outcome_statistics_rejects_malformed_nested_statistics(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        OutcomeStatistics(**{field: value})
+
+
 @pytest.mark.parametrize("value", [[], False, 0])
 def test_search_result_rejects_malformed_excluded_counts(value: object) -> None:
     with pytest.raises(ValueError, match="excluded_counts"):

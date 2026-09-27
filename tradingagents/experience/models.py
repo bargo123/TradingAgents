@@ -428,9 +428,16 @@ class OutcomeStatistics(Serializable):
             "exclusions_by_tier",
             _freeze(_mapping_or_empty(self.exclusions_by_tier, "exclusions_by_tier")),
         )
-        object.__setattr__(self, "buy", self.buy or OutcomeDirectionStatistics())
-        object.__setattr__(self, "sell", self.sell or OutcomeDirectionStatistics())
-        object.__setattr__(self, "hold", self.hold or OutcomeHoldStatistics())
+        for name, value, expected, factory in (
+            ("buy", self.buy, OutcomeDirectionStatistics, OutcomeDirectionStatistics),
+            ("sell", self.sell, OutcomeDirectionStatistics, OutcomeDirectionStatistics),
+            ("hold", self.hold, OutcomeHoldStatistics, OutcomeHoldStatistics),
+        ):
+            if value is None:
+                value = factory()
+            elif not isinstance(value, expected):
+                raise ValueError(f"{name} must be {expected.__name__}")
+            object.__setattr__(self, name, value)
 
 
 @dataclass(frozen=True, slots=True)
