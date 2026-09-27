@@ -652,7 +652,10 @@ def test_source_helpers_release_windows_sqlite_handles(tmp_path: Path):
         assert not config.source_database_path.exists()
 
 
-def test_source_transient_scan_rejects_malformed_portfolio_result_json(tmp_path: Path):
+@pytest.mark.parametrize("raw_result", ["{", "[]", "null", "1", '"text"'])
+def test_source_transient_scan_rejects_malformed_portfolio_result_json(
+    tmp_path: Path, raw_result: str
+):
     db = tmp_path / "source.db"
     with closing(sqlite3.connect(db)) as conn:
         conn.execute(
@@ -662,7 +665,7 @@ def test_source_transient_scan_rejects_malformed_portfolio_result_json(tmp_path:
         )
         conn.execute(
             "INSERT INTO shadow_decisions VALUES (?, ?, ?)",
-            ("decision-1", _source_bytes().decode("utf-8"), "{"),
+            ("decision-1", _source_bytes().decode("utf-8"), raw_result),
         )
         conn.commit()
 

@@ -494,7 +494,10 @@ def _source_has_transient(path: str | Path) -> bool:
                 if not isinstance(value, str):
                     raise SnapshotReplayError(f"{column} is not valid JSON")
                 try:
-                    if _contains_transient(json.loads(value)):
+                    payload = json.loads(value)
+                    if not isinstance(payload, Mapping):
+                        raise SnapshotReplayError(f"{column} must be a JSON object")
+                    if _contains_transient(payload):
                         return True
                 except json.JSONDecodeError as exc:
                     raise SnapshotReplayError(f"{column} is not valid JSON") from exc
