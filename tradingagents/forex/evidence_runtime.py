@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import inspect
 import json
+import math
 import multiprocessing
 import sqlite3
 import time
@@ -79,9 +80,15 @@ class ReadonlyEvidenceRuntimeConfiguration:
         roots = envelope.get("artifact_roots") or {}
         if not isinstance(roots, Mapping):
             raise TypeError("artifact_roots must be a mapping")
+        raw_timeout = envelope.get("evidence_timeout_seconds", 10.0)
+        if isinstance(raw_timeout, bool) or not isinstance(raw_timeout, (int, float)):
+            raise TypeError("evidence_timeout_seconds must be a finite non-negative number")
+        timeout = float(raw_timeout)
+        if not math.isfinite(timeout) or timeout < 0:
+            raise ValueError("evidence_timeout_seconds must be a finite non-negative number")
         return cls(
             tuple(sorted((str(key), str(value)) for key, value in roots.items())),
-            float(envelope.get("evidence_timeout_seconds", 10.0)),
+            timeout,
         )
 
     def roots(self) -> dict[str, str]:

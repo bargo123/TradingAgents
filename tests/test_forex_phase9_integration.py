@@ -567,6 +567,14 @@ def test_child_failure_does_not_transport_exception_text(tmp_path: Path):
     assert detail == ""
 
 
+@pytest.mark.parametrize("value", [True, -1.0, float("nan"), float("inf")])
+def test_runtime_envelope_rejects_invalid_evidence_timeout(value):
+    with pytest.raises((TypeError, ValueError), match="evidence_timeout_seconds"):
+        ReadonlyEvidenceRuntimeConfiguration.from_envelope(
+            {"artifact_roots": {}, "evidence_timeout_seconds": value}
+        )
+
+
 def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):
     roots = _artifact_roots(tmp_path)
     service = EvidenceIntegrationService(
