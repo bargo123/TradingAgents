@@ -14,7 +14,11 @@ from typing import Any
 
 from .catalog import ExperienceCatalog
 from .config import ExperienceConfig
-from .errors import ExperienceImportLockedError, SourceDecisionConflictError
+from .errors import (
+    ExperienceImportLockedError,
+    FeatureExtractionIncompleteError,
+    SourceDecisionConflictError,
+)
 from .features import extract_market_state
 from .identity import source_decision_fingerprint, source_evaluation_fingerprint
 from .models import TrustTier
@@ -186,7 +190,7 @@ class ExperienceImporter:
                                     "feature_names": vector.feature_names,
                                     "cohort": vector.cohort,
                                 }
-                            except Exception:
+                            except FeatureExtractionIncompleteError:
                                 vector = None
                                 trust = type("T", (), {"tier": TrustTier.TIER_C_DIAGNOSTIC_ONLY})()
                                 market_state = {

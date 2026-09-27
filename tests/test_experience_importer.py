@@ -33,6 +33,17 @@ def test_first_import_is_idempotent(tmp_path):
     assert second.experience_count == first.experience_count
 
 
+def test_typed_feature_extraction_failure_remains_diagnostic_history(tmp_path):
+    source = create_source_db(tmp_path / "source.sqlite3")
+    catalog = ExperienceCatalog(tmp_path / "artifact")
+
+    report = ExperienceImporter(catalog).import_sources((source,))
+
+    assert report.failed_scan_count == 0
+    assert catalog.active_records()[0].trust == "TIER_C_DIAGNOSTIC_ONLY"
+    assert catalog.quarantine_count() == 0
+
+
 def test_failed_scan_does_not_remove_alias(tmp_path):
     source = create_source_db(tmp_path / "source.sqlite3")
     catalog = ExperienceCatalog(tmp_path / "artifact")
@@ -72,6 +83,22 @@ def test_source_snapshot_writes_are_atomic(tmp_path):
         report = importer.import_sources((source,))
     assert catalog.active_records() == ()
     assert (report.indexed_count, report.alias_count, report.evaluation_snapshot_count) == (0, 0, 0)
+
+
+def test_unexpected_feature_extractor_error_fails_source_scan_closed(tmp_path):
+    source = create_source_db(tmp_path / "source.sqlite3")
+    catalog = ExperienceCatalog(tmp_path / "artifact")
+    importer = ExperienceImporter(catalog)
+
+    with patch(
+        "tradingagents.experience.importer.extract_market_state",
+        side_effect=RuntimeError("unexpected extractor defect"),
+    ):
+        report = importer.import_sources((source,))
+
+    assert report.failed_scan_count == 1
+    assert report.indexed_count == 0
+    assert catalog.active_records() == ()
 
 
 def test_lock_collision_does_not_create_staging(tmp_path):
