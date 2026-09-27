@@ -76,6 +76,37 @@ def _bounded(value: Any) -> Any:
     return value
 
 
+def _string_sequence(value: Any, name: str) -> tuple[str, ...]:
+    """Normalize audit identifier lists without accepting scalar coercions."""
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise TypeError(f"{name} must be a sequence of strings")
+    try:
+        values = tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{name} must be a sequence of strings") from exc
+    if any(not isinstance(item, str) or not item.strip() or item != item.strip() for item in values):
+        raise ValueError(f"{name} entries must be non-empty trimmed strings")
+    return values
+
+
+def _rejection_sequence(value: Any) -> tuple[Any, ...]:
+    """Normalize rejection records while preserving their structured reason."""
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise TypeError("evidence_refs_rejected must be a sequence")
+    try:
+        values = tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError("evidence_refs_rejected must be a sequence") from exc
+    for item in values:
+        ref = item.get("ref") if isinstance(item, Mapping) else getattr(item, "ref", None)
+        reason = item.get("reason") if isinstance(item, Mapping) else getattr(item, "reason", None)
+        if not isinstance(ref, str) or not ref.strip() or ref != ref.strip():
+            raise ValueError("evidence_refs_rejected entries must have a valid ref")
+        if reason is None or (isinstance(reason, str) and not reason.strip()):
+            raise ValueError("evidence_refs_rejected entries must have a reason")
+    return values
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceUsageAudit:
     decision_id: str
@@ -127,6 +158,16 @@ class EvidenceUsageAudit:
             value = getattr(self, field)
             if value is not None and not isinstance(value, Mapping):
                 raise TypeError(f"{field} must be a mapping")
+        for field in (
+            "available_knowledge_ids",
+            "available_experience_ids",
+            "available_statistics_ids",
+            "evidence_refs_used",
+            "telemetry_references",
+            "missing_nodes",
+        ):
+            object.__setattr__(self, field, _string_sequence(getattr(self, field), field))
+        object.__setattr__(self, "evidence_refs_rejected", _rejection_sequence(self.evidence_refs_rejected))
         expected = hashlib.sha256(self.rendered_context.encode("utf-8")).hexdigest()
         if self.rendered_context_hash != expected:
             raise ValueError("rendered_context_hash does not match rendered_context")

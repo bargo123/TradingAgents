@@ -81,6 +81,29 @@ def test_audit_rejects_malformed_mapping_fields(field, value):
         audit(**{field: value})
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "available_knowledge_ids",
+        "available_experience_ids",
+        "available_statistics_ids",
+        "evidence_refs_used",
+        "telemetry_references",
+        "missing_nodes",
+    ],
+)
+@pytest.mark.parametrize("value", [False, 0, "", {}])
+def test_audit_rejects_malformed_reference_sequences(field, value):
+    with pytest.raises((TypeError, ValueError), match=field):
+        audit(**{field: value})
+
+
+@pytest.mark.parametrize("value", [False, 0, "", {}])
+def test_audit_rejects_malformed_rejection_sequence(value):
+    with pytest.raises((TypeError, ValueError), match="evidence_refs_rejected"):
+        audit(evidence_refs_rejected=value)
+
+
 def test_audit_is_append_only(tmp_path):
     store = EvidenceAuditStore(tmp_path / "audit.sqlite3")
     store.initialize()
