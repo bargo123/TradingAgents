@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from tradingagents.experience.errors import FeatureExtractionIncompleteError
 from tradingagents.experience.features import extract_market_state
 from tradingagents.experience.models import TrustTier
@@ -60,3 +62,12 @@ def test_nonfinite_required_quote_is_tier_c():
     result = classify_trust(row, features)
     assert result.tier is TrustTier.TIER_C_DIAGNOSTIC_ONLY
     assert "QUOTE_INVALID" in result.reasons
+
+
+@pytest.mark.parametrize("value", [None, "BROKEN", 1])
+def test_explicit_invalid_decision_reference_status_is_tier_c(value):
+    row = _row()
+    row["decision_reference_status"] = value
+    result = classify_trust(row, extract_market_state(row))
+    assert result.tier is TrustTier.TIER_C_DIAGNOSTIC_ONLY
+    assert "REFERENCE_STATUS_INVALID" in result.reasons

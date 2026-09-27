@@ -62,8 +62,17 @@ def classify_trust(
                 reasons.append("TEMPORAL_INVALID")
         except (TypeError, ValueError):
             reasons.append("TEMPORAL_INVALID")
-    if str(row.get("decision_reference_status", "")).upper() == "INVALID_TEMPORAL":
-        reasons.append("TEMPORAL_INVALID")
+    if isinstance(row, Mapping):
+        has_reference_status = "decision_reference_status" in row
+        reference_status = row.get("decision_reference_status")
+    else:
+        has_reference_status = hasattr(row, "decision_reference_status")
+        reference_status = getattr(row, "decision_reference_status", None)
+    if has_reference_status:
+        if reference_status not in {"AVAILABLE", "UNAVAILABLE", "INVALID_TEMPORAL"}:
+            reasons.append("REFERENCE_STATUS_INVALID")
+        elif reference_status == "INVALID_TEMPORAL":
+            reasons.append("TEMPORAL_INVALID")
     if sum(feature_result.mask) < MIN_FEATURES:
         reasons.append("MARKET_FEATURES_INSUFFICIENT")
     if any(d.code in {"PROVENANCE_INVALID", "SOURCE_CONFLICT"} for d in feature_result.diagnostics):
@@ -90,6 +99,7 @@ def classify_trust(
         "PROVENANCE_INVALID",
         "TEMPORAL_INVALID",
         "QUOTE_INVALID",
+        "REFERENCE_STATUS_INVALID",
     }
     if any(reason in severe for reason in reasons):
         return TrustClassification(TrustTier.TIER_C_DIAGNOSTIC_ONLY, tuple(dict.fromkeys(reasons)))
