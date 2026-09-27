@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from numbers import Real
 from types import MappingProxyType
 from typing import Any
 
@@ -113,8 +115,8 @@ def _optional_text(value: Any, name: str) -> str | None:
     return value
 
 
-def _required_text(value: Any, name: str) -> str:
-    if not isinstance(value, str) or not value.strip() or len(value) > 256:
+def _required_text(value: Any, name: str, *, max_length: int = 256) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > max_length:
         raise ValueError(f"{name} must be a non-empty bounded string")
     return value
 
@@ -133,6 +135,54 @@ def _count_mapping(value: Any, name: str) -> Mapping[str, int]:
             raise ValueError(f"{name} keys must be non-empty strings")
         normalized[key] = _non_negative_int(item, f"{name}.{key}")
     return normalized
+
+
+def _text_mapping(value: Any, name: str) -> Mapping[str, str]:
+    mapping = _mapping_or_empty(value, name)
+    normalized: dict[str, str] = {}
+    for key, item in mapping.items():
+        normalized[_required_text(key, f"{name} key")] = _required_text(item, f"{name} value")
+    return normalized
+
+
+def _float_mapping(value: Any, name: str) -> Mapping[str, float]:
+    mapping = _mapping_or_empty(value, name)
+    normalized: dict[str, float] = {}
+    for key, item in mapping.items():
+        normalized[_required_text(key, f"{name} key")] = _finite_float(item, f"{name}.{key}")
+    return normalized
+
+
+def _finite_float(value: Any, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be finite")
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        raise ValueError(f"{name} must be finite")
+    return normalized
+
+
+def _optional_finite_float(value: Any, name: str) -> float | None:
+    if value is None:
+        return None
+    return _finite_float(value, name)
+
+
+def _rate(value: Any, name: str) -> float | None:
+    normalized = _optional_finite_float(value, name)
+    if normalized is not None and not 0.0 <= normalized <= 1.0:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return normalized
+
+
+def _float_sequence(value: Any, name: str) -> tuple[float, ...]:
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise ValueError(f"{name} must be a sequence of finite numbers")
+    try:
+        values = tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a sequence of finite numbers") from exc
+    return tuple(_finite_float(item, f"{name}[]") for item in values)
 
 
 def _reject_reserved(value: Any) -> None:
@@ -392,11 +442,34 @@ class OutcomeDirectionStatistics(Serializable):
     mae_quantiles: Mapping[str, float] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "net_points", tuple(self.net_points))
-        object.__setattr__(self, "mfe_points", tuple(self.mfe_points))
-        object.__setattr__(self, "mae_points", tuple(self.mae_points))
-        object.__setattr__(self, "mfe_quantiles", _freeze(_mapping_or_empty(self.mfe_quantiles, "mfe_quantiles")))
-        object.__setattr__(self, "mae_quantiles", _freeze(_mapping_or_empty(self.mae_quantiles, "mae_quantiles")))
+        object.__setattr__(self, "net_points", _float_sequence(self.net_points, "net_points"))
+        object.__setattr__(self, "mfe_points", _float_sequence(self.mfe_points, "mfe_points"))
+        object.__setattr__(self, "mae_points", _float_sequence(self.mae_points, "mae_points"))
+        for name in (
+            "count",
+            "positive_net_count",
+            "negative_net_count",
+            "zero_net_count",
+        ):
+            object.__setattr__(self, name, _non_negative_int(getattr(self, name), name))
+        for name in (
+            "win_rate",
+            "positive_net_rate",
+            "negative_net_rate",
+            "zero_net_rate",
+        ):
+            object.__setattr__(self, name, _rate(getattr(self, name), name))
+        for name in (
+            "mean_net_points",
+            "median_net_points",
+            "mfe_mean",
+            "mfe_median",
+            "mae_mean",
+            "mae_median",
+        ):
+            object.__setattr__(self, name, _optional_finite_float(getattr(self, name), name))
+        object.__setattr__(self, "mfe_quantiles", _freeze(_float_mapping(self.mfe_quantiles, "mfe_quantiles")))
+        object.__setattr__(self, "mae_quantiles", _freeze(_float_mapping(self.mae_quantiles, "mae_quantiles")))
 
     @property
     def positive_count(self) -> int:
@@ -417,17 +490,27 @@ class OutcomeHoldStatistics(Serializable):
     best_counterfactual_counts: Mapping[str, int] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "opportunity_cost_points", tuple(self.opportunity_cost_points))
         object.__setattr__(
-            self, "missed_buy_opportunity_points", tuple(self.missed_buy_opportunity_points)
+            self,
+            "opportunity_cost_points",
+            _float_sequence(self.opportunity_cost_points, "opportunity_cost_points"),
+        )
+        object.__setattr__(self, "normal_win_rate", _rate(self.normal_win_rate, "normal_win_rate"))
+        object.__setattr__(self, "count", _non_negative_int(self.count, "count"))
+        object.__setattr__(
+            self,
+            "missed_buy_opportunity_points",
+            _float_sequence(self.missed_buy_opportunity_points, "missed_buy_opportunity_points"),
         )
         object.__setattr__(
-            self, "missed_sell_opportunity_points", tuple(self.missed_sell_opportunity_points)
+            self,
+            "missed_sell_opportunity_points",
+            _float_sequence(self.missed_sell_opportunity_points, "missed_sell_opportunity_points"),
         )
         object.__setattr__(
-            self, "best_counterfactual_counts", _freeze(
-                _mapping_or_empty(self.best_counterfactual_counts, "best_counterfactual_counts")
-            )
+            self,
+            "best_counterfactual_counts",
+            _freeze(_count_mapping(self.best_counterfactual_counts, "best_counterfactual_counts")),
         )
 
     @property
@@ -456,15 +539,25 @@ class OutcomeStatistics(Serializable):
     hold: OutcomeHoldStatistics = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "excluded_counts", _freeze(_mapping_or_empty(self.excluded_counts, "excluded_counts")))
+        for name in ("eligible_sample_denominator", "eligible_count"):
+            object.__setattr__(self, name, _non_negative_int(getattr(self, name), name))
+        for name in ("horizon_seconds", "requested_horizon_seconds"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _non_negative_int(value, name))
+        for name in ("evaluation_basis", "requested_basis"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(
+                    self,
+                    name,
+                    _required_text(value, name) if name == "evaluation_basis" else _optional_text(value, name),
+                )
+        object.__setattr__(self, "excluded_counts", _freeze(_count_mapping(self.excluded_counts, "excluded_counts")))
         object.__setattr__(
             self,
             "source_evaluation_fingerprints",
-            _freeze(
-                _mapping_or_empty(
-                    self.source_evaluation_fingerprints, "source_evaluation_fingerprints"
-                )
-            ),
+            _freeze(_text_mapping(self.source_evaluation_fingerprints, "source_evaluation_fingerprints")),
         )
         # Zero is a meaningful result when every candidate was excluded.  Do
         # not replace an explicit zero with the denominator via truthiness.
@@ -484,12 +577,12 @@ class OutcomeStatistics(Serializable):
         object.__setattr__(
             self,
             "exclusions_by_status",
-            _freeze(_mapping_or_empty(self.exclusions_by_status, "exclusions_by_status")),
+            _freeze(_count_mapping(self.exclusions_by_status, "exclusions_by_status")),
         )
         object.__setattr__(
             self,
             "exclusions_by_tier",
-            _freeze(_mapping_or_empty(self.exclusions_by_tier, "exclusions_by_tier")),
+            _freeze(_count_mapping(self.exclusions_by_tier, "exclusions_by_tier")),
         )
         for name, value, expected, factory in (
             ("buy", self.buy, OutcomeDirectionStatistics, OutcomeDirectionStatistics),
@@ -583,8 +676,21 @@ class EvidenceBundle(Serializable):
     provenance: Mapping[str, Any] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "knowledge", tuple(self.knowledge))
-        object.__setattr__(self, "experience", tuple(self.experience))
+        if not isinstance(self.status, str) or self.status not in {
+            "COMPLETE",
+            "PARTIAL",
+            "EMPTY",
+            "FAILED",
+        }:
+            raise ValueError("status must be a supported evidence bundle status")
+        for name in ("knowledge", "experience", "warnings", "errors"):
+            value = getattr(self, name)
+            if isinstance(value, (str, bytes, bytearray, Mapping)):
+                raise ValueError(f"{name} must be a sequence")
+            try:
+                object.__setattr__(self, name, tuple(value))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be a sequence") from exc
         object.__setattr__(
             self, "source_status", _freeze(_mapping_or_empty(self.source_status, "source_status"))
         )
@@ -602,11 +708,21 @@ class EvidenceSourceError(Serializable):
     message: str
     fingerprint: str | None = None
 
+    def __post_init__(self) -> None:
+        for name in ("source", "error_type"):
+            object.__setattr__(self, name, _required_text(getattr(self, name), name))
+        object.__setattr__(self, "message", _required_text(self.message, "message", max_length=512))
+        object.__setattr__(self, "fingerprint", _optional_text(self.fingerprint, "fingerprint"))
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceWarning(Serializable):
     code: str
     message: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "code", _required_text(self.code, "code"))
+        object.__setattr__(self, "message", _required_text(self.message, "message", max_length=512))
 
 
 @dataclass(frozen=True, slots=True)

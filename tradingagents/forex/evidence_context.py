@@ -117,6 +117,12 @@ class CanonicalKnowledgeQuery:
     fingerprint: str = ""
     policy_version: str = ""
 
+    def __post_init__(self) -> None:
+        for name in ("text", "fingerprint", "policy_version"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or len(value) > 256:
+                raise ValueError(f"{name} must be text")
+
 
 @dataclass(frozen=True, slots=True)
 class EvidenceSnapshotAdapter:

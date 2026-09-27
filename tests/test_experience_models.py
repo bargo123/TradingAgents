@@ -7,6 +7,8 @@ from tradingagents.experience.models import (
     EvaluationStatus,
     EvidenceBundle,
     EvidenceRequest,
+    EvidenceSourceError,
+    EvidenceWarning,
     ExperienceHit,
     ExperienceQuery,
     ExperienceRecord,
@@ -17,6 +19,7 @@ from tradingagents.experience.models import (
     OutcomeStatsRequest,
     TrustTier,
 )
+from tradingagents.forex.evidence_context import CanonicalKnowledgeQuery
 
 
 def test_outcome_stats_request_carries_as_of() -> None:
@@ -198,10 +201,39 @@ def test_direction_statistics_reject_malformed_quantile_mappings(field: str, val
         OutcomeDirectionStatistics(**{field: value})
 
 
+@pytest.mark.parametrize("value", [False, "bad", {}, [True]])
+def test_direction_statistics_reject_malformed_numeric_sequences(value: object) -> None:
+    with pytest.raises(ValueError, match="net_points"):
+        OutcomeDirectionStatistics(net_points=value)
+
+
+def test_direction_statistics_reject_invalid_quantile_values() -> None:
+    with pytest.raises(ValueError, match="mfe_quantiles"):
+        OutcomeDirectionStatistics(mfe_quantiles={"p50": "1"})
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, "1"])
+def test_direction_statistics_reject_invalid_count(value: object) -> None:
+    with pytest.raises(ValueError, match="count"):
+        OutcomeDirectionStatistics(count=value)
+
+
 @pytest.mark.parametrize("value", [[], False, 0])
 def test_hold_statistics_reject_malformed_counterfactual_mapping(value: object) -> None:
     with pytest.raises(ValueError, match="best_counterfactual_counts"):
         OutcomeHoldStatistics(best_counterfactual_counts=value)
+
+
+@pytest.mark.parametrize("value", [False, "bad", {}, [True]])
+def test_hold_statistics_reject_malformed_numeric_sequences(value: object) -> None:
+    with pytest.raises(ValueError, match="opportunity_cost_points"):
+        OutcomeHoldStatistics(opportunity_cost_points=value)
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, "1"])
+def test_hold_statistics_reject_invalid_count(value: object) -> None:
+    with pytest.raises(ValueError, match="count"):
+        OutcomeHoldStatistics(count=value)
 
 
 @pytest.mark.parametrize(
@@ -214,11 +246,59 @@ def test_outcome_statistics_reject_malformed_mappings(field: str, value: object)
         OutcomeStatistics(**{field: value})
 
 
+@pytest.mark.parametrize("field", ["eligible_sample_denominator", "eligible_count"])
+@pytest.mark.parametrize("value", [True, -1, 1.5, "1"])
+def test_outcome_statistics_reject_invalid_counts(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        OutcomeStatistics(**{field: value})
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_outcome_statistics_rejects_non_text_basis(value: object) -> None:
+    with pytest.raises(ValueError, match="evaluation_basis"):
+        OutcomeStatistics(evaluation_basis=value)
+
+
+def test_outcome_statistics_rejects_non_text_fingerprint_values() -> None:
+    with pytest.raises(ValueError, match="source_evaluation_fingerprints"):
+        OutcomeStatistics(source_evaluation_fingerprints={"x": 1})
+
+
 @pytest.mark.parametrize("field", ["source_status", "provenance"])
 @pytest.mark.parametrize("value", [[], False, 0])
 def test_evidence_bundle_rejects_malformed_mappings(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
         EvidenceBundle(**{field: value})
+
+
+@pytest.mark.parametrize("field", ["text", "fingerprint", "policy_version"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_canonical_knowledge_query_rejects_non_text_fields(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        CanonicalKnowledgeQuery(**{field: value})
+
+
+@pytest.mark.parametrize("factory", [EvidenceSourceError, EvidenceWarning])
+def test_evidence_diagnostics_reject_non_text_fields(factory) -> None:
+    kwargs = (
+        {"source": False, "error_type": "x", "message": "m"}
+        if factory is EvidenceSourceError
+        else {"code": False, "message": "m"}
+    )
+    with pytest.raises(ValueError):
+        factory(**kwargs)
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}, "UNKNOWN"])
+def test_evidence_bundle_rejects_invalid_status(value: object) -> None:
+    with pytest.raises(ValueError, match="status"):
+        EvidenceBundle(status=value)
+
+
+@pytest.mark.parametrize("field", ["knowledge", "experience", "warnings", "errors"])
+def test_evidence_bundle_rejects_scalar_collections(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        EvidenceBundle(**{field: "not-a-sequence"})
 
 
 def test_evaluation_status_includes_ineligible() -> None:
