@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import sqlite3
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
@@ -1297,6 +1298,7 @@ class ShadowOutcomeEvaluator:
     ) -> ShadowDecisionEvaluationResult:
         decision = self.decision_store.get(decision_id)
         provider: Any | None = None
+        result: ShadowDecisionEvaluationResult | None = None
         try:
             result, provider, _, _ = self._evaluate_one(
                 decision,
@@ -1309,7 +1311,15 @@ class ShadowOutcomeEvaluator:
         finally:
             shutdown = getattr(provider, "shutdown", None) if provider is not None else None
             if callable(shutdown):
-                shutdown()
+                cleanup_failed_during_primary_error = (
+                    sys.exc_info()[0] is not None
+                    or (result is not None and bool(result.errors))
+                )
+                try:
+                    shutdown()
+                except Exception:
+                    if not cleanup_failed_during_primary_error:
+                        raise
 
     def evaluate_pending(
         self,
@@ -1351,7 +1361,14 @@ class ShadowOutcomeEvaluator:
         finally:
             shutdown = getattr(provider, "shutdown", None) if provider is not None else None
             if callable(shutdown):
-                shutdown()
+                cleanup_failed_during_primary_error = (
+                    sys.exc_info()[0] is not None or bool(all_errors)
+                )
+                try:
+                    shutdown()
+                except Exception:
+                    if not cleanup_failed_during_primary_error:
+                        raise
         status_by_basis = {
             basis: _aggregate_status(
                 [row for row in all_evaluations if row.evaluation_basis == basis]

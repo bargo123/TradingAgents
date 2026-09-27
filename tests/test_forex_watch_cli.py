@@ -91,6 +91,29 @@ def test_once_propagates_active_analysis_failure(capsys, monkeypatch, tmp_path):
     assert "ANALYSIS_FAILED" in capsys.readouterr().err
 
 
+def test_once_preserves_analysis_failure_when_coordinator_shutdown_fails(
+    capsys, monkeypatch, tmp_path
+):
+    class FakeCoordinator:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def start(self):
+            return SimpleNamespace(status=LeaseStatus.ACQUIRED)
+
+        def run_once(self, now=None):
+            del now
+            raise RuntimeError("analysis failure")
+
+        def shutdown(self):
+            raise RuntimeError("shutdown failure")
+
+    monkeypatch.setattr("cli.forex_watch.WatcherCoordinator", FakeCoordinator)
+
+    assert main(["once", "--db-path", str(tmp_path / "watch.db")]) == 1
+    assert "analysis failure" in capsys.readouterr().err
+
+
 def test_once_shuts_down_coordinator_when_start_raises(capsys, monkeypatch, tmp_path):
     calls = []
 

@@ -155,6 +155,47 @@ def test_supervisor_shuts_down_owned_runtime_when_watcher_exits():
     assert calls[-1] == "shutdown"
 
 
+def test_supervisor_preserves_watcher_failure_when_runtime_shutdown_fails():
+    store = SimpleNamespace(active_lease=lambda _now: None)
+
+    class Runtime:
+        def ensure_healthy(self):
+            return OllamaHealth(
+                "HEALTHY",
+                "http://127.0.0.1:11435",
+                "v",
+                ("qwen3.5:2b", "qwen3.5:4b"),
+                16384,
+            )
+
+        def prewarm(self):
+            return {}
+
+        def health(self):
+            return OllamaHealth(
+                "HEALTHY",
+                "http://127.0.0.1:11435",
+                "v",
+                ("qwen3.5:2b", "qwen3.5:4b"),
+                16384,
+            )
+
+        def shutdown(self):
+            raise RuntimeError("shutdown failure")
+
+    def watch_main(*_args, **_kwargs):
+        raise RuntimeError("watch failure")
+
+    supervisor = ForexSupervisor(
+        ForexShadowRuntimeConfig(),
+        runtime_factory=lambda _config: Runtime(),
+        store_factory=lambda _path: store,
+    )
+
+    with pytest.raises(RuntimeError, match="watch failure"):
+        supervisor.run(db_path="watch.db", watch_main=watch_main)
+
+
 def test_supervisor_never_starts_collector_before_ollama_is_healthy():
     store = SimpleNamespace(active_lease=lambda _now: None)
     watched = []

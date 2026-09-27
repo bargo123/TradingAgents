@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
@@ -197,7 +198,12 @@ class ForexSupervisor:
         finally:
             shutdown = getattr(runtime, "shutdown", None)
             if callable(shutdown):
-                shutdown()
+                cleanup_failed_during_primary_error = sys.exc_info()[0] is not None
+                try:
+                    shutdown()
+                except Exception:
+                    if not cleanup_failed_during_primary_error:
+                        raise
 
 
 __all__ = ["ForexSupervisor"]

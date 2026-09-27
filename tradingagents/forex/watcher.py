@@ -14,6 +14,7 @@ import json
 import math
 import os
 import socket
+import sys
 import threading
 import time
 import uuid
@@ -639,7 +640,12 @@ class ReadOnlyMarketProbe:
         finally:
             shutdown = getattr(provider, "shutdown", None) if provider is not None else None
             if callable(shutdown):
-                shutdown()
+                cleanup_failed_during_primary_error = sys.exc_info()[0] is not None
+                try:
+                    shutdown()
+                except Exception:
+                    if not cleanup_failed_during_primary_error:
+                        raise
 
 
 class Mt5OperationBusy(RuntimeError):

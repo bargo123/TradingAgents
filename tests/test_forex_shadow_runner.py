@@ -657,6 +657,33 @@ def test_runner_shuts_down_when_graph_fails(tmp_path):
     assert provider.shutdown_calls == 1
 
 
+def test_runner_preserves_graph_failure_when_shutdown_also_fails(tmp_path):
+    provider = _FakeProvider(_snapshot())
+
+    def failing_shutdown():
+        provider.shutdown_calls += 1
+        raise RuntimeError("shutdown failure")
+
+    provider.shutdown = failing_shutdown
+
+    class FailingGraph(_FakeGraph):
+        def _invoke_compiled(self, init_state, **kwargs):
+            raise RuntimeError("graph failure")
+
+    graph = FailingGraph({"final_trade_decision": None})
+    runner = ForexShadowRunner(
+        provider_factory=lambda terminal_path=None: provider,
+        graph_factory=lambda **kwargs: graph,
+        store=ShadowDecisionStore(tmp_path / "shadow.db"),
+        config={"llm_provider": "local"},
+    )
+
+    with pytest.raises(RuntimeError, match="graph failure"):
+        runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert provider.shutdown_calls == 1
+
+
 def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
     provider = _FakeProvider(_snapshot())
     runner, _, _, _ = _make_runner(tmp_path, {"final_trade_decision": None})

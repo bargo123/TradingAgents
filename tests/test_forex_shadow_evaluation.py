@@ -378,9 +378,16 @@ def test_evaluation_store_migrates_legacy_single_key_table(tmp_path: Path) -> No
 
 
 class _CountingEvaluationProvider:
-    def __init__(self, ticks: tuple[Mt5Tick, ...] = (), *, init_error: Exception | None = None):
+    def __init__(
+        self,
+        ticks: tuple[Mt5Tick, ...] = (),
+        *,
+        init_error: Exception | None = None,
+        shutdown_error: Exception | None = None,
+    ):
         self.ticks = ticks
         self.init_error = init_error
+        self.shutdown_error = shutdown_error
         self.initialize_calls = 0
         self.shutdown_calls = 0
         self.range_calls: list[tuple[str, datetime, datetime]] = []
@@ -393,6 +400,8 @@ class _CountingEvaluationProvider:
 
     def shutdown(self) -> None:
         self.shutdown_calls += 1
+        if self.shutdown_error is not None:
+            raise self.shutdown_error
 
     def get_ticks_range(self, symbol: str, start: datetime, end: datetime, *, flags=None):
         self.range_calls.append((symbol, start, end))
@@ -503,6 +512,19 @@ def test_evaluator_provider_failure_leaves_unresolved_horizons_pending(tmp_path:
     assert provider.initialize_calls == 1
     assert result.errors and "MT5 unavailable" in result.errors[0]
     assert all(row.evaluation_status == "PENDING" for row in result.evaluations)
+
+
+def test_evaluator_preserves_evaluation_failure_when_shutdown_also_fails(tmp_path: Path) -> None:
+    provider = _CountingEvaluationProvider(
+        init_error=RuntimeError("MT5 failure"),
+        shutdown_error=RuntimeError("shutdown failure"),
+    )
+    evaluator, decision = _evaluator(tmp_path, provider)
+
+    result = evaluator.evaluate_decision(decision.decision_id, now=REFERENCE + timedelta(hours=1))
+
+    assert result.errors and "MT5 failure" in result.errors[0]
+    assert provider.shutdown_calls == 1
 
 
 def test_evaluator_recovers_data_unavailable_after_later_successful_read(tmp_path: Path) -> None:

@@ -275,7 +275,12 @@ def _run_once(coordinator: Any) -> int:
         _print_status(summary, False)
         return 0 if error_code is None else 1
     finally:
-        coordinator.shutdown()
+        cleanup_failed_during_primary_error = sys.exc_info()[0] is not None
+        try:
+            coordinator.shutdown()
+        except Exception:
+            if not cleanup_failed_during_primary_error:
+                raise
 
 
 def main(

@@ -5,6 +5,7 @@ import importlib
 import inspect
 import json
 import math
+import sys
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -977,7 +978,12 @@ class ForexShadowRunner:
         finally:
             shutdown = getattr(mt5_provider, "shutdown", None) if mt5_provider is not None else None
             if callable(shutdown):
-                shutdown()
+                cleanup_failed_during_primary_error = sys.exc_info()[0] is not None
+                try:
+                    shutdown()
+                except Exception:
+                    if not cleanup_failed_during_primary_error:
+                        raise
 
     def run(
         self,

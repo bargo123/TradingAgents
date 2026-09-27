@@ -308,6 +308,25 @@ def test_probe_shuts_down_provider_and_never_exposes_mutation_api():
         assert not hasattr(probe, name)
 
 
+def test_probe_preserves_probe_failure_when_shutdown_also_fails():
+    provider = FakeProbeProvider()
+
+    def failing_shutdown():
+        provider.shutdown_calls += 1
+        raise RuntimeError("shutdown failure")
+
+    provider.ensure_symbol = lambda symbol: (_ for _ in ()).throw(
+        RuntimeError("probe failure")
+    )
+    provider.shutdown = failing_shutdown
+    probe = ReadOnlyMarketProbe(lambda terminal_path=None: provider, terminal_path=None)
+
+    with pytest.raises(RuntimeError, match="probe failure"):
+        probe.probe("EURUSD")
+
+    assert provider.shutdown_calls == 1
+
+
 def test_market_probe_result_validates_injected_quote_values():
     with pytest.raises(ValueError):
         from tradingagents.forex.watcher import MarketProbeResult
