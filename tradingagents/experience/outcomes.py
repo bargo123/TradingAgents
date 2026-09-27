@@ -217,8 +217,7 @@ class OutcomeStatsCalculator:
                         reason = "SOURCE_CONTEXT_INELIGIBLE"
                     elif (
                         request.evaluation_basis == "DECISION_REFERENCE"
-                        and str(snapshot.get("decision_reference_status", "AVAILABLE")).upper()
-                        != "AVAILABLE"
+                        and snapshot.get("decision_reference_status", "AVAILABLE") != "AVAILABLE"
                     ):
                         reason = "REFERENCE_UNAVAILABLE"
                     elif (
@@ -230,11 +229,11 @@ class OutcomeStatsCalculator:
                                 "selected_action_net_points",
                             )
                         )
-                        or str(snapshot.get("selected_action", "")).upper() == "HOLD"
+                        or snapshot.get("selected_action", "") == "HOLD"
                         and not _finite(snapshot.get("hold_opportunity_cost_points"))
                     ):
                         reason = "REQUIRED_FIELD_MISSING_OR_NONFINITE"
-                    elif str(snapshot.get("selected_action", "")).upper() not in {
+                    elif snapshot.get("selected_action", "") not in {
                         "BUY",
                         "SELL",
                         "HOLD",
@@ -243,7 +242,7 @@ class OutcomeStatsCalculator:
                 if reason is None:
                     eligible_count += 1
                     fingerprints[str(experience_id)] = str(snapshot.get("fingerprint", ""))
-                    action = str(snapshot.get("selected_action", "")).upper()
+                    action = snapshot.get("selected_action", "")
                     if _finite(snapshot.get("buy_mfe_points")):
                         buy_mfe.append(float(snapshot["buy_mfe_points"]))
                     if _finite(snapshot.get("buy_mae_points")):
@@ -260,7 +259,7 @@ class OutcomeStatsCalculator:
                             hold_buy_missed.append(float(snapshot["buy_net_points"]))
                         if float(snapshot["sell_net_points"]) > 0:
                             hold_sell_missed.append(float(snapshot["sell_net_points"]))
-                        best = str(snapshot.get("best_counterfactual_action", "")).upper()
+                        best = snapshot.get("best_counterfactual_action", "")
                         if best in {"BUY", "SELL", "TIE"}:
                             best_counterfactuals[best] = best_counterfactuals.get(best, 0) + 1
                     continue

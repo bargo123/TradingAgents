@@ -99,6 +99,30 @@ def test_complete_snapshot_with_invalid_selected_action_is_excluded():
     assert result.excluded_counts["SELECTED_ACTION_INVALID"] == 1
 
 
+def test_noncanonical_selected_action_is_excluded_without_uppercase_coercion():
+    row = _complete("lower-action", selected_action="buy")
+    result = OutcomeStatsCalculator((_record("lower-action", snapshots=(row,)),)).calculate(
+        OutcomeStatsRequest(("lower-action",), "ANALYSIS_SNAPSHOT", 300)
+    )
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["SELECTED_ACTION_INVALID"] == 1
+
+
+def test_noncanonical_decision_reference_status_is_unavailable():
+    row = _complete(
+        "lower-reference",
+        basis="DECISION_REFERENCE",
+        decision_reference_status="available",
+    )
+    result = OutcomeStatsCalculator((_record("lower-reference", snapshots=(row,)),)).calculate(
+        OutcomeStatsRequest(("lower-reference",), "DECISION_REFERENCE", 300)
+    )
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["REFERENCE_UNAVAILABLE"] == 1
+
+
 def test_complete_snapshot_with_nonfinite_selected_action_value_is_excluded():
     row = _complete("bad-selected-value", selected_action_net_points=float("nan"))
     result = OutcomeStatsCalculator(
