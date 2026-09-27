@@ -321,6 +321,36 @@ def test_publish_generation_rejects_cross_source_chunks_atomically(tmp_path):
     assert catalog.get_document(document_id) is None
 
 
+def test_publish_generation_rejects_alias_source_hash_mismatch_atomically(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("cc" * 32)
+    document = make_parsed_document(document_id=document_id, source_hash="cc" * 32)
+    summary = IngestionRunSummary(
+        run_id="run-alias-identity-mismatch",
+        state="SUCCEEDED",
+        counts={},
+        source_count=1,
+        document_count=1,
+        chunk_count=0,
+    )
+
+    with pytest.raises(ValueError, match="source_hash"):
+        catalog.publish_generation(
+            None,
+            documents_by_id={document_id: document},
+            component_fingerprints={},
+            chunks_by_document={},
+            aliases=(("res_bad", document_id, "dd" * 32, IngestionState.INDEXED),),
+            removed_resource_ids=(),
+            ready_document_ids=(),
+            summary=summary,
+        )
+
+    assert catalog.get_document(document_id) is None
+    assert catalog.get_alias("res_bad") is None
+
+
 def test_generation_registry_rejects_invalid_pair_and_preserves_previous_active_generation(tmp_path):
     catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
     catalog.initialize()
