@@ -71,3 +71,18 @@ def test_explicit_invalid_decision_reference_status_is_tier_c(value):
     result = classify_trust(row, extract_market_state(row))
     assert result.tier is TrustTier.TIER_C_DIAGNOSTIC_ONLY
     assert "REFERENCE_STATUS_INVALID" in result.reasons
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("normalization_status", "normalized"),
+        ("decision_context_status", "complete"),
+        ("action", "buy"),
+    ],
+)
+def test_noncanonical_shadow_status_values_are_tier_c(field, value):
+    row = _row()
+    row[field] = value
+    result = classify_trust(row, extract_market_state(row))
+    assert result.tier is TrustTier.TIER_C_DIAGNOSTIC_ONLY

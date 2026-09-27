@@ -37,11 +37,11 @@ def classify_trust(
     executed = row.get("executed", 0)
     if executed not in (0, False, None):
         reasons.append("EXECUTED")
-    if str(row.get("normalization_status", "")).upper() != "NORMALIZED":
+    if row.get("normalization_status") != "NORMALIZED":
         reasons.append("NORMALIZATION_FAILED")
-    if str(row.get("decision_context_status", "")).upper() != "COMPLETE":
+    if row.get("decision_context_status") != "COMPLETE":
         reasons.append("CONTEXT_INCOMPLETE")
-    if str(row.get("action", "")).upper() not in {"BUY", "SELL", "HOLD"}:
+    if row.get("action") not in {"BUY", "SELL", "HOLD"}:
         reasons.append("ACTION_INVALID")
     completed = row.get("decision_completed_timestamp")
     if completed is None:
