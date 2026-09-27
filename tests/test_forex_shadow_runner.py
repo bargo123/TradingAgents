@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -539,7 +540,11 @@ def test_runner_persists_failed_normalization_without_guessing(tmp_path):
     assert result.decision.action is None
     assert result.decision.normalization_status == "FAILED"
     assert "structured" in result.decision.normalization_error.lower()
-    assert "BUY now" in result.decision.raw_portfolio_manager_result_json
+    assert "BUY now" not in result.decision.raw_portfolio_manager_result_json
+    assert json.loads(result.decision.raw_portfolio_manager_result_json) == {
+        "error": "STRUCTURED_OUTPUT_INVALID",
+        "status": "FAILED",
+    }
     assert store.get(result.decision.decision_id).normalization_status == "FAILED"
 
 

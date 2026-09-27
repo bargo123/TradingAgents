@@ -187,6 +187,20 @@ def test_normalization_rejects_whitespace_and_case_variants() -> None:
     assert "unknown" in result.normalization_error.lower()
 
 
+def test_normalization_failure_does_not_echo_model_rating() -> None:
+    result = normalize_portfolio_manager_result(
+        {"rating": "SECRET_PROMPT_COMPLETION_TOKEN"}
+    )
+
+    assert result.action is None
+    assert result.normalization_status == "FAILED"
+    assert "secret_prompt_completion_token" not in (result.normalization_error or "").lower()
+    assert result.raw_result == {
+        "error": "STRUCTURED_OUTPUT_INVALID",
+        "status": "FAILED",
+    }
+
+
 def test_normalization_rejects_conflicting_mapping_and_unknown_types() -> None:
     result = normalize_portfolio_manager_result(
         {"rating": "Hold", "recommendation": "Sell"}

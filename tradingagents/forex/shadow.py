@@ -76,7 +76,7 @@ def _validate_forex_payload(payload: Mapping[str, Any], profile_name: str) -> st
     if profile_value is not None and profile_value != profile_name:
         return (
             f"forex analysis_profile must be exactly {profile_name}, "
-            f"got {profile_value!r}"
+            f"received type {type(profile_value).__name__}"
         )
 
     horizon = payload.get("time_horizon")
@@ -147,6 +147,12 @@ def _canonical_rating(value: Any) -> str:
     raise ValueError("rating must be an exact PortfolioRating value")
 
 
+def _invalid_structured_result() -> dict[str, str]:
+    """Return bounded metadata for a rejected model payload."""
+
+    return {"error": "STRUCTURED_OUTPUT_INVALID", "status": "FAILED"}
+
+
 def _normalize_from_payload(
     payload: Mapping[str, Any],
     *,
@@ -158,8 +164,11 @@ def _normalize_from_payload(
         return ShadowNormalization(
             action=None,
             normalization_status="FAILED",
-            normalization_error=str(exc),
-            raw_result={"error": str(exc)},
+            normalization_error=(
+                "structured output contains non-finite or unsupported values "
+                f"(cause_type={type(exc).__name__})"
+            ),
+            raw_result=_invalid_structured_result(),
         )
 
     if "rating" not in payload:
@@ -169,7 +178,7 @@ def _normalize_from_payload(
             normalization_error=(
                 "structured Portfolio Manager output must include an exact rating"
             ),
-            raw_result=safe_payload,
+            raw_result=_invalid_structured_result(),
         )
 
     if forex_profile is not None:
@@ -179,7 +188,7 @@ def _normalize_from_payload(
                 action=None,
                 normalization_status="FAILED",
                 normalization_error=forex_error,
-                raw_result=safe_payload,
+                raw_result=_invalid_structured_result(),
             )
 
     try:
@@ -189,9 +198,10 @@ def _normalize_from_payload(
             action=None,
             normalization_status="FAILED",
             normalization_error=(
-                f"unknown PortfolioRating value: {payload['rating']!r}"
+                "unknown PortfolioRating value "
+                f"(type={type(payload['rating']).__name__})"
             ),
-            raw_result=safe_payload,
+            raw_result=_invalid_structured_result(),
         )
     except TypeError:
         return ShadowNormalization(
@@ -200,7 +210,7 @@ def _normalize_from_payload(
             normalization_error=(
                 "structured Portfolio Manager output must include an exact rating"
             ),
-            raw_result=safe_payload,
+            raw_result=_invalid_structured_result(),
         )
 
     mapped_action = _RATING_TO_ACTION.get(rating_text)
@@ -208,10 +218,8 @@ def _normalize_from_payload(
         return ShadowNormalization(
             action=None,
             normalization_status="FAILED",
-            normalization_error=(
-                f"unknown PortfolioRating value: {rating_text!r}"
-            ),
-            raw_result=safe_payload,
+            normalization_error="unknown PortfolioRating value",
+            raw_result=_invalid_structured_result(),
         )
 
     for alias in ("recommendation", "action"):
@@ -222,7 +230,7 @@ def _normalize_from_payload(
                 normalization_error=(
                     "conflicting structured Portfolio Manager rating values"
                 ),
-                raw_result=safe_payload,
+                raw_result=_invalid_structured_result(),
             )
 
     return ShadowNormalization(
@@ -263,7 +271,7 @@ def normalize_portfolio_manager_result(
             normalization_error=(
                 "structured Portfolio Manager output must not be prose"
             ),
-            raw_result={"value": raw},
+            raw_result=_invalid_structured_result(),
         )
 
     if isinstance(raw, PortfolioDecision):
