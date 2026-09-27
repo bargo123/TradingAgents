@@ -33,6 +33,13 @@ def test_experience_query_defaults_to_tier_a_and_b() -> None:
     )
 
 
+@pytest.mark.parametrize("field", ["symbol", "analysis_profile", "analysis_timeframe", "action_filter"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_experience_query_rejects_non_text_filters(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        ExperienceQuery({}, **{field: value})
+
+
 def test_evidence_bundle_has_no_recommendation_field() -> None:
     assert not hasattr(EvidenceBundle, "recommendation")
 
@@ -52,6 +59,24 @@ def test_contracts_are_frozen_and_json_serializable() -> None:
 def test_experience_search_result_rejects_non_hit_values(value: object) -> None:
     with pytest.raises((TypeError, ValueError), match="hits"):
         ExperienceSearchResult((value,))
+
+
+@pytest.mark.parametrize("field", ["query_normalization_fingerprint", "active_generation_id"])
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_experience_search_result_rejects_non_text_metadata(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        ExperienceSearchResult(**{field: value})
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, "1"])
+def test_experience_search_result_rejects_invalid_candidate_count(value: object) -> None:
+    with pytest.raises(ValueError, match="candidate_count"):
+        ExperienceSearchResult(candidate_count=value)
+
+
+def test_experience_search_result_rejects_invalid_excluded_count_values() -> None:
+    with pytest.raises(ValueError, match="excluded_counts"):
+        ExperienceSearchResult(excluded_counts={"invalid": "1"})
 
 
 @pytest.mark.parametrize(
@@ -77,10 +102,43 @@ def test_experience_record_requires_analysis_snapshot_timestamp() -> None:
         ExperienceRecord("exp-1", "db-1", "dec-1", "EURUSD", None)
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_run_id",
+        "requested_symbol",
+        "analysis_profile",
+        "analysis_timeframe",
+        "source_decision_fingerprint",
+    ],
+)
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_experience_record_rejects_non_text_optional_identity(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        ExperienceRecord(
+            "exp-1",
+            "db-1",
+            "dec-1",
+            "EURUSD",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            **{field: value},
+        )
+
+
 @pytest.mark.parametrize("value", [None, 1, "  "])
 def test_experience_hit_rejects_invalid_identity(value: object) -> None:
     with pytest.raises(ValueError, match="experience_id"):
         ExperienceHit(value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["source_decision_id", "action", "feature_schema_version", "similarity_profile_version"],
+)
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_experience_hit_rejects_non_text_optional_identity(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        ExperienceHit("exp-1", **{field: value})
 
 
 def test_utc_timestamps_are_required() -> None:
@@ -280,6 +338,12 @@ def test_outcome_stats_request_rejects_string_experience_ids() -> None:
         OutcomeStatsRequest("exp-1", horizon_seconds=300)
 
 
+@pytest.mark.parametrize("value", [None, False, 0, [], {}])
+def test_outcome_stats_request_rejects_non_text_basis(value: object) -> None:
+    with pytest.raises(ValueError, match="evaluation_basis"):
+        OutcomeStatsRequest(("exp-1",), evaluation_basis=value, horizon_seconds=300)
+
+
 @pytest.mark.parametrize("field", ["knowledge_top_k", "experience_top_k"])
 @pytest.mark.parametrize("value", [True, 0, -1, 1001, 1.5, "10"])
 def test_evidence_request_rejects_invalid_top_k(field: str, value: object) -> None:
@@ -297,3 +361,20 @@ def test_evidence_request_rejects_invalid_horizon(value: object) -> None:
 def test_evidence_request_rejects_scalar_filter_sequences(field: str) -> None:
     with pytest.raises(ValueError, match=field):
         EvidenceRequest(**{field: "not-a-sequence"})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "research_question",
+        "symbol",
+        "analysis_profile",
+        "analysis_timeframe",
+        "evaluation_basis",
+        "action_filter",
+    ],
+)
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_evidence_request_rejects_non_text_optional_fields(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        EvidenceRequest(**{field: value})

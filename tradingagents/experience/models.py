@@ -105,6 +105,36 @@ def _mapping_or_empty(value: Any, name: str) -> Mapping:
     return value
 
 
+def _optional_text(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or len(value) > 256:
+        raise ValueError(f"{name} must be text or None")
+    return value
+
+
+def _required_text(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > 256:
+        raise ValueError(f"{name} must be a non-empty bounded string")
+    return value
+
+
+def _non_negative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _count_mapping(value: Any, name: str) -> Mapping[str, int]:
+    mapping = _mapping_or_empty(value, name)
+    normalized: dict[str, int] = {}
+    for key, item in mapping.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"{name} keys must be non-empty strings")
+        normalized[key] = _non_negative_int(item, f"{name}.{key}")
+    return normalized
+
+
 def _reject_reserved(value: Any) -> None:
     if isinstance(value, Mapping):
         if "training_eligible" in value or "training_eligibility_reason" in value:
@@ -149,6 +179,14 @@ class ExperienceRecord(Serializable):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a non-empty string")
+        for name in (
+            "source_run_id",
+            "requested_symbol",
+            "analysis_profile",
+            "analysis_timeframe",
+            "source_decision_fingerprint",
+        ):
+            _optional_text(getattr(self, name), name)
         if not isinstance(self.analysis_snapshot_timestamp, datetime):
             raise ValueError("analysis_snapshot_timestamp is required")
         object.__setattr__(
@@ -218,6 +256,8 @@ class ExperienceQuery(Serializable):
         if not isinstance(self.market_state, Mapping):
             raise ValueError("market_state must be a mapping")
         _reject_reserved(self.market_state)
+        for name in ("symbol", "analysis_profile", "analysis_timeframe", "action_filter"):
+            _optional_text(getattr(self, name), name)
         if isinstance(self.top_k, bool) or not isinstance(self.top_k, int):
             raise ValueError("top_k must be a positive integer")
         if self.top_k < 1:
@@ -249,6 +289,13 @@ class ExperienceHit(Serializable):
             raise ValueError("experience_id must be a non-empty string")
         if not isinstance(self.currently_tombstoned, bool):
             raise ValueError("currently_tombstoned must be a boolean")
+        for name in (
+            "source_decision_id",
+            "action",
+            "feature_schema_version",
+            "similarity_profile_version",
+        ):
+            _optional_text(getattr(self, name), name)
         if self.trust_tier is not None:
             object.__setattr__(self, "trust_tier", TrustTier(self.trust_tier))
         for n in ("market_state", "timestamps", "outcome_availability", "provenance"):
@@ -277,7 +324,22 @@ class ExperienceSearchResult(Serializable):
         if any(not isinstance(hit, ExperienceHit) for hit in hits):
             raise TypeError("hits must contain ExperienceHit values")
         object.__setattr__(self, "hits", hits)
-        object.__setattr__(self, "excluded_counts", _freeze(_mapping_or_empty(self.excluded_counts, "excluded_counts")))
+        object.__setattr__(
+            self,
+            "query_normalization_fingerprint",
+            _optional_text(self.query_normalization_fingerprint, "query_normalization_fingerprint"),
+        )
+        object.__setattr__(
+            self,
+            "active_generation_id",
+            _optional_text(self.active_generation_id, "active_generation_id"),
+        )
+        object.__setattr__(self, "candidate_count", _non_negative_int(self.candidate_count, "candidate_count"))
+        object.__setattr__(
+            self,
+            "excluded_counts",
+            _freeze(_count_mapping(self.excluded_counts, "excluded_counts")),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +360,7 @@ class OutcomeStatsRequest(Serializable):
         if any(not isinstance(value, str) or not value.strip() for value in experience_ids):
             raise ValueError("experience_ids must contain non-empty strings")
         object.__setattr__(self, "experience_ids", experience_ids)
+        object.__setattr__(self, "evaluation_basis", _required_text(self.evaluation_basis, "evaluation_basis"))
         object.__setattr__(self, "trust_tiers", _tiers(self.trust_tiers))
         object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
         if isinstance(self.horizon_seconds, bool) or not isinstance(self.horizon_seconds, int):
@@ -458,6 +521,15 @@ class EvidenceRequest(Serializable):
     action_filter: str | None = None
 
     def __post_init__(self) -> None:
+        for name in (
+            "research_question",
+            "symbol",
+            "analysis_profile",
+            "analysis_timeframe",
+            "evaluation_basis",
+            "action_filter",
+        ):
+            _optional_text(getattr(self, name), name)
         for name in ("knowledge_top_k", "experience_top_k"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 1000:
