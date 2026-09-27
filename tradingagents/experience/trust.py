@@ -79,8 +79,10 @@ def classify_trust(
         reasons.append("PROVENANCE_INVALID")
     if any(d.code == "QUOTE_INVALID" for d in feature_result.diagnostics):
         reasons.append("QUOTE_INVALID")
-    provenance = row.get("provenance") or {}
-    if isinstance(provenance, Mapping):
+    provenance = row.get("provenance")
+    if provenance is not None and not isinstance(provenance, Mapping):
+        reasons.append("PROVENANCE_INVALID")
+    elif isinstance(provenance, Mapping):
         expected = row.get("source_decision_fingerprint")
         actual = provenance.get("source_decision_fingerprint")
         if expected and actual and expected != actual:

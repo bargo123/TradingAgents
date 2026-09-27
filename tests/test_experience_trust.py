@@ -64,6 +64,15 @@ def test_nonfinite_required_quote_is_tier_c():
     assert "QUOTE_INVALID" in result.reasons
 
 
+@pytest.mark.parametrize("value", ["malformed", [], 1])
+def test_malformed_explicit_provenance_is_tier_c(value):
+    row = _row()
+    row["provenance"] = value
+    result = classify_trust(row, extract_market_state(row))
+    assert result.tier is TrustTier.TIER_C_DIAGNOSTIC_ONLY
+    assert "PROVENANCE_INVALID" in result.reasons
+
+
 @pytest.mark.parametrize("value", [None, "BROKEN", 1])
 def test_explicit_invalid_decision_reference_status_is_tier_c(value):
     row = _row()
