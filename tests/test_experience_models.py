@@ -97,6 +97,34 @@ def test_nested_mappings_are_immutable_and_set_serialization_is_deterministic() 
     )
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_aliases",
+        "market_state",
+        "decision_evidence",
+        "outcome_evidence_by_basis_horizon",
+        "provenance",
+        "source_evaluation_fingerprints",
+    ],
+)
+def test_experience_record_rejects_non_mapping_payloads(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        ExperienceRecord(
+            "x",
+            "db",
+            "d",
+            "EURUSD",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            **{field: ["not", "a", "mapping"]},
+        )
+
+
+def test_experience_hit_rejects_non_mapping_payloads() -> None:
+    with pytest.raises(ValueError, match="market_state"):
+        ExperienceHit("x", market_state=["not", "a", "mapping"])
+
+
 def test_training_eligible_is_rejected_outside_provenance() -> None:
     with pytest.raises(ValueError, match="training_eligible"):
         ExperienceRecord(

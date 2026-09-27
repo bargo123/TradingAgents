@@ -156,10 +156,13 @@ class ExperienceRecord(Serializable):
             _utc(self.decision_reference_timestamp, "decision_reference_timestamp"),
         )
         object.__setattr__(self, "trust", TrustTier(self.trust))
+        aliases = {} if self.source_aliases is None else self.source_aliases
+        if not isinstance(aliases, Mapping):
+            raise ValueError("source_aliases must be a mapping")
         object.__setattr__(
             self,
             "source_aliases",
-            _freeze({str(k): SourceAliasState(v) for k, v in (self.source_aliases or {}).items()}),
+            _freeze({str(k): SourceAliasState(v) for k, v in aliases.items()}),
         )
         for name in (
             "market_state",
@@ -168,7 +171,10 @@ class ExperienceRecord(Serializable):
             "provenance",
             "source_evaluation_fingerprints",
         ):
-            value = getattr(self, name) or {}
+            raw_value = getattr(self, name)
+            value = {} if raw_value is None else raw_value
+            if not isinstance(value, Mapping):
+                raise ValueError(f"{name} must be a mapping")
             if name != "provenance":
                 _reject_reserved(value)
             object.__setattr__(self, name, _freeze(value))
@@ -221,7 +227,10 @@ class ExperienceHit(Serializable):
         if self.trust_tier is not None:
             object.__setattr__(self, "trust_tier", TrustTier(self.trust_tier))
         for n in ("market_state", "timestamps", "outcome_availability", "provenance"):
-            value = getattr(self, n) or {}
+            raw_value = getattr(self, n)
+            value = {} if raw_value is None else raw_value
+            if not isinstance(value, Mapping):
+                raise ValueError(f"{n} must be a mapping")
             if n != "provenance":
                 _reject_reserved(value)
             if n == "timestamps":
