@@ -115,7 +115,13 @@ def _sync_phase8(config: ShadowCycleConfig) -> dict[str, Any]:
         "generation_id": generation.generation_id,
         "population_fingerprint": generation.population_fingerprint,
         "experience_count": generation.experience_count,
-        "trust_counts": dict(sorted(Counter(str(item.trust) for item in records).items())),
+        "trust_counts": dict(
+            sorted(
+                Counter(
+                    str(getattr(item.trust, "value", item.trust)) for item in records
+                ).items()
+            )
+        ),
         "feature_projection_count": feature_projection_count,
         "evaluation_snapshot_count": evaluation_snapshot_count,
     }

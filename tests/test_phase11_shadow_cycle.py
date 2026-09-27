@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.finetuning.shadow_cycle import (
     ShadowCycleConfig,
     ShadowCycleError,
+    _sync_phase8,
     run_shadow_cycle,
 )
 
@@ -119,3 +121,12 @@ def test_collector_failure_stops_without_refresh(monkeypatch, tmp_path: Path) ->
     with pytest.raises(ShadowCycleError, match="forex-watch"):
         run_shadow_cycle(config, command_runner=fake_runner)
     assert calls == ["phase8", "watch"]
+
+
+def test_phase8_sync_reports_trust_enum_values(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    create_source_db(config.db_path)
+
+    report = _sync_phase8(config)
+
+    assert set(report["trust_counts"]) == {"TIER_C_DIAGNOSTIC_ONLY"}
