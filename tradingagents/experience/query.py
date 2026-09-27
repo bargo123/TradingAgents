@@ -72,7 +72,12 @@ class ExperienceQueryService:
             self.catalog = None
         self.records = tuple(records)
         self.profile = profile
-        self.profiles = profiles or {}
+        if profiles is None:
+            self.profiles = {}
+        elif not isinstance(profiles, Mapping):
+            raise ValueError("profiles must be a mapping")
+        else:
+            self.profiles = dict(profiles)
         self.generation_id = generation_id or active_generation_id
         vectors = feature_vectors or {str(_get(r, "experience_id")): r for r in self.records}
         self.index = index or ExactSimilarityIndex(

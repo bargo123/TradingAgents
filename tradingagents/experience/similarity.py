@@ -58,7 +58,12 @@ class ExactSimilarityIndex:
             self._vectors = dict(vectors)
         else:
             self._vectors = {_get(row, "experience_id", _get(row, "id")): row for row in vectors}
-        self._metadata = metadata or {}
+        if metadata is None:
+            self._metadata = {}
+        elif not isinstance(metadata, Mapping):
+            raise ValueError("metadata must be a mapping")
+        else:
+            self._metadata = dict(metadata)
 
     def search(self, query_vector, query_mask, candidate_ids, top_k, profile):
         names = tuple(profile.feature_order)

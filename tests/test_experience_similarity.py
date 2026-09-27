@@ -72,3 +72,8 @@ def test_non_boolean_candidate_mask_is_excluded_without_coercion():
     idx = ExactSimilarityIndex({"x": {"values": [0] * 8, "mask": ["false"] * 8}})
 
     assert idx.search([0] * 8, [True] * 8, ("x",), 5, profile()) == ()
+
+
+def test_similarity_index_rejects_non_mapping_metadata():
+    with pytest.raises(ValueError, match="metadata"):
+        ExactSimilarityIndex({"x": {"values": [0] * 8, "mask": [True] * 8}}, metadata=[])
