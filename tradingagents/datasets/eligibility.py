@@ -92,9 +92,24 @@ def _decision_row(decision: Any) -> dict[str, Any]:
     return row
 
 
+def _identity_text(value: Any, name: str) -> str | None:
+    """Validate an optional persisted identity without coercing malformed values."""
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
 def _decision_fingerprint(decision: Any) -> str:
-    value = _get(decision, "fields", {}).get("source_decision_fingerprint")
-    return str(value) if value else source_decision_fingerprint(_decision_row(decision))
+    fields = _get(decision, "fields", {})
+    if not isinstance(fields, Mapping):
+        raise ValueError("decision fields must be a mapping")
+    value = _identity_text(
+        fields.get("source_decision_fingerprint"),
+        "source decision fingerprint",
+    )
+    return value if value is not None else source_decision_fingerprint(_decision_row(decision))
 
 
 def _evaluation_row(evaluation: Any) -> dict[str, Any]:
@@ -113,9 +128,18 @@ def _evaluation_row(evaluation: Any) -> dict[str, Any]:
 
 
 def _evaluation_fingerprint(evaluation: Any) -> str:
-    fields = _get(evaluation, "fields", {}) or {}
-    value = fields.get("source_evaluation_fingerprint") or fields.get("fingerprint")
-    return str(value) if value else source_evaluation_fingerprint(_evaluation_row(evaluation))
+    fields = _get(evaluation, "fields", {})
+    if fields is None:
+        fields = {}
+    if not isinstance(fields, Mapping):
+        raise ValueError("evaluation fields must be a mapping")
+    value = _identity_text(
+        fields.get("source_evaluation_fingerprint"),
+        "source evaluation fingerprint",
+    )
+    if value is None:
+        value = _identity_text(fields.get("fingerprint"), "evaluation fingerprint")
+    return value if value is not None else source_evaluation_fingerprint(_evaluation_row(evaluation))
 
 
 def _with_evaluation_fingerprint(evaluation: Any):
@@ -123,7 +147,12 @@ def _with_evaluation_fingerprint(evaluation: Any):
     if not isinstance(evaluation, EvaluationObservation):
         return None
     fields = dict(_get(evaluation, "fields", {}) or {})
-    if fields.get("source_evaluation_fingerprint") or fields.get("fingerprint"):
+    source_value = _identity_text(
+        fields.get("source_evaluation_fingerprint"),
+        "source evaluation fingerprint",
+    )
+    legacy_value = _identity_text(fields.get("fingerprint"), "evaluation fingerprint")
+    if source_value is not None or legacy_value is not None:
         return evaluation
     fields["source_evaluation_fingerprint"] = _evaluation_fingerprint(evaluation)
     return type(evaluation)(

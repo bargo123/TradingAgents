@@ -108,6 +108,35 @@ def test_malformed_evaluation_mapping_cannot_coerce_horizon(tmp_path):
     assert DatasetExclusionReason.OUTCOME_UNAVAILABLE in result.reasons
 
 
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_malformed_decision_fingerprint_is_not_recomputed(value):
+    decision = _decision(source_decision_fingerprint=value)
+    with pytest.raises(ValueError, match="source decision fingerprint"):
+        join_observations(
+            SourceReadResult(decisions=(decision,)),
+            SourceReadResult(),
+            SourceReadResult(),
+        )
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_malformed_evaluation_fingerprint_is_not_recomputed(value):
+    evaluation = EvaluationObservation(
+        "d1",
+        "ANALYSIS_SNAPSHOT",
+        300,
+        "COMPLETE",
+        True,
+        {"source_evaluation_fingerprint": value},
+    )
+    with pytest.raises(ValueError, match="source evaluation fingerprint"):
+        join_observations(
+            SourceReadResult(decisions=(_decision(),), evaluations=(evaluation,)),
+            SourceReadResult(),
+            SourceReadResult(),
+        )
+
+
 def test_source_availability_does_not_truthiness_coerce_text(tmp_path):
     observation = _joined(tmp_path)
     source = SourceReadResult(
