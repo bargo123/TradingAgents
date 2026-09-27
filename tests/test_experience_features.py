@@ -84,6 +84,7 @@ def test_malformed_individual_timeframe_section_has_typed_diagnostic(decision_ro
         {"bid": 0.0, "ask": 1.1, "spread_points": 10},
         {"bid": 1.2, "ask": 1.1, "spread_points": 10},
         {"bid": 1.1, "ask": 1.1001, "spread_points": -1},
+        {"bid": 1.1, "ask": 1.1001, "spread_points": 1},
     ],
 )
 def test_impossible_quote_values_have_typed_diagnostic(decision_row, quote):

@@ -130,7 +130,8 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
     metadata = metadata if isinstance(metadata, Mapping) else {}
     point = raw.get("point", row.get("point", metadata.get("point")))
     digits = raw.get("digits", row.get("digits", metadata.get("digits")))
-    if _finite(point) is None or float(point) <= 0:
+    point_value = _finite(point)
+    if point_value is None or point_value <= 0:
         diags.append(
             ExtractionDiagnostic(
                 "POINT_INVALID", "snapshot_json.point", "positive finite number required"
@@ -221,6 +222,29 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
     if spread_points is not None and spread_points < 0:
         diags.append(
             ExtractionDiagnostic("QUOTE_INVALID", "snapshot_json.quote.spread_points", "must be non-negative")
+        )
+    if (
+        point_value is not None
+        and point_value > 0
+        and bid is not None
+        and ask is not None
+        and spread_points is not None
+        and bid > 0
+        and ask >= bid
+        and spread_points >= 0
+        and not math.isclose(
+            spread_points,
+            (ask - bid) / point_value,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        )
+    ):
+        diags.append(
+            ExtractionDiagnostic(
+                "QUOTE_INVALID",
+                "snapshot_json.quote.spread_points",
+                "must match ask minus bid divided by point",
+            )
         )
     spread = row.get("analysis_snapshot_spread_points", quote.get("spread_points"))
     add(
