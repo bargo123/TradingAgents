@@ -60,6 +60,10 @@ class _Http:
         {"max_recovery_attempts": 1.5},
         {"max_recovery_attempts": "1"},
         {"max_recovery_attempts": -1},
+        {"prewarm_timeout_seconds": True},
+        {"prewarm_timeout_seconds": "30"},
+        {"prewarm_timeout_seconds": math.nan},
+        {"prewarm_timeout_seconds": 0},
     ],
 )
 def test_runtime_rejects_invalid_probe_and_recovery_controls(kwargs):
@@ -201,6 +205,7 @@ def test_prewarm_uses_bounded_non_persistent_health_requests():
     assert len(http.posts) == 2
     assert all(item[1]["json"]["stream"] is False for item in http.posts)
     assert all(item[1]["json"]["options"]["num_predict"] == 1 for item in http.posts)
+    assert all(item[1]["timeout"] == 30.0 for item in http.posts)
 
 
 def test_openai_compatible_probe_uses_documented_bounded_fields():
@@ -267,6 +272,40 @@ def test_empty_ps_recovers_and_verifies_each_model_after_swap():
     assert health.quick_context_verified is True
     assert health.deep_context_verified is True
     assert health.verified_context_length == 16384
+
+
+def test_context_not_verified_retries_failed_prewarm_within_recovery_budget():
+    class FlakyPrewarmHttp(_Http):
+        def __init__(self):
+            super().__init__()
+            self.loaded_model = None
+            self.deep_attempts = 0
+
+        def post(self, url, **kwargs):
+            if url.endswith("/api/chat") and kwargs["json"]["model"] == "qwen3.5:4b":
+                self.deep_attempts += 1
+                if self.deep_attempts == 1:
+                    raise TimeoutError("bounded prewarm timeout")
+            response = super().post(url, **kwargs)
+            if url.endswith("/api/chat"):
+                self.loaded_model = kwargs["json"]["model"]
+            return response
+
+    http = FlakyPrewarmHttp()
+    runtime = DedicatedOllamaRuntime(
+        ForexShadowRuntimeConfig(),
+        http=http,
+        version_runner=lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v"),
+        sleep=lambda _: None,
+        probe_attempts=1,
+        max_recovery_attempts=1,
+    )
+
+    health = runtime.ensure_healthy()
+
+    assert health.healthy
+    assert http.deep_attempts == 2
+    assert health.deep_context_verified is True
 
 
 def test_owned_wrong_context_restarts_only_owned_process():

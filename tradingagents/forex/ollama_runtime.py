@@ -96,6 +96,7 @@ class DedicatedOllamaRuntime:
         probe_attempts: int = 12,
         probe_interval_seconds: float = 0.5,
         max_recovery_attempts: int = 2,
+        prewarm_timeout_seconds: float = 30.0,
     ) -> None:
         if isinstance(probe_attempts, bool) or not isinstance(probe_attempts, int) or probe_attempts <= 0:
             raise ValueError("probe_attempts must be a positive integer")
@@ -108,6 +109,13 @@ class DedicatedOllamaRuntime:
             raise ValueError("probe_interval_seconds must be finite and non-negative")
         if isinstance(max_recovery_attempts, bool) or not isinstance(max_recovery_attempts, int) or max_recovery_attempts < 0:
             raise ValueError("max_recovery_attempts must be a non-negative integer")
+        if (
+            isinstance(prewarm_timeout_seconds, bool)
+            or not isinstance(prewarm_timeout_seconds, (int, float))
+            or not math.isfinite(float(prewarm_timeout_seconds))
+            or prewarm_timeout_seconds <= 0
+        ):
+            raise ValueError("prewarm_timeout_seconds must be finite and positive")
         self.config = config
         self.http = http
         self.process_launcher = process_launcher
@@ -116,6 +124,7 @@ class DedicatedOllamaRuntime:
         self.probe_attempts = probe_attempts
         self.probe_interval_seconds = float(probe_interval_seconds)
         self.max_recovery_attempts = max_recovery_attempts
+        self.prewarm_timeout_seconds = float(prewarm_timeout_seconds)
         self._owned_process: Any | None = None
         self._verified_contexts: dict[str, int] = {}
         self._recovery_attempts = 0
@@ -367,7 +376,7 @@ class DedicatedOllamaRuntime:
                     "think": False,
                     "options": {"num_predict": 1},
                 },
-                timeout=10,
+                timeout=self.prewarm_timeout_seconds,
             )
             _response_json(response)
             return "OK"
@@ -435,6 +444,12 @@ class DedicatedOllamaRuntime:
                 current = self.health()
                 if current.healthy:
                     return self._probe_after_verification(current)
+
+            # A prewarm can time out while Ollama is still loading a model.
+            # Treat an unverified context as a bounded, recoverable state and
+            # consume the configured recovery budget before failing closed.
+            if current.error_code == "CONTEXT_NOT_VERIFIED" and recovery < self.max_recovery_attempts:
+                continue
 
             if current.error_code == "CONTEXT_TOO_SMALL" and self._process_alive():
                 self._stop_owned_server()
