@@ -241,6 +241,78 @@ def test_phase8_adapter_derives_version_provenance_from_catalog_contract(tmp_pat
     assert row["trust_policy_version"] == "trust-policy.v1"
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "experience_id",
+        "source_decision_id",
+        "source_database_id",
+        "source_decision_fingerprint",
+        "symbol",
+    ],
+)
+def test_phase8_rejects_empty_record_identity_before_join(tmp_path, field):
+    from tradingagents.datasets.sources import _PHASE8_REQUIRED
+
+    path = tmp_path / "catalog.sqlite3"
+    with closing(sqlite3.connect(path)) as db, db:
+        for table, columns in _PHASE8_REQUIRED.items():
+            db.execute(
+                f'CREATE TABLE "{table}" ('
+                + ", ".join(f'"{column}" TEXT' for column in columns)
+                + ")"
+            )
+        record_values = dict.fromkeys(_PHASE8_REQUIRED["experience_records"], "")
+        record_values.update(
+            {
+                "experience_id": "e1",
+                "source_decision_id": "d1",
+                "source_database_id": "s1",
+                "source_decision_fingerprint": "dfp",
+                "symbol": "EURUSD",
+                "tombstoned": "0",
+                "market_state_json": "{}",
+                "decision_evidence_json": "{}",
+                "provenance_json": "{}",
+                "source_evaluation_fingerprints_json": "{}",
+                "trust": "TIER_A_HIGH_TRUST",
+            }
+        )
+        record_values[field] = ""
+        columns = sorted(record_values)
+        db.execute(
+            'INSERT INTO experience_records ('
+            + ",".join(f'"{column}"' for column in columns)
+            + ") VALUES ("
+            + ",".join("?" for _ in columns)
+            + ")",
+            [record_values[column] for column in columns],
+        )
+        projection_values = dict.fromkeys(
+            _PHASE8_REQUIRED["experience_feature_projections"], ""
+        )
+        projection_values.update(
+            {
+                "experience_id": "e1",
+                "feature_schema_version": "experience-features.v1",
+                "projection_json": '{"version":"phase8-feature-extractor.v1"}',
+            }
+        )
+        columns = sorted(projection_values)
+        db.execute(
+            'INSERT INTO experience_feature_projections ('
+            + ",".join(f'"{column}"' for column in columns)
+            + ") VALUES ("
+            + ",".join("?" for _ in columns)
+            + ")",
+            [projection_values[column] for column in columns],
+        )
+        db.commit()
+
+    with pytest.raises(SourceReadError, match=field):
+        ReadonlyExperienceSource(path).read()
+
+
 def test_audit_retains_policy_fingerprints_and_rejects_incomplete_schema(tmp_path):
     path = tmp_path / "audit.sqlite3"
     with closing(sqlite3.connect(path)) as db, db:

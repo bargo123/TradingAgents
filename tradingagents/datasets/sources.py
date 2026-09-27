@@ -228,6 +228,13 @@ def _source_text(value: Any, name: str) -> str:
     return value
 
 
+def _phase8_required_text(value: Any, name: str) -> str:
+    """Validate a required Phase 8 identity before bounding source data."""
+    if not isinstance(value, str) or not value.strip():
+        raise SourceReadError(f"{name} must be a non-empty string")
+    return value
+
+
 def _source_horizon(value: Any) -> int:
     """Normalize legacy SQLite TEXT horizons without accepting arbitrary values."""
     if isinstance(value, bool):
@@ -370,16 +377,28 @@ def _decode_phase8_fingerprints(value: Any) -> dict[str, str]:
 
 
 def _related(
-    db, experience_id: str, table: str, query: str, raw_json_keys: frozenset[str] = frozenset()
+    db,
+    experience_id: str,
+    table: str,
+    query: str,
+    raw_json_keys: frozenset[str] = frozenset(),
+    required_text_keys: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     names = [x[0] for x in db.execute(f'SELECT * FROM "{table}" LIMIT 0').description]
-    return [
-        {
-            k: v if k in raw_json_keys else _bounded(v)
-            for k, v in zip(names, row, strict=True)
+    rows = []
+    for row in db.execute(query, (experience_id,)):
+        raw_item = dict(zip(names, row, strict=True))
+        validated = {
+            key: _phase8_required_text(raw_item.get(key), key)
+            for key in required_text_keys
         }
-        for row in db.execute(query, (experience_id,))
-    ]
+        item = {
+            key: value if key in raw_json_keys else _bounded(value)
+            for key, value in raw_item.items()
+        }
+        item.update(validated)
+        rows.append(item)
+    return rows
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,6 +636,17 @@ class ReadonlyExperienceSource(_Readonly):
                 names = [
                     x[0] for x in db.execute("SELECT * FROM experience_records LIMIT 0").description
                 ]
+                raw_item = dict(zip(names, row, strict=True))
+                required_identity = {
+                    field: _phase8_required_text(raw_item.get(field), field)
+                    for field in (
+                        "experience_id",
+                        "source_decision_id",
+                        "source_database_id",
+                        "source_decision_fingerprint",
+                        "symbol",
+                    )
+                }
                 json_keys = (
                     "market_state_json",
                     "decision_evidence_json",
@@ -625,8 +655,9 @@ class ReadonlyExperienceSource(_Readonly):
                 )
                 item = {
                     k: v if k in json_keys else _bounded(v)
-                    for k, v in zip(names, row, strict=True)
+                    for k, v in raw_item.items()
                 }
+                item.update(required_identity)
                 for key in json_keys:
                     raw_json = item.pop(key)
                     name = key[:-5] if key.endswith("_json") else key
@@ -642,6 +673,16 @@ class ReadonlyExperienceSource(_Readonly):
                     experience_id,
                     "experience_source_aliases",
                     "SELECT * FROM experience_source_aliases WHERE experience_id=? AND state='CURRENT'",
+                    required_text_keys=frozenset(
+                        (
+                            "source_database_id",
+                            "source_decision_id",
+                            "accepted_fingerprint",
+                            "experience_id",
+                            "state",
+                            "scan_status",
+                        )
+                    ),
                 )
                 projections = _related(
                     db,
@@ -649,6 +690,7 @@ class ReadonlyExperienceSource(_Readonly):
                     "experience_feature_projections",
                     "SELECT * FROM experience_feature_projections WHERE experience_id=?",
                     frozenset(("projection_json",)),
+                    required_text_keys=frozenset(("experience_id",)),
                 )
                 snapshots = _related(
                     db,
@@ -656,6 +698,7 @@ class ReadonlyExperienceSource(_Readonly):
                     "experience_outcome_snapshots",
                     "SELECT * FROM experience_outcome_snapshots WHERE experience_id=? ORDER BY observed_at,fingerprint",
                     frozenset(("evaluation_json", "provenance_json")),
+                    required_text_keys=frozenset(("experience_id", "fingerprint")),
                 )
                 for snapshot in snapshots:
                     snapshot["evaluation"] = _decode_phase8_object(snapshot.pop("evaluation_json"))
