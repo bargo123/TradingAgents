@@ -205,6 +205,106 @@ def test_projection_readiness_requires_active_matched_generation(tmp_path):
     assert stored.lexical_ready is True
 
 
+def test_replacing_chunks_invalidates_old_projection_readiness(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("66" * 32)
+    catalog.register_document(make_parsed_document(document_id=document_id, source_hash="66" * 32))
+    catalog.commit_alias("res_a", document_id, "66" * 32, AliasRelation.CURRENT)
+    catalog.store_chunks(
+        document_id,
+        (ChunkRecord(chunk_id="old", document_id=document_id, source_hash="66" * 32, text="old"),),
+    )
+    catalog.record_projection_ready(document_id, "gen-1", vector_ready=True, lexical_ready=True)
+    catalog.set_active_generation(make_generation(generation_id="gen-1"))
+    assert catalog.document_is_retrieval_ready(document_id) is True
+
+    catalog.store_chunks(
+        document_id,
+        (ChunkRecord(chunk_id="new", document_id=document_id, source_hash="66" * 32, text="new"),),
+    )
+
+    assert catalog.document_is_active(document_id) is True
+    assert catalog.document_is_retrieval_ready(document_id) is False
+
+
+def test_reregistering_document_invalidates_old_projection_readiness(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("77" * 32)
+    original = make_parsed_document(document_id=document_id, source_hash="77" * 32)
+    catalog.register_document(original)
+    catalog.commit_alias("res_a", document_id, "77" * 32, AliasRelation.CURRENT)
+    catalog.record_projection_ready(document_id, "gen-1", vector_ready=True, lexical_ready=True)
+    catalog.set_active_generation(make_generation(generation_id="gen-1"))
+    assert catalog.document_is_retrieval_ready(document_id) is True
+
+    reparsed = ParsedDocument(
+        document_id=document_id,
+        source_hash=original.source_hash,
+        metadata=original.metadata,
+        parser_id=original.parser_id,
+        parser_version=original.parser_version,
+        parser_config_hash="changed-parser-config",
+    )
+    catalog.register_document(reparsed)
+
+    assert catalog.document_is_active(document_id) is True
+    assert catalog.document_is_retrieval_ready(document_id) is False
+
+
+def test_store_chunks_rejects_source_identity_mismatch_without_deleting_old_chunks(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("88" * 32)
+    catalog.register_document(make_parsed_document(document_id=document_id, source_hash="88" * 32))
+    original = ChunkRecord(
+        chunk_id="original", document_id=document_id, source_hash="88" * 32, text="original"
+    )
+    catalog.store_chunks(document_id, (original,))
+
+    mismatched = ChunkRecord(
+        chunk_id="mismatched", document_id=document_id, source_hash="99" * 32, text="wrong source"
+    )
+    with pytest.raises(ValueError, match="source_hash"):
+        catalog.store_chunks(document_id, (mismatched,))
+
+    assert catalog.chunks_for_document(document_id) == (original,)
+
+
+def test_publish_generation_rejects_cross_source_chunks_atomically(tmp_path):
+    catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
+    catalog.initialize()
+    document_id = document_id_for("aa" * 32)
+    document = make_parsed_document(document_id=document_id, source_hash="aa" * 32)
+    mismatched = ChunkRecord(
+        chunk_id="mismatched", document_id=document_id, source_hash="bb" * 32, text="wrong source"
+    )
+    summary = IngestionRunSummary(
+        run_id="run-identity-mismatch",
+        state="SUCCEEDED",
+        counts={},
+        source_count=1,
+        document_count=1,
+        chunk_count=1,
+    )
+
+    with pytest.raises(ValueError, match="source_hash"):
+        catalog.publish_generation(
+            make_generation(generation_id="gen-identity-mismatch"),
+            documents_by_id={document_id: document},
+            component_fingerprints={},
+            chunks_by_document={document_id: (mismatched,)},
+            aliases=(("res_a", document_id, document.source_hash, IngestionState.INDEXED),),
+            removed_resource_ids=(),
+            ready_document_ids=(document_id,),
+            summary=summary,
+        )
+
+    assert catalog.active_generation() is None
+    assert catalog.get_document(document_id) is None
+
+
 def test_generation_registry_rejects_invalid_pair_and_preserves_previous_active_generation(tmp_path):
     catalog = KnowledgeCatalog(tmp_path / "catalog.sqlite3")
     catalog.initialize()

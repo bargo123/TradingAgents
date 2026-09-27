@@ -362,6 +362,8 @@ class KnowledgeCatalog:
                      parser_config_hash=excluded.parser_config_hash, state=excluded.state,
                      component_fingerprints_json=excluded.component_fingerprints_json,
                      ingestion_run_id=excluded.ingestion_run_id,
+                     vector_ready=0, lexical_ready=0,
+                     projection_generation=NULL, projection_population_hash=NULL,
                      updated_at=excluded.updated_at""",
                 (
                     document.document_id, document.source_hash, _json(document.metadata.to_dict()),
@@ -412,8 +414,7 @@ class KnowledgeCatalog:
         self, document_id: str, chunks: tuple[ChunkRecord, ...], *, run_id: str | None = None
     ) -> None:
         with self._write() as connection:
-            if connection.execute("SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)).fetchone() is None:
-                raise ValueError(f"unknown document_id: {document_id}")
+            self._validate_chunks_for_document(connection, document_id, chunks)
             connection.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
             connection.executemany(
                 """INSERT INTO knowledge_chunks
@@ -424,6 +425,36 @@ class KnowledgeCatalog:
                     for chunk in chunks
                 ],
             )
+            # Replacing the chunk set invalidates every prior vector/lexical
+            # projection for this document.  Keep the catalog fail-closed
+            # until a matched generation is published again.
+            connection.execute(
+                """UPDATE knowledge_documents
+                   SET vector_ready=0, lexical_ready=0,
+                       projection_generation=NULL, projection_population_hash=NULL,
+                       updated_at=?
+                   WHERE document_id=?""",
+                (_now(), document_id),
+            )
+
+    @staticmethod
+    def _validate_chunks_for_document(
+        connection: sqlite3.Connection,
+        document_id: str,
+        chunks: tuple[ChunkRecord, ...],
+    ) -> None:
+        row = connection.execute(
+            "SELECT source_hash FROM knowledge_documents WHERE document_id = ?",
+            (document_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown document_id: {document_id}")
+        expected_hash = row["source_hash"]
+        for chunk in chunks:
+            if chunk.document_id != document_id:
+                raise ValueError("chunk document_id does not match document_id")
+            if chunk.source_hash != expected_hash:
+                raise ValueError("chunk source_hash does not match document source_hash")
 
     def chunks_for_document(self, document_id: str) -> tuple[ChunkRecord, ...]:
         with self._read() as connection:
@@ -712,10 +743,7 @@ class KnowledgeCatalog:
                     ),
                 )
             for document_id, chunks in chunks_by_document.items():
-                if connection.execute(
-                    "SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)
-                ).fetchone() is None:
-                    raise ValueError(f"unknown document_id: {document_id}")
+                self._validate_chunks_for_document(connection, document_id, chunks)
                 connection.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
                 connection.executemany(
                     """INSERT INTO knowledge_chunks
