@@ -6,6 +6,7 @@ import inspect
 import json
 import math
 from collections.abc import Mapping, Sequence
+from numbers import Real
 from typing import Any
 
 from .embeddings import EmbeddingSpecMismatch
@@ -212,10 +213,15 @@ class KnowledgeQueryService:
         except (TypeError, ValueError):
             kwargs = {"purpose": "query"}
         result = embed((request.text,), **kwargs)
-        if not result:
+        if result is None:
             raise EmbeddingSpecMismatch("query embedder returned no vector")
-        first = result[0]
-        vector = result if isinstance(first, (int, float)) else first
+        try:
+            if len(result) == 0:
+                raise EmbeddingSpecMismatch("query embedder returned no vector")
+            first = result[0]
+        except (TypeError, ValueError, IndexError):
+            raise EmbeddingSpecMismatch("query embedder returned a malformed vector batch") from None
+        vector = result if isinstance(first, Real) else first
         try:
             values = tuple(float(value) for value in vector)
         except (TypeError, ValueError):

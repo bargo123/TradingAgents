@@ -4,6 +4,7 @@ from dataclasses import replace
 from math import inf, nan
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from tradingagents.knowledge.embeddings import EmbeddingSpecMismatch
@@ -320,6 +321,17 @@ def test_malformed_query_vector_fails_before_dense_retrieval():
 
     with pytest.raises(EmbeddingSpecMismatch):
         service.search(KnowledgeQuery(text="OFI"))
+
+
+def test_query_vector_accepts_numpy_batch_shape() -> None:
+    service = query_harness(
+        dense=(
+            {"chunk_id": "chunk-a", "semantic_score": 0.9, "rank": 1, "chunk": make_chunk()},
+        )
+    )
+    service.embedder.embed = lambda _texts, **_kwargs: np.array([[0.1, 0.2, 0.3]])
+
+    assert service.search(KnowledgeQuery(text="OFI"))
 
 
 def test_malformed_rows_only_vector_fails_closed():
