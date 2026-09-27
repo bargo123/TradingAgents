@@ -213,7 +213,7 @@ def _vectors(rows: Sequence[Any], names: tuple[str, ...]) -> tuple[list[list[flo
         if isinstance(values, Mapping):
             row_values = [values.get(name, math.nan) for name in names]
             row_mask = [
-                bool(mask.get(name, v is not None)) if isinstance(mask, Mapping) else v is not None
+                mask.get(name, v is not None) if isinstance(mask, Mapping) else v is not None
                 for name, v in zip(names, row_values, strict=False)
             ]
         else:

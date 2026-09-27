@@ -165,6 +165,18 @@ def test_non_boolean_feature_mask_is_excluded_without_crashing():
     assert profile.population_count == 0
 
 
+def test_non_boolean_mapping_feature_mask_is_excluded_without_coercion():
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when) | {
+        "values": dict.fromkeys(FEATURE_NAMES_V1, 1.0),
+        "mask": dict.fromkeys(FEATURE_NAMES_V1, "false"),
+    }
+
+    profile = build_profile([malformed], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
+
+    assert profile.population_count == 0
+
+
 def test_query_fingerprint_contains_policy_and_cutoff():
     when = datetime(2026, 1, 1, tzinfo=UTC)
     profile = build_profile([row(1.0, when)], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)
