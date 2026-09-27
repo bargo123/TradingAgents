@@ -84,6 +84,22 @@ def test_recovery_snapshot_is_append_only_only_when_observed(catalog: Experience
     assert catalog.evaluation_snapshot_fingerprints("exp1") == ("old-fp", "new-fp")
 
 
+@pytest.mark.parametrize("provenance", [[], "", 0, False])
+def test_append_evaluation_snapshot_rejects_non_object_provenance(
+    catalog: ExperienceCatalog, provenance
+) -> None:
+    with pytest.raises(ValueError, match="provenance"):
+        catalog.append_evaluation_snapshot(
+            "exp1", {"evaluation_status": "COMPLETE"}, "fp", provenance=provenance
+        )
+
+
+@pytest.mark.parametrize("detail", [[], "", 0, False])
+def test_record_quarantine_rejects_non_object_detail(catalog: ExperienceCatalog, detail) -> None:
+    with pytest.raises(ValueError, match="JSON object"):
+        catalog.record_quarantine("db-a", "d1", "fp", "BAD_SOURCE", detail=detail)
+
+
 def test_catalog_has_phase8_tables_and_diagnostics_are_bounded(catalog: ExperienceCatalog) -> None:
     catalog.record_failed_scan(
         "db-a", "SOURCE_DATABASE_UNAVAILABLE", detail="secret report\nshould not be indexed"

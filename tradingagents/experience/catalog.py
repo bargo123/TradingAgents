@@ -345,7 +345,12 @@ class ExperienceCatalog:
         provenance: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> bool:
-        prov = dict(provenance or {})
+        if provenance is None:
+            prov = {}
+        elif not isinstance(provenance, Mapping):
+            raise ValueError("provenance must be a mapping")
+        else:
+            prov = dict(provenance)
         if "evaluation_fingerprint" in prov and prov["evaluation_fingerprint"] != fingerprint:
             from .errors import ProvenanceViolationError
 
@@ -420,7 +425,12 @@ class ExperienceCatalog:
     ) -> None:
         with self._connect() as db:
             self._quarantine_db(
-                db, source_database_id, decision_id, fingerprint, reason, detail or {}
+                db,
+                source_database_id,
+                decision_id,
+                fingerprint,
+                reason,
+                {} if detail is None else detail,
             )
 
     def quarantine_count(self) -> int:
