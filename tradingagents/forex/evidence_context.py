@@ -641,7 +641,12 @@ class Phase9EvidenceContextBuilder:
 
     @staticmethod
     def _provenance(item: Any, kind: EvidenceSourceKind, authoritative_id: str) -> dict[str, Any]:
-        value = dict(_field(item, "provenance", {}) or {})
+        raw = _field(item, "provenance", {})
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raise ValueError("provenance must be a mapping")
+        value = dict(raw)
         value.setdefault("source_kind", kind.value)
         value.setdefault("authoritative_id", authoritative_id)
         if kind is EvidenceSourceKind.KNOWLEDGE:
@@ -658,7 +663,12 @@ class Phase9EvidenceContextBuilder:
 
     @classmethod
     def _item(cls, value: Any, kind: EvidenceSourceKind, display_id: str) -> CanonicalEvidenceItem:
-        existing_provenance = dict(_field(value, "provenance", {}) or {})
+        raw_provenance = _field(value, "provenance", {})
+        if raw_provenance is None:
+            raw_provenance = {}
+        if not isinstance(raw_provenance, Mapping):
+            raise ValueError("provenance must be a mapping")
+        existing_provenance = dict(raw_provenance)
         if kind is EvidenceSourceKind.KNOWLEDGE:
             authoritative_value = (
                 _field(value, "chunk_id")
@@ -679,15 +689,23 @@ class Phase9EvidenceContextBuilder:
             )
         if not authoritative_value:
             raise ValueError(f"{kind.value} item is missing an authoritative identifier")
-        authoritative_id = str(authoritative_value)
+        if not isinstance(authoritative_value, str) or not authoritative_value.strip():
+            raise ValueError(f"{kind.value} authoritative identifier must be a non-empty string")
+        authoritative_id = authoritative_value
         score = _field(value, "score", _field(value, "similarity_score", 0.0))
         metadata = _field(value, "metadata", _field(value, "extra", {})) or {}
+        text = _field(value, "text", "")
+        content_type = _field(value, "content_type", "")
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text must be a non-empty string")
+        if not isinstance(content_type, str) or not content_type.strip():
+            raise ValueError("content_type must be a non-empty string")
         return CanonicalEvidenceItem(
             display_id=display_id,
             source_kind=kind,
             authoritative_id=authoritative_id,
-            text=str(_field(value, "text", "") or ""),
-            content_type=str(_field(value, "content_type", "") or ""),
+            text=text,
+            content_type=content_type,
             score=float(score or 0.0),
             provenance=cls._provenance(value, kind, authoritative_id),
             metadata=metadata,

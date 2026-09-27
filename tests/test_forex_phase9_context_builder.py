@@ -3,6 +3,8 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from tradingagents.experience.models import EvidenceBundle
 from tradingagents.forex.evidence_context import (
     CanonicalKnowledgeQuery,
@@ -121,6 +123,43 @@ def test_authoritative_ids_fall_back_to_structured_provenance():
     context = build_context(bundle(knowledge=[knowledge], experience=[experience]))
     assert context.knowledge_items[0].authoritative_id == "chunk-from-prov"
     assert context.experience_items[0].authoritative_id == "exp-from-prov"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("text", 123), ("content_type", 0)),
+)
+def test_builder_rejects_non_string_evidence_fields(field, value):
+    malformed = item("KNOWLEDGE", "k", "text")
+    setattr(malformed, field, value)
+    with pytest.raises(ValueError, match=field):
+        build_context(bundle(knowledge=[malformed]))
+
+
+def test_builder_rejects_non_string_authoritative_identifier():
+    malformed = SimpleNamespace(
+        chunk_id=123,
+        document_id=456,
+        text="evidence",
+        content_type="PROSE",
+        score=1.0,
+        provenance={},
+    )
+    with pytest.raises(ValueError, match="identifier"):
+        build_context(bundle(knowledge=[malformed]))
+
+
+def test_builder_rejects_non_mapping_provenance():
+    malformed = SimpleNamespace(
+        chunk_id="chunk-1",
+        document_id="doc-1",
+        text="evidence",
+        content_type="PROSE",
+        score=1.0,
+        provenance=[],
+    )
+    with pytest.raises(ValueError, match="provenance"):
+        build_context(bundle(knowledge=[malformed]))
 
 
 def test_builder_is_publicly_exported():
