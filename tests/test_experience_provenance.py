@@ -26,6 +26,15 @@ def test_invalid_evaluation_provenance_is_rejected() -> None:
         validate_evaluation_provenance({"training_eligible": "yes"})
 
 
+@pytest.mark.parametrize("value", [1, ["eval-fp"], {"id": "eval-fp"}])
+def test_evaluation_fingerprint_is_not_string_coerced(value) -> None:
+    with pytest.raises(ProvenanceViolationError, match="evaluation fingerprint"):
+        build_evaluation_provenance(value)
+
+    with pytest.raises(ProvenanceViolationError, match="evaluation fingerprint"):
+        validate_evaluation_provenance({"evaluation_fingerprint": value})
+
+
 def test_catalog_snapshot_retains_provenance_and_status(tmp_path) -> None:
     catalog = ExperienceCatalog(tmp_path / "experience")
     catalog.append_evaluation_snapshot(
