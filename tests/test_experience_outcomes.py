@@ -87,6 +87,26 @@ def test_training_null_does_not_exclude_complete_descriptive_row():
     assert result.eligible_count == 1
 
 
+def test_complete_snapshot_with_invalid_selected_action_is_excluded():
+    row = _complete("bad-action", selected_action="WAIT")
+    result = OutcomeStatsCalculator((_record("bad-action", snapshots=(row,)),)).calculate(
+        OutcomeStatsRequest(("bad-action",), "ANALYSIS_SNAPSHOT", 300)
+    )
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["SELECTED_ACTION_INVALID"] == 1
+
+
+def test_complete_snapshot_with_nonfinite_selected_action_value_is_excluded():
+    row = _complete("bad-selected-value", selected_action_net_points=float("nan"))
+    result = OutcomeStatsCalculator(
+        (_record("bad-selected-value", snapshots=(row,)),)
+    ).calculate(OutcomeStatsRequest(("bad-selected-value",), "ANALYSIS_SNAPSHOT", 300))
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["REQUIRED_FIELD_MISSING_OR_NONFINITE"] == 1
+
+
 def test_basis_and_horizon_are_exact():
     result = calculator().calculate(OutcomeStatsRequest(("exp1",), "DECISION_REFERENCE", 900))
     assert result.requested_basis == "DECISION_REFERENCE"

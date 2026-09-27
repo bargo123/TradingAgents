@@ -221,12 +221,22 @@ class OutcomeStatsCalculator:
                     elif (
                         not all(
                             _finite(snapshot.get(field))
-                            for field in ("buy_net_points", "sell_net_points")
+                            for field in (
+                                "buy_net_points",
+                                "sell_net_points",
+                                "selected_action_net_points",
+                            )
                         )
                         or str(snapshot.get("selected_action", "")).upper() == "HOLD"
                         and not _finite(snapshot.get("hold_opportunity_cost_points"))
                     ):
                         reason = "REQUIRED_FIELD_MISSING_OR_NONFINITE"
+                    elif str(snapshot.get("selected_action", "")).upper() not in {
+                        "BUY",
+                        "SELL",
+                        "HOLD",
+                    }:
+                        reason = "SELECTED_ACTION_INVALID"
                 if reason is None:
                     eligible_count += 1
                     fingerprints[str(experience_id)] = str(snapshot.get("fingerprint", ""))
