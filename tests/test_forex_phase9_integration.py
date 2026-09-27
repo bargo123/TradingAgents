@@ -177,6 +177,8 @@ class _ReadonlyVectorReader(VectorIndexReader):
             "generation_id": "g1",
             "population_hash": "pop",
             "embedding_spec": EmbeddingSpec().to_dict(),
+            "lexical_index_version": "fts5-v1",
+            "index_version": "index-v1",
         }
 
     def metadata(self):
@@ -193,6 +195,8 @@ class _ReadonlyLexicalReader(LexicalIndexReader):
             "generation_id": "g1",
             "population_hash": "pop",
             "embedding_spec": EmbeddingSpec().to_dict(),
+            "lexical_index_version": "fts5-v1",
+            "index_version": "index-v1",
         }
 
     def metadata(self):
@@ -818,7 +822,13 @@ class _QueryReader:
         self._spec = spec
 
     def metadata(self):
-        return {"generation_id": "g", "population_hash": "p", "embedding_spec": self._spec.to_dict()}
+        return {
+            "generation_id": "g",
+            "population_hash": "p",
+            "embedding_spec": self._spec.to_dict(),
+            "lexical_index_version": "fts5-v1",
+            "index_version": "index-v1",
+        }
 
     def rows(self):
         return ()

@@ -113,6 +113,7 @@ class FakeVectorReader:
             "generation_id": self.generation_id,
             "population_hash": "pop-1",
             "embedding_spec": self.embedding_spec.to_dict(),
+            "lexical_index_version": "fts5-v1",
             "index_version": "index-v1",
         }
 
@@ -121,6 +122,11 @@ class FakeVectorReader:
             raise AssertionError("dense reader must not be called")
         self.calls.append((vector, limit, document_ids, content_types))
         return self.rows
+
+
+class MissingMetadataVectorReader(FakeVectorReader):
+    def metadata(self):
+        return {}
 
 
 class FakeLexicalReader:
@@ -135,6 +141,7 @@ class FakeLexicalReader:
             "generation_id": self.generation_id,
             "population_hash": "pop-1",
             "embedding_spec": self.embedding_spec.to_dict(),
+            "lexical_index_version": "fts5-v1",
             "index_version": "index-v1",
         }
 
@@ -227,6 +234,16 @@ def test_anonymous_hit_and_generation_mismatch_fail_closed():
         validate_hit_provenance(make_hit(source_relative_path=None))
     with pytest.raises(IncompatibleIndexGeneration):
         query_harness(vector_generation="gen-a", lexical_generation="gen-b").search(KnowledgeQuery(text="OFI"))
+
+
+def test_missing_projection_metadata_fails_closed_before_retrieval():
+    reader = MissingMetadataVectorReader(
+        ({"chunk_id": "chunk-a", "semantic_score": 0.9, "rank": 1, "chunk": make_chunk()},)
+    )
+    service = query_harness(dense_reader=reader)
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        service.search(KnowledgeQuery(text="OFI"))
 
 
 def test_identical_query_and_index_embedding_specs_allow_dense_search():

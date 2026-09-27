@@ -135,14 +135,35 @@ class KnowledgeQueryService:
         vector_meta = _metadata(self.vector_reader)
         lexical_meta = _metadata(self.lexical_reader)
         expected_id = generation.generation_id
-        ids = (vector_meta.get("generation_id"), lexical_meta.get("generation_id"), getattr(self.vector_reader, "generation_id", expected_id), getattr(self.lexical_reader, "generation_id", expected_id))
-        if any(value != expected_id for value in ids if value is not None):
-            raise IncompatibleIndexGeneration("vector and lexical generations do not match the active generation")
+        expected_spec = _spec(generation.embedding_spec).to_dict()
         for metadata in (vector_meta, lexical_meta):
-            if metadata.get("population_hash") not in (None, generation.population_hash):
-                raise IncompatibleIndexGeneration("projection population does not match the active generation")
-            stored_spec = metadata.get("embedding_spec")
-            if stored_spec is not None and _spec(stored_spec).to_dict() != _spec(generation.embedding_spec).to_dict():
+            required = (
+                "generation_id",
+                "population_hash",
+                "embedding_spec",
+                "lexical_index_version",
+                "index_version",
+            )
+            missing = tuple(key for key in required if key not in metadata)
+            if missing:
+                raise IncompatibleIndexGeneration(
+                    "projection metadata is incomplete: " + ",".join(missing)
+                )
+            if metadata["generation_id"] != expected_id:
+                raise IncompatibleIndexGeneration(
+                    "vector and lexical generations do not match the active generation"
+                )
+            if metadata["population_hash"] != generation.population_hash:
+                raise IncompatibleIndexGeneration(
+                    "projection population does not match the active generation"
+                )
+            if metadata["index_version"] != generation.index_version:
+                raise IncompatibleIndexGeneration("projection index version differs from active generation")
+            if metadata["lexical_index_version"] != generation.lexical_index_version:
+                raise IncompatibleIndexGeneration(
+                    "projection lexical index version differs from active generation"
+                )
+            if _spec(metadata["embedding_spec"]).to_dict() != expected_spec:
                 raise EmbeddingSpecMismatch("projection embedding specification differs from active generation")
         for reader in (self.vector_reader, self.lexical_reader):
             reader_spec = getattr(reader, "embedding_spec", None)
