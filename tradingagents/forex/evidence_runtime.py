@@ -805,7 +805,11 @@ class EvidenceIntegrationService:
         descriptor = _factory_descriptor(self.orchestrator_factory)
         process = process_factory(target=_child_query, args=(send_conn, descriptor, envelope))
         self.active_evidence_workers += 1
+        process_started = False
         try:
+            # Mark the process as potentially started before invoking start():
+            # a launcher can create a child and then raise while reporting it.
+            process_started = True
             process.start()
             timeout = max(0.0, float(self.policy.evidence_timeout_seconds if self.policy else 0.0))
             deadline = time.monotonic() + timeout
@@ -852,6 +856,17 @@ class EvidenceIntegrationService:
                 raise RuntimeError(str(result[1]))
             payload = result[1]
             return payload if isinstance(payload, EvidenceBundle) else EvidenceBundle(**dict(payload))
+        except BaseException:
+            if process_started:
+                try:
+                    is_alive = getattr(process, "is_alive", None)
+                    if callable(is_alive) and is_alive():
+                        _terminate_worker_bounded(process)
+                except Exception:
+                    # Preserve the original worker/query exception. The normal
+                    # timeout path already reports termination failures directly.
+                    pass
+            raise
         finally:
             self.active_evidence_workers -= 1
             recv_conn.close()
