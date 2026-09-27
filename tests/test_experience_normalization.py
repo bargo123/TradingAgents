@@ -202,6 +202,21 @@ def test_malformed_aliases_and_provenance_are_excluded_without_crashing():
     assert profile.population_count == 0
 
 
+@pytest.mark.parametrize("aliases", [[], 0, False])
+def test_falsey_malformed_aliases_are_excluded_under_as_of(aliases):
+    when = datetime(2026, 1, 1, tzinfo=UTC)
+    malformed = row(1.0, when) | {"source_aliases": aliases}
+
+    profile = build_profile(
+        [malformed],
+        COHORT,
+        (TrustTier.TIER_A_HIGH_TRUST,),
+        datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+    assert profile.population_count == 0
+
+
 def test_query_fingerprint_contains_policy_and_cutoff():
     when = datetime(2026, 1, 1, tzinfo=UTC)
     profile = build_profile([row(1.0, when)], COHORT, (TrustTier.TIER_A_HIGH_TRUST,), None)

@@ -207,7 +207,9 @@ def _eligible(
         return False
     if not (_value(row, "feature_fingerprint", _value(row, "fingerprint", ""))):
         return False
-    aliases = _value(row, "source_aliases", {}) or {}
+    aliases = _value(row, "source_aliases", {})
+    if aliases is None:
+        aliases = {}
     if not isinstance(aliases, Mapping):
         return False
     if as_of is None:
