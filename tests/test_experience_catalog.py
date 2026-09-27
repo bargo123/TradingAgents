@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -20,6 +21,49 @@ def test_duplicate_aliases_share_one_logical_record(catalog: ExperienceCatalog) 
     assert first.experience_id == second.experience_id
     assert len(catalog.active_records()) == 1
     assert catalog.current_alias_count(first.experience_id) == 2
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        False,
+        0,
+        "",
+        [],
+        datetime(2026, 1, 1),
+        datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=2))),
+    ],
+)
+def test_explicit_analysis_timestamp_must_be_utc_and_typed(catalog, timestamp) -> None:
+    with pytest.raises((TypeError, ValueError), match="analysis_snapshot_timestamp"):
+        catalog.upsert_source_alias(
+            "db-a", decision_id="timestamp-invalid", fingerprint="fp1",
+            analysis_snapshot_timestamp=timestamp,
+        )
+
+
+@pytest.mark.parametrize("field", ["decision_completed_timestamp", "decision_reference_timestamp"])
+@pytest.mark.parametrize("timestamp", [False, 0, "", [], datetime(2026, 1, 1)])
+def test_explicit_optional_timestamps_must_be_utc_and_typed(catalog, field, timestamp) -> None:
+    with pytest.raises((TypeError, ValueError), match=field):
+        catalog.upsert_source_alias(
+            "db-a", decision_id=f"{field}-invalid", fingerprint="fp1",
+            **{field: timestamp},
+        )
+
+
+@pytest.mark.parametrize("value", [False, 0, [], ""])
+def test_source_decision_fingerprint_must_be_non_empty_text(catalog, value) -> None:
+    with pytest.raises((TypeError, ValueError), match="fingerprint"):
+        catalog.upsert_source_alias("db-a", decision_id="bad-fingerprint", fingerprint=value)
+
+
+@pytest.mark.parametrize("value", [False, 0, [], ""])
+def test_evaluation_fingerprint_must_be_non_empty_text(catalog, value) -> None:
+    with pytest.raises((TypeError, ValueError), match="fingerprint"):
+        catalog.append_evaluation_snapshot(
+            "exp1", {"evaluation_status": "COMPLETE"}, value
+        )
 
 
 def test_alias_identity_preserves_multiple_decisions_from_one_source(

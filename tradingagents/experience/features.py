@@ -31,6 +31,7 @@ FEATURE_NAMES_V1 = (
     "utc_hour_cos",
 )
 _DIRECTIONS = {"UP": 1.0, "FLAT": 0.0, "DOWN": -1.0}
+_MISSING = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +87,14 @@ def _finite(value: Any) -> float | None:
         return None
 
 
+def _primary_or_legacy(row: Mapping[str, Any], primary: str, legacy: str) -> Any:
+    """Fallback only when the primary field is genuinely absent/null/empty."""
+    value = row.get(primary, _MISSING)
+    if value is _MISSING or value is None or (isinstance(value, str) and value == ""):
+        return row.get(legacy)
+    return value
+
+
 def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVector:
     """Extract only persisted snapshot and decision metadata; no outcomes are read."""
     row = (
@@ -98,7 +107,7 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
         )
     )
     diags: list[ExtractionDiagnostic] = []
-    symbol = row.get("resolved_symbol") or row.get("symbol")
+    symbol = _primary_or_legacy(row, "resolved_symbol", "symbol")
     profile = row.get("analysis_profile")
     timeframe = row.get("analysis_timeframe")
     if not isinstance(symbol, str) or not symbol.strip():
@@ -107,7 +116,9 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
         diags.append(ExtractionDiagnostic("IDENTITY_MISSING", "analysis_profile", "required"))
     if not isinstance(timeframe, str) or not timeframe.strip():
         diags.append(ExtractionDiagnostic("IDENTITY_MISSING", "analysis_timeframe", "required"))
-    timestamp = row.get("analysis_snapshot_timestamp") or row.get("snapshot_timestamp")
+    timestamp = _primary_or_legacy(
+        row, "analysis_snapshot_timestamp", "snapshot_timestamp"
+    )
     dt = _timestamp(timestamp) if timestamp is not None else None
     if dt is None:
         diags.append(

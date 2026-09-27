@@ -142,6 +142,21 @@ def test_malformed_null_decision_id_fails_source_scan_closed(tmp_path):
     assert catalog.active_records() == ()
 
 
+def test_malformed_primary_timestamp_is_not_replaced_by_legacy_value(tmp_path):
+    source = create_source_db(tmp_path / "source.sqlite3")
+    with closing(sqlite3.connect(source)) as connection, connection:
+        connection.execute(
+            "UPDATE shadow_decisions SET analysis_snapshot_timestamp=?", (0,)
+        )
+    catalog = ExperienceCatalog(tmp_path / "artifact")
+
+    report = ExperienceImporter(catalog).import_sources((source,))
+
+    assert report.failed_scan_count == 1
+    assert report.indexed_count == 0
+    assert catalog.active_records() == ()
+
+
 def test_lock_collision_does_not_create_staging(tmp_path):
     source = create_source_db(tmp_path / "source.sqlite3")
     catalog = ExperienceCatalog(tmp_path / "artifact")

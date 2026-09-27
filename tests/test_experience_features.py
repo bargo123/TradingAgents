@@ -40,6 +40,16 @@ def test_feature_order_and_missing_mask_are_deterministic(decision_row):
     assert result.mask[result.feature_names.index("M5.average_true_range")] is False
 
 
+@pytest.mark.parametrize("field", ["resolved_symbol", "analysis_snapshot_timestamp"])
+@pytest.mark.parametrize("value", [False, 0, []])
+def test_malformed_primary_metadata_is_not_silently_replaced(decision_row, field, value):
+    decision_row["symbol"] = "EURUSD"
+    decision_row["snapshot_timestamp"] = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+    decision_row[field] = value
+    with pytest.raises(FeatureExtractionIncompleteError):
+        extract_market_state(decision_row)
+
+
 def test_outcome_fields_cannot_change_market_vector(decision_row):
     changed = {**decision_row, "buy_net_points": 99999, "selected_action": "SELL"}
     assert (

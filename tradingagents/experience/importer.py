@@ -26,6 +26,20 @@ from .provenance import build_evaluation_provenance
 from .source_reader import ReadonlySourceReader, ReadonlySourceSnapshot
 from .trust import classify_trust
 
+_MISSING = object()
+
+
+def _primary_source_value(row: dict[str, Any], primary: str, fallback: str) -> Any:
+    value = row.get(primary, _MISSING)
+    if value is _MISSING or value is None or (isinstance(value, str) and value == ""):
+        return row.get(fallback)
+    return value
+
+
+def _source_symbol(row: dict[str, Any]) -> Any:
+    value = _primary_source_value(row, "resolved_symbol", "symbol")
+    return "UNKNOWN" if value is None else value
+
 
 @dataclass(frozen=True)
 class ImportReport:
@@ -199,7 +213,7 @@ class ExperienceImporter:
                                 vector = None
                                 trust = type("T", (), {"tier": TrustTier.TIER_C_DIAGNOSTIC_ONLY})()
                                 market_state = {
-                                    "symbol": row.get("resolved_symbol") or row.get("symbol"),
+                                    "symbol": _source_symbol(row),
                                     "action": row.get("action"),
                                 }
                             provenance = {
@@ -213,14 +227,15 @@ class ExperienceImporter:
                                     decision_id,
                                     fingerprint,
                                     source_run_id=row.get("source_run_id"),
-                                    symbol=row.get("resolved_symbol") or "UNKNOWN",
+                                    symbol=_source_symbol(row),
                                     requested_symbol=row.get("requested_symbol"),
                                     analysis_profile=row.get("analysis_profile"),
                                     analysis_timeframe=row.get("analysis_timeframe"),
-                                    analysis_snapshot_timestamp=row.get(
-                                        "analysis_snapshot_timestamp"
-                                    )
-                                    or row.get("snapshot_timestamp"),
+                                    analysis_snapshot_timestamp=_primary_source_value(
+                                        row,
+                                        "analysis_snapshot_timestamp",
+                                        "snapshot_timestamp",
+                                    ),
                                     decision_completed_timestamp=row.get(
                                         "decision_completed_timestamp"
                                     ),

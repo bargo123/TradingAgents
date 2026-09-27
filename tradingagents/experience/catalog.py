@@ -21,10 +21,38 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _timestamp_value(value: Any) -> Any:
-    """Return a SQLite-safe timestamp without using deprecated adapters."""
+def _parse_utc_timestamp(value: Any, name: str) -> datetime:
+    if isinstance(value, str):
+        if not value.strip():
+            raise ValueError(f"{name} must be timezone-aware UTC")
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(f"{name} must be timezone-aware UTC") from exc
+    if not isinstance(value, datetime):
+        raise TypeError(f"{name} must be a datetime or ISO string")
+    if value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
+        raise ValueError(f"{name} must be timezone-aware UTC")
+    return value.astimezone(timezone.utc)
 
-    return value.isoformat() if isinstance(value, datetime) else value
+
+def _analysis_snapshot_timestamp(value: Any) -> datetime:
+    """Normalize an explicit analysis timestamp without truthiness coercion."""
+    if value is None:
+        return datetime.now(timezone.utc)
+    return _parse_utc_timestamp(value, "analysis_snapshot_timestamp")
+
+
+def _optional_timestamp_value(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    return _parse_utc_timestamp(value, name).isoformat()
+
+
+def _required_text(value: Any, name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise TypeError(f"{name} must be a non-empty string")
+    return value
 
 
 def _json(value: Any) -> str:
@@ -162,6 +190,9 @@ class ExperienceCatalog:
     def upsert_source_alias(
         self, source_database_id: str, decision_id: str, fingerprint: str, **kwargs: Any
     ) -> ExperienceRecord:
+        source_database_id = _required_text(source_database_id, "source_database_id")
+        decision_id = _required_text(decision_id, "decision_id")
+        fingerprint = _required_text(fingerprint, "fingerprint")
         now = _now()
         experience_id = self._experience_id(decision_id)
         in_transaction = self._transaction_connection is not None
@@ -185,11 +216,9 @@ class ExperienceCatalog:
                     db.commit()
                 raise SourceDecisionConflictError(f"conflicting fingerprint for {decision_id}")
             if not existing:
-                timestamp = kwargs.get("analysis_snapshot_timestamp") or datetime.now(timezone.utc)
-                if isinstance(timestamp, str):
-                    timestamp = datetime.fromisoformat(timestamp)
-                if timestamp.tzinfo is None:
-                    timestamp = timestamp.replace(tzinfo=timezone.utc)
+                timestamp = _analysis_snapshot_timestamp(
+                    kwargs.get("analysis_snapshot_timestamp")
+                )
                 db.execute(
                     "INSERT INTO experience_records VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
@@ -203,8 +232,14 @@ class ExperienceCatalog:
                         kwargs.get("analysis_profile"),
                         kwargs.get("analysis_timeframe"),
                         timestamp.isoformat(),
-                        _timestamp_value(kwargs.get("decision_completed_timestamp")),
-                        _timestamp_value(kwargs.get("decision_reference_timestamp")),
+                        _optional_timestamp_value(
+                            kwargs.get("decision_completed_timestamp"),
+                            "decision_completed_timestamp",
+                        ),
+                        _optional_timestamp_value(
+                            kwargs.get("decision_reference_timestamp"),
+                            "decision_reference_timestamp",
+                        ),
                         _json(kwargs.get("market_state")),
                         _json(kwargs.get("decision_evidence")),
                         _json(kwargs.get("provenance")),
@@ -345,6 +380,10 @@ class ExperienceCatalog:
         provenance: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> bool:
+        experience_id = _required_text(experience_id, "experience_id")
+        fingerprint = _required_text(fingerprint, "fingerprint")
+        if not isinstance(evaluation, Mapping):
+            raise TypeError("evaluation must be a mapping")
         if provenance is None:
             prov = {}
         elif not isinstance(provenance, Mapping):
