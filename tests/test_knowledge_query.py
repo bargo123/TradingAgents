@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from math import inf, nan
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,14 @@ from tradingagents.knowledge.models import (
 from tradingagents.knowledge.provenance import ProvenanceError, validate_hit_provenance
 from tradingagents.knowledge.query import KnowledgeQueryService
 from tradingagents.knowledge.reranking import Reranker
+
+
+@pytest.mark.parametrize("score", [nan, inf, -inf])
+def test_fusion_candidates_reject_non_finite_scores(score: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        DenseCandidate("chunk-a", 1, score)
+    with pytest.raises(ValueError, match="finite"):
+        LexicalCandidate("chunk-a", 1, score)
 
 
 def make_embedding_spec(**overrides: object) -> EmbeddingSpec:

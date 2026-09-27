@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
+
+
+def _finite_score(value: float | int, name: str) -> float:
+    """Normalize a retrieval score without allowing non-finite ordering keys."""
+
+    score = float(value)
+    if not math.isfinite(score):
+        raise ValueError(f"{name} must be finite")
+    return score
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -26,7 +36,7 @@ class DenseCandidate:
         if rank <= 0:
             raise ValueError("dense candidate rank must be positive")
         object.__setattr__(self, "rank", rank)
-        object.__setattr__(self, "score", float(score))
+        object.__setattr__(self, "score", _finite_score(score, "dense candidate score"))
         object.__setattr__(self, "chunk", chunk)
         object.__setattr__(self, "metadata", metadata or {})
 
@@ -54,7 +64,7 @@ class LexicalCandidate:
         if rank <= 0:
             raise ValueError("lexical candidate rank must be positive")
         object.__setattr__(self, "rank", rank)
-        object.__setattr__(self, "score", float(score))
+        object.__setattr__(self, "score", _finite_score(score, "lexical candidate score"))
         object.__setattr__(self, "chunk", chunk)
         object.__setattr__(self, "metadata", metadata or {})
 
