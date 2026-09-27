@@ -319,6 +319,22 @@ def test_candidate_from_stale_projection_population_fails_closed():
         service.search(KnowledgeQuery(text="OFI"))
 
 
+def test_candidate_chunk_identity_mismatch_fails_closed():
+    service = query_harness(
+        dense=(
+            {
+                "chunk_id": "claimed-chunk",
+                "semantic_score": 0.9,
+                "rank": 1,
+                "chunk": make_chunk("actual-chunk"),
+            },
+        )
+    )
+
+    with pytest.raises(ProvenanceError, match="chunk identity"):
+        service.search(KnowledgeQuery(text="OFI"))
+
+
 def test_malformed_query_vector_fails_before_dense_retrieval():
     service = query_harness(
         dense_reader=FakeVectorReader(fail_if_called=True),

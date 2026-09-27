@@ -13,7 +13,7 @@ from .embeddings import EmbeddingSpecMismatch
 from .fusion import DenseCandidate, LexicalCandidate, reciprocal_rank_fuse
 from .index_generation import IncompatibleIndexGeneration
 from .models import ChunkRecord, ContentType, EmbeddingSpec, KnowledgeHit, KnowledgeQuery
-from .provenance import validate_hit_provenance
+from .provenance import ProvenanceError, validate_hit_provenance
 from .reranking import Reranker
 
 
@@ -75,6 +75,21 @@ def _candidate(item: Any, cls: type[DenseCandidate] | type[LexicalCandidate], ra
         return item
     if isinstance(item, Mapping):
         chunk = _chunk(item)
+        claimed_chunk_id = item.get("chunk_id")
+        if chunk is not None and claimed_chunk_id is not None:
+            if not isinstance(claimed_chunk_id, str) or claimed_chunk_id != chunk.chunk_id:
+                raise ProvenanceError("candidate chunk identity does not match its payload")
+            claimed_document_id = item.get("document_id")
+            if claimed_document_id is not None and claimed_document_id != chunk.document_id:
+                raise ProvenanceError("candidate document identity does not match its payload")
+            chunk_extra = chunk.extra if isinstance(chunk.extra, Mapping) else {}
+            for field, chunk_value in (
+                ("projection_generation", chunk.projection_generation),
+                ("projection_population_hash", chunk_extra.get("projection_population_hash")),
+            ):
+                claimed_value = item.get(field)
+                if claimed_value is not None and chunk_value is not None and claimed_value != chunk_value:
+                    raise ProvenanceError(f"candidate {field} does not match its payload")
         score_key = "semantic_score" if cls is DenseCandidate else "lexical_score"
         score = item.get(score_key, item.get("score", 0.0))
         return cls(
