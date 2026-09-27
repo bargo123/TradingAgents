@@ -173,6 +173,8 @@ class ShadowOutcomeEvaluation:
             raise ValueError(f"unsupported evaluation basis: {self.evaluation_basis!r}")
         if self.evaluation_status not in _STATUS_VALUES:
             raise ValueError(f"unsupported evaluation status: {self.evaluation_status!r}")
+        if not isinstance(self.source_context_eligible, bool):
+            raise ValueError("source_context_eligible must be bool")
         if (
             isinstance(self.horizon_seconds, bool)
             or not isinstance(self.horizon_seconds, int)
@@ -977,7 +979,9 @@ class ShadowEvaluationStore:
             horizon_seconds=int(row["horizon_seconds"]),
             evaluation_version=row["evaluation_version"],
             market_data_source=row["market_data_source"],
-            source_context_eligible=bool(row["source_context_eligible"]),
+            source_context_eligible=_db_bool(
+                row["source_context_eligible"], "source_context_eligible"
+            ),
             training_eligible=None,
             training_eligibility_reason=row["training_eligibility_reason"],
             target_timestamp=_parse_db_timestamp(value("target_timestamp")),
@@ -1027,6 +1031,14 @@ def _parse_db_timestamp(value: str | None) -> datetime | None:
     if value is None:
         return None
     return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
+def _db_bool(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{name} must be boolean 0/1")
 
 
 @dataclass(frozen=True, slots=True)

@@ -69,6 +69,14 @@ def _safe_text(value: Any, limit: int = 500) -> str | None:
     return text[:limit] if text else None
 
 
+def _db_bool(value: Any, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{name} must be boolean 0/1")
+
+
 class LeaseStatus(Enum):
     ACQUIRED = "ACQUIRED"
     WATCHER_ALREADY_RUNNING = "WATCHER_ALREADY_RUNNING"
@@ -1320,7 +1328,9 @@ class WatcherStore:
             # Older watcher processes could persist ERROR without a diagnostic
             # code.  Keep status reads explicit without mutating the database.
             result["last_error_code"] = "EVALUATION_FAILED"
-        result["evaluation_due_pending"] = bool(result.get("evaluation_due_pending", 0))
+        result["evaluation_due_pending"] = _db_bool(
+            result.get("evaluation_due_pending", 0), "evaluation_due_pending"
+        )
         result["opportunity_counts"] = counts
         result["run_counts"] = run_counts
         result["database_path"] = str(self.path)
@@ -1412,7 +1422,9 @@ class WatcherStore:
             decision_reference_timestamp=values["decision_reference_timestamp"],
             decision_reference_status=row["decision_reference_status"],
             decision_reference_delay_seconds=row["decision_reference_delay_seconds"],
-            stale_by_completion=None if row["stale_by_completion"] is None else bool(row["stale_by_completion"]),
+            stale_by_completion=None
+            if row["stale_by_completion"] is None
+            else _db_bool(row["stale_by_completion"], "stale_by_completion"),
             freshness_budget_seconds=row["freshness_budget_seconds"],
             llm_provider=row["llm_provider"], quick_model=row["quick_model"], deep_model=row["deep_model"],
             analyst_set_json=row["analyst_set_json"], analysis_profile=row["analysis_profile"],
@@ -1420,7 +1432,7 @@ class WatcherStore:
             git_commit=row["git_commit"],
             working_tree_dirty=None
             if row["working_tree_dirty"] is None
-            else bool(row["working_tree_dirty"]),
+            else _db_bool(row["working_tree_dirty"], "working_tree_dirty"),
             collector_contract_version=row["collector_contract_version"],
             config_fingerprint=row["config_fingerprint"], safe_config_json=row["safe_config_json"],
             runtime_seconds=row["runtime_seconds"], llm_calls=row["llm_calls"], tool_calls=row["tool_calls"],

@@ -509,6 +509,15 @@ def test_runner_merges_partial_runtime_config_with_graph_defaults():
     assert runner.config["max_debate_rounds"] >= 0
 
 
+def test_runner_rejects_ambiguous_evidence_config_boolean():
+    assert ForexShadowRunner._evidence_is_enabled({"forex_evidence_enabled": False}) is False
+    assert ForexShadowRunner._evidence_is_enabled({"forex_evidence_enabled": True}) is True
+    assert ForexShadowRunner._evidence_is_enabled({"forex_evidence_enabled": "false"}) is False
+    assert ForexShadowRunner._evidence_is_enabled({"forex_evidence_enabled": "true"}) is True
+    with pytest.raises(ValueError, match="forex_evidence_enabled"):
+        ForexShadowRunner._evidence_is_enabled({"forex_evidence_enabled": "maybe"})
+
+
 def test_runner_persists_failed_normalization_without_guessing(tmp_path):
     runner, provider, _, store = _make_runner(
         tmp_path,

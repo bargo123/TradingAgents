@@ -48,6 +48,20 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _config_bool(value: Any, name: str, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    raise ValueError(f"{name} must be a boolean")
+
+
 def _normalize_utc_timestamp(value: Any) -> datetime:
     """Normalize a provider timestamp while requiring an explicit UTC value."""
     if not isinstance(value, datetime) or value.tzinfo is None:
@@ -562,7 +576,7 @@ class ForexShadowRunner:
 
     @staticmethod
     def _evidence_is_enabled(config: Mapping[str, Any]) -> bool:
-        return bool(config.get("forex_evidence_enabled", False))
+        return _config_bool(config.get("forex_evidence_enabled"), "forex_evidence_enabled")
 
     def _default_evidence_service_factory(self, **kwargs: Any) -> EvidenceIntegrationService:
         config = kwargs.get("config", self.config)
@@ -737,16 +751,18 @@ class ForexShadowRunner:
             if (
                 forex_evidence_enabled is not None
                 and evidence_enabled is not None
-                and bool(forex_evidence_enabled) != bool(evidence_enabled)
+                and _config_bool(forex_evidence_enabled, "forex_evidence_enabled")
+                != _config_bool(evidence_enabled, "evidence_enabled")
             ):
                 raise ValueError("conflicting evidence-enabled replay flags")
             effective_evidence_enabled = (
                 self._evidence_is_enabled(self.config)
                 if forex_evidence_enabled is None and evidence_enabled is None
-                else bool(
+                else _config_bool(
                     forex_evidence_enabled
                     if forex_evidence_enabled is not None
-                    else evidence_enabled
+                    else evidence_enabled,
+                    "forex_evidence_enabled",
                 )
             )
             config_for_graph["forex_evidence_enabled"] = effective_evidence_enabled

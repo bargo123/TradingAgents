@@ -278,6 +278,29 @@ def test_evaluation_store_creates_basis_schema_and_triple_key(tmp_path: Path) ->
     assert primary_key == ["decision_id", "evaluation_basis", "horizon_seconds"]
 
 
+def test_evaluation_model_rejects_non_boolean_source_context_flag() -> None:
+    record = _record(_decision(), now=ANCHOR + timedelta(seconds=300))
+
+    with pytest.raises(ValueError, match="source_context_eligible must be bool"):
+        replace(record, source_context_eligible="false")
+
+
+def test_evaluation_store_rejects_malformed_source_context_flag(tmp_path: Path) -> None:
+    store = ShadowEvaluationStore(tmp_path / "malformed-flag.db")
+    decision = _decision()
+    store.upsert([_record(decision, now=ANCHOR + timedelta(seconds=300))])
+
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE shadow_decision_evaluations SET source_context_eligible=?",
+            ("false",),
+        )
+
+    with pytest.raises(ValueError, match="source_context_eligible"):
+        store.get(decision.decision_id, "ANALYSIS_SNAPSHOT", 300)
+
+
 def test_evaluation_store_allows_recovery_but_preserves_complete_and_ineligible(
     tmp_path: Path,
 ) -> None:
