@@ -718,6 +718,13 @@ class KnowledgeCatalog:
         if not ready_document_ids and generation is not None:
             raise ValueError("an active generation requires its ready document population")
         with self._write() as connection:
+            for document_id in ready_document_ids:
+                if document_id in documents_by_id:
+                    continue
+                if connection.execute(
+                    "SELECT 1 FROM knowledge_documents WHERE document_id = ?", (document_id,)
+                ).fetchone() is None:
+                    raise ValueError(f"unknown ready document_id: {document_id}")
             if generation is not None:
                 self._set_active_generation_in_transaction(connection, generation)
 
