@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .evidence_context import EvidenceReferenceRejectionReason
+
 _FORBIDDEN_WORDS = (
     "prompt",
     "completion",
@@ -102,8 +104,12 @@ def _rejection_sequence(value: Any) -> tuple[Any, ...]:
         reason = item.get("reason") if isinstance(item, Mapping) else getattr(item, "reason", None)
         if not isinstance(ref, str) or not ref.strip() or ref != ref.strip():
             raise ValueError("evidence_refs_rejected entries must have a valid ref")
-        if reason is None or (isinstance(reason, str) and not reason.strip()):
-            raise ValueError("evidence_refs_rejected entries must have a reason")
+        try:
+            EvidenceReferenceRejectionReason(reason)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "evidence_refs_rejected entries must have an allowed reason"
+            ) from exc
     return values
 
 

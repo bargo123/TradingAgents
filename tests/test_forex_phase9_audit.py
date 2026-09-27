@@ -104,6 +104,12 @@ def test_audit_rejects_malformed_rejection_sequence(value):
         audit(evidence_refs_rejected=value)
 
 
+@pytest.mark.parametrize("reason", ["MADE_UP", "", 1, None])
+def test_audit_rejects_closed_rejection_reason_violation(reason):
+    with pytest.raises((TypeError, ValueError), match="reason"):
+        audit(evidence_refs_rejected=({"ref": "K1", "reason": reason},))
+
+
 def test_audit_is_append_only(tmp_path):
     store = EvidenceAuditStore(tmp_path / "audit.sqlite3")
     store.initialize()
