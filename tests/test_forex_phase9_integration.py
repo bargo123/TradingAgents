@@ -1038,7 +1038,13 @@ def test_readonly_knowledge_catalog_uses_mode_ro(tmp_path: Path):
             catalog._connection.execute("CREATE TABLE forbidden (x INTEGER)")
 
 
-def test_readonly_knowledge_catalog_rejects_malformed_generation_flags(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    (("vector_ready", "false"), ("lexical_ready", "true")),
+)
+def test_readonly_knowledge_catalog_rejects_malformed_generation_flags(
+    tmp_path: Path, field: str, bad_value: str
+):
     db = tmp_path / "catalog.sqlite3"
     with closing(sqlite3.connect(db)) as connection, connection:
         connection.execute(
@@ -1065,8 +1071,8 @@ def test_readonly_knowledge_catalog_rejects_malformed_generation_flags(tmp_path:
                 "identity",
                 1,
                 1,
-                "false",
-                1,
+                bad_value if field == "vector_ready" else 1,
+                bad_value if field == "lexical_ready" else 1,
                 "VALIDATED",
                 "2026-01-01T00:00:00+00:00",
                 "2026-01-01T00:00:00+00:00",
@@ -1075,7 +1081,7 @@ def test_readonly_knowledge_catalog_rejects_malformed_generation_flags(tmp_path:
         )
 
     with ReadonlyKnowledgeCatalog(tmp_path) as catalog, pytest.raises(
-        ValueError, match="vector_ready"
+        ValueError, match=field
     ):
         catalog.active_generation()
 
