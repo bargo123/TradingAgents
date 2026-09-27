@@ -196,7 +196,14 @@ class KnowledgeQueryService:
         if not result:
             raise EmbeddingSpecMismatch("query embedder returned no vector")
         first = result[0]
-        return result if isinstance(first, (int, float)) else first
+        vector = result if isinstance(first, (int, float)) else first
+        try:
+            values = tuple(float(value) for value in vector)
+        except (TypeError, ValueError):
+            raise EmbeddingSpecMismatch("query embedder returned a malformed vector") from None
+        if len(values) != spec.dimensions or not all(math.isfinite(value) for value in values):
+            raise EmbeddingSpecMismatch("query embedding vector is non-finite or has the wrong dimension")
+        return values
 
     @staticmethod
     def _hit(candidate: Any) -> KnowledgeHit:
@@ -239,7 +246,12 @@ class KnowledgeQueryService:
         if callable(getattr(self.vector_reader, "search", None)):
             dense_rows = _call_search(self.vector_reader, vector, request, limit)
         else:
-            dense_rows = self._search_vector_rows(vector, request, limit)
+            dense_rows = self._search_vector_rows(
+                vector,
+                request,
+                limit,
+                expected_dimensions=generation.embedding_spec.dimensions,
+            )
         dense = tuple(_candidate(item, DenseCandidate, index) for index, item in enumerate(dense_rows, 1))
         lexical = tuple(_candidate(item, LexicalCandidate, index) for index, item in enumerate(
             _call_search(self.lexical_reader, request.text, request, limit), 1
@@ -255,17 +267,28 @@ class KnowledgeQueryService:
             hits.append(hit)
         return tuple(hits)
 
-    def _search_vector_rows(self, vector: Sequence[float], request: KnowledgeQuery, limit: int) -> tuple[Mapping[str, Any], ...]:
+    def _search_vector_rows(
+        self,
+        vector: Sequence[float],
+        request: KnowledgeQuery,
+        limit: int,
+        *,
+        expected_dimensions: int,
+    ) -> tuple[Mapping[str, Any], ...]:
         """Small fallback for the metadata/rows-only VectorIndexReader adapter."""
         rows = self.vector_reader.rows()
         scored: list[dict[str, Any]] = []
         norm = math.sqrt(sum(float(value) ** 2 for value in vector)) or 1.0
         for row in rows:
             values = row.get("vector") if isinstance(row, Mapping) else None
-            if not values:
-                continue
-            row_norm = math.sqrt(sum(float(value) ** 2 for value in values)) or 1.0
-            score = sum(float(left) * float(right) for left, right in zip(vector, values, strict=False)) / (norm * row_norm)
+            try:
+                values = tuple(float(value) for value in values)
+            except (TypeError, ValueError):
+                raise IncompatibleIndexGeneration("vector row contains a malformed embedding") from None
+            if len(values) != expected_dimensions or not all(math.isfinite(value) for value in values):
+                raise IncompatibleIndexGeneration("vector row has a non-finite or wrong-dimension embedding")
+            row_norm = math.sqrt(sum(value ** 2 for value in values)) or 1.0
+            score = sum(float(left) * right for left, right in zip(vector, values, strict=True)) / (norm * row_norm)
             scored.append({**row, "semantic_score": score})
         scored.sort(key=lambda row: (-float(row["semantic_score"]), str(row.get("chunk_id", ""))))
         for index, row in enumerate(scored, 1):

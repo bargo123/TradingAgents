@@ -129,6 +129,23 @@ class MissingMetadataVectorReader(FakeVectorReader):
         return {}
 
 
+class RowsOnlyMalformedVectorReader:
+    def __init__(self, rows):
+        self._rows = tuple(rows)
+
+    def metadata(self):
+        return {
+            "generation_id": "gen-1",
+            "population_hash": "pop-1",
+            "embedding_spec": make_embedding_spec().to_dict(),
+            "lexical_index_version": "fts5-v1",
+            "index_version": "index-v1",
+        }
+
+    def rows(self):
+        return self._rows
+
+
 class FakeLexicalReader:
     def __init__(self, rows=(), *, generation_id="gen-1", embedding_spec=None):
         self.rows = tuple(rows)
@@ -239,6 +256,26 @@ def test_anonymous_hit_and_generation_mismatch_fail_closed():
 def test_missing_projection_metadata_fails_closed_before_retrieval():
     reader = MissingMetadataVectorReader(
         ({"chunk_id": "chunk-a", "semantic_score": 0.9, "rank": 1, "chunk": make_chunk()},)
+    )
+    service = query_harness(dense_reader=reader)
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        service.search(KnowledgeQuery(text="OFI"))
+
+
+def test_malformed_query_vector_fails_before_dense_retrieval():
+    service = query_harness(
+        dense_reader=FakeVectorReader(fail_if_called=True),
+    )
+    service.embedder.embed = lambda _texts, **_kwargs: ((0.1, float("nan")),)
+
+    with pytest.raises(EmbeddingSpecMismatch):
+        service.search(KnowledgeQuery(text="OFI"))
+
+
+def test_malformed_rows_only_vector_fails_closed():
+    reader = RowsOnlyMalformedVectorReader(
+        ({"chunk_id": "chunk-a", "vector": (0.1, 0.2)},),
     )
     service = query_harness(dense_reader=reader)
 
