@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,7 +28,11 @@ def _timestamp_value(value: Any) -> Any:
 
 
 def _json(value: Any) -> str:
-    return json.dumps(value or {}, sort_keys=True, separators=(",", ":"), default=str)
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("catalog JSON payload must be a JSON object")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
 def _db_bool(value: Any, name: str) -> bool:

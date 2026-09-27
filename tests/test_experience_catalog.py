@@ -108,6 +108,12 @@ def test_catalog_has_phase8_tables_and_diagnostics_are_bounded(catalog: Experien
         assert "SOURCE_DATABASE_UNAVAILABLE" in indexed
 
 
+@pytest.mark.parametrize("detail", [[], "not-an-object", 0, False])
+def test_catalog_rejects_non_object_json_details(catalog: ExperienceCatalog, detail) -> None:
+    with pytest.raises(ValueError, match="JSON object"):
+        catalog.record_import_event("RUNNING", detail=detail)
+
+
 def test_orphaned_import_run_is_marked_interrupted_once(catalog: ExperienceCatalog) -> None:
     catalog.record_import_event("RUNNING", detail={"run_id": "stale-run"})
     catalog.record_import_event("RUNNING", detail={"run_id": "finished-run"})
