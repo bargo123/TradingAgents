@@ -76,3 +76,18 @@ def test_malformed_individual_timeframe_section_has_typed_diagnostic(decision_ro
     decision_row["snapshot_json"]["features"]["M1"] = []
     with pytest.raises(FeatureExtractionIncompleteError):
         extract_market_state(decision_row)
+
+
+@pytest.mark.parametrize(
+    "quote",
+    [
+        {"bid": 0.0, "ask": 1.1, "spread_points": 10},
+        {"bid": 1.2, "ask": 1.1, "spread_points": 10},
+        {"bid": 1.1, "ask": 1.1001, "spread_points": -1},
+    ],
+)
+def test_impossible_quote_values_have_typed_diagnostic(decision_row, quote):
+    decision_row["snapshot_json"]["quote"] = quote
+
+    with pytest.raises(FeatureExtractionIncompleteError):
+        extract_market_state(decision_row)

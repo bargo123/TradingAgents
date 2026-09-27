@@ -195,13 +195,33 @@ def extract_market_state(decision_row: Mapping[str, Any] | Any) -> MarketStateVe
             paths.append(path)
             reasons.append(None)
 
-    for quote_key in ("bid", "ask", "spread_points"):
-        if _finite(quote.get(quote_key)) is None:
+    quote_values = {quote_key: _finite(quote.get(quote_key)) for quote_key in ("bid", "ask", "spread_points")}
+    for quote_key, quote_value in quote_values.items():
+        if quote_value is None:
             diags.append(
                 ExtractionDiagnostic(
                     "QUOTE_INVALID", f"snapshot_json.quote.{quote_key}", "finite value required"
                 )
             )
+    bid, ask, spread_points = (
+        quote_values["bid"],
+        quote_values["ask"],
+        quote_values["spread_points"],
+    )
+    if bid is not None and bid <= 0:
+        diags.append(ExtractionDiagnostic("QUOTE_INVALID", "snapshot_json.quote.bid", "must be positive"))
+    if ask is not None and ask <= 0:
+        diags.append(ExtractionDiagnostic("QUOTE_INVALID", "snapshot_json.quote.ask", "must be positive"))
+    if bid is not None and ask is not None and ask < bid:
+        diags.append(
+            ExtractionDiagnostic(
+                "QUOTE_INVALID", "snapshot_json.quote.ask", "must be greater than or equal to bid"
+            )
+        )
+    if spread_points is not None and spread_points < 0:
+        diags.append(
+            ExtractionDiagnostic("QUOTE_INVALID", "snapshot_json.quote.spread_points", "must be non-negative")
+        )
     spread = row.get("analysis_snapshot_spread_points", quote.get("spread_points"))
     add(
         "spread_points",
