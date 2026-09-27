@@ -89,6 +89,20 @@ def test_query_service_rejects_non_mapping_profiles():
         ExperienceQueryService([row("a")], profile=profile(), profiles=[])
 
 
+def test_query_service_preserves_explicit_empty_feature_index():
+    service = ExperienceQueryService([row("a")], profile=profile(), feature_vectors={})
+
+    result = service.search(ExperienceQuery(query_state()))
+
+    assert result.hits == ()
+
+
+@pytest.mark.parametrize("feature_vectors", [[], "", 0, False])
+def test_query_service_rejects_non_mapping_feature_index(feature_vectors):
+    with pytest.raises(ValueError, match="feature_vectors"):
+        ExperienceQueryService([row("a")], profile=profile(), feature_vectors=feature_vectors)
+
+
 def test_query_excludes_malformed_trust_tier_without_crashing():
     service = ExperienceQueryService(
         [row("good"), row("malformed") | {"trust": "NOT_A_TRUST_TIER", "trust_tier": "NOT_A_TRUST_TIER"}],

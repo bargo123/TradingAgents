@@ -79,7 +79,12 @@ class ExperienceQueryService:
         else:
             self.profiles = dict(profiles)
         self.generation_id = generation_id or active_generation_id
-        vectors = feature_vectors or {str(_get(r, "experience_id")): r for r in self.records}
+        if feature_vectors is None:
+            vectors = {str(_get(r, "experience_id")): r for r in self.records}
+        elif not isinstance(feature_vectors, Mapping):
+            raise ValueError("feature_vectors must be a mapping")
+        else:
+            vectors = dict(feature_vectors)
         self.index = index or ExactSimilarityIndex(
             vectors, {str(_get(r, "experience_id")): r for r in self.records}
         )
