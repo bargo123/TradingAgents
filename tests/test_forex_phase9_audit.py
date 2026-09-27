@@ -217,6 +217,27 @@ def test_injected_none_relevant_requires_rejection_for_each_available_ref():
     assert result.evidence_audit_status == "INVALID_REFERENCE"
 
 
+def test_duplicate_available_display_ids_fail_closed():
+    context = EvidenceContext(
+        integration_status=EvidenceIntegrationStatus.INJECTED,
+        knowledge_items=(
+            CanonicalEvidenceItem("K1", "KNOWLEDGE", "k-auth-1", "first", "rule", 0.9, {}),
+            CanonicalEvidenceItem("K1", "KNOWLEDGE", "k-auth-2", "duplicate", "rule", 0.8, {}),
+        ),
+    )
+    result = validate_evidence_references(
+        context,
+        {
+            "evidence_use_status": "NONE_RELEVANT",
+            "evidence_refs_used": [],
+            "evidence_refs_rejected": [{"ref": "K1", "reason": "LOW_RELEVANCE"}],
+        },
+        runtime_integration_status=EvidenceIntegrationStatus.INJECTED,
+    )
+
+    assert result.evidence_audit_status == "INVALID_REFERENCE"
+
+
 def test_disabled_runtime_overrides_model_status():
     result = validate_evidence_references(
         _context_with_items(),

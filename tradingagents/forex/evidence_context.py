@@ -439,10 +439,14 @@ def validate_evidence_references(
     if not isinstance(raw_result, Mapping):
         raise TypeError("raw_result must be a mapping")
     runtime = EvidenceIntegrationStatus(runtime_integration_status)
-    available = set(_context_reference_ids(context))
+    available_ids = _context_reference_ids(context)
+    # Display IDs are the accounting keys.  A duplicate would collapse in a
+    # set and make one injected item impossible to account for exactly once.
+    available = set(available_ids)
+    invalid = len(available_ids) != len(available)
     used_values, used_shape_ok = _reference_values(raw_result, "evidence_refs_used")
     rejected_values, rejected_shape_ok = _reference_values(raw_result, "evidence_refs_rejected")
-    invalid = not used_shape_ok or not rejected_shape_ok
+    invalid = invalid or not used_shape_ok or not rejected_shape_ok
 
     valid_used: list[str] = []
     seen_used: set[str] = set()
