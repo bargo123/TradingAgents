@@ -212,7 +212,9 @@ class OutcomeStatsCalculator:
                         reason = status or "EVALUATION_STATUS_UNKNOWN"
                     elif self._availability(snapshot) is None:
                         reason = "EVALUATION_AVAILABILITY_UNKNOWN"
-                    elif snapshot.get("source_context_eligible") != 1:
+                    elif type(snapshot.get("source_context_eligible")) is not int or snapshot.get(
+                        "source_context_eligible"
+                    ) != 1:
                         reason = "SOURCE_CONTEXT_INELIGIBLE"
                     elif (
                         request.evaluation_basis == "DECISION_REFERENCE"

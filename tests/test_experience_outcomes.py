@@ -120,6 +120,17 @@ def test_complete_snapshot_with_non_numeric_selected_action_value_is_excluded(va
     assert result.excluded_counts["REQUIRED_FIELD_MISSING_OR_NONFINITE"] == 1
 
 
+@pytest.mark.parametrize("value", [True, "1"])
+def test_complete_snapshot_with_malformed_source_context_flag_is_excluded(value: object):
+    row = _complete("bad-context-flag", source_context_eligible=value)
+    result = OutcomeStatsCalculator(
+        (_record("bad-context-flag", snapshots=(row,)),)
+    ).calculate(OutcomeStatsRequest(("bad-context-flag",), "ANALYSIS_SNAPSHOT", 300))
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["SOURCE_CONTEXT_INELIGIBLE"] == 1
+
+
 def test_basis_and_horizon_are_exact():
     result = calculator().calculate(OutcomeStatsRequest(("exp1",), "DECISION_REFERENCE", 900))
     assert result.requested_basis == "DECISION_REFERENCE"

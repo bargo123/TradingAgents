@@ -220,3 +220,15 @@ def test_outcome_stats_request_rejects_string_experience_ids() -> None:
 def test_evidence_request_rejects_invalid_top_k(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
         EvidenceRequest(**{field: value})
+
+
+@pytest.mark.parametrize("value", [True, -1, 1.5, "300"])
+def test_evidence_request_rejects_invalid_horizon(value: object) -> None:
+    with pytest.raises(ValueError, match="horizon_seconds"):
+        EvidenceRequest(evaluation_basis="ANALYSIS_SNAPSHOT", horizon_seconds=value)
+
+
+@pytest.mark.parametrize("field", ["content_types", "document_ids"])
+def test_evidence_request_rejects_scalar_filter_sequences(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        EvidenceRequest(**{field: "not-a-sequence"})

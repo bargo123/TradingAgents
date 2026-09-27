@@ -426,12 +426,36 @@ class EvidenceRequest(Serializable):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 1000:
                 raise ValueError(f"{name} must be between 1 and 1000")
+        if self.evaluation_basis is not None and (
+            not isinstance(self.evaluation_basis, str) or not self.evaluation_basis.strip()
+        ):
+            raise ValueError("evaluation_basis must be a non-empty string")
         if (self.evaluation_basis is None) != (self.horizon_seconds is None):
             raise ValueError("evaluation_basis and horizon_seconds must be paired")
+        if self.horizon_seconds is not None and (
+            isinstance(self.horizon_seconds, bool)
+            or not isinstance(self.horizon_seconds, int)
+            or self.horizon_seconds < 0
+        ):
+            raise ValueError("horizon_seconds must be a non-negative integer")
         object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
         object.__setattr__(self, "trust_tiers", tuple(TrustTier(v) for v in self.trust_tiers))
         if self.market_state is not None and not isinstance(self.market_state, Mapping):
             raise ValueError("market_state must be a mapping")
+        for name in ("content_types", "document_ids"):
+            raw = getattr(self, name)
+            if raw is None:
+                values = ()
+            elif isinstance(raw, (str, bytes, bytearray, Mapping)):
+                raise ValueError(f"{name} must be a sequence of strings")
+            else:
+                try:
+                    values = tuple(raw)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"{name} must be a sequence of strings") from exc
+            if any(not isinstance(value, str) or not value.strip() for value in values):
+                raise ValueError(f"{name} entries must be non-empty strings")
+            object.__setattr__(self, name, values)
         object.__setattr__(
             self,
             "market_state",
