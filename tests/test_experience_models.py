@@ -137,3 +137,10 @@ def test_outcome_stats_request_rejects_non_integer_horizon(value: object) -> Non
 def test_outcome_stats_request_rejects_string_experience_ids() -> None:
     with pytest.raises(ValueError, match="experience_ids"):
         OutcomeStatsRequest("exp-1", horizon_seconds=300)
+
+
+@pytest.mark.parametrize("field", ["knowledge_top_k", "experience_top_k"])
+@pytest.mark.parametrize("value", [True, 0, -1, 1001, 1.5, "10"])
+def test_evidence_request_rejects_invalid_top_k(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        EvidenceRequest(**{field: value})

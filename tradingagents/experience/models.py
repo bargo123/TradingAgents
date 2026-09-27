@@ -396,6 +396,10 @@ class EvidenceRequest(Serializable):
     action_filter: str | None = None
 
     def __post_init__(self) -> None:
+        for name in ("knowledge_top_k", "experience_top_k"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 1000:
+                raise ValueError(f"{name} must be between 1 and 1000")
         if (self.evaluation_basis is None) != (self.horizon_seconds is None):
             raise ValueError("evaluation_basis and horizon_seconds must be paired")
         object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
