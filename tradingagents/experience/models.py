@@ -189,6 +189,8 @@ class ExperienceQuery(Serializable):
         if not isinstance(self.market_state, Mapping):
             raise ValueError("market_state must be a mapping")
         _reject_reserved(self.market_state)
+        if isinstance(self.top_k, bool) or not isinstance(self.top_k, int):
+            raise ValueError("top_k must be a positive integer")
         if self.top_k < 1:
             raise ValueError("top_k must be positive")
         object.__setattr__(self, "market_state", _freeze(self.market_state))
@@ -250,9 +252,19 @@ class OutcomeStatsRequest(Serializable):
     as_of: datetime | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "experience_ids", tuple(self.experience_ids))
+        if isinstance(self.experience_ids, (str, bytes)):
+            raise ValueError("experience_ids must be a sequence of strings")
+        try:
+            experience_ids = tuple(self.experience_ids)
+        except TypeError as exc:
+            raise ValueError("experience_ids must be a sequence of strings") from exc
+        if any(not isinstance(value, str) or not value.strip() for value in experience_ids):
+            raise ValueError("experience_ids must contain non-empty strings")
+        object.__setattr__(self, "experience_ids", experience_ids)
         object.__setattr__(self, "trust_tiers", _tiers(self.trust_tiers))
         object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
+        if isinstance(self.horizon_seconds, bool) or not isinstance(self.horizon_seconds, int):
+            raise ValueError("horizon_seconds must be a non-negative integer")
         if self.horizon_seconds < 0:
             raise ValueError("horizon_seconds must be non-negative")
 

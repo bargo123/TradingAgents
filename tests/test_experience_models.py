@@ -120,3 +120,20 @@ def test_query_market_state_is_deeply_immutable() -> None:
         query.market_state["nested"]["price"] = 2
     with pytest.raises(ValueError, match="training_eligible"):
         ExperienceQuery({"training_eligible": True})
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "10"])
+def test_experience_query_rejects_non_integer_top_k(value: object) -> None:
+    with pytest.raises(ValueError, match="top_k"):
+        ExperienceQuery({}, top_k=value)
+
+
+@pytest.mark.parametrize("value", [True, 300.0, "300"])
+def test_outcome_stats_request_rejects_non_integer_horizon(value: object) -> None:
+    with pytest.raises(ValueError, match="horizon_seconds"):
+        OutcomeStatsRequest(("exp-1",), horizon_seconds=value)
+
+
+def test_outcome_stats_request_rejects_string_experience_ids() -> None:
+    with pytest.raises(ValueError, match="experience_ids"):
+        OutcomeStatsRequest("exp-1", horizon_seconds=300)
