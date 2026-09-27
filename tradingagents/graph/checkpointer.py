@@ -92,7 +92,5 @@ def clear_checkpoint(data_dir: str | Path, ticker: str, date: str, signature: st
         for table in ("writes", "checkpoints"):
             conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (tid,))
         conn.commit()
-    except sqlite3.OperationalError:
-        pass
     finally:
         conn.close()

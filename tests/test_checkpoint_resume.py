@@ -1,7 +1,9 @@
 """Test checkpoint resume: crash mid-analysis, re-run resumes from last node."""
 
+import sqlite3
 import tempfile
 import unittest
+from pathlib import Path
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -138,6 +140,15 @@ class TestCheckpointResume(unittest.TestCase):
 
         # Original date checkpoint still exists (untouched)
         self.assertTrue(has_checkpoint(self.tmpdir, self.ticker, self.date))
+
+    def test_clear_checkpoint_does_not_hide_corrupt_database(self):
+        """A malformed checkpoint DB must fail closed instead of claiming success."""
+        db = Path(self.tmpdir) / "checkpoints" / f"{self.ticker}.db"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        sqlite3.connect(db).close()
+
+        with self.assertRaises(sqlite3.OperationalError):
+            clear_checkpoint(self.tmpdir, self.ticker, self.date)
 
 
 class TestCheckpointSignature(unittest.TestCase):
