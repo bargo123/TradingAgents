@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tradingagents.experience.models import EvidenceRequest
 from tradingagents.forex.evidence_context import (
     CanonicalEvidenceItem,
     CanonicalKnowledgeQuery,
@@ -16,6 +17,7 @@ from tradingagents.forex.evidence_context import (
     EvidenceQueryPolicy,
     EvidenceReferenceRejection,
     EvidenceReferenceRejectionReason,
+    EvidenceReferenceValidation,
     EvidenceSnapshotAdapter,
     EvidenceUseStatus,
 )
@@ -51,6 +53,23 @@ def test_context_rejects_naive_or_non_utc_as_of():
         EvidenceContext(as_of=datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=2))))
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "selected_knowledge_count",
+        "selected_experience_count",
+        "selected_statistics_count",
+        "dropped_knowledge_count",
+        "dropped_experience_count",
+        "dropped_statistics_count",
+        "rendered_character_count",
+    ],
+)
+def test_evidence_context_rejects_invalid_counts(field: str):
+    with pytest.raises(ValueError, match=field):
+        EvidenceContext(**{field: -1})
+
+
 def test_closed_status_and_rejection_enums():
     assert {x.value for x in EvidenceIntegrationStatus} == {"DISABLED", "INJECTED", "FALLBACK"}
     assert {x.value for x in EvidenceBundleStatus} == {"COMPLETE", "PARTIAL", "EMPTY", "FAILED"}
@@ -61,6 +80,33 @@ def test_closed_status_and_rejection_enums():
     }
     with pytest.raises(ValueError):
         EvidenceReferenceRejection(ref="x", reason="NOPE")
+
+
+def test_evidence_mapping_fields_reject_non_mapping_payloads():
+    with pytest.raises(ValueError, match="provenance"):
+        CanonicalEvidenceItem("k1", "KNOWLEDGE", "auth", "text", "rule", 0.5, [])
+    with pytest.raises(ValueError, match="diagnostics"):
+        EvidenceContext(diagnostics=["not", "a", "mapping"])
+    with pytest.raises(ValueError, match="market_state"):
+        EvidenceRequest(market_state=["not", "a", "mapping"])
+
+
+def test_canonical_evidence_identifiers_and_text_are_non_empty_strings():
+    with pytest.raises(ValueError, match="display_id"):
+        CanonicalEvidenceItem("", "KNOWLEDGE", "auth", "text", "rule", 0.5, {})
+    with pytest.raises(ValueError, match="authoritative_id"):
+        CanonicalEvidenceItem("K1", "KNOWLEDGE", "", "text", "rule", 0.5, {})
+    with pytest.raises(ValueError, match="text"):
+        CanonicalEvidenceItem("K1", "KNOWLEDGE", "auth", "", "rule", 0.5, {})
+    with pytest.raises(ValueError, match="content_type"):
+        CanonicalEvidenceItem("K1", "KNOWLEDGE", "auth", "text", "", 0.5, {})
+
+
+def test_evidence_reference_validation_rejects_scalar_reference_lists():
+    with pytest.raises(ValueError, match="evidence_refs_used"):
+        EvidenceReferenceValidation(evidence_refs_used="K1")
+    with pytest.raises(ValueError, match="evidence_refs_rejected"):
+        EvidenceReferenceValidation(evidence_refs_rejected="K1")
 
 
 def test_forex_portfolio_schema_closes_rejection_reason_contract():

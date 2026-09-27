@@ -294,8 +294,10 @@ class CanonicalEvidenceItem:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_kind", EvidenceSourceKind(self.source_kind))
-        if not self.authoritative_id:
-            raise ValueError("authoritative_id must be non-empty")
+        for name in ("display_id", "authoritative_id", "text", "content_type"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
         if isinstance(self.score, bool):
             raise ValueError("score must be finite")
         try:
@@ -305,8 +307,14 @@ class CanonicalEvidenceItem:
         if not math.isfinite(score):
             raise ValueError("score must be finite")
         object.__setattr__(self, "score", score)
-        object.__setattr__(self, "provenance", _freeze(self.provenance or {}))
-        object.__setattr__(self, "metadata", _freeze(self.metadata or {}))
+        provenance = {} if self.provenance is None else self.provenance
+        metadata = {} if self.metadata is None else self.metadata
+        if not isinstance(provenance, Mapping):
+            raise ValueError("provenance must be a mapping")
+        if not isinstance(metadata, Mapping):
+            raise ValueError("metadata must be a mapping")
+        object.__setattr__(self, "provenance", _freeze(provenance))
+        object.__setattr__(self, "metadata", _freeze(metadata))
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,6 +326,8 @@ class EvidenceReferenceRejection:
     reason: EvidenceReferenceRejectionReason
 
     def __post_init__(self) -> None:
+        if not isinstance(self.ref, str) or not self.ref.strip() or self.ref != self.ref.strip():
+            raise ValueError("ref must be a non-empty trimmed string")
         object.__setattr__(self, "reason", EvidenceReferenceRejectionReason(self.reason))
 
 
@@ -331,8 +341,24 @@ class EvidenceReferenceValidation:
     def __post_init__(self) -> None:
         object.__setattr__(self, "evidence_use_status", EvidenceUseStatus(self.evidence_use_status))
         object.__setattr__(self, "evidence_audit_status", EvidenceAuditStatus(self.evidence_audit_status))
-        object.__setattr__(self, "evidence_refs_used", tuple(self.evidence_refs_used))
-        object.__setattr__(self, "evidence_refs_rejected", tuple(self.evidence_refs_rejected))
+        if isinstance(self.evidence_refs_used, (str, bytes, bytearray, Mapping)):
+            raise ValueError("evidence_refs_used must be a sequence")
+        if isinstance(self.evidence_refs_rejected, (str, bytes, bytearray, Mapping)):
+            raise ValueError("evidence_refs_rejected must be a sequence")
+        try:
+            used = tuple(self.evidence_refs_used)
+            rejected = tuple(self.evidence_refs_rejected)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("evidence references must be sequences") from exc
+        if any(
+            not isinstance(value, str) or not value.strip() or value != value.strip()
+            for value in used
+        ):
+            raise ValueError("evidence_refs_used must contain non-empty trimmed strings")
+        if any(not isinstance(value, EvidenceReferenceRejection) for value in rejected):
+            raise ValueError("evidence_refs_rejected must contain rejection objects")
+        object.__setattr__(self, "evidence_refs_used", used)
+        object.__setattr__(self, "evidence_refs_rejected", rejected)
 
 
 _TRANSIENT_EVIDENCE_KEYS = frozenset(
@@ -574,10 +600,28 @@ class EvidenceContext:
         object.__setattr__(self, "integration_status", EvidenceIntegrationStatus(self.integration_status))
         object.__setattr__(self, "bundle_status", EvidenceBundleStatus(self.bundle_status))
         object.__setattr__(self, "as_of", _utc(self.as_of))
+        for name in (
+            "selected_knowledge_count",
+            "selected_experience_count",
+            "selected_statistics_count",
+            "dropped_knowledge_count",
+            "dropped_experience_count",
+            "dropped_statistics_count",
+            "rendered_character_count",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
         for name in ("knowledge_items", "experience_items", "statistics_items"):
             object.__setattr__(self, name, _freeze_items(getattr(self, name)))
-        object.__setattr__(self, "diagnostics", _freeze(self.diagnostics or {}))
-        object.__setattr__(self, "source_errors", _freeze(self.source_errors or {}))
+        diagnostics = {} if self.diagnostics is None else self.diagnostics
+        source_errors = {} if self.source_errors is None else self.source_errors
+        if not isinstance(diagnostics, Mapping):
+            raise ValueError("diagnostics must be a mapping")
+        if not isinstance(source_errors, Mapping):
+            raise ValueError("source_errors must be a mapping")
+        object.__setattr__(self, "diagnostics", _freeze(diagnostics))
+        object.__setattr__(self, "source_errors", _freeze(source_errors))
 
     def to_dict(self) -> dict[str, Any]:
         return _json(self)

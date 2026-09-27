@@ -961,7 +961,25 @@ class EvidenceIntegrationService:
         except EvidenceTimeout as exc:
             return self._fallback(as_of, query=query, generations=generations, code="EVIDENCE_TIMEOUT", detail=exc)
         except Exception as exc:
-            return self._fallback(as_of, query=query, generations=generations, code="ORCHESTRATOR_FAILURE", detail=exc)
+            # Keep the hosted-provider isolation boundary fail-closed even when
+            # canonicalization fails before the normal non-loopback content
+            # check.  A malformed/partial hosted bundle must never leave a
+            # rendered fallback envelope that could be mistaken for usable
+            # evidence.  Local loopback failures retain the structural empty
+            # context used for diagnostics.
+            try:
+                endpoint = self.provider_endpoint() if callable(self.provider_endpoint) else self.provider_endpoint
+                redact_context = not _is_loopback(endpoint)
+            except Exception:
+                redact_context = True
+            return self._fallback(
+                as_of,
+                query=query,
+                generations=generations,
+                code="ORCHESTRATOR_FAILURE",
+                detail=exc,
+                redact_context=redact_context,
+            )
 
 
 def _is_loopback(endpoint: str | None) -> bool:

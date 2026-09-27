@@ -413,6 +413,8 @@ class EvidenceRequest(Serializable):
             raise ValueError("evaluation_basis and horizon_seconds must be paired")
         object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
         object.__setattr__(self, "trust_tiers", tuple(TrustTier(v) for v in self.trust_tiers))
+        if self.market_state is not None and not isinstance(self.market_state, Mapping):
+            raise ValueError("market_state must be a mapping")
         object.__setattr__(
             self,
             "market_state",
