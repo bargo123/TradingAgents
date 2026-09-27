@@ -636,6 +636,29 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     return getattr(value, name, default)
 
 
+_MISSING_FIELD = object()
+
+
+def _validated_identifier_candidates(
+    value: Any, names: tuple[str, ...], kind: EvidenceSourceKind
+) -> tuple[str, ...]:
+    """Validate present identifier fields before applying compatibility fallbacks."""
+    candidates: list[str] = []
+    for name in names:
+        raw = _field(value, name, _MISSING_FIELD)
+        if raw is _MISSING_FIELD or raw is None:
+            continue
+        if isinstance(raw, str):
+            if raw == "":
+                continue
+            if not raw.strip():
+                raise ValueError(f"{kind.value} identifier must be a non-empty string")
+            candidates.append(raw)
+            continue
+        raise ValueError(f"{kind.value} identifier must be a non-empty string")
+    return tuple(candidates)
+
+
 class Phase9EvidenceContextBuilder:
     """Build one bounded, deterministic context from an already ordered bundle."""
 
@@ -670,20 +693,22 @@ class Phase9EvidenceContextBuilder:
             raise ValueError("provenance must be a mapping")
         existing_provenance = dict(raw_provenance)
         if kind is EvidenceSourceKind.KNOWLEDGE:
-            authoritative_value = (
-                _field(value, "chunk_id")
-                or _field(value, "document_id")
-                or existing_provenance.get("chunk_id")
+            direct_identifiers = _validated_identifier_candidates(
+                value, ("chunk_id", "document_id"), kind
+            )
+            authoritative_value = direct_identifiers[0] if direct_identifiers else (
+                existing_provenance.get("chunk_id")
                 or existing_provenance.get("document_id")
             )
         elif kind is EvidenceSourceKind.EXPERIENCE:
-            authoritative_value = _field(value, "experience_id") or existing_provenance.get("experience_id")
+            direct_identifiers = _validated_identifier_candidates(value, ("experience_id",), kind)
+            authoritative_value = direct_identifiers[0] if direct_identifiers else existing_provenance.get("experience_id")
         else:
-            authoritative_value = (
-                _field(value, "authoritative_id")
-                or _field(value, "statistics_id")
-                or _field(value, "experience_id")
-                or existing_provenance.get("authoritative_id")
+            direct_identifiers = _validated_identifier_candidates(
+                value, ("authoritative_id", "statistics_id", "experience_id"), kind
+            )
+            authoritative_value = direct_identifiers[0] if direct_identifiers else (
+                existing_provenance.get("authoritative_id")
                 or existing_provenance.get("statistics_id")
                 or existing_provenance.get("experience_id")
             )

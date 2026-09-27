@@ -149,6 +149,15 @@ def test_builder_rejects_non_string_authoritative_identifier():
         build_context(bundle(knowledge=[malformed]))
 
 
+@pytest.mark.parametrize("field", ["chunk_id", "document_id"])
+@pytest.mark.parametrize("value", [False, [], 0])
+def test_builder_rejects_falsey_malformed_knowledge_identifiers(field, value):
+    malformed = item("KNOWLEDGE", "k", "evidence")
+    setattr(malformed, field, value)
+    with pytest.raises(ValueError, match="identifier"):
+        build_context(bundle(knowledge=[malformed]))
+
+
 def test_builder_rejects_non_mapping_provenance():
     malformed = SimpleNamespace(
         chunk_id="chunk-1",
