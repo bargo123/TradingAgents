@@ -425,7 +425,7 @@ class DedicatedOllamaRuntime:
                 continue
 
             for model in (self.config.quick_model, self.config.deep_model):
-                if model in self._verified_contexts:
+                if self._verified_contexts.get(model, 0) >= self.config.context_length:
                     continue
                 self._prewarm_model(model)
                 current = self._verify_model(model)

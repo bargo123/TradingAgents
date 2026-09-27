@@ -165,6 +165,28 @@ def test_health_does_not_accept_cached_context_below_required_minimum():
     assert health.error_code == "CONTEXT_NOT_VERIFIED"
 
 
+def test_ensure_healthy_refreshes_cached_context_below_required_minimum():
+    http = _Http()
+    runtime = DedicatedOllamaRuntime(
+        ForexShadowRuntimeConfig(),
+        http=http,
+        version_runner=lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v"),
+        sleep=lambda _: None,
+    )
+    runtime._verified_contexts.update(
+        {
+            "qwen3.5:2b": 4096,
+            "qwen3.5:4b": 4096,
+        }
+    )
+
+    health = runtime.ensure_healthy()
+
+    assert health.healthy
+    assert health.quick_context_verified is True
+    assert health.deep_context_verified is True
+
+
 def test_prewarm_uses_bounded_non_persistent_health_requests():
     http = _Http()
     runtime = DedicatedOllamaRuntime(
