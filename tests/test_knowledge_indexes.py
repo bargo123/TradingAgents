@@ -431,6 +431,22 @@ def test_failed_lexical_publication_rolls_back_vector_projection(tmp_path, monke
     assert manager.active_generation() is None
 
 
+def test_failed_post_move_validation_rolls_back_both_projections(tmp_path, monkeypatch):
+    manager = make_generation_manager(tmp_path, seed=False)
+
+    def fail_validation(_generation):
+        raise IncompatibleIndexGeneration("simulated post-publication validation failure")
+
+    monkeypatch.setattr(manager, "validate_generation", fail_validation)
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        manager.build_generation(make_chunks(), make_vectors(), "gen-invalid-after-move")
+
+    assert not (tmp_path / "vector" / "lancedb" / "gen-invalid-after-move").exists()
+    assert not (tmp_path / "keyword" / "gen-invalid-after-move" / "bm25.sqlite3").exists()
+    assert manager.active_generation() is None
+
+
 def test_lexical_projection_preserves_hft_token_characters_and_normalizes_diacritics(tmp_path):
     manager = make_generation_manager(tmp_path)
     generation = manager.resolve_active_generation()
