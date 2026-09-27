@@ -193,8 +193,10 @@ class MT5Provider:
         try:
             success = api.initialize(path=self._terminal_path) if self._terminal_path else api.initialize()
         except Exception as exc:
+            self._shutdown_after_failed_initialize()
             raise Mt5InitializationError(f"MT5 initialization failed: {self._last_error()!r}") from exc
         if not success:
+            self._shutdown_after_failed_initialize()
             raise Mt5InitializationError(f"MT5 initialization failed: {self._last_error()!r}")
         try:
             terminal, account = api.terminal_info(), api.account_info()
@@ -213,9 +215,14 @@ class MT5Provider:
         return True
 
     def shutdown(self) -> None:
-        if self._initialized and self._api is not None:
-            self._api.shutdown()
-        self._initialized = False
+        try:
+            if self._initialized and self._api is not None:
+                self._api.shutdown()
+        finally:
+            # Never reuse connection or broker-clock state after a terminal
+            # lifecycle ends, including when the vendor shutdown call fails.
+            self._initialized = False
+            self._broker_clock = None
 
     def is_connected(self) -> bool:
         if not self._initialized or self._api is None:

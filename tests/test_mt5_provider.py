@@ -208,12 +208,50 @@ def test_initialize_success_and_shutdown(fake_api):
     assert provider.is_connected() is False
 
 
+def test_shutdown_clears_clock_and_is_reusable_after_reinitialize(fake_api):
+    provider = initialized_provider(fake_api)
+    assert provider.broker_clock is not None
+
+    provider.shutdown()
+
+    assert provider.broker_clock is None
+    assert provider.initialize() is True
+    assert provider.broker_clock is None
+
+
+def test_shutdown_marks_provider_uninitialized_when_api_shutdown_raises(fake_api):
+    provider = initialized_provider(fake_api)
+
+    def shutdown_failure():
+        raise RuntimeError("shutdown transport failed")
+
+    fake_api.shutdown = shutdown_failure
+
+    with pytest.raises(RuntimeError, match="shutdown transport failed"):
+        provider.shutdown()
+    assert provider.is_connected() is False
+    provider.shutdown()
+
+
 @pytest.mark.unit
 def test_initialize_failure_surfaces_last_error(fake_api):
     fake_api.initialize_result = False
     fake_api.error = (10004, "terminal unavailable")
     with pytest.raises(Mt5InitializationError, match="terminal unavailable"):
         MT5Provider(api=fake_api).initialize()
+    assert fake_api.shutdown_called is True
+
+
+def test_initialize_exception_shuts_down_partial_api_start(fake_api):
+    def initialize_failure():
+        fake_api.connected = True
+        raise RuntimeError("initialize transport failed")
+
+    fake_api.initialize = initialize_failure
+
+    with pytest.raises(Mt5InitializationError, match="MT5 initialization failed"):
+        MT5Provider(api=fake_api).initialize()
+    assert fake_api.shutdown_called is True
 
 
 @pytest.mark.unit
