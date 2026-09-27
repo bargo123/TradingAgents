@@ -110,6 +110,15 @@ def test_audit_rejects_closed_rejection_reason_violation(reason):
         audit(evidence_refs_rejected=({"ref": "K1", "reason": reason},))
 
 
+def test_audit_rejects_extra_rejection_fields():
+    with pytest.raises(ValueError, match="evidence_refs_rejected"):
+        audit(
+            evidence_refs_rejected=(
+                {"ref": "K1", "reason": "LOW_RELEVANCE", "extra": "unexpected"},
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

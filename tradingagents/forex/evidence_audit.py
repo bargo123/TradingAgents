@@ -17,6 +17,7 @@ from .evidence_context import (
     EvidenceAuditStatus,
     EvidenceBundleStatus,
     EvidenceIntegrationStatus,
+    EvidenceReferenceRejection,
     EvidenceReferenceRejectionReason,
     EvidenceUseStatus,
 )
@@ -106,8 +107,20 @@ def _rejection_sequence(value: Any) -> tuple[Any, ...]:
     except (TypeError, ValueError) as exc:
         raise TypeError("evidence_refs_rejected must be a sequence") from exc
     for item in values:
-        ref = item.get("ref") if isinstance(item, Mapping) else getattr(item, "ref", None)
-        reason = item.get("reason") if isinstance(item, Mapping) else getattr(item, "reason", None)
+        if isinstance(item, Mapping):
+            if set(item) != {"ref", "reason"}:
+                raise ValueError(
+                    "evidence_refs_rejected entries may only contain ref and reason"
+                )
+            ref = item.get("ref")
+            reason = item.get("reason")
+        elif isinstance(item, EvidenceReferenceRejection):
+            ref = item.ref
+            reason = item.reason
+        else:
+            raise TypeError(
+                "evidence_refs_rejected entries must be rejection records"
+            )
         if not isinstance(ref, str) or not ref.strip() or ref != ref.strip():
             raise ValueError("evidence_refs_rejected entries must have a valid ref")
         try:
