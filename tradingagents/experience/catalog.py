@@ -482,6 +482,7 @@ class ExperienceCatalog:
         population_fingerprint: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        generation_id = _required_text(generation_id, "generation_id")
         payload = {
             "generation_id": generation_id,
             "population_fingerprint": population_fingerprint,

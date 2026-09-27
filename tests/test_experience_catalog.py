@@ -196,3 +196,9 @@ def test_publish_generation_is_atomic_and_readable(catalog: ExperienceCatalog) -
     )
     assert generation["generation_id"] == "gen-1"
     assert catalog.active_generation()["population_fingerprint"] == "pop-1"
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}, ""])
+def test_publish_generation_rejects_malformed_generation_id(catalog, value) -> None:
+    with pytest.raises((TypeError, ValueError), match="generation_id"):
+        catalog.publish_generation(value, population_fingerprint="pop-1")
