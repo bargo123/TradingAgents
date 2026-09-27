@@ -125,6 +125,27 @@ def test_context_must_be_observed_after_model_load():
     assert health.error_code == "CONTEXT_NOT_VERIFIED"
 
 
+def test_health_does_not_reuse_required_context_for_unrelated_loaded_model():
+    http = _Http()
+    http.loaded_model = "unconfigured-model"
+    runtime = DedicatedOllamaRuntime(
+        ForexShadowRuntimeConfig(),
+        http=http,
+        version_runner=lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="v"),
+    )
+    runtime._verified_contexts.update(
+        {
+            "qwen3.5:2b": 16384,
+            "qwen3.5:4b": 16384,
+        }
+    )
+
+    health = runtime.health()
+
+    assert health.status == "DEGRADED"
+    assert health.error_code == "CONTEXT_NOT_VERIFIED"
+
+
 def test_prewarm_uses_bounded_non_persistent_health_requests():
     http = _Http()
     runtime = DedicatedOllamaRuntime(

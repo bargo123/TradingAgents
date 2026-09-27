@@ -182,9 +182,13 @@ class DedicatedOllamaRuntime:
             for model, value in self._verified_contexts.items()
             if model in required and value >= self.config.context_length
         }
-        current_valid = bool(loaded) and all(
-            value is not None and value >= self.config.context_length
-            for value in loaded.values()
+        current_valid = (
+            bool(loaded)
+            and set(loaded).issubset(required)
+            and all(
+                value is not None and value >= self.config.context_length
+                for value in loaded.values()
+            )
         )
         if status == "CONTEXT_NOT_VERIFIED" and verified.keys() == required and current_valid:
             status = "HEALTHY"
@@ -236,6 +240,7 @@ class DedicatedOllamaRuntime:
                 error_code = "CONTEXT_TOO_SMALL"
             elif (
                 not loaded
+                or not set(loaded).issubset(required)
                 or any(value is None for value in loaded.values())
                 or required - set(self._verified_contexts)
             ):
