@@ -156,6 +156,20 @@ def test_record_quarantine_rejects_non_object_detail(catalog: ExperienceCatalog,
         catalog.record_quarantine("db-a", "d1", "fp", "BAD_SOURCE", detail=detail)
 
 
+@pytest.mark.parametrize("field", ["source_database_id", "decision_id", "fingerprint", "reason"])
+@pytest.mark.parametrize("value", [False, 0, [], {}, ""])
+def test_record_quarantine_rejects_malformed_identity(field, value, catalog) -> None:
+    kwargs = {
+        "source_database_id": "db-a",
+        "decision_id": "d1",
+        "fingerprint": "fp",
+        "reason": "BAD_SOURCE",
+    }
+    kwargs[field] = value
+    with pytest.raises((TypeError, ValueError), match=field):
+        catalog.record_quarantine(**kwargs)
+
+
 def test_catalog_has_phase8_tables_and_diagnostics_are_bounded(catalog: ExperienceCatalog) -> None:
     catalog.record_failed_scan(
         "db-a", "SOURCE_DATABASE_UNAVAILABLE", detail="secret report\nshould not be indexed"
@@ -184,6 +198,12 @@ def test_catalog_has_phase8_tables_and_diagnostics_are_bounded(catalog: Experien
 def test_catalog_rejects_non_object_json_details(catalog: ExperienceCatalog, detail) -> None:
     with pytest.raises(ValueError, match="JSON object"):
         catalog.record_import_event("RUNNING", detail=detail)
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}, ""])
+def test_record_import_event_rejects_malformed_event_type(catalog, value) -> None:
+    with pytest.raises((TypeError, ValueError), match="event_type"):
+        catalog.record_import_event(value)
 
 
 def test_orphaned_import_run_is_marked_interrupted_once(catalog: ExperienceCatalog) -> None:

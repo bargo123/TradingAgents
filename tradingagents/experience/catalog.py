@@ -63,6 +63,12 @@ def _optional_text(value: Any, name: str) -> str | None:
     return value
 
 
+def _optional_identity(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    return _required_text(value, name)
+
+
 def _json(value: Any) -> str:
     if value is None:
         value = {}
@@ -461,6 +467,8 @@ class ExperienceCatalog:
         return tuple(s["fingerprint"] for s in self.evaluation_snapshots(experience_id))
 
     def record_failed_scan(self, source_database_id: str, reason: str, detail: Any = "") -> None:
+        source_database_id = _required_text(source_database_id, "source_database_id")
+        reason = _required_text(reason, "reason")
         with self._connect() as db:
             label = diagnostic_label(reason, source_database_id=source_database_id)
             db.execute(
@@ -473,6 +481,10 @@ class ExperienceCatalog:
             )
 
     def _quarantine_db(self, db, source_database_id, decision_id, fingerprint, reason, detail):
+        source_database_id = _required_text(source_database_id, "source_database_id")
+        decision_id = _required_text(decision_id, "decision_id")
+        fingerprint = _required_text(fingerprint, "fingerprint")
+        reason = _required_text(reason, "reason")
         db.execute(
             "INSERT INTO experience_quarantine(source_database_id,decision_id,fingerprint,reason,detail_json,observed_at) VALUES (?,?,?,?,?,?)",
             (source_database_id, decision_id, fingerprint, reason, _json(detail), _now()),
@@ -583,6 +595,10 @@ class ExperienceCatalog:
         decision_id: str | None = None,
         experience_id: str | None = None,
     ) -> None:
+        event_type = _required_text(event_type, "event_type")
+        source_database_id = _optional_identity(source_database_id, "source_database_id")
+        decision_id = _optional_identity(decision_id, "decision_id")
+        experience_id = _optional_identity(experience_id, "experience_id")
         with self._connect() as db:
             db.execute(
                 "INSERT INTO experience_import_events(event_type,source_database_id,decision_id,experience_id,detail_json,observed_at) VALUES (?,?,?,?,?,?)",
