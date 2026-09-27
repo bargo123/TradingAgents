@@ -159,6 +159,15 @@ def test_saved_snapshot_codec_rejects_numeric_strings_instead_of_coercing():
         SavedSnapshotCodec.from_source_row({"snapshot_json": payload})
 
 
+@pytest.mark.parametrize("symbol", [123, ""])
+def test_saved_snapshot_codec_rejects_invalid_position_symbol_without_coercion(symbol):
+    payload = json.loads(_row()["snapshot_json"])
+    payload["positions"][0]["symbol"] = symbol
+
+    with pytest.raises(SnapshotReplayError, match=r"positions\[0\]\.symbol"):
+        SavedSnapshotCodec.from_source_row({"snapshot_json": payload})
+
+
 def test_replay_uses_identical_snapshot_fingerprint(tmp_path: Path):
     calls: list[dict] = []
     runner = _FakeRunner(calls, generations=("p7", "p8"))

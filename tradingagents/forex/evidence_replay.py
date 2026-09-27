@@ -120,9 +120,12 @@ def _position(value: Any, name: str) -> Mt5Position:
     raw = _mapping(value, name)
     if "ticket" not in raw or "symbol" not in raw:
         raise SnapshotReplayError(f"{name} must contain ticket and symbol")
+    symbol = raw["symbol"]
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise SnapshotReplayError(f"{name}.symbol must be a non-empty string")
     kwargs: dict[str, Any] = {
         "ticket": _number(raw["ticket"], f"{name}.ticket", integer=True),
-        "symbol": str(raw["symbol"]),
+        "symbol": symbol,
     }
     for key in ("type",):
         kwargs[key] = None if raw.get(key) is None else _number(raw[key], f"{name}.{key}", integer=True)
