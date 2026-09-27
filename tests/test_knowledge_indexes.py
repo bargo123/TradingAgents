@@ -409,6 +409,28 @@ def test_generation_validation_rejects_a_persisted_vector_row_count_or_provenanc
     assert not (tmp_path / "vector" / "lancedb" / "gen-truncated").exists()
 
 
+def test_failed_lexical_publication_rolls_back_vector_projection(tmp_path, monkeypatch):
+    manager = make_generation_manager(tmp_path, seed=False)
+    original_replace = __import__("os").replace
+    calls = 0
+
+    def fail_lexical_move(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated lexical publication failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr("tradingagents.knowledge.index_generation.os.replace", fail_lexical_move)
+
+    with pytest.raises(IncompatibleIndexGeneration):
+        manager.build_generation(make_chunks(), make_vectors(), "gen-partial")
+
+    assert not (tmp_path / "vector" / "lancedb" / "gen-partial").exists()
+    assert not (tmp_path / "keyword" / "gen-partial" / "bm25.sqlite3").exists()
+    assert manager.active_generation() is None
+
+
 def test_lexical_projection_preserves_hft_token_characters_and_normalizes_diacritics(tmp_path):
     manager = make_generation_manager(tmp_path)
     generation = manager.resolve_active_generation()

@@ -88,6 +88,7 @@ class IndexGenerationManager:
         stage_root = Path(tempfile.mkdtemp(prefix=f"{generation_id}.", dir=self._staging_root()))
         stage_vector = stage_root / "vector" / "lancedb" / generation_id
         stage_lexical = stage_root / "keyword" / generation_id / "bm25.sqlite3"
+        published_paths: list[Path] = []
         try:
             vector_metadata = self.vector_writer.write(
                 stage_vector, chunks, vectors, generation_id=generation_id,
@@ -108,13 +109,17 @@ class IndexGenerationManager:
             final_vector.parent.mkdir(parents=True, exist_ok=True)
             final_lexical.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage_vector, final_vector)
+            published_paths.append(final_vector)
             os.replace(stage_lexical, final_lexical)
+            published_paths.append(final_lexical)
             generation = replace(staged, vector_location=final_vector, lexical_location=final_lexical)
             self.validate_generation(generation)
             return generation
         except (VectorIndexError, LexicalIndexError, IncompatibleIndexGeneration, EmbeddingSpecMismatch):
+            _remove_published_paths(published_paths)
             raise
         except Exception as exc:
+            _remove_published_paths(published_paths)
             raise IncompatibleIndexGeneration(f"could not stage generation {generation_id}: {exc}") from exc
         finally:
             shutil.rmtree(stage_root, ignore_errors=True)
@@ -411,6 +416,20 @@ def _safe_generation_id(value: str) -> str:
     if not generation_id or generation_id in {".", ".."} or "/" in generation_id or "\\" in generation_id:
         raise ValueError("generation_id must be one safe path component")
     return generation_id
+
+
+def _remove_published_paths(paths: Sequence[Path]) -> None:
+    """Remove only projections created by a failed build attempt."""
+    for path in reversed(tuple(paths)):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink(missing_ok=True)
+        except OSError:
+            # The original publication/validation error is more actionable;
+            # callers still fail closed and the orphan is not treated as active.
+            pass
 
 
 def _population_hashes(chunks: Sequence[ChunkRecord]) -> dict[str, str]:
