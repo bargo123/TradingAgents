@@ -645,8 +645,21 @@ def test_child_guard_treats_approved_embedding_provider_as_read_only_leaf(tmp_pa
             orchestrator,
             ReadonlyEvidenceRuntimeConfiguration(tuple(sorted(roots.items()))),
         )
+
     finally:
         _close_orchestrator(orchestrator)
+
+
+@pytest.mark.parametrize("value", [[], False, 0, ""])
+def test_evidence_service_rejects_invalid_artifact_roots(value):
+    with pytest.raises(TypeError, match="artifact_roots"):
+        EvidenceIntegrationService(
+            policy=None,
+            orchestrator_factory=None,
+            generation_provider=None,
+            provider_endpoint=None,
+            artifact_roots=value,
+        )
 
 
 @pytest.mark.parametrize("factory", [_nested_writer_dependency_factory, _nested_untyped_dependency_factory])

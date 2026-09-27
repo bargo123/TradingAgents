@@ -775,6 +775,8 @@ class EvidenceIntegrationService:
         self.provider_endpoint = provider_endpoint
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.process_factory = process_factory
+        if artifact_roots is not None and not isinstance(artifact_roots, Mapping):
+            raise TypeError("artifact_roots must be a mapping")
         self.artifact_roots: dict[str, str] = {
             str(key): str(value) for key, value in (artifact_roots or {}).items()
         }
