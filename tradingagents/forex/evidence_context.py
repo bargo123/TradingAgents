@@ -659,6 +659,23 @@ def _validated_identifier_candidates(
     return tuple(candidates)
 
 
+def _validated_provenance_candidates(
+    value: Mapping[str, Any], names: tuple[str, ...], kind: EvidenceSourceKind
+) -> tuple[str, ...]:
+    """Validate structured provenance identifiers before fallback selection."""
+    candidates: list[str] = []
+    for name in names:
+        if name not in value:
+            continue
+        raw = value[name]
+        if raw is None or raw == "":
+            continue
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"{kind.value} identifier must be a non-empty string")
+        candidates.append(raw)
+    return tuple(candidates)
+
+
 class Phase9EvidenceContextBuilder:
     """Build one bounded, deterministic context from an already ordered bundle."""
 
@@ -696,22 +713,30 @@ class Phase9EvidenceContextBuilder:
             direct_identifiers = _validated_identifier_candidates(
                 value, ("chunk_id", "document_id"), kind
             )
-            authoritative_value = direct_identifiers[0] if direct_identifiers else (
-                existing_provenance.get("chunk_id")
-                or existing_provenance.get("document_id")
+            provenance_identifiers = _validated_provenance_candidates(
+                existing_provenance, ("chunk_id", "document_id"), kind
             )
         elif kind is EvidenceSourceKind.EXPERIENCE:
             direct_identifiers = _validated_identifier_candidates(value, ("experience_id",), kind)
-            authoritative_value = direct_identifiers[0] if direct_identifiers else existing_provenance.get("experience_id")
+            provenance_identifiers = _validated_provenance_candidates(
+                existing_provenance, ("experience_id",), kind
+            )
         else:
             direct_identifiers = _validated_identifier_candidates(
                 value, ("authoritative_id", "statistics_id", "experience_id"), kind
             )
-            authoritative_value = direct_identifiers[0] if direct_identifiers else (
-                existing_provenance.get("authoritative_id")
-                or existing_provenance.get("statistics_id")
-                or existing_provenance.get("experience_id")
+            provenance_identifiers = _validated_provenance_candidates(
+                existing_provenance,
+                ("authoritative_id", "statistics_id", "experience_id"),
+                kind,
             )
+        authoritative_value = (
+            direct_identifiers[0]
+            if direct_identifiers
+            else provenance_identifiers[0]
+            if provenance_identifiers
+            else None
+        )
         if not authoritative_value:
             raise ValueError(f"{kind.value} item is missing an authoritative identifier")
         if not isinstance(authoritative_value, str) or not authoritative_value.strip():

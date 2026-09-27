@@ -125,6 +125,18 @@ def test_authoritative_ids_fall_back_to_structured_provenance():
     assert context.experience_items[0].authoritative_id == "exp-from-prov"
 
 
+@pytest.mark.parametrize("value", [False, 0, [], " "])
+def test_builder_rejects_malformed_provenance_identifiers(value):
+    malformed = SimpleNamespace(
+        text="knowledge",
+        content_type="PROSE",
+        score=1.0,
+        provenance={"chunk_id": value, "document_id": "doc-valid"},
+    )
+    with pytest.raises(ValueError, match="identifier"):
+        build_context(bundle(knowledge=[malformed]))
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (("text", 123), ("content_type", 0)),

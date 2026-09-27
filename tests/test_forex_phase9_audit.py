@@ -2,7 +2,7 @@ import hashlib
 import sqlite3
 from contextlib import closing
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -79,6 +79,33 @@ def test_audit_rejects_hyphenated_forbidden_fields_and_sensitive_values(tmp_path
 def test_audit_rejects_malformed_mapping_fields(field, value):
     with pytest.raises(TypeError, match=field):
         audit(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("retrieval_count", True),
+        ("retrieval_count", -1),
+        ("retrieval_latency_seconds", float("nan")),
+        ("retrieval_latency_seconds", -0.1),
+        ("builder_latency_seconds", "slow"),
+        ("provider", 123),
+        ("model", []),
+        ("audit_schema_version", ""),
+    ],
+)
+def test_audit_rejects_malformed_scalar_metadata(field, value):
+    with pytest.raises((TypeError, ValueError), match=field):
+        audit(**{field: value})
+
+
+def test_audit_requires_utc_as_of_and_valid_count_maps():
+    with pytest.raises(ValueError, match="as_of"):
+        audit(as_of=datetime(2026, 1, 1, tzinfo=timezone(timedelta(hours=2))))
+    with pytest.raises((TypeError, ValueError), match="selected_counts"):
+        audit(selected_counts={"knowledge": True})
+    with pytest.raises((TypeError, ValueError), match="node_context_hashes"):
+        audit(node_context_hashes={"Market Analyst": 0})
 
 
 @pytest.mark.parametrize(
