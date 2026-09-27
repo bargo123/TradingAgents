@@ -149,6 +149,7 @@ class ExperienceCatalog:
     ) -> ExperienceRecord:
         now = _now()
         experience_id = self._experience_id(decision_id)
+        in_transaction = self._transaction_connection is not None
         with self._connect() as db:
             existing = db.execute(
                 "SELECT * FROM experience_records WHERE source_decision_id=?", (decision_id,)
@@ -162,7 +163,11 @@ class ExperienceCatalog:
                     "SOURCE_DECISION_CONFLICT",
                     {"accepted_fingerprint": existing["source_decision_fingerprint"]},
                 )
-                db.commit()
+                # Standalone callers need the quarantine row committed even
+                # though the conflict is raised.  Importer transactions must
+                # retain their all-or-nothing rollback semantics instead.
+                if not in_transaction:
+                    db.commit()
                 raise SourceDecisionConflictError(f"conflicting fingerprint for {decision_id}")
             if not existing:
                 timestamp = kwargs.get("analysis_snapshot_timestamp") or datetime.now(timezone.utc)

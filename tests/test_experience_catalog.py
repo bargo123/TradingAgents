@@ -53,6 +53,18 @@ def test_conflicting_fingerprint_is_quarantined(catalog: ExperienceCatalog) -> N
     assert catalog.active_records()[0].source_decision_fingerprint == "fp1"
 
 
+def test_conflict_does_not_commit_unrelated_writes_in_outer_transaction(
+    catalog: ExperienceCatalog,
+) -> None:
+    catalog.upsert_source_alias("db-a", "d1", "fp1")
+    with pytest.raises(SourceDecisionConflictError), catalog.transaction():
+        catalog.upsert_source_alias("db-a", "d2", "fp2")
+        catalog.upsert_source_alias("db-a", "d1", "conflicting-fp")
+
+    assert [record.source_decision_id for record in catalog.active_records()] == ["d1"]
+    assert catalog.quarantine_count() == 0
+
+
 def test_recovery_snapshot_is_append_only_only_when_observed(catalog: ExperienceCatalog) -> None:
     catalog.append_evaluation_snapshot("exp1", {"evaluation_status": "DATA_UNAVAILABLE"}, "old-fp")
     catalog.append_evaluation_snapshot("exp1", {"evaluation_status": "COMPLETE"}, "new-fp")
