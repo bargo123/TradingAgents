@@ -61,6 +61,16 @@ _FOREX_LONG_HORIZON_RE = re.compile(
 )
 
 
+def _db_bool(value: Any, name: str) -> bool:
+    """Decode persisted SQLite boolean flags without truthiness coercion."""
+
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    raise ValueError(f"{name} must be boolean 0/1")
+
+
 def _validate_forex_payload(payload: Mapping[str, Any], profile_name: str) -> str | None:
     profile_value = payload.get("analysis_profile")
     if profile_value is not None and profile_value != profile_name:
@@ -938,7 +948,7 @@ class ShadowDecisionStore:
             ),
             reflection=row["reflection"],
             source_run_id=row["source_run_id"],
-            executed=bool(row["executed"]),
+            executed=_db_bool(row["executed"], "executed"),
             analysis_snapshot_timestamp=(
                 None
                 if "analysis_snapshot_timestamp" not in row_keys

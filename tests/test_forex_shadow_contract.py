@@ -474,6 +474,24 @@ def test_store_round_trip_is_idempotent_and_preserves_failed_action(
     assert json.loads(restored.raw_portfolio_manager_result_json)["error"] == "missing"
 
 
+def test_store_rejects_malformed_persisted_executed_flag(
+    tmp_path: Path,
+) -> None:
+    store = ShadowDecisionStore(tmp_path / "malformed-executed.db")
+    decision = make_decision()
+    store.record(decision)
+
+    with closing(sqlite3.connect(store.path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            "UPDATE shadow_decisions SET executed = ? WHERE decision_id = ?",
+            ("false", decision.decision_id),
+        )
+
+    with pytest.raises(ValueError, match="executed must be boolean 0/1"):
+        store.get(decision.decision_id)
+
+
 def test_store_round_trip_preserves_profile_and_validity(tmp_path: Path) -> None:
     store = ShadowDecisionStore(tmp_path / "shadow.db")
     timestamp = datetime(2026, 9, 8, 0, 0, tzinfo=timezone.utc)
