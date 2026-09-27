@@ -652,6 +652,24 @@ def test_source_helpers_release_windows_sqlite_handles(tmp_path: Path):
         assert not config.source_database_path.exists()
 
 
+def test_source_transient_scan_rejects_malformed_portfolio_result_json(tmp_path: Path):
+    db = tmp_path / "source.db"
+    with closing(sqlite3.connect(db)) as conn:
+        conn.execute(
+            "CREATE TABLE shadow_decisions ("
+            "decision_id TEXT PRIMARY KEY, snapshot_json TEXT NOT NULL, "
+            "raw_portfolio_manager_result TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO shadow_decisions VALUES (?, ?, ?)",
+            ("decision-1", _source_bytes().decode("utf-8"), "{"),
+        )
+        conn.commit()
+
+    with pytest.raises(SnapshotReplayError, match="raw_portfolio_manager_result"):
+        _source_has_transient(db)
+
+
 def test_replay_rejects_requested_audit_path_instead_of_ignoring_it(tmp_path: Path):
     config = _config(tmp_path)
     config = replace(config, audit_path=tmp_path / "audit.sqlite3")

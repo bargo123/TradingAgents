@@ -484,13 +484,20 @@ def _source_has_transient(path: str | Path) -> bool:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(shadow_decisions)")}
         for column in {"snapshot_json", "raw_portfolio_manager_result"} & columns:
             for (value,) in connection.execute(f'SELECT "{column}" FROM shadow_decisions'):
-                if not isinstance(value, str):
+                if value is None:
                     continue
+                if isinstance(value, (bytes, bytearray)):
+                    try:
+                        value = value.decode("utf-8")
+                    except UnicodeDecodeError as exc:
+                        raise SnapshotReplayError(f"{column} is not valid JSON") from exc
+                if not isinstance(value, str):
+                    raise SnapshotReplayError(f"{column} is not valid JSON")
                 try:
                     if _contains_transient(json.loads(value)):
                         return True
-                except json.JSONDecodeError:
-                    continue
+                except json.JSONDecodeError as exc:
+                    raise SnapshotReplayError(f"{column} is not valid JSON") from exc
         return False
     finally:
         connection.close()
