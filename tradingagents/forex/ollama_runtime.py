@@ -242,7 +242,10 @@ class DedicatedOllamaRuntime:
                 not loaded
                 or not set(loaded).issubset(required)
                 or any(value is None for value in loaded.values())
-                or required - set(self._verified_contexts)
+                or any(
+                    self._verified_contexts.get(model, 0) < self.config.context_length
+                    for model in required
+                )
             ):
                 error_code = "CONTEXT_NOT_VERIFIED"
             else:
