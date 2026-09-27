@@ -163,6 +163,16 @@ def test_graph_config_accepts_evidence_identity() -> None:
 
 
 @pytest.mark.unit
+def test_forex_run_signature_rejects_ambiguous_evidence_boolean() -> None:
+    graph = _bare_graph()
+    graph.market_data_mode = "forex_mt5"
+    graph.config["forex_evidence_enabled"] = "maybe"
+
+    with pytest.raises(ValueError, match="forex_evidence_enabled"):
+        graph._run_signature("forex")
+
+
+@pytest.mark.unit
 def test_forex_graph_setup_rejects_stock_specific_analysts(
     forex_snapshot: ForexMarketSnapshot,
 ) -> None:

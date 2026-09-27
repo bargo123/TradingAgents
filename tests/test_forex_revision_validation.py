@@ -29,6 +29,21 @@ def test_freshness_report_does_not_infer_without_a_budget():
     assert report["stale_by_completion_count"] == 1
 
 
+def test_freshness_report_rejects_malformed_stale_flag():
+    report = _freshness_report(
+        [
+            {
+                "stale_by_completion": "false",
+                "analysis_latency_seconds": 1,
+                "freshness_budget_seconds": 900,
+            }
+        ]
+    )
+
+    assert report["status_counts"] == {"UNAVAILABLE": 1}
+    assert report["stale_by_completion_count"] == 0
+
+
 def test_agent_metrics_aggregate_safe_numeric_telemetry_only():
     report = aggregate_agent_metrics(
         [

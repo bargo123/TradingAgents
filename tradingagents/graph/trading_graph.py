@@ -524,7 +524,10 @@ class TradingAgentsGraph:
             f"forex_profile={getattr(self, 'forex_analysis_profile', 'INTRADAY')}",
         ]
         if getattr(self, "market_data_mode", "stock") == "forex_mt5":
-            evidence_enabled = bool(self.config.get("forex_evidence_enabled", False))
+            evidence_enabled = _coerce_bool(
+                self.config.get("forex_evidence_enabled", False),
+                "forex_evidence_enabled",
+            )
             context_hash = str(self.config.get("forex_evidence_context_hash", "") or "")
             evidence_identity = f"enabled/{context_hash}" if evidence_enabled else "disabled/"
             signature_parts.append(f"forex_evidence={evidence_identity}")

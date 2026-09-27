@@ -42,6 +42,14 @@ def _safe_nonnegative_int(value: Any) -> int:
     return max(parsed, 0)
 
 
+def _safe_db_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if type(value) is int and value in (0, 1):
+        return bool(value)
+    return None
+
+
 def _nearest_rank(values: Iterable[float], percentile: float) -> float | None:
     ordered = sorted(values)
     if not ordered:
@@ -131,16 +139,20 @@ def _freshness_report(rows: Iterable[sqlite3.Row]) -> dict[str, Any]:
         if budget is not None:
             budgets.append(budget)
         raw_stale = row["stale_by_completion"]
-        if raw_stale is not None:
-            stale = bool(raw_stale)
+        parsed_stale = _safe_db_bool(raw_stale)
+        if raw_stale is not None and parsed_stale is None:
+            status = "UNAVAILABLE"
+            stale = False
+        elif raw_stale is not None:
+            stale = parsed_stale is True
+            status = "STALE" if stale else "WITHIN_BUDGET"
         else:
             latency = _safe_nonnegative_float(row["analysis_latency_seconds"])
             stale = latency is not None and budget is not None and latency >= budget
-        latency = _safe_nonnegative_float(row["analysis_latency_seconds"])
-        if raw_stale is None and (latency is None or budget is None):
-            status = "UNAVAILABLE"
-        else:
-            status = "STALE" if stale else "WITHIN_BUDGET"
+            if latency is None or budget is None:
+                status = "UNAVAILABLE"
+            else:
+                status = "STALE" if stale else "WITHIN_BUDGET"
         status_counts[status] += 1
         stale_count += int(status == "STALE")
     return {
