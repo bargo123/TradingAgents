@@ -208,7 +208,8 @@ def _artifact(
 
 
 def _present(artifact: Mapping[str, Any]) -> bool:
-    return bool(artifact.get("present"))
+    value = artifact.get("present")
+    return value is True or (type(value) is int and value == 1)
 
 
 def _timeframe_directions(metrics: Mapping[str, Any]) -> dict[str, str | None]:

@@ -123,6 +123,26 @@ def test_research_signal_audit_does_not_treat_missing_recommendation_as_hold(tmp
     assert report.observations[0].research_recommendation is None
 
 
+def test_research_signal_audit_rejects_malformed_artifact_presence(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    metrics = json.loads(_metrics())
+    metrics["state_boundaries"][0]["artifacts"]["market"]["present"] = "false"
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?, ?, ?)",
+            ("d1", "HOLD", "HOLD", "FINAL TRANSACTION PROPOSAL: **HOLD**", "COMPLETE", "NORMALIZED"),
+        )
+        db.execute(
+            "INSERT INTO forex_watch_runs VALUES (?, ?, ?, ?)",
+            ("r1", "d1", "SUCCEEDED", json.dumps(metrics)),
+        )
+
+    report = audit_research_signals(path)
+
+    assert report.observations[0].market_present is False
+    assert report.availability["market_unavailable"]["samples"] == 1
+
+
 def test_research_signal_audit_attributes_timeframe_pattern_to_recommendation(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     with closing(sqlite3.connect(path)) as db, db:
