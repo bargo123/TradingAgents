@@ -77,8 +77,14 @@ class OutcomeStatsCalculator:
                         basis, horizon = key.split("/", 1)
                     else:
                         continue
+                    parsed_horizon = self._parse_horizon(horizon)
+                    if parsed_horizon is None:
+                        # A malformed external projection must not abort all
+                        # statistics; it simply cannot match a requested
+                        # basis/horizon and is excluded by the selector.
+                        continue
                     normalized.append(
-                        dict(value, evaluation_basis=basis, horizon_seconds=int(horizon))
+                        dict(value, evaluation_basis=basis, horizon_seconds=parsed_horizon)
                     )
                 snapshots = tuple(normalized)
         return tuple(snapshots or ())
@@ -109,44 +115,64 @@ class OutcomeStatsCalculator:
             s
             for s in snapshots
             if s.get("evaluation_basis") == request.evaluation_basis
-            and int(s.get("horizon_seconds") or 0) == request.horizon_seconds
+            and self._matches_horizon(s, request.horizon_seconds)
         ]
         if not exact:
             return None, "BASIS_OR_HORIZON_MISMATCH" if snapshots else "EVALUATION_NOT_AVAILABLE"
         if request.as_of is None:
             return max(exact, key=self._snapshot_key), None
+
         observed = []
         for snapshot in exact:
-            observation = _utc(snapshot.get("observation_timestamp"))
             available = self._availability(snapshot)
-            if (
-                observation is not None
-                and observation <= request.as_of
-                and available is not None
-                and available <= request.as_of
-            ):
-                observed.append(snapshot)
+            if available is None or available > request.as_of:
+                continue
+            # A COMPLETE row also needs its market observation to be at or
+            # before the historical cutoff.  DATA_UNAVAILABLE/PENDING/
+            # INELIGIBLE rows intentionally have no market observation in the
+            # normal no-quote shape; their catalog availability is the fact
+            # that makes the state historically known.
+            if snapshot.get("evaluation_status") == "COMPLETE":
+                observation = _utc(snapshot.get("observation_timestamp"))
+                if observation is None or observation > request.as_of:
+                    continue
+            observed.append(snapshot)
         if observed:
             return max(observed, key=self._snapshot_key), None
-        # A DATA_UNAVAILABLE state observed before the cutoff is meaningful
-        # history. A recovered row first seen after recovery has no such state.
-        if any(
-            s.get("evaluation_status") == "DATA_UNAVAILABLE"
-            and _utc(s.get("observation_timestamp")) is not None
-            and _utc(s.get("observation_timestamp")) <= request.as_of
-            and self._availability(s) is not None
-            and self._availability(s) <= request.as_of
-            for s in exact
-        ):
-            prior = [
-                s
-                for s in exact
-                if s.get("evaluation_status") == "DATA_UNAVAILABLE"
-                and _utc(s.get("observation_timestamp")) <= request.as_of
-                and self._availability(s) <= request.as_of
-            ]
-            return max(prior, key=self._snapshot_key), None
         return None, "EVALUATION_NOT_YET_AVAILABLE"
+
+    @staticmethod
+    def _matches_horizon(snapshot: Mapping[str, Any], horizon_seconds: int) -> bool:
+        value = OutcomeStatsCalculator._parse_horizon(snapshot.get("horizon_seconds"))
+        return value == horizon_seconds
+
+    @staticmethod
+    def _trust_tier(record: Any) -> TrustTier | None:
+        value = _get(
+            record,
+            "trust",
+            _get(record, "trust_tier", TrustTier.TIER_C_DIAGNOSTIC_ONLY),
+        )
+        try:
+            return TrustTier(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_horizon(value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            if not text or not text.lstrip("+-").isdigit():
+                return None
+            try:
+                return int(text)
+            except (TypeError, ValueError, OverflowError):
+                return None
+        return None
 
     def calculate(self, request: OutcomeStatsRequest) -> OutcomeStatistics:
         by_reason: dict[str, int] = {}
@@ -170,16 +196,12 @@ class OutcomeStatsCalculator:
             if record is None:
                 reason, snapshot = "EXPERIENCE_NOT_FOUND", None
             else:
-                tier = TrustTier(
-                    _get(
-                        record,
-                        "trust",
-                        _get(record, "trust_tier", TrustTier.TIER_C_DIAGNOSTIC_ONLY),
-                    )
-                )
+                tier = self._trust_tier(record)
                 snapshots = self._record_snapshots(record)
                 snapshot, reason = self._select(snapshots, request)
-                if reason is None and tier not in request.trust_tiers:
+                if reason is None and tier is None:
+                    reason = "TRUST_TIER_INVALID"
+                elif reason is None and tier not in request.trust_tiers:
                     reason = "TRUST_TIER_NOT_ALLOWED"
                 if reason is None:
                     status = str(snapshot.get("evaluation_status", ""))
@@ -231,7 +253,8 @@ class OutcomeStatsCalculator:
                 status = str(snapshot.get("evaluation_status", "")) if snapshot is not None else ""
                 if status:
                     by_status[status] = by_status.get(status, 0) + 1
-                by_tier[tier.value] = by_tier.get(tier.value, 0) + 1
+                if tier is not None:
+                    by_tier[tier.value] = by_tier.get(tier.value, 0) + 1
             by_reason[reason] = by_reason.get(reason, 0) + 1
 
         def directional(

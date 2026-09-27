@@ -40,6 +40,14 @@ def _action(row):
     return None
 
 
+def _trust_tier(row: Any) -> TrustTier | None:
+    value = _get(row, "trust_tier", _get(row, "trust", TrustTier.TIER_C_DIAGNOSTIC_ONLY))
+    try:
+        return TrustTier(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class ExperienceQueryService:
     def __init__(
         self,
@@ -68,7 +76,9 @@ class ExperienceQueryService:
     def _profile(self, record, query):
         if self.profile is not None:
             return self.profile
-        cohort = self._cohort(record)
+        cohort = self._safe_cohort(record)
+        if cohort is None:
+            return None
         return self.profiles.get(cohort) or self.profiles.get(tuple(cohort))
 
     @staticmethod
@@ -84,6 +94,13 @@ class ExperienceQueryService:
             str(_get(row, "feature_extractor_version", "")),
         )
 
+    @classmethod
+    def _safe_cohort(cls, row) -> NormalizationCohortV1 | None:
+        try:
+            return cls._cohort(row)
+        except (TypeError, ValueError):
+            return None
+
     def search(self, query: ExperienceQuery) -> ExperienceSearchResult:
         if TrustTier.TIER_C_DIAGNOSTIC_ONLY in query.trust_tiers:
             raise ValueError("Tier C is diagnostic-only and cannot be used for numeric similarity")
@@ -92,6 +109,7 @@ class ExperienceQueryService:
         eligible = []
         for row in rows:
             reason = None
+            trust_tier = _trust_tier(row)
             aliases = _get(row, "source_aliases", {}) or {}
             tombstoned = bool(_get(row, "tombstoned", False)) or (
                 bool(aliases)
@@ -110,10 +128,7 @@ class ExperienceQueryService:
             ):
                 reason = "timeframe"
             elif (
-                TrustTier(
-                    _get(row, "trust_tier", _get(row, "trust", TrustTier.TIER_C_DIAGNOSTIC_ONLY))
-                )
-                not in query.trust_tiers
+                trust_tier is None or trust_tier not in query.trust_tiers
             ):
                 reason = "trust_tier"
             elif (
@@ -143,7 +158,11 @@ class ExperienceQueryService:
                 excluded_counts=exclusions,
                 active_generation_id=self.generation_id,
             )
-        profile = self._profile(eligible[0], query)
+        profile = None
+        for candidate in eligible:
+            profile = self._profile(candidate, query)
+            if profile is not None:
+                break
         if profile is None:
             return ExperienceSearchResult(
                 candidate_count=len(rows),
@@ -151,8 +170,8 @@ class ExperienceQueryService:
                 active_generation_id=self.generation_id,
             )
         for row in tuple(eligible):
-            cohort = self._cohort(row)
-            if cohort != profile.cohort:
+            cohort = self._safe_cohort(row)
+            if cohort is None or cohort != profile.cohort:
                 eligible.remove(row)
                 exclusions["cohort"] = exclusions.get("cohort", 0) + 1
             elif (

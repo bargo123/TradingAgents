@@ -125,6 +125,74 @@ def test_genuine_prior_unavailable_snapshot_is_used_before_recovery():
     assert result.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
 
 
+def test_prior_unavailable_without_market_observation_timestamp_is_still_historical():
+    """A no-quote snapshot is known by catalog observation, not a market tick."""
+
+    record = _record(
+        "exp-with-no-quote-timestamp",
+        snapshots=(
+            _complete(
+                "prior-unavailable",
+                evaluation_status="DATA_UNAVAILABLE",
+                observation_timestamp=None,
+                evaluated_at="2026-01-02T13:00:00Z",
+                observed_at="2026-01-02T13:00:00Z",
+                unavailable_reason="NO_QUOTES",
+            ),
+            _complete(
+                "recovered",
+                evaluated_at="2026-01-02T15:00:00Z",
+                observed_at="2026-01-02T15:00:00Z",
+                recovered_from_unavailable_at="2026-01-02T15:00:00Z",
+            ),
+        ),
+    )
+    result = OutcomeStatsCalculator((record,)).calculate(
+        OutcomeStatsRequest(
+            ("exp-with-no-quote-timestamp",),
+            "ANALYSIS_SNAPSHOT",
+            300,
+            as_of=utc("2026-01-02T14:00:00Z"),
+        )
+    )
+
+    assert result.excluded_counts["DATA_UNAVAILABLE"] == 1
+    assert result.excluded_counts.get("EVALUATION_NOT_YET_AVAILABLE", 0) == 0
+
+
+def test_malformed_mapping_snapshot_horizon_fails_closed_without_crashing():
+    record = {
+        "experience_id": "exp-with-malformed-horizon",
+        "trust": TrustTier.TIER_A_HIGH_TRUST,
+        "outcome_evidence_by_basis_horizon": {
+            "ANALYSIS_SNAPSHOT/not-an-integer": {
+                "evaluation_status": "COMPLETE",
+            }
+        },
+    }
+
+    result = OutcomeStatsCalculator((record,)).calculate(
+        OutcomeStatsRequest(("exp-with-malformed-horizon",), "ANALYSIS_SNAPSHOT", 300)
+    )
+
+    assert result.excluded_counts["EVALUATION_NOT_AVAILABLE"] == 1
+
+
+def test_malformed_record_trust_fails_closed_without_crashing():
+    record = _record(
+        "exp-with-malformed-trust",
+        trust="NOT_A_TRUST_TIER",
+        snapshots=(_complete(),),
+    )
+
+    result = OutcomeStatsCalculator((record,)).calculate(
+        OutcomeStatsRequest(("exp-with-malformed-trust",), "ANALYSIS_SNAPSHOT", 300)
+    )
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["TRUST_TIER_INVALID"] == 1
+
+
 def test_historical_selection_uses_phase8_observation_time() -> None:
     """Source timestamps cannot make an unobserved catalog state visible."""
 

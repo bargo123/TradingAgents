@@ -84,6 +84,42 @@ def test_default_query_excludes_tier_c_and_current_tombstones():
     assert result.active_generation_id == "g1"
 
 
+def test_query_excludes_malformed_trust_tier_without_crashing():
+    service = ExperienceQueryService(
+        [row("good"), row("malformed") | {"trust": "NOT_A_TRUST_TIER", "trust_tier": "NOT_A_TRUST_TIER"}],
+        profile=profile(),
+    )
+
+    result = service.search(ExperienceQuery(query_state()))
+
+    assert [hit.experience_id for hit in result.hits] == ["good"]
+    assert result.excluded_counts["trust_tier"] == 1
+
+
+def test_query_excludes_malformed_record_cohort_without_crashing():
+    service = ExperienceQueryService(
+        [row("good"), row("malformed") | {"cohort": "not-a-cohort"}],
+        profile=profile(),
+    )
+
+    result = service.search(ExperienceQuery(query_state()))
+
+    assert [hit.experience_id for hit in result.hits] == ["good"]
+    assert result.excluded_counts["cohort"] == 1
+
+
+def test_query_profile_inference_skips_malformed_first_cohort():
+    service = ExperienceQueryService(
+        [row("malformed") | {"cohort": "not-a-cohort"}, row("good")],
+        profiles={COHORT: profile()},
+    )
+
+    result = service.search(ExperienceQuery(query_state()))
+
+    assert [hit.experience_id for hit in result.hits] == ["good"]
+    assert result.excluded_counts["cohort"] == 1
+
+
 def test_historical_query_allows_tombstones_but_requires_completion_before_cutoff():
     service = ExperienceQueryService(
         [row("gone", tombstoned=True), row("future", completed=datetime(2026, 1, 3, tzinfo=UTC))],
