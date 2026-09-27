@@ -308,6 +308,12 @@ def test_phase8_json_object_fields_reject_non_object_json(raw):
         _decode_phase8_object(raw)
 
 
+@pytest.mark.parametrize("raw", [0, False, "", "   "])
+def test_phase8_json_object_fields_reject_falsey_malformed_values(raw):
+    with pytest.raises(SourceReadError, match="Phase 8 JSON object"):
+        _decode_phase8_object(raw)
+
+
 @pytest.mark.parametrize(
     "raw",
     [json.dumps({"x" * 129: "value"}), json.dumps({"value": "x" * 2500})],

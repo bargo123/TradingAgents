@@ -300,11 +300,13 @@ def _decode_mapping(value: Any) -> dict[str, Any]:
 
 def _decode_phase8_object(value: Any) -> dict[str, Any]:
     """Decode a bounded Phase 8 JSON object without silent truncation."""
-    if isinstance(value, dict):
+    if value is None:
+        decoded = {}
+    elif isinstance(value, dict):
         decoded = value
     else:
         try:
-            decoded = json.loads(value or "{}")
+            decoded = json.loads(value)
         except (TypeError, json.JSONDecodeError) as exc:
             raise SourceReadError("invalid Phase 8 JSON object") from exc
     if not isinstance(decoded, dict):
