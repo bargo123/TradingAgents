@@ -163,6 +163,30 @@ def test_training_eligibility_is_only_provenance() -> None:
     assert "training_eligible" not in ExperienceRecord.__dataclass_fields__
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "experience_schema_version",
+        "feature_schema_version",
+        "feature_extractor_version",
+        "similarity_profile_version",
+        "trust_policy_version",
+        "statistics_policy_version",
+    ],
+)
+@pytest.mark.parametrize("value", [None, False, 0, [], {}, "   ", "x" * 257])
+def test_experience_record_rejects_invalid_version_metadata(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        ExperienceRecord(
+            "exp-1",
+            "db-1",
+            "dec-1",
+            "EURUSD",
+            datetime(2026, 1, 1, tzinfo=timezone.utc),
+            **{field: value},
+        )
+
+
 def test_request_and_statistics_contracts_accept_defaults() -> None:
     assert EvidenceRequest().as_of is None
     assert OutcomeStatistics().eligible_sample_denominator == 0

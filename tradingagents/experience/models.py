@@ -255,6 +255,19 @@ class ExperienceRecord(Serializable):
             _utc(self.decision_reference_timestamp, "decision_reference_timestamp"),
         )
         object.__setattr__(self, "trust", TrustTier(self.trust))
+        for name in (
+            "experience_schema_version",
+            "feature_schema_version",
+            "feature_extractor_version",
+            "similarity_profile_version",
+            "trust_policy_version",
+            "statistics_policy_version",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _required_text(getattr(self, name), name).strip(),
+            )
         aliases = {} if self.source_aliases is None else self.source_aliases
         if not isinstance(aliases, Mapping):
             raise ValueError("source_aliases must be a mapping")
