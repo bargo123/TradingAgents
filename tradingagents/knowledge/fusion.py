@@ -17,6 +17,18 @@ def _finite_score(value: float | int, name: str) -> float:
     return score
 
 
+def _chunk_id(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("chunk_id must be a non-empty string")
+    return value
+
+
+def _rank(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} rank must be a positive integer")
+    return value
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class DenseCandidate:
     chunk_id: str
@@ -31,10 +43,8 @@ class DenseCandidate:
             score = semantic_score
         if score is None:
             raise TypeError("dense candidate requires semantic score")
-        object.__setattr__(self, "chunk_id", str(chunk_id))
-        rank = int(rank)
-        if rank <= 0:
-            raise ValueError("dense candidate rank must be positive")
+        object.__setattr__(self, "chunk_id", _chunk_id(chunk_id))
+        rank = _rank(rank, "dense candidate")
         object.__setattr__(self, "rank", rank)
         object.__setattr__(self, "score", _finite_score(score, "dense candidate score"))
         object.__setattr__(self, "chunk", chunk)
@@ -59,10 +69,8 @@ class LexicalCandidate:
             score = lexical_score
         if score is None:
             raise TypeError("lexical candidate requires lexical score")
-        object.__setattr__(self, "chunk_id", str(chunk_id))
-        rank = int(rank)
-        if rank <= 0:
-            raise ValueError("lexical candidate rank must be positive")
+        object.__setattr__(self, "chunk_id", _chunk_id(chunk_id))
+        rank = _rank(rank, "lexical candidate")
         object.__setattr__(self, "rank", rank)
         object.__setattr__(self, "score", _finite_score(score, "lexical candidate score"))
         object.__setattr__(self, "chunk", chunk)
@@ -127,6 +135,8 @@ def reciprocal_rank_fuse(
     config = config or RRFConfig()
     merged: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(dense, 1):
+        if isinstance(item, Mapping) and not str(item.get("chunk_id", "")).strip():
+            continue
         candidate = _candidate(item, DenseCandidate, index)
         if not candidate.chunk_id:
             continue
@@ -139,6 +149,8 @@ def reciprocal_rank_fuse(
         )
         row["fused_score"] = row.get("fused_score", 0.0) + 1.0 / (config.k + candidate.rank)
     for index, item in enumerate(lexical, 1):
+        if isinstance(item, Mapping) and not str(item.get("chunk_id", "")).strip():
+            continue
         candidate = _candidate(item, LexicalCandidate, index)
         if not candidate.chunk_id:
             continue

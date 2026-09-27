@@ -35,6 +35,20 @@ def test_fusion_candidates_reject_non_finite_scores(score: float) -> None:
         LexicalCandidate("chunk-a", 1, score)
 
 
+@pytest.mark.parametrize("candidate_type", [DenseCandidate, LexicalCandidate])
+@pytest.mark.parametrize("chunk_id", [None, "", "   "])
+def test_fusion_candidates_reject_empty_chunk_ids(candidate_type, chunk_id: object) -> None:
+    with pytest.raises(ValueError, match="chunk_id"):
+        candidate_type(chunk_id, 1, 1.0)
+
+
+@pytest.mark.parametrize("candidate_type", [DenseCandidate, LexicalCandidate])
+@pytest.mark.parametrize("rank", [True, 0, -1, 1.5, "1"])
+def test_fusion_candidates_reject_non_positive_integer_ranks(candidate_type, rank: object) -> None:
+    with pytest.raises(ValueError, match="rank"):
+        candidate_type("chunk-a", rank, 1.0)
+
+
 def make_embedding_spec(**overrides: object) -> EmbeddingSpec:
     values: dict[str, object] = {
         "model_id": "fixture/bge",
