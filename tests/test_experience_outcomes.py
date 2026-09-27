@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+
 from tradingagents.experience.models import OutcomeStatsRequest, TrustTier
 from tradingagents.experience.outcomes import OutcomeStatsCalculator
 
@@ -102,6 +104,17 @@ def test_complete_snapshot_with_nonfinite_selected_action_value_is_excluded():
     result = OutcomeStatsCalculator(
         (_record("bad-selected-value", snapshots=(row,)),)
     ).calculate(OutcomeStatsRequest(("bad-selected-value",), "ANALYSIS_SNAPSHOT", 300))
+
+    assert result.eligible_count == 0
+    assert result.excluded_counts["REQUIRED_FIELD_MISSING_OR_NONFINITE"] == 1
+
+
+@pytest.mark.parametrize("value", [True, "10.0"])
+def test_complete_snapshot_with_non_numeric_selected_action_value_is_excluded(value: object):
+    row = _complete("bad-selected-type", selected_action_net_points=value)
+    result = OutcomeStatsCalculator(
+        (_record("bad-selected-type", snapshots=(row,)),)
+    ).calculate(OutcomeStatsRequest(("bad-selected-type",), "ANALYSIS_SNAPSHOT", 300))
 
     assert result.eligible_count == 0
     assert result.excluded_counts["REQUIRED_FIELD_MISSING_OR_NONFINITE"] == 1

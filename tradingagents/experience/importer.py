@@ -97,7 +97,8 @@ class ExperienceImporter:
         """Append only evaluation rows observed in this immutable source read."""
         added = 0
         for evaluation in snapshot.evaluations:
-            if str(evaluation.get("decision_id")) != decision_id:
+            evaluation_decision_id = evaluation.get("decision_id")
+            if not isinstance(evaluation_decision_id, str) or evaluation_decision_id != decision_id:
                 continue
             efp = (
                 evaluation.get("source_evaluation_fingerprint")
@@ -149,7 +150,10 @@ class ExperienceImporter:
                         )
                         seen: set[str] = set()
                         for row in snapshot.decisions:
-                            decision_id = str(row["decision_id"])
+                            raw_decision_id = row.get("decision_id")
+                            if not isinstance(raw_decision_id, str) or not raw_decision_id.strip():
+                                raise ValueError("decision_id must be a non-empty string")
+                            decision_id = raw_decision_id
                             seen.add(decision_id)
                             fingerprint = source_decision_fingerprint(row)
                             existing = next(

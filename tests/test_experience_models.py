@@ -46,6 +46,35 @@ def test_contracts_are_frozen_and_json_serializable() -> None:
     assert result.to_dict()["hits"][0]["experience_id"] == "exp-1"
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["experience_id", "source_database_id", "source_decision_id", "symbol"],
+)
+@pytest.mark.parametrize("value", [None, 1, "  "])
+def test_experience_record_rejects_invalid_required_identity(field: str, value: object) -> None:
+    payload = {
+        "experience_id": "exp-1",
+        "source_database_id": "db-1",
+        "source_decision_id": "dec-1",
+        "symbol": "EURUSD",
+        "analysis_snapshot_timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+    }
+    payload[field] = value
+    with pytest.raises(ValueError, match=field):
+        ExperienceRecord(**payload)
+
+
+def test_experience_record_requires_analysis_snapshot_timestamp() -> None:
+    with pytest.raises(ValueError, match="analysis_snapshot_timestamp"):
+        ExperienceRecord("exp-1", "db-1", "dec-1", "EURUSD", None)
+
+
+@pytest.mark.parametrize("value", [None, 1, "  "])
+def test_experience_hit_rejects_invalid_identity(value: object) -> None:
+    with pytest.raises(ValueError, match="experience_id"):
+        ExperienceHit(value)
+
+
 def test_utc_timestamps_are_required() -> None:
     with pytest.raises(ValueError, match="UTC"):
         OutcomeStatsRequest(("x",), "ANALYSIS_SNAPSHOT", 300, as_of=datetime(2026, 1, 1))
@@ -120,9 +149,28 @@ def test_experience_record_rejects_non_mapping_payloads(field: str) -> None:
         )
 
 
+def test_experience_record_rejects_malformed_alias_and_fingerprint_entries() -> None:
+    base = {
+        "experience_id": "x",
+        "source_database_id": "db",
+        "source_decision_id": "d",
+        "symbol": "EURUSD",
+        "analysis_snapshot_timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+    }
+    with pytest.raises(ValueError, match="source_aliases"):
+        ExperienceRecord(**base, source_aliases={None: "CURRENT"})
+    with pytest.raises(ValueError, match="source_evaluation_fingerprints"):
+        ExperienceRecord(**base, source_evaluation_fingerprints={"ANALYSIS_SNAPSHOT:300": 1})
+
+
 def test_experience_hit_rejects_non_mapping_payloads() -> None:
     with pytest.raises(ValueError, match="market_state"):
         ExperienceHit("x", market_state=["not", "a", "mapping"])
+
+
+def test_experience_hit_requires_boolean_tombstone_flag() -> None:
+    with pytest.raises(ValueError, match="currently_tombstoned"):
+        ExperienceHit("x", currently_tombstoned="false")
 
 
 def test_training_eligible_is_rejected_outside_provenance() -> None:

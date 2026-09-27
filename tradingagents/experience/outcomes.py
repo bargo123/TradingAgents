@@ -35,8 +35,10 @@ def _utc(value: Any) -> datetime | None:
 
 
 def _finite(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
     try:
-        return value is not None and math.isfinite(float(value))
+        return math.isfinite(float(value))
     except (TypeError, ValueError, OverflowError):
         return False
 

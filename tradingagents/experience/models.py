@@ -138,8 +138,11 @@ class ExperienceRecord(Serializable):
 
     def __post_init__(self) -> None:
         for name in ("experience_id", "source_database_id", "source_decision_id", "symbol"):
-            if not str(getattr(self, name)).strip():
-                raise ValueError(f"{name} must be non-empty")
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if not isinstance(self.analysis_snapshot_timestamp, datetime):
+            raise ValueError("analysis_snapshot_timestamp is required")
         object.__setattr__(
             self,
             "analysis_snapshot_timestamp",
@@ -159,6 +162,8 @@ class ExperienceRecord(Serializable):
         aliases = {} if self.source_aliases is None else self.source_aliases
         if not isinstance(aliases, Mapping):
             raise ValueError("source_aliases must be a mapping")
+        if any(not isinstance(key, str) or not key.strip() for key in aliases):
+            raise ValueError("source_aliases keys must be non-empty strings")
         object.__setattr__(
             self,
             "source_aliases",
@@ -177,6 +182,16 @@ class ExperienceRecord(Serializable):
                 raise ValueError(f"{name} must be a mapping")
             if name != "provenance":
                 _reject_reserved(value)
+            if name == "source_evaluation_fingerprints" and any(
+                not isinstance(key, str)
+                or not key.strip()
+                or not isinstance(item, str)
+                or not item.strip()
+                for key, item in value.items()
+            ):
+                raise ValueError(
+                    "source_evaluation_fingerprints keys and values must be non-empty strings"
+                )
             object.__setattr__(self, name, _freeze(value))
 
 
@@ -222,8 +237,10 @@ class ExperienceHit(Serializable):
     currently_tombstoned: bool = False
 
     def __post_init__(self) -> None:
-        if not str(self.experience_id).strip():
-            raise ValueError("experience_id must be non-empty")
+        if not isinstance(self.experience_id, str) or not self.experience_id.strip():
+            raise ValueError("experience_id must be a non-empty string")
+        if not isinstance(self.currently_tombstoned, bool):
+            raise ValueError("currently_tombstoned must be a boolean")
         if self.trust_tier is not None:
             object.__setattr__(self, "trust_tier", TrustTier(self.trust_tier))
         for n in ("market_state", "timestamps", "outcome_availability", "provenance"):
