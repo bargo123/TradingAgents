@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from tradingagents.knowledge.models import KnowledgeQuery
@@ -48,7 +49,15 @@ class EvidenceOrchestrator:
     def _experience_result(value: Any) -> ExperienceSearchResult:
         if isinstance(value, ExperienceSearchResult):
             return value
-        return ExperienceSearchResult(tuple(value or ()))
+        if value is None:
+            return ExperienceSearchResult()
+        if isinstance(value, (str, bytes, bytearray, Mapping)):
+            raise TypeError("experience search result must be an iterable of ExperienceHit values")
+        try:
+            values = tuple(value)
+        except TypeError as exc:
+            raise TypeError("experience search result must be an iterable of ExperienceHit values") from exc
+        return ExperienceSearchResult(values)
 
     def query(self, request: EvidenceRequest) -> EvidenceBundle:
         if not isinstance(request, EvidenceRequest):
@@ -147,7 +156,7 @@ class EvidenceOrchestrator:
             statistics=statistics,
             source_status=source_status,
             errors=tuple(errors),
-            provenance=provenance,
+            provenance=provenance.to_dict(),
         )
 
 

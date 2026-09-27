@@ -126,6 +126,13 @@ def _source_bytes() -> bytes:
     return _row()["snapshot_json"].encode("utf-8")
 
 
+@pytest.mark.parametrize("field", ["models", "model_settings"])
+@pytest.mark.parametrize("value", [[], False, 0, ""])
+def test_replay_config_rejects_malformed_mapping_fields(tmp_path: Path, field: str, value):
+    with pytest.raises((TypeError, ValueError), match=field):
+        replace(_config(tmp_path), **{field: value})
+
+
 def test_saved_snapshot_codec_validates_row():
     snapshot = SavedSnapshotCodec.from_source_row(_row())
     assert snapshot.symbol == "EURUSDm"

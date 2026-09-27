@@ -77,7 +77,9 @@ class ReadonlyEvidenceRuntimeConfiguration:
 
     @classmethod
     def from_envelope(cls, envelope: Mapping[str, Any]) -> ReadonlyEvidenceRuntimeConfiguration:
-        roots = envelope.get("artifact_roots") or {}
+        roots = envelope.get("artifact_roots")
+        if roots is None:
+            roots = {}
         if not isinstance(roots, Mapping):
             raise TypeError("artifact_roots must be a mapping")
         raw_timeout = envelope.get("evidence_timeout_seconds", 10.0)

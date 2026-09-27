@@ -48,6 +48,12 @@ def test_contracts_are_frozen_and_json_serializable() -> None:
     assert result.to_dict()["hits"][0]["experience_id"] == "exp-1"
 
 
+@pytest.mark.parametrize("value", [False, 0, "bad", {"experience_id": "exp-1"}])
+def test_experience_search_result_rejects_non_hit_values(value: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="hits"):
+        ExperienceSearchResult((value,))
+
+
 @pytest.mark.parametrize(
     "field",
     ["experience_id", "source_database_id", "source_decision_id", "symbol"],

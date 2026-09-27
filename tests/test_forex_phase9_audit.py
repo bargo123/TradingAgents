@@ -71,6 +71,16 @@ def test_audit_rejects_hyphenated_forbidden_fields_and_sensitive_values(tmp_path
         store.append(audit(source_errors={"nested": ["api-key"]}))
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["source_status", "diagnostics", "source_errors", "selected_counts", "dropped_counts", "node_context_hashes"],
+)
+@pytest.mark.parametrize("value", [[], False, 0, ""])
+def test_audit_rejects_malformed_mapping_fields(field, value):
+    with pytest.raises(TypeError, match=field):
+        audit(**{field: value})
+
+
 def test_audit_is_append_only(tmp_path):
     store = EvidenceAuditStore(tmp_path / "audit.sqlite3")
     store.initialize()

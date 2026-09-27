@@ -101,6 +101,21 @@ def test_empty_request_is_empty_without_calling_services():
     knowledge, experience, stats = Knowledge(), Experience(), Stats()
     bundle = EvidenceOrchestrator(knowledge, experience, stats).query(EvidenceRequest())
     assert bundle.status == "EMPTY"
+    assert bundle.provenance["experience_requested"] is False
     assert knowledge.last_query is None
     assert experience.last_query is None
     assert stats.last_request is None
+
+
+def test_malformed_experience_service_result_is_failed_not_empty():
+    class MalformedExperience:
+        def search(self, _query):
+            return False
+
+    bundle = EvidenceOrchestrator(Knowledge(), MalformedExperience(), Stats()).query(
+        EvidenceRequest(market_state={"x": 1})
+    )
+
+    assert bundle.status == "FAILED"
+    assert bundle.source_status["experience"] == "FAILED"
+    assert bundle.errors[0].source == "experience"

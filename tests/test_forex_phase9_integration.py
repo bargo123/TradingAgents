@@ -575,6 +575,12 @@ def test_runtime_envelope_rejects_invalid_evidence_timeout(value):
         )
 
 
+@pytest.mark.parametrize("value", [[], False, 0, ""])
+def test_runtime_envelope_rejects_invalid_artifact_roots(value):
+    with pytest.raises(TypeError, match="artifact_roots"):
+        ReadonlyEvidenceRuntimeConfiguration.from_envelope({"artifact_roots": value})
+
+
 def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):
     roots = _artifact_roots(tmp_path)
     service = EvidenceIntegrationService(

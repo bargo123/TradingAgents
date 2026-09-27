@@ -116,6 +116,17 @@ class EvidenceUsageAudit:
     def __post_init__(self) -> None:
         if self.as_of.tzinfo is None:
             raise ValueError("as_of must be timezone-aware")
+        for field in (
+            "source_status",
+            "diagnostics",
+            "source_errors",
+            "selected_counts",
+            "dropped_counts",
+            "node_context_hashes",
+        ):
+            value = getattr(self, field)
+            if value is not None and not isinstance(value, Mapping):
+                raise TypeError(f"{field} must be a mapping")
         expected = hashlib.sha256(self.rendered_context.encode("utf-8")).hexdigest()
         if self.rendered_context_hash != expected:
             raise ValueError("rendered_context_hash does not match rendered_context")

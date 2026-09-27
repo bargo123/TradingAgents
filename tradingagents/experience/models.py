@@ -273,7 +273,10 @@ class ExperienceSearchResult(Serializable):
     excluded_counts: Mapping[str, int] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "hits", tuple(self.hits))
+        hits = tuple(self.hits)
+        if any(not isinstance(hit, ExperienceHit) for hit in hits):
+            raise TypeError("hits must contain ExperienceHit values")
+        object.__setattr__(self, "hits", hits)
         object.__setattr__(self, "excluded_counts", _freeze(_mapping_or_empty(self.excluded_counts, "excluded_counts")))
 
 

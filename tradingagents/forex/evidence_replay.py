@@ -278,8 +278,15 @@ class EvidenceReplayConfig:
         if not isinstance(self.source_decision_id, str) or not self.source_decision_id.strip():
             raise ValueError("source_decision_id must be non-empty")
         object.__setattr__(self, "analysts", tuple(self.analysts))
-        object.__setattr__(self, "models", dict(self.models or {}))
-        object.__setattr__(self, "model_settings", dict(self.model_settings or {}))
+        for field in ("models", "model_settings"):
+            value = getattr(self, field)
+            if value is None:
+                value = {}
+            elif not isinstance(value, Mapping):
+                raise TypeError(f"{field} must be a mapping")
+            else:
+                value = dict(value)
+            object.__setattr__(self, field, value)
 
     @property
     def phase7_generation(self) -> str | None:
