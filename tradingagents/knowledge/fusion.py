@@ -103,9 +103,8 @@ class RRFConfig:
     k: int = 60
 
     def __post_init__(self) -> None:
-        if int(self.k) <= 0:
+        if isinstance(self.k, bool) or not isinstance(self.k, int) or self.k <= 0:
             raise ValueError("RRF k must be positive")
-        object.__setattr__(self, "k", int(self.k))
 
 
 def _candidate(item: Any, cls: type[DenseCandidate] | type[LexicalCandidate], rank: int) -> Any:

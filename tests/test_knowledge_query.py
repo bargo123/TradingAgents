@@ -50,6 +50,12 @@ def test_fusion_candidates_reject_non_positive_integer_ranks(candidate_type, ran
         candidate_type("chunk-a", rank, 1.0)
 
 
+@pytest.mark.parametrize("value", [True, 0, -1, 1.5, "60"])
+def test_rrf_config_rejects_non_positive_integer_k(value: object) -> None:
+    with pytest.raises(ValueError, match="RRF k"):
+        RRFConfig(k=value)
+
+
 def make_embedding_spec(**overrides: object) -> EmbeddingSpec:
     values: dict[str, object] = {
         "model_id": "fixture/bge",
