@@ -486,6 +486,46 @@ class ExperienceCatalog:
                 (event_type, source_database_id, decision_id, experience_id, _json(detail), _now()),
             )
 
+    def reconcile_interrupted_imports(self) -> tuple[str, ...]:
+        """Mark import runs left in ``RUNNING`` state by a crashed process.
+
+        Import events are append-only and keep the run identifier inside their
+        bounded detail payload.  A run whose latest valid event is still
+        ``RUNNING`` is considered orphaned; malformed detail is ignored rather
+        than guessing an identifier.  The reconciliation event is itself
+        idempotent because it becomes the latest terminal event for that run.
+        """
+
+        latest: dict[str, str] = {}
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT event_type, detail_json FROM experience_import_events "
+                "WHERE event_type IN ('RUNNING', 'COMPLETED', 'INTERRUPTED') "
+                "ORDER BY event_id"
+            ).fetchall()
+            for event_type, detail_json in rows:
+                try:
+                    detail = json.loads(detail_json)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(detail, dict):
+                    continue
+                run_id = detail.get("run_id")
+                if isinstance(run_id, str) and run_id.strip():
+                    latest[run_id] = event_type
+            orphaned = tuple(sorted(run_id for run_id, event in latest.items() if event == "RUNNING"))
+            for run_id in orphaned:
+                db.execute(
+                    "INSERT INTO experience_import_events(event_type,detail_json,observed_at) "
+                    "VALUES (?,?,?)",
+                    (
+                        "INTERRUPTED",
+                        _json({"run_id": run_id, "reason": "RESTART_RECONCILIATION"}),
+                        _now(),
+                    ),
+                )
+        return orphaned
+
     def aliases_for_source(self, source_database_id: str) -> tuple[dict[str, str], ...]:
         with self._connect() as db:
             return tuple(

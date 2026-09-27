@@ -33,6 +33,16 @@ def test_first_import_is_idempotent(tmp_path):
     assert second.experience_count == first.experience_count
 
 
+def test_completed_import_does_not_leave_empty_staging_runs(tmp_path):
+    source = create_source_db(tmp_path / "source.sqlite3")
+    catalog = ExperienceCatalog(tmp_path / "artifact")
+
+    ExperienceImporter(catalog).import_sources((source,))
+
+    staging_root = catalog.artifact_root / ".staging"
+    assert not list(staging_root.iterdir())
+
+
 def test_typed_feature_extraction_failure_remains_diagnostic_history(tmp_path):
     source = create_source_db(tmp_path / "source.sqlite3")
     catalog = ExperienceCatalog(tmp_path / "artifact")
@@ -53,6 +63,24 @@ def test_failed_scan_does_not_remove_alias(tmp_path):
 
     record = catalog.active_records()[0]
     assert catalog.current_alias_count(record.experience_id) == 1
+
+
+def test_import_reconciles_orphaned_run_before_starting(tmp_path):
+    source = create_source_db(tmp_path / "source.sqlite3")
+    catalog = ExperienceCatalog(tmp_path / "artifact")
+    catalog.record_import_event("RUNNING", detail={"run_id": "crashed-run"})
+
+    ExperienceImporter(catalog).import_sources((source,))
+
+    with closing(sqlite3.connect(catalog.database_path)) as db, db:
+        event_types = [
+            row[0]
+            for row in db.execute(
+                "SELECT event_type FROM experience_import_events "
+                "WHERE detail_json LIKE '%crashed-run%' ORDER BY event_id"
+            )
+        ]
+    assert event_types == ["RUNNING", "INTERRUPTED"]
 
 
 def test_later_import_appends_newly_observed_evaluation_for_unchanged_decision(tmp_path):

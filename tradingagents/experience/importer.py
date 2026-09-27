@@ -120,6 +120,7 @@ class ExperienceImporter:
         staging.mkdir(parents=True, exist_ok=False)
         indexed = unchanged = experiences = aliases = quarantined = failed = eval_count = 0
         try:
+            self.catalog.reconcile_interrupted_imports()
             self.catalog.record_import_event("RUNNING", detail={"run_id": run_id})
             for path in sorted((Path(p) for p in source_paths), key=lambda p: str(p.resolve())):
                 committed_counts = (indexed, unchanged, aliases, quarantined, eval_count)
@@ -274,6 +275,11 @@ class ExperienceImporter:
             self.catalog.record_import_event("INTERRUPTED", detail={"run_id": run_id})
             raise
         finally:
+            # Import currently stores no files in this staging directory.  Do
+            # not accumulate empty run folders; if a future stage writes
+            # diagnostics, rmdir will fail closed and preserve them for review.
+            with suppress(OSError):
+                staging.rmdir()
             lock.close()
             with suppress(FileNotFoundError):
                 self.lock_path.unlink()

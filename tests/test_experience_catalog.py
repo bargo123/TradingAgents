@@ -96,6 +96,22 @@ def test_catalog_has_phase8_tables_and_diagnostics_are_bounded(catalog: Experien
         assert "SOURCE_DATABASE_UNAVAILABLE" in indexed
 
 
+def test_orphaned_import_run_is_marked_interrupted_once(catalog: ExperienceCatalog) -> None:
+    catalog.record_import_event("RUNNING", detail={"run_id": "stale-run"})
+    catalog.record_import_event("RUNNING", detail={"run_id": "finished-run"})
+    catalog.record_import_event("COMPLETED", detail={"run_id": "finished-run"})
+
+    assert catalog.reconcile_interrupted_imports() == ("stale-run",)
+    assert catalog.reconcile_interrupted_imports() == ()
+
+    with closing(sqlite3.connect(catalog.database_path)) as db, db:
+        events = db.execute(
+            "SELECT event_type, detail_json FROM experience_import_events "
+            "WHERE detail_json LIKE '%stale-run%' ORDER BY event_id"
+        ).fetchall()
+    assert [event[0] for event in events] == ["RUNNING", "INTERRUPTED"]
+
+
 def test_publish_generation_is_atomic_and_readable(catalog: ExperienceCatalog) -> None:
     generation = catalog.publish_generation(
         "gen-1", population_fingerprint="pop-1", metadata={"rows": 1}
