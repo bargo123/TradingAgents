@@ -25,6 +25,29 @@ def _get(row: Any, name: str, default: Any = None) -> Any:
     return getattr(row, name, default)
 
 
+def _strict_bool_mask(value: Any) -> np.ndarray | None:
+    """Return a one-dimensional bool mask without truthiness coercion."""
+
+    try:
+        array = np.asarray(value)
+        if array.ndim == 0:
+            return None
+        flattened = array.reshape(-1)
+        if not all(
+            isinstance(item, (bool, np.bool_))
+            or (
+                isinstance(item, (int, np.integer))
+                and not isinstance(item, (bool, np.bool_))
+                and item in (0, 1)
+            )
+            for item in flattened.tolist()
+        ):
+            return None
+        return flattened.astype(bool, copy=False)
+    except (TypeError, ValueError):
+        return None
+
+
 class ExactSimilarityIndex:
     """In-memory read-only index; callers provide already-loaded projections."""
 
@@ -40,8 +63,8 @@ class ExactSimilarityIndex:
     def search(self, query_vector, query_mask, candidate_ids, top_k, profile):
         names = tuple(profile.feature_order)
         q = np.asarray(query_vector, dtype=np.float32).reshape(-1)
-        qm = np.asarray(query_mask, dtype=bool).reshape(-1)
-        if len(q) != len(names) or len(qm) != len(names):
+        qm = _strict_bool_mask(query_mask)
+        if qm is None or len(q) != len(names) or len(qm) != len(names):
             return ()
         rows: list[SimilarityHit] = []
         for eid in candidate_ids:
@@ -56,8 +79,12 @@ class ExactSimilarityIndex:
             if isinstance(vector, Mapping):
                 vector = [vector.get(n, np.nan) for n in names]
             c = np.asarray(vector, dtype=np.float32).reshape(-1)
-            cm = np.asarray(mask if mask is not None else np.isfinite(c), dtype=bool).reshape(-1)
-            if len(c) != len(names) or len(cm) != len(names):
+            cm = (
+                _strict_bool_mask(mask)
+                if mask is not None
+                else np.isfinite(c)
+            )
+            if cm is None or len(c) != len(names) or len(cm) != len(names):
                 continue
             comparable = qm & cm & np.isfinite(q) & np.isfinite(c)
             count = int(comparable.sum())

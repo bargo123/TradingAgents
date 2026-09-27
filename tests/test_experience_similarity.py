@@ -60,3 +60,15 @@ def test_sort_fallback_handles_missing_timestamp_with_aware_timestamp():
     )
     hits = idx.search([0] * 8, [1] * 8, ("missing", "dated"), 5, profile())
     assert [h.experience_id for h in hits] == ["missing", "dated"]
+
+
+def test_non_boolean_query_mask_fails_closed():
+    idx = ExactSimilarityIndex({"x": {"values": [0] * 8, "mask": [True] * 8}})
+
+    assert idx.search([0] * 8, ["false"] * 8, ("x",), 5, profile()) == ()
+
+
+def test_non_boolean_candidate_mask_is_excluded_without_coercion():
+    idx = ExactSimilarityIndex({"x": {"values": [0] * 8, "mask": ["false"] * 8}})
+
+    assert idx.search([0] * 8, [True] * 8, ("x",), 5, profile()) == ()
