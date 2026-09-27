@@ -986,6 +986,12 @@ def test_event_sink_drops_non_finite_numeric_values(value):
     assert events == [{"event": "ANALYSIS_FINISHED"}]
 
 
+@pytest.mark.parametrize("payload", [[], False, 0, ""])
+def test_event_sink_rejects_malformed_payload_mapping(payload):
+    with pytest.raises(TypeError, match="payload"):
+        EventSink([]).emit("ANALYSIS_FINISHED", payload)
+
+
 def test_cooldown_selects_only_newest_current_candidate(tmp_path):
     harness = _Harness(tmp_path, symbols=("EURUSD", "USDJPY"))
     harness.start()

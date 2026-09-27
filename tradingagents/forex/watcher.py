@@ -845,6 +845,8 @@ class EventSink:
     def emit(self, event: str, payload: Mapping[str, Any] | None = None) -> None:
         if event not in self.ALLOWED:
             raise ValueError(f"event is not allow-listed: {event}")
+        if payload is not None and not isinstance(payload, Mapping):
+            raise TypeError("payload must be a mapping")
         safe = {"event": event}
         for key, value in dict(payload or {}).items():
             key_text = str(key).casefold()
