@@ -78,6 +78,15 @@ def _canonical_extra_json(value: Mapping[str, Any]) -> str:
     )
 
 
+def _required_version(value: Any, name: str, *, max_length: int = 256) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a non-empty bounded string")
+    normalized = value.strip()
+    if not normalized or len(normalized) > max_length:
+        raise ValueError(f"{name} must be a non-empty bounded string")
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class ForexShadowRuntimeConfig:
     """Validated, non-secret configuration used by the autonomous launcher."""
@@ -134,6 +143,16 @@ class ForexShadowRuntimeConfig:
         object.__setattr__(self, "backend_url", backend_url)
         object.__setattr__(self, "quick_model", quick_model)
         object.__setattr__(self, "deep_model", deep_model)
+        for name in (
+            "prompt_config_version",
+            "collector_contract_version",
+            "application_version",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _required_version(getattr(self, name), name),
+            )
         if (
             isinstance(self.temperature, bool)
             or not isinstance(self.temperature, (int, float))

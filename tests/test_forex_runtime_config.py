@@ -61,6 +61,16 @@ def test_runtime_config_rejects_invalid_provider_and_temperature_types(field, va
 
 
 @pytest.mark.parametrize(
+    "field",
+    ["prompt_config_version", "collector_contract_version", "application_version"],
+)
+@pytest.mark.parametrize("value", [None, False, 0, [], {}, "   ", "x" * 257])
+def test_runtime_config_rejects_invalid_provenance_versions(field, value):
+    with pytest.raises(ValueError, match=field):
+        ForexShadowRuntimeConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
     "backend_url",
     [
         "https://api.example.invalid/v1",
