@@ -440,6 +440,52 @@ def test_outcome_coordinator_does_not_retry_internal_type_error():
     assert evaluator.calls == 1
 
 
+@pytest.mark.parametrize("bad_errors", [False, 0, "evaluation failed", {"error": "failed"}])
+def test_outcome_coordinator_rejects_malformed_error_collections(bad_errors):
+    class Evaluator:
+        def evaluate_pending(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(errors=bad_errors, metrics={})
+
+    from tradingagents.forex.watcher import OutcomeCoordinator
+
+    with pytest.raises(TypeError, match="errors must be a sequence"):
+        OutcomeCoordinator(Evaluator()).evaluate_pending(NOW)
+
+
+def test_outcome_coordinator_preserves_valid_error_list_and_empty_errors():
+    class Evaluator:
+        def __init__(self, errors):
+            self.errors = errors
+
+        def evaluate_pending(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(errors=self.errors, metrics={})
+
+    from tradingagents.forex.watcher import OutcomeCoordinator
+
+    ok = OutcomeCoordinator(Evaluator([])).evaluate_pending(NOW)
+    assert ok.status == "OK"
+    assert ok.errors == ()
+
+    failed = OutcomeCoordinator(Evaluator(["MT5 unavailable"])).evaluate_pending(NOW)
+    assert failed.status == "ERROR"
+    assert failed.errors == ("MT5 unavailable",)
+
+
+@pytest.mark.parametrize("bad_metrics", [False, 0, [], "metrics"])
+def test_outcome_coordinator_rejects_malformed_metrics(bad_metrics):
+    class Evaluator:
+        def evaluate_pending(self, **kwargs):
+            del kwargs
+            return SimpleNamespace(errors=(), metrics=bad_metrics)
+
+    from tradingagents.forex.watcher import OutcomeCoordinator
+
+    with pytest.raises(TypeError, match="metrics must be a mapping"):
+        OutcomeCoordinator(Evaluator()).evaluate_pending(NOW)
+
+
 def test_circuit_breakers_open_only_after_class_threshold_and_reset_independently(
     tmp_path,
 ):

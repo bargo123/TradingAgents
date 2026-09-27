@@ -885,11 +885,18 @@ class OutcomeCoordinator:
             result = evaluate(now=now)
         else:
             result = evaluate(now=now, terminal_path=self.terminal_path)
-        errors = tuple(str(item) for item in getattr(result, "errors", ()) or ())
-        metrics = getattr(result, "metrics", {})
-        if not isinstance(metrics, Mapping):
-            metrics = {}
-        metrics = dict(metrics)
+        raw_errors = getattr(result, "errors", None)
+        if raw_errors is None:
+            raw_errors = ()
+        if isinstance(raw_errors, (str, bytes, bytearray)) or not isinstance(raw_errors, Sequence):
+            raise TypeError("errors must be a sequence")
+        errors = tuple(str(item) for item in raw_errors)
+        raw_metrics = getattr(result, "metrics", None)
+        if raw_metrics is None:
+            raw_metrics = {}
+        if not isinstance(raw_metrics, Mapping):
+            raise TypeError("metrics must be a mapping")
+        metrics = dict(raw_metrics)
         metrics["llm_calls"] = 0
         status = "ERROR" if errors else "OK"
         return EvaluationRunEvidence(status=status, errors=errors, metrics=metrics)
