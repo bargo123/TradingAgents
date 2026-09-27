@@ -257,6 +257,35 @@ def test_phase9_array_fields_decode_to_bounded_arrays():
     assert _decode_array('["telemetry-a", "node-a"]') == ["telemetry-a", "node-a"]
 
 
+def test_phase9_rejects_non_text_audit_identity_without_string_coercion(tmp_path):
+    path = tmp_path / "audit.sqlite3"
+    columns = tuple(_AUDIT_FIELDS)
+    values = dict.fromkeys(columns)
+    values["decision_id"] = 1
+    values["source_run_id"] = "run-1"
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "CREATE TABLE evidence_usage_audit ("
+            + ", ".join(f'"{column}" TEXT' for column in columns)
+            + ")"
+        )
+        db.execute(
+            'INSERT INTO evidence_usage_audit ("'
+            + '", "'.join(columns)
+            + '") VALUES ('
+            + ", ".join("?" for _ in columns)
+            + ")",
+            [values[column] for column in columns],
+        )
+        db.execute(
+            "UPDATE evidence_usage_audit SET decision_id=CAST(? AS BLOB)",
+            (1,),
+        )
+
+    with pytest.raises(SourceReadError, match="decision_id"):
+        ReadonlyPhase9AuditSource(path).read()
+
+
 @pytest.mark.parametrize("raw", [0, False, "", "   "])
 def test_phase9_array_fields_reject_falsey_or_empty_non_json_values(raw):
     with pytest.raises(SourceReadError, match="array metadata"):

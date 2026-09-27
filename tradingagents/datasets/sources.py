@@ -764,11 +764,16 @@ class ReadonlyPhase9AuditSource(_Readonly):
             for row in db.execute(
                 f'SELECT * FROM "{_AUDIT_TABLE}" ORDER BY decision_id,source_run_id'
             ):
+                raw_row = dict(zip(names, row, strict=True))
+                decision_id = _source_text(raw_row.get("decision_id"), "decision_id")
+                source_run_id = _source_text(raw_row.get("source_run_id"), "source_run_id")
                 item = {
                     k: v if k in raw_json_keys else _bounded(v, 500)
-                    for k, v in zip(names, row, strict=True)
+                    for k, v in raw_row.items()
                     if k in _AUDIT_FIELDS
                 }
+                item["decision_id"] = decision_id
+                item["source_run_id"] = source_run_id
                 for key in array_keys:
                     if key in item:
                         item[key] = _decode_array(item[key])
