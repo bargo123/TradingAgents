@@ -45,9 +45,10 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 
 def _text(value: Any) -> str:
-    if value is None:
-        return ""
-    return value if isinstance(value, str) else str(value)
+    # Context-integrity is a visibility gate, not a serializer.  Coercing
+    # mappings/numbers to strings would let malformed state masquerade as a
+    # substantive agent report.
+    return value if isinstance(value, str) else ""
 
 
 def _text_metric(value: Any, *, debate_labels: bool = False) -> dict[str, Any]:
