@@ -776,7 +776,7 @@ class ForexShadowRunner:
         if isinstance(callbacks, (str, bytes, bytearray, Mapping)):
             raise ValueError("callbacks must be a sequence")
         try:
-            callback_list = list(callbacks or ())
+            callback_list = [] if callbacks is None else list(callbacks)
         except (TypeError, ValueError) as exc:
             raise ValueError("callbacks must be a sequence") from exc
         # The watcher intentionally reuses its callback handler for each

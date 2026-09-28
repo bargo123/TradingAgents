@@ -780,6 +780,7 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
         {"analysts": ("market", "fundamentals")},
         {"analysts": {"market": True, "news": True}},
         {"callbacks": {"callback": True}},
+        {"callbacks": 0},
     ):
         try:
             runner.run(symbol="EURUSD", analysis_date="2026-09-08", **kwargs)
