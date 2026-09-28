@@ -54,6 +54,12 @@ def test_environment_versions_records_available_cuda_identity_without_importing_
     assert result["gpu_models"] == ["Fake GPU 0", "Fake GPU 1"]
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_publish_run_rejects_empty_artifact_root(value):
+    with pytest.raises(ArtifactError, match="root"):
+        publish_run(value, run_id="empty-root", config={}, dataset={}, metrics={})
+
+
 def test_publish_layout_hashes_and_create_only(tmp_path: Path) -> None:
     prepared = tmp_path / "train.sft.jsonl"
     prepared.write_text('{"example_id":"x"}\n', encoding="utf-8")

@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .fingerprints import directory_hash, environment_versions, file_sha256, request_fingerprint
 from .models import ADAPTER_PACKAGE_VERSION, RUN_MANIFEST_VERSION, canonical_json
 
@@ -45,7 +47,10 @@ def publish_run(root: str | Path, *, run_id: str | None = None,
                 adapter: str | Path | None = None, environment: Mapping[str, Any] | None = None,
                 request: Mapping[str, Any] | None = None) -> Path:
     """Stage then atomically publish one run; an existing run is never changed."""
-    root = Path(root)
+    try:
+        root = require_nonempty_path(root, "artifact root")
+    except (TypeError, ValueError) as exc:
+        raise ArtifactError("artifact root must be a non-empty path") from exc
     rid = run_id or new_run_id()
     if not isinstance(rid, str) or not rid or len(_safe_name(rid).parts) != 1:
         raise ArtifactError("run_id must be a relative single path component")
