@@ -1048,6 +1048,40 @@ def test_runner_marks_older_broker_quote_temporally_invalid(
     assert decision.decision_reference_bid == pytest.approx(1.1004)
 
 
+def test_fresh_reference_quote_rejects_oversized_numeric_values() -> None:
+    class Provider:
+        def get_spread(self, _symbol):
+            return SimpleNamespace(
+                timestamp=COMPLETION_TIMESTAMP,
+                bid=10**1000,
+                ask=1.1006,
+                price=0.0002,
+                points=20.0,
+            )
+
+    with pytest.raises(ValueError, match="non-numeric"):
+        runner_module._fresh_reference_quote(
+            Provider(), "EURUSDm", COMPLETION_TIMESTAMP
+        )
+
+
+def test_fresh_reference_quote_rejects_oversized_bid_when_spread_is_derived() -> None:
+    class Provider:
+        def get_spread(self, _symbol):
+            return SimpleNamespace(
+                timestamp=COMPLETION_TIMESTAMP,
+                bid=10**1000,
+                ask=1.1006,
+                price=None,
+                points=20.0,
+            )
+
+    with pytest.raises(ValueError, match="non-numeric"):
+        runner_module._fresh_reference_quote(
+            Provider(), "EURUSDm", COMPLETION_TIMESTAMP
+        )
+
+
 class _ReferencePollClock:
     def __init__(self) -> None:
         self.now = 0.0

@@ -7,6 +7,7 @@ changing LangGraph state or retaining prompt/reasoning content.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -119,9 +120,17 @@ def stage_timings_from_trace(
         duration = entry.get("duration_seconds")
         if not node or not isinstance(duration, (int, float)) or isinstance(duration, bool):
             continue
+        try:
+            normalized_duration = float(duration)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not math.isfinite(normalized_duration):
+            continue
         current = timings.setdefault(node, {"calls": 0, "elapsed_seconds": 0.0})
         current["calls"] = int(current["calls"]) + 1
-        current["elapsed_seconds"] = float(current["elapsed_seconds"]) + max(0.0, float(duration))
+        current["elapsed_seconds"] = float(current["elapsed_seconds"]) + max(
+            0.0, normalized_duration
+        )
     return timings
 
 

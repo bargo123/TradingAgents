@@ -450,6 +450,22 @@ def test_successful_ingestion_writes_and_repairs_active_pointer(tmp_path):
     assert json.loads(pointer.read_text(encoding="utf-8")) == active.to_dict()
 
 
+def test_oversized_cached_vector_is_recomputed_instead_of_leaking_overflow(tmp_path):
+    from tradingagents.knowledge.ingestion import IngestionMode
+
+    harness = ingestion_harness(tmp_path)
+    harness.ingestor.run(IngestionMode.INCREMENTAL)
+    path = harness.ingestor._vector_cache_path(harness.shared_document_id)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["vectors"][0][0] = 10**1000
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    chunks = harness.catalog.chunks_for_document(harness.shared_document_id)
+    vectors = harness.ingestor._vectors_for(harness.shared_document_id, chunks)
+    assert len(vectors) == len(chunks)
+    assert all(len(vector) == harness.embedder.spec.dimensions for vector in vectors)
+
+
 def test_recovery_uses_crash_safe_lock_for_stale_runs_and_excludes_live_writer(tmp_path):
     from tradingagents.knowledge.ingestion import IngestionLockedError, KnowledgeIngestor
 

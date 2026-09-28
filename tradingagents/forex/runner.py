@@ -98,7 +98,10 @@ def _fresh_reference_quote(
     ask = getattr(tick, "ask", getattr(spread, "ask", None))
     spread_price = getattr(spread, "price", None)
     if spread_price is None and bid is not None and ask is not None:
-        spread_price = float(ask) - float(bid)
+        try:
+            spread_price = float(ask) - float(bid)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("fresh MT5 quote contains non-numeric values") from exc
     points = getattr(spread, "points", None)
     values = (bid, ask, spread_price, points)
     if any(value is None for value in values):
@@ -110,7 +113,7 @@ def _fresh_reference_quote(
         ask = float(ask)
         spread_price = float(spread_price)
         points = float(points)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("fresh MT5 quote contains non-numeric values") from exc
     if not all(math.isfinite(value) for value in (bid, ask, spread_price, points)):
         raise ValueError("fresh MT5 quote contains non-finite values")

@@ -78,6 +78,12 @@ def test_instrumented_node_records_metadata_only_stage_timing():
     }
 
 
+def test_stage_timing_ignores_oversized_duration_metadata():
+    assert stage_timings_from_trace(
+        [{"phase": "after", "node": "Market Analyst", "duration_seconds": 10**1000}]
+    ) == {}
+
+
 def test_stats_collects_usage_per_agent_without_private_content():
     handler = StatsCallbackHandler()
     with agent_context("Trader", SimpleNamespace(model_name="quick-model")):

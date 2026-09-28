@@ -92,10 +92,14 @@ def _candidate(item: Any, cls: type[DenseCandidate] | type[LexicalCandidate], ra
                     raise ProvenanceError(f"candidate {field} does not match its payload")
         score_key = "semantic_score" if cls is DenseCandidate else "lexical_score"
         score = item.get(score_key, item.get("score", 0.0))
+        try:
+            numeric_score = float(score)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("candidate score must be finite") from None
         return cls(
             chunk_id=str(item.get("chunk_id") or getattr(chunk, "chunk_id", "")),
             rank=int(item.get("rank", rank)),
-            score=float(score),
+            score=numeric_score,
             chunk=chunk,
             metadata=item,
         )
@@ -239,7 +243,7 @@ class KnowledgeQueryService:
         vector = result if isinstance(first, Real) else first
         try:
             values = tuple(float(value) for value in vector)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             raise EmbeddingSpecMismatch("query embedder returned a malformed vector") from None
         if len(values) != spec.dimensions or not all(math.isfinite(value) for value in values):
             raise EmbeddingSpecMismatch("query embedding vector is non-finite or has the wrong dimension")
@@ -343,7 +347,7 @@ class KnowledgeQueryService:
             values = row.get("vector") if isinstance(row, Mapping) else None
             try:
                 values = tuple(float(value) for value in values)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 raise IncompatibleIndexGeneration("vector row contains a malformed embedding") from None
             if len(values) != expected_dimensions or not all(math.isfinite(value) for value in values):
                 raise IncompatibleIndexGeneration("vector row has a non-finite or wrong-dimension embedding")

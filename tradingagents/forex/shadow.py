@@ -436,10 +436,15 @@ class ShadowTradeDecision:
                 raise ValueError("decision_completed_timestamp cannot precede analysis snapshot")
             if self.analysis_latency_seconds is None:
                 object.__setattr__(self, "analysis_latency_seconds", computed_latency)
-            elif not math.isclose(
-                float(self.analysis_latency_seconds), computed_latency, rel_tol=0.0, abs_tol=1e-6
-            ):
-                raise ValueError("analysis_latency_seconds does not match decision timestamps")
+            else:
+                try:
+                    supplied_latency = float(self.analysis_latency_seconds)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("analysis_latency_seconds must be finite when provided") from exc
+                if not math.isclose(
+                    supplied_latency, computed_latency, rel_tol=0.0, abs_tol=1e-6
+                ):
+                    raise ValueError("analysis_latency_seconds does not match decision timestamps")
         elif self.analysis_latency_seconds is not None:
             raise ValueError("analysis_latency_seconds requires decision_completed_timestamp")
 
@@ -488,13 +493,18 @@ class ShadowTradeDecision:
             ).total_seconds()
             if self.decision_reference_delay_seconds is None:
                 object.__setattr__(self, "decision_reference_delay_seconds", computed_delay)
-            elif not math.isclose(
-                float(self.decision_reference_delay_seconds),
-                computed_delay,
-                rel_tol=0.0,
-                abs_tol=1e-6,
-            ):
-                raise ValueError("decision_reference_delay_seconds does not match reference timestamps")
+            else:
+                try:
+                    supplied_delay = float(self.decision_reference_delay_seconds)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("decision_reference_delay_seconds must be finite when provided") from exc
+                if not math.isclose(
+                    supplied_delay,
+                    computed_delay,
+                    rel_tol=0.0,
+                    abs_tol=1e-6,
+                ):
+                    raise ValueError("decision_reference_delay_seconds does not match reference timestamps")
             if self.decision_reference_status == "AVAILABLE" and computed_delay < 0:
                 raise ValueError("AVAILABLE decision references cannot precede completion")
             if self.decision_reference_status == "INVALID_TEMPORAL" and computed_delay >= 0:

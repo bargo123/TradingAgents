@@ -192,7 +192,7 @@ class EmbeddingProvider:
     def _validate_vector(self, vector: Sequence[float]) -> tuple[float, ...]:
         try:
             normalized = tuple(float(value) for value in vector)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise EmbeddingContractError("provider returned a non-numeric vector") from exc
         if len(normalized) != self.spec.dimensions:
             raise EmbeddingContractError(

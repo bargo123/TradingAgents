@@ -431,7 +431,7 @@ class KnowledgeIngestor:
             if len(vectors) != len(chunks) or any(len(vector) != self.embedder.spec.dimensions for vector in vectors):
                 raise ValueError("cached vectors are invalid")
             return vectors
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        except (OSError, KeyError, TypeError, ValueError, OverflowError, json.JSONDecodeError):
             vectors = tuple(tuple(float(value) for value in vector) for vector in self.embedder.embed(
                 tuple(chunk.text for chunk in chunks), purpose="corpus"
             ))

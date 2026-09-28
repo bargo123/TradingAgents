@@ -83,7 +83,7 @@ def _finite(value: Any) -> float | None:
     try:
         number = float(value)
         return number if math.isfinite(number) else None
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 

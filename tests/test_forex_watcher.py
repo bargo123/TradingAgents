@@ -374,6 +374,19 @@ def test_market_probe_result_rejects_numeric_text_without_coercion():
         )
 
 
+def test_market_probe_result_rejects_oversized_numeric_quote():
+    from tradingagents.forex.watcher import MarketProbeResult
+
+    with pytest.raises(ValueError, match="finite"):
+        MarketProbeResult(
+            requested_symbol="EURUSD",
+            resolved_symbol="EURUSD",
+            timestamp=NOW,
+            bid=10**1000,
+            ask=1.2002,
+        )
+
+
 class FakeHeartbeatStore:
     def __init__(self):
         self.renewals = 0
@@ -401,6 +414,16 @@ def test_heartbeat_only_renews_and_marks_soft_timeout():
     assert store.renewals == 2
     assert store.runtime_alerts == 1
     assert heartbeat.runner_future_still_owned is True
+
+
+def test_heartbeat_rejects_oversized_timeout():
+    with pytest.raises(ValueError, match="timeout"):
+        LeaseHeartbeat(
+            store=FakeHeartbeatStore(),
+            owner_token="owner",
+            run_id="run",
+            timeout_seconds=10**1000,
+        )
 
 
 def test_heartbeat_preserves_falsey_heartbeat_callable():

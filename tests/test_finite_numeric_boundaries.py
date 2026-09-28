@@ -6,6 +6,7 @@ from tradingagents.dataflows.mt5.clock import BrokerClockConfig
 from tradingagents.dataflows.mt5.models import _finite_number
 from tradingagents.datasets.canonical import _snapshot
 from tradingagents.distillation.splits import GroupedSplitter
+from tradingagents.experience.features import _finite as experience_feature_finite
 from tradingagents.experience.models import _finite_float as experience_finite_float
 from tradingagents.forex.decision_path_audit import _finite as decision_finite
 from tradingagents.forex.evidence_audit import _non_negative_float
@@ -44,6 +45,10 @@ HUGE_INTEGER = 10**1000
 def test_numeric_configuration_rejects_oversized_integers(factory) -> None:
     with pytest.raises(ValueError):
         factory()
+
+
+def test_feature_extractor_quarantines_oversized_numeric_values() -> None:
+    assert experience_feature_finite(HUGE_INTEGER) is None
 
 
 def test_supervisor_rejects_oversized_restart_backoff() -> None:

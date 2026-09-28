@@ -146,6 +146,14 @@ def test_embedding_provider_rejects_wrong_dimension_and_non_finite_values():
         non_finite.embed(("OFI",))
 
 
+def test_embedding_provider_quarantines_oversized_numeric_vector_values():
+    from tradingagents.knowledge.embeddings import EmbeddingContractError
+
+    provider = FakeEmbeddingProvider()
+    with pytest.raises(EmbeddingContractError, match="non-numeric"):
+        provider._validate_vector((10**1000, 2.0, 3.0))
+
+
 @pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
 def test_embedding_artifact_store_rejects_empty_root(value):
     from tradingagents.knowledge.embeddings import EmbeddingArtifactStore

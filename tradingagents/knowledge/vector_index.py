@@ -159,7 +159,7 @@ class VectorIndexWriter:
             seen.add(chunk.chunk_id)
             try:
                 normalized = tuple(float(value) for value in vector)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise VectorIndexError("vector values must be numeric") from exc
             if len(normalized) != embedding_spec.dimensions:
                 raise VectorIndexError("vector dimensions do not match complete embedding specification")

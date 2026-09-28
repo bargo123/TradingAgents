@@ -595,8 +595,11 @@ class MarketProbeResult:
             or not isinstance(self.ask, Real)
         ):
             raise ValueError("probe quote must contain numeric bid and ask")
-        bid = float(self.bid)
-        ask = float(self.ask)
+        try:
+            bid = float(self.bid)
+            ask = float(self.ask)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("probe quote must be finite, positive, and ask >= bid") from exc
         if not math.isfinite(bid) or not math.isfinite(ask) or bid <= 0 or ask < bid:
             raise ValueError("probe quote must be finite, positive, and ask >= bid")
         object.__setattr__(self, "bid", bid)
@@ -758,7 +761,10 @@ class LeaseHeartbeat:
         self.store = store
         self.owner_token = owner_token
         self.run_id = run_id
-        self.timeout_seconds = float(timeout_seconds)
+        try:
+            self.timeout_seconds = float(timeout_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("timeout_seconds must be finite") from exc
         self.sequence = sequence
         self._runtime_alerted = False
         self._tracked_run_id = run_id

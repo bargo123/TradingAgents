@@ -231,6 +231,12 @@ class FakeEmbedder:
         return ((0.1, 0.2, 0.3),)
 
 
+class OversizedEmbedder(FakeEmbedder):
+    def embed(self, texts, *, purpose="query"):
+        self.embed_calls += 1
+        return ((10**1000, 0.2, 0.3),)
+
+
 def query_harness(
     *, dense=(), lexical=(), vector_generation="gen-1", lexical_generation="gen-1",
     index_embedding_spec=None, query_embedding_spec=None, dense_reader=None,
@@ -282,6 +288,40 @@ def test_anonymous_hit_and_generation_mismatch_fail_closed():
         validate_hit_provenance(make_hit(source_relative_path=None))
     with pytest.raises(IncompatibleIndexGeneration):
         query_harness(vector_generation="gen-a", lexical_generation="gen-b").search(KnowledgeQuery(text="OFI"))
+
+
+def test_query_embedder_rejects_oversized_numeric_vector():
+    service = query_harness()
+    service.embedder = OversizedEmbedder(service.embedder.spec)
+
+    with pytest.raises(EmbeddingSpecMismatch, match="malformed vector"):
+        service.search(KnowledgeQuery(text="OFI"))
+
+
+def test_rows_only_vector_reader_rejects_oversized_numeric_vector():
+    reader = RowsOnlyMalformedVectorReader(
+        ({"chunk_id": "chunk-a", "vector": (10**1000, 0.2, 0.3), "chunk": make_chunk()},)
+    )
+    service = query_harness(dense_reader=reader)
+
+    with pytest.raises(IncompatibleIndexGeneration, match="malformed embedding"):
+        service.search(KnowledgeQuery(text="OFI"))
+
+
+def test_query_rejects_oversized_candidate_score():
+    service = query_harness(
+        dense=(
+            {
+                "chunk_id": "chunk-a",
+                "semantic_score": 10**1000,
+                "rank": 1,
+                "chunk": make_chunk(),
+            },
+        )
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        service.search(KnowledgeQuery(text="OFI"))
 
 
 def test_missing_projection_metadata_fails_closed_before_retrieval():

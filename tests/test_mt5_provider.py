@@ -703,6 +703,15 @@ def test_market_snapshot_contains_required_series_and_symbol_positions(fake_api)
     assert snapshot.positions[0].ticket == 101
 
 
+def test_market_snapshot_rejects_oversized_point(fake_api):
+    fake_api.symbol_records = [fake_api.symbol("USDJPY")]
+    fake_api.symbol_records[0].point = 10**1000
+    provider = initialized_provider(fake_api)
+
+    with pytest.raises(Mt5DataError, match="Invalid spread data"):
+        provider.get_market_snapshot("USDJPY", count=1)
+
+
 @pytest.mark.unit
 def test_provider_exposes_no_mutation_or_execution_api(fake_api):
     provider = MT5Provider(api=fake_api)

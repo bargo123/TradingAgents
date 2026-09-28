@@ -409,6 +409,12 @@ def test_build_rejects_mixed_chunk_embedding_specs_and_non_finite_or_wrong_vecto
         manager.build_generation(tuple(mixed), make_vectors(), "gen-mixed")
     with pytest.raises(VectorIndexError):
         manager.build_generation(make_chunks(), ((1.0, 2.0), (0.0, 1.0, float("nan"))), "gen-invalid")
+    with pytest.raises(VectorIndexError, match="numeric"):
+        manager.build_generation(
+            make_chunks(),
+            ((1.0, 2.0, 3.0), (10**1000, 1.0, 0.0)),
+            "gen-oversized",
+        )
 
 
 def test_generation_validation_rejects_a_persisted_vector_row_count_or_provenance_mismatch(tmp_path):

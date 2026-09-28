@@ -380,6 +380,28 @@ def test_shadow_decision_rejects_inconsistent_decision_reference_quote_math() ->
         )
 
 
+@pytest.mark.parametrize("field", ("analysis_latency_seconds", "decision_reference_delay_seconds"))
+def test_shadow_decision_rejects_oversized_derived_metrics(field: str) -> None:
+    completed = datetime(2026, 9, 8, 0, 0, 1, tzinfo=timezone.utc)
+    overrides = {"decision_completed_timestamp": completed}
+    if field == "analysis_latency_seconds":
+        overrides[field] = 10**1000
+    else:
+        overrides.update(
+            {
+                "decision_reference_timestamp": completed,
+                "decision_reference_bid": 1.1004,
+                "decision_reference_ask": 1.1006,
+                "decision_reference_spread": 0.0002,
+                "decision_reference_spread_points": 20.0,
+                "decision_reference_status": "AVAILABLE",
+                field: 10**1000,
+            }
+        )
+    with pytest.raises(ValueError, match="finite"):
+        make_decision(**overrides)
+
+
 def test_shadow_decision_requires_utc_timestamps() -> None:
     with pytest.raises(ValueError):
         make_decision(created_at=datetime(2026, 9, 8, 2, 0, tzinfo=timezone(timedelta(hours=2))))

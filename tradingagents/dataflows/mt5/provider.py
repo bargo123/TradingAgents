@@ -616,7 +616,7 @@ class MT5Provider:
             point = float(_field(info, "point"))
             spread = tick.ask - tick.bid
             spread_points = spread / point
-        except (TypeError, ValueError, ZeroDivisionError) as exc:
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError) as exc:
             raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
         candles = {
             timeframe: self._get_bars_resolved(resolved, timeframe, count)
