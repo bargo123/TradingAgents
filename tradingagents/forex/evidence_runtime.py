@@ -41,6 +41,7 @@ from tradingagents.knowledge.models import EmbeddingSpec, IndexGeneration, Knowl
 from tradingagents.knowledge.query import KnowledgeQueryService
 from tradingagents.knowledge.reranking import Reranker
 from tradingagents.knowledge.vector_index import VectorIndexReader
+from tradingagents.path_utils import require_nonempty_path
 
 from .evidence_context import (
     EvidenceBundleStatus,
@@ -75,8 +76,22 @@ class ReadonlyEvidenceRuntimeConfiguration:
     artifact_roots: tuple[tuple[str, str], ...] = ()
     evidence_timeout_seconds: float = 10.0
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "artifact_roots", _normalize_artifact_roots(self.artifact_roots))
+        timeout = self.evidence_timeout_seconds
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout))
+            or timeout < 0
+        ):
+            raise ValueError("evidence_timeout_seconds must be a finite non-negative number")
+        object.__setattr__(self, "evidence_timeout_seconds", float(timeout))
+
     @classmethod
     def from_envelope(cls, envelope: Mapping[str, Any]) -> ReadonlyEvidenceRuntimeConfiguration:
+        if not isinstance(envelope, Mapping):
+            raise TypeError("envelope must be a mapping")
         roots = envelope.get("artifact_roots")
         if roots is None:
             roots = {}
@@ -88,13 +103,39 @@ class ReadonlyEvidenceRuntimeConfiguration:
         timeout = float(raw_timeout)
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("evidence_timeout_seconds must be a finite non-negative number")
-        return cls(
-            tuple(sorted((str(key), str(value)) for key, value in roots.items())),
-            timeout,
-        )
+        return cls(tuple(roots.items()), timeout)
 
     def roots(self) -> dict[str, str]:
         return dict(self.artifact_roots)
+
+
+def _normalize_artifact_roots(value: Any) -> tuple[tuple[str, str], ...]:
+    if isinstance(value, Mapping):
+        items = tuple(value.items())
+    elif isinstance(value, (str, bytes, bytearray)):
+        raise TypeError("artifact_roots must be a mapping or sequence of pairs")
+    else:
+        try:
+            items = tuple(value)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("artifact_roots must be a mapping or sequence of pairs") from exc
+    normalized: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, (tuple, list)) or len(item) != 2:
+            raise TypeError("artifact_roots entries must be key/path pairs")
+        key, raw_path = item
+        if not isinstance(key, str) or not key.strip() or key != key.strip():
+            raise TypeError("artifact_roots keys must be non-empty trimmed strings")
+        if key in seen:
+            raise ValueError("artifact_roots keys must be unique")
+        seen.add(key)
+        try:
+            path = require_nonempty_path(raw_path, f"artifact_roots.{key}")
+        except (TypeError, ValueError) as exc:
+            raise type(exc)(f"artifact_roots.{key} must be a non-empty path") from exc
+        normalized.append((key, str(path)))
+    return tuple(sorted(normalized))
 
 
 def approved_readonly_factory(factory: Callable[..., Any]) -> Callable[..., Any]:
@@ -777,9 +818,7 @@ class EvidenceIntegrationService:
         self.process_factory = process_factory
         if artifact_roots is not None and not isinstance(artifact_roots, Mapping):
             raise TypeError("artifact_roots must be a mapping")
-        self.artifact_roots: dict[str, str] = {
-            str(key): str(value) for key, value in (artifact_roots or {}).items()
-        }
+        self.artifact_roots: dict[str, str] = dict(_normalize_artifact_roots(artifact_roots or {}))
         self.active_evidence_workers = 0
         self.retrieval_count = 0
         self._query_issued = False

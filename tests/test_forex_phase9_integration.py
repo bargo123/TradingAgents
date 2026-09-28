@@ -581,6 +581,22 @@ def test_runtime_envelope_rejects_invalid_artifact_roots(value):
         ReadonlyEvidenceRuntimeConfiguration.from_envelope({"artifact_roots": value})
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"knowledge": ""},
+        {"knowledge": "   "},
+        {"knowledge": Path(".")},
+        {"knowledge": Path("   ")},
+        {1: "knowledge"},
+        {"": "knowledge"},
+    ],
+)
+def test_runtime_envelope_rejects_malformed_artifact_root_entries(value):
+    with pytest.raises((TypeError, ValueError), match="artifact_roots"):
+        ReadonlyEvidenceRuntimeConfiguration.from_envelope({"artifact_roots": value})
+
+
 def test_child_guard_rejects_approved_factory_that_owns_writer(tmp_path: Path):
     roots = _artifact_roots(tmp_path)
     service = EvidenceIntegrationService(
@@ -653,6 +669,28 @@ def test_child_guard_treats_approved_embedding_provider_as_read_only_leaf(tmp_pa
 @pytest.mark.parametrize("value", [[], False, 0, ""])
 def test_evidence_service_rejects_invalid_artifact_roots(value):
     with pytest.raises(TypeError, match="artifact_roots"):
+        EvidenceIntegrationService(
+            policy=None,
+            orchestrator_factory=None,
+            generation_provider=None,
+            provider_endpoint=None,
+            artifact_roots=value,
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"knowledge": ""},
+        {"knowledge": "   "},
+        {"knowledge": Path(".")},
+        {"knowledge": Path("   ")},
+        {1: "knowledge"},
+        {"": "knowledge"},
+    ],
+)
+def test_evidence_service_rejects_malformed_artifact_root_entries(value):
+    with pytest.raises((TypeError, ValueError), match="artifact_roots"):
         EvidenceIntegrationService(
             policy=None,
             orchestrator_factory=None,
