@@ -403,6 +403,35 @@ def test_heartbeat_only_renews_and_marks_soft_timeout():
     assert heartbeat.runner_future_still_owned is True
 
 
+def test_heartbeat_preserves_falsey_heartbeat_callable():
+    class FalseyCallable:
+        def __init__(self):
+            self.calls = 0
+
+        def __bool__(self):
+            return False
+
+        def __call__(self, owner_token, now, run_id=None):
+            self.calls += 1
+
+    class Store:
+        def __init__(self):
+            self.heartbeat = FalseyCallable()
+
+    store = Store()
+    heartbeat = LeaseHeartbeat(
+        store=store,
+        owner_token="owner",
+        run_id="run",
+        timeout_seconds=7200,
+        sequence=None,
+    )
+
+    heartbeat.tick(NOW, 0.0)
+
+    assert store.heartbeat.calls == 1
+
+
 def test_heartbeat_uses_elapsed_monotonic_time_not_absolute_clock_value():
     store = FakeHeartbeatStore()
     heartbeat = LeaseHeartbeat(

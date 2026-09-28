@@ -766,7 +766,9 @@ class LeaseHeartbeat:
         self.runner_future_still_owned = True
 
     def tick(self, now: datetime, monotonic_now: float) -> None:
-        renew = getattr(self.store, "heartbeat", None) or getattr(self.store, "renew", None)
+        renew = getattr(self.store, "heartbeat", None)
+        if renew is None:
+            renew = getattr(self.store, "renew", None)
         if not callable(renew):
             raise RuntimeError("watcher store does not expose a lease heartbeat")
         if _accepts_keyword(renew, "run_id") is False:
