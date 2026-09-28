@@ -1,9 +1,9 @@
 """Append-only markdown decision log for TradingAgents."""
 
 import re
-from pathlib import Path
 
 from tradingagents.agents.utils.rating import parse_rating
+from tradingagents.path_utils import require_nonempty_path
 
 
 class TradingMemoryLog:
@@ -20,7 +20,10 @@ class TradingMemoryLog:
         self._log_path = None
         path = cfg.get("memory_log_path")
         if path:
-            self._log_path = Path(path).expanduser()
+            try:
+                self._log_path = require_nonempty_path(path, "memory log path").expanduser()
+            except (TypeError, ValueError) as exc:
+                raise ValueError("memory log path must be a non-empty path") from exc
             self._log_path.parent.mkdir(parents=True, exist_ok=True)
         # Optional cap on resolved entries. None disables rotation.
         self._max_entries = cfg.get("memory_log_max_entries")

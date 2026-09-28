@@ -1,5 +1,6 @@
 """Tests for TradingMemoryLog — storage, deferred reflection, PM injection, legacy removal."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -34,6 +35,12 @@ DECISION_NO_RATING = (
 def make_log(tmp_path, filename="trading_memory.md"):
     config = {"memory_log_path": str(tmp_path / filename)}
     return TradingMemoryLog(config)
+
+
+@pytest.mark.parametrize("value", ["   ", Path("."), Path("   ")])
+def test_memory_log_rejects_nonempty_but_invalid_storage_paths(value):
+    with pytest.raises(ValueError, match="memory log path"):
+        TradingMemoryLog({"memory_log_path": value})
 
 
 def _seed_completed(tmp_path, ticker, date, decision_text, reflection_text, filename="trading_memory.md"):
