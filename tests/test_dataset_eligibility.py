@@ -332,6 +332,19 @@ def test_identical_evaluation_key_is_duplicate(tmp_path):
     assert joined[0].fields["duplicate"]
 
 
+@pytest.mark.parametrize("field", ["decisions", "evaluations", "records", "audits"])
+@pytest.mark.parametrize("value", [False, 0, "malformed", {"row": "malformed"}])
+def test_join_rejects_malformed_adapter_collections(field, value):
+    phase56 = SourceReadResult()
+    phase8 = SourceReadResult()
+    phase9 = SourceReadResult()
+    target = {"decisions": phase56, "evaluations": phase56, "records": phase8, "audits": phase9}[field]
+    object.__setattr__(target, field, value)
+
+    with pytest.raises((TypeError, ValueError)):
+        join_observations(phase56, phase8, phase9)
+
+
 def test_phase8_snapshot_provenance_is_carried_to_source_evaluation(tmp_path):
     decision = _decision(source_decision_fingerprint="dfp")
     evaluation = EvaluationObservation(

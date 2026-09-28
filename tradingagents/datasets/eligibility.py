@@ -63,6 +63,18 @@ def _get(obj: Any, name: str, default: Any = None) -> Any:
     return obj.get(name, default) if isinstance(obj, Mapping) else getattr(obj, name, default)
 
 
+def _collection(value: Any, name: str) -> tuple[Any, ...]:
+    """Materialize adapter collections without truthiness coercion."""
+    if value is None:
+        return ()
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise TypeError(f"{name} must be a sequence")
+    try:
+        return tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{name} must be a sequence") from exc
+
+
 def _dt(value: Any) -> datetime | None:
     if isinstance(value, str):
         try:
@@ -328,10 +340,10 @@ def _enrich_evaluation(evaluation: Any, record: Any) -> Any:
 
 def join_observations(phase56: Any, experience: Any, audit: Any) -> tuple[JoinedObservation, ...]:
     """Join adapter results without mutation; ambiguous identities remain marked."""
-    decisions = tuple(_get(phase56, "decisions", ()) or ())
-    evaluations = tuple(_get(phase56, "evaluations", ()) or ())
-    records = tuple(_get(experience, "records", ()) or ())
-    audits = tuple(_get(audit, "audits", ()) or ())
+    decisions = _collection(_get(phase56, "decisions", ()), "decisions")
+    evaluations = _collection(_get(phase56, "evaluations", ()), "evaluations")
+    records = _collection(_get(experience, "records", ()), "records")
+    audits = _collection(_get(audit, "audits", ()), "audits")
     unavailable = not _availability(_get(audit, "available", True))
     recs = defaultdict(list)
     for row in records:
