@@ -84,6 +84,12 @@ def calculator():
     return OutcomeStatsCalculator(rows)
 
 
+@pytest.mark.parametrize("records", ["abc", b"abc", bytearray(b"abc"), {}, 0, False])
+def test_outcome_calculator_rejects_malformed_record_collections(records):
+    with pytest.raises(ValueError, match="records"):
+        OutcomeStatsCalculator(records)
+
+
 def test_training_null_does_not_exclude_complete_descriptive_row():
     result = calculator().calculate(OutcomeStatsRequest(("exp1",), "ANALYSIS_SNAPSHOT", 300))
     assert result.eligible_count == 1

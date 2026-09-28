@@ -77,3 +77,9 @@ def test_non_boolean_candidate_mask_is_excluded_without_coercion():
 def test_similarity_index_rejects_non_mapping_metadata():
     with pytest.raises(ValueError, match="metadata"):
         ExactSimilarityIndex({"x": {"values": [0] * 8, "mask": [True] * 8}}, metadata=[])
+
+
+@pytest.mark.parametrize("vectors", ["abc", b"abc", bytearray(b"abc"), 0, False])
+def test_similarity_index_rejects_malformed_vector_collections(vectors):
+    with pytest.raises(ValueError, match="vectors"):
+        ExactSimilarityIndex(vectors)

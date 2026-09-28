@@ -89,6 +89,12 @@ def test_query_service_rejects_non_mapping_profiles():
         ExperienceQueryService([row("a")], profile=profile(), profiles=[])
 
 
+@pytest.mark.parametrize("records", ["abc", b"abc", bytearray(b"abc"), {}, 0, False])
+def test_query_service_rejects_malformed_record_collections(records):
+    with pytest.raises(ValueError, match="records"):
+        ExperienceQueryService(records, profile=profile())
+
+
 def test_query_service_preserves_explicit_empty_feature_index():
     service = ExperienceQueryService([row("a")], profile=profile(), feature_vectors={})
 

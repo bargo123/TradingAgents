@@ -54,6 +54,17 @@ def _trust_tier(row: Any) -> TrustTier | None:
         return None
 
 
+def _record_collection(value: Any) -> tuple[Any, ...]:
+    """Materialize a record collection without consuming scalar inputs."""
+
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise ValueError("records must be a sequence")
+    try:
+        return tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("records must be a sequence") from exc
+
+
 class ExperienceQueryService:
     def __init__(
         self,
@@ -70,7 +81,7 @@ class ExperienceQueryService:
             records = tuple(records.active_records()) + tuple(records.historical_records())
         else:
             self.catalog = None
-        self.records = tuple(records)
+        self.records = _record_collection(records)
         self.profile = profile
         if profiles is None:
             self.profiles = {}

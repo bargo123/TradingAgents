@@ -57,7 +57,15 @@ class ExactSimilarityIndex:
         if isinstance(vectors, Mapping):
             self._vectors = dict(vectors)
         else:
-            self._vectors = {_get(row, "experience_id", _get(row, "id")): row for row in vectors}
+            if isinstance(vectors, (str, bytes, bytearray)):
+                raise ValueError("vectors must be a sequence or mapping")
+            try:
+                vector_rows = tuple(vectors)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("vectors must be a sequence or mapping") from exc
+            self._vectors = {
+                _get(row, "experience_id", _get(row, "id")): row for row in vector_rows
+            }
         if metadata is None:
             self._metadata = {}
         elif not isinstance(metadata, Mapping):

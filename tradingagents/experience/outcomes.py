@@ -43,6 +43,17 @@ def _finite(value: Any) -> bool:
         return False
 
 
+def _record_collection(value: Any) -> tuple[Any, ...]:
+    """Materialize records without treating scalar/mapping inputs as rows."""
+
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise ValueError("records must be a sequence")
+    try:
+        return tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("records must be a sequence") from exc
+
+
 class OutcomeStatsCalculator:
     """Calculate statistics from records or an ``ExperienceCatalog`` only.
 
@@ -57,7 +68,7 @@ class OutcomeStatsCalculator:
             self.records = tuple(catalog.active_records()) + tuple(catalog.historical_records())
             self._snapshots = catalog.evaluation_snapshots
         else:
-            self.records = tuple(records)
+            self.records = _record_collection(records)
             self._snapshots = None
 
     def _record_snapshots(self, record: Any) -> tuple[dict[str, Any], ...]:
