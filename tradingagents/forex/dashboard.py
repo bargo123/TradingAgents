@@ -83,10 +83,11 @@ def _row_value(row: Mapping[str, Any], *names: str, default: Any = None) -> Any:
 
 
 def _int(value: Any, default: int = 0) -> int:
-    try:
-        return default if value is None else int(value)
-    except (TypeError, ValueError):
+    """Read a non-negative persisted integer without coercing corruption."""
+
+    if value is None or type(value) is not int or value < 0:
         return default
+    return value
 
 
 def _float(value: Any) -> float | None:

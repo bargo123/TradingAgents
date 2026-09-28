@@ -229,6 +229,25 @@ def test_malformed_stale_flag_is_excluded_from_valid_collection(tmp_path: Path) 
     assert snapshot.valid_collection_decisions == 0
 
 
+def test_dashboard_does_not_coerce_fractional_persisted_integer_metrics(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    ShadowDecisionStore(path).record(_decision("fractional-metrics"))
+    _insert_run(path, "fractional-metrics")
+    _insert_evaluations(path, "fractional-metrics", {300.5: "COMPLETE"})
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            "UPDATE forex_watch_runs SET llm_calls=? WHERE run_id=?",
+            (3.5, "run-fractional-metrics"),
+        )
+
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+
+    assert snapshot.latency["llm_calls_latest"] == 0
+    assert snapshot.evaluation_horizons[300]["COMPLETE"] == 0
+
+
 def test_action_distribution_and_latency_percentiles_are_deterministic(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     for index, action in enumerate(("BUY", "SELL", "HOLD")):
