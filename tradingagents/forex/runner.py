@@ -773,7 +773,12 @@ class ForexShadowRunner:
         if snapshot is not None and snapshot_bytes is not None and not isinstance(snapshot_bytes, bytes):
             raise ValueError("snapshot_bytes must be immutable bytes")
         mt5_provider: Any | None = None
-        callback_list = list(callbacks or ())
+        if isinstance(callbacks, (str, bytes, bytearray, Mapping)):
+            raise ValueError("callbacks must be a sequence")
+        try:
+            callback_list = list(callbacks or ())
+        except (TypeError, ValueError) as exc:
+            raise ValueError("callbacks must be a sequence") from exc
         # The watcher intentionally reuses its callback handler for each
         # scheduled opportunity.  Reset only handlers that explicitly expose
         # this opt-in seam so persisted metrics represent this decision, while

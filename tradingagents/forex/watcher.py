@@ -1015,7 +1015,12 @@ class WatcherCoordinator:
         self.executor = executor
         self.gate = gate
         self.process_inspector = process_inspector
-        self.callbacks = tuple(callbacks)
+        if isinstance(callbacks, (str, bytes, bytearray, Mapping)):
+            raise ValueError("callbacks must be a sequence")
+        try:
+            self.callbacks = tuple(callbacks)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("callbacks must be a sequence") from exc
         self.events = events if isinstance(events, EventSink) else EventSink(events)
         self.owner_token: str | None = None
         self._owner = None

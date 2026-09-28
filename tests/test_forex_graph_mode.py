@@ -270,3 +270,9 @@ def test_trading_agents_graph_accepts_forex_mode_arguments(
 def test_trading_agents_graph_rejects_mapping_analysts() -> None:
     with pytest.raises(ValueError, match="selected_analysts"):
         TradingAgentsGraph(selected_analysts={"market": True})
+
+
+@pytest.mark.unit
+def test_trading_agents_graph_rejects_mapping_callbacks() -> None:
+    with pytest.raises(ValueError, match="callbacks"):
+        TradingAgentsGraph(callbacks={"callback": True})

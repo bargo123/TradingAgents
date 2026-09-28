@@ -650,6 +650,7 @@ class _Harness:
         symbols=("EURUSD",),
         process_alive=None,
         cooldown_seconds=60,
+        callbacks=(),
     ):
         from concurrent.futures import Future
 
@@ -700,6 +701,7 @@ class _Harness:
             gate=self.gate,
             events=self.events,
             process_inspector=self.process_inspector,
+            callbacks=callbacks,
         )
 
     def start(self, now=None):
@@ -725,6 +727,11 @@ class _Harness:
         self.coordinator.owner_token = None
         self.coordinator._analysis_future = None
         self.coordinator._active_run_id = None
+
+
+def test_coordinator_rejects_mapping_callbacks(tmp_path):
+    with pytest.raises(ValueError, match="callbacks"):
+        _Harness(tmp_path, callbacks={"callback": True})
 
 
 def _complete_run_result():

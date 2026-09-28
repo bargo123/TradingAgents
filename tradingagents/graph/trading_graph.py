@@ -161,11 +161,17 @@ class TradingAgentsGraph:
             selected_analysts = tuple(selected_analysts)
         except (TypeError, ValueError) as exc:
             raise ValueError("selected_analysts must be a sequence") from exc
+        if isinstance(callbacks, (str, bytes, bytearray, Mapping)):
+            raise ValueError("callbacks must be a sequence")
+        try:
+            callbacks = [] if callbacks is None else list(callbacks)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("callbacks must be a sequence") from exc
 
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
         _validate_graph_storage_paths(self.config)
-        self.callbacks = callbacks or []
+        self.callbacks = callbacks
         self.market_data_mode = market_data_mode
         self.mt5_tools = mt5_tools
         self.forex_analysis_profile = (
