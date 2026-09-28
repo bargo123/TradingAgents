@@ -10,6 +10,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .errors import EmptyEligibleSetError, Phase10InvalidError, SequenceTooLongError
 from .models import Phase11Status, TrainingConfig, canonical_json
 from .provenance import BaseModelRevisionUnpinnedError, ProvenanceError
@@ -61,6 +63,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def _inspect(path: Path) -> tuple[int, dict[str, Any]]:
     try:
+        path = require_nonempty_path(path, "generation path").resolve()
         manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
         if not isinstance(manifest, dict):
             raise ValueError("manifest must be an object")
@@ -220,7 +223,10 @@ def _validate(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _status(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
-    root = Path(args.output_root).resolve()
+    try:
+        root = require_nonempty_path(args.output_root, "output root").resolve()
+    except (TypeError, ValueError):
+        return 1, _failure(Phase11Status.TRAINING_FAILED, "output root must be non-empty")
     runs = []
     if root.is_dir():
         for path in sorted(root.iterdir(), key=lambda p: p.name)[:_MAX_ITEMS]:

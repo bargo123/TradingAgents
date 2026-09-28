@@ -39,6 +39,18 @@ def test_invalid_generation_is_fail_closed(capsys, tmp_path):
     assert "traceback" not in json.dumps(payload).lower()
 
 
+def test_inspect_rejects_empty_generation_path(capsys):
+    code, payload = _run(capsys, "inspect", "--generation", "")
+    assert code != 0
+    assert payload["status"] == "PHASE10_INVALID"
+
+
+def test_status_rejects_empty_output_root(capsys):
+    code, payload = _run(capsys, "status", "--output-root", "")
+    assert code != 0
+    assert payload["status"] == "TRAINING_FAILED"
+
+
 def test_stock_cli_import_remains_available():
     import cli.main  # noqa: F401
 
