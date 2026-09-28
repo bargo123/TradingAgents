@@ -78,6 +78,19 @@ def test_config_rejects_output_root_that_contains_source_path(tmp_path):
         DatasetConfig((tmp_path / "inputs" / "source.sqlite",), tmp_path / "p8", None, tmp_path)
 
 
+@pytest.mark.parametrize("field", ["source_db_paths", "phase8_root", "phase9_audit_path", "output_root"])
+def test_config_rejects_empty_storage_paths(tmp_path, field):
+    values = {
+        "source_db_paths": (tmp_path / "source.sqlite",),
+        "phase8_root": tmp_path / "p8",
+        "phase9_audit_path": tmp_path / "audit.sqlite",
+        "output_root": tmp_path / "out",
+    }
+    values[field] = ("",) if field == "source_db_paths" else ""
+    with pytest.raises(DatasetConfigError, match="path"):
+        DatasetConfig(**values)
+
+
 def test_refs_rejected_must_be_structured_with_closed_reason():
     with pytest.raises(ValueError, match="refs_rejected"):
         EvidenceObservation(refs_rejected=("K1",))

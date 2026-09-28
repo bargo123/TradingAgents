@@ -14,6 +14,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .errors import DatasetConfigError
 
 DATASET_SCHEMA_VERSION = "phase10.dataset.v1"
@@ -160,15 +162,23 @@ class DatasetConfig(Contract):
     allow_empty: bool = True
 
     def __post_init__(self):
-        paths = tuple(Path(p).resolve() for p in self.source_db_paths)
+        try:
+            paths = tuple(
+                require_nonempty_path(p, "source database path").resolve()
+                for p in self.source_db_paths
+            )
+            phase8_root = require_nonempty_path(self.phase8_root, "Phase 8 artifact root").resolve()
+            phase9_audit_path = (
+                None
+                if self.phase9_audit_path is None
+                else require_nonempty_path(self.phase9_audit_path, "Phase 9 audit path").resolve()
+            )
+            out = require_nonempty_path(self.output_root, "dataset output root").resolve()
+        except (TypeError, ValueError) as exc:
+            raise DatasetConfigError("dataset storage paths must be non-empty") from exc
         object.__setattr__(self, "source_db_paths", paths)
-        object.__setattr__(self, "phase8_root", Path(self.phase8_root).resolve())
-        object.__setattr__(
-            self,
-            "phase9_audit_path",
-            Path(self.phase9_audit_path).resolve() if self.phase9_audit_path else None,
-        )
-        out = Path(self.output_root).resolve()
+        object.__setattr__(self, "phase8_root", phase8_root)
+        object.__setattr__(self, "phase9_audit_path", phase9_audit_path)
         object.__setattr__(self, "output_root", out)
         if not isinstance(self.filters, Mapping):
             raise DatasetConfigError("filters must be a mapping")
