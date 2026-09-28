@@ -8,6 +8,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,7 +30,13 @@ from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
 from tradingagents.forex.evidence_audit import EvidenceAuditStore, _contains_forbidden
-from tradingagents.forex.evidence_replay import EvidenceReplayReport, _json_value, _telemetry
+from tradingagents.forex.evidence_replay import (
+    EvidenceReplayReport,
+    SnapshotReplayError,
+    _context_metrics,
+    _json_value,
+    _telemetry,
+)
 
 
 def test_smoke_uses_local_ollama_model_defaults_and_env_overrides(monkeypatch):
@@ -714,6 +721,34 @@ def test_replay_telemetry_rejects_fractional_token_counts():
         }
 
     assert _telemetry(Result()) == {"reasoning_tokens": 3}
+
+
+def test_replay_context_metrics_reject_malformed_numeric_counts():
+    context = SimpleNamespace(
+        diagnostics={
+            "network": {
+                "loopback_connection_attempts": 2.5,
+                "external_network_attempts": -1,
+            }
+        },
+        knowledge_items=(),
+        experience_items=(),
+        statistics_items=(),
+        integration_status="DISABLED",
+        rendered_context="",
+        rendered_context_hash=None,
+        rendered_character_count=0,
+        selected_knowledge_count=2.5,
+        selected_experience_count=0,
+        selected_statistics_count=0,
+        bundle_status="EMPTY",
+        statistics_status=None,
+    )
+
+    with pytest.raises(SnapshotReplayError, match="selected_knowledge_count"):
+        _context_metrics(
+            SimpleNamespace(evidence_context=context, raw_portfolio_manager_result={})
+        )
 
 
 @pytest.mark.parametrize("value", ["apiKey", "accessToken", "authorization", "secret", "bearer"])

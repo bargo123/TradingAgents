@@ -649,6 +649,24 @@ def _context_value(context: Any, name: str, default: Any = None) -> Any:
     return getattr(context, name, default)
 
 
+def _context_count(context: Any, name: str, default: int = 0) -> int:
+    value = _context_value(context, name, None)
+    if value is None:
+        return default
+    if type(value) is not int or value < 0:
+        raise SnapshotReplayError(f"{name} must be a non-negative integer")
+    return value
+
+
+def _network_count(network: Mapping[str, Any], name: str) -> int:
+    value = network.get(name, 0)
+    if value is None:
+        return 0
+    if type(value) is not int or value < 0:
+        raise SnapshotReplayError(f"network.{name} must be a non-negative integer")
+    return value
+
+
 def _context_metrics(result: Any) -> dict[str, Any]:
     context = _result_value(result, "evidence_context")
     if context is None:
@@ -688,12 +706,12 @@ def _context_metrics(result: Any) -> dict[str, Any]:
         "hash": rendered_hash,
         "hash_valid": isinstance(rendered_hash, str) and rendered_hash == hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
         "rendered": rendered,
-        "rendered_characters": int(_context_value(context, "rendered_character_count", len(rendered)) or 0),
+        "rendered_characters": _context_count(context, "rendered_character_count", len(rendered)),
         "bundle": str(_context_value(context, "bundle_status", "EMPTY")),
         "integration": str(runtime_status),
-        "knowledge": int(_context_value(context, "selected_knowledge_count", 0) or 0),
-        "experience": int(_context_value(context, "selected_experience_count", 0) or 0),
-        "statistics": int(_context_value(context, "selected_statistics_count", 0) or 0),
+        "knowledge": _context_count(context, "selected_knowledge_count"),
+        "experience": _context_count(context, "selected_experience_count"),
+        "statistics": _context_count(context, "selected_statistics_count"),
         "knowledge_status": source_status.get("knowledge"),
         "experience_status": source_status.get("experience"),
         "statistics_status": _context_value(context, "statistics_status"),
@@ -707,8 +725,8 @@ def _context_metrics(result: Any) -> dict[str, Any]:
         "citation": str(validation.evidence_audit_status),
         "source_status": source_status,
         "integration_diagnostic": integration_diagnostic,
-        "loopback": int(network.get("loopback_connection_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
-        "external": int(network.get("external_network_attempts", 0) or 0) if isinstance(network, Mapping) else 0,
+        "loopback": _network_count(network, "loopback_connection_attempts") if isinstance(network, Mapping) else 0,
+        "external": _network_count(network, "external_network_attempts") if isinstance(network, Mapping) else 0,
         "knowledge_query": _context_value(context, "knowledge_query"),
         "knowledge_query_fingerprint": _context_value(context, "knowledge_query_fingerprint"),
         "query_policy_version": _context_value(context, "knowledge_query_policy_version"),
