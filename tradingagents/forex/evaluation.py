@@ -1010,7 +1010,7 @@ class ShadowEvaluationStore:
             decision_id=row["decision_id"],
             resolved_symbol=row["resolved_symbol"],
             evaluation_basis=row["evaluation_basis"],
-            horizon_seconds=int(row["horizon_seconds"]),
+            horizon_seconds=_db_horizon(row["horizon_seconds"]),
             evaluation_version=row["evaluation_version"],
             market_data_source=row["market_data_source"],
             source_context_eligible=_db_bool(
@@ -1073,6 +1073,13 @@ def _db_bool(value: Any, name: str) -> bool:
     if type(value) is int and value in (0, 1):
         return bool(value)
     raise ValueError(f"{name} must be boolean 0/1")
+
+
+def _db_horizon(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("horizon_seconds must be an integer") from exc
 
 
 @dataclass(frozen=True, slots=True)
