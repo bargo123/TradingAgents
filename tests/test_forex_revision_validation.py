@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from tradingagents.forex.evaluation import ShadowEvaluationStore, ShadowOutcomeEvaluation
 from tradingagents.forex.revision_validation import (
+    _evaluation_coverage,
     _freshness_report,
     aggregate_agent_metrics,
     validate_revision,
@@ -134,6 +135,58 @@ def test_agent_metrics_ignore_malformed_rows_and_private_fields():
     }
     assert "prompt" not in str(report)
     assert "completion" not in str(report)
+
+
+def test_agent_metrics_reject_fractional_integer_fields():
+    report = aggregate_agent_metrics(
+        [
+            {
+                "agents": {
+                    "Trader": {
+                        "calls": 300.5,
+                        "tokens_in": "200.5",
+                        "tokens_out": 7,
+                    }
+                }
+            }
+        ]
+    )
+
+    assert report["Trader"]["calls"] == 0
+    assert report["Trader"]["tokens_in"] == 0
+    assert report["Trader"]["tokens_out"] == 7
+
+
+def test_evaluation_coverage_ignores_fractional_horizon_rows():
+    with closing(sqlite3.connect(":memory:")) as connection, connection:
+        connection.row_factory = sqlite3.Row
+        connection.execute(
+            """
+            CREATE TABLE shadow_decision_evaluations (
+                decision_id TEXT,
+                evaluation_basis TEXT,
+                horizon_seconds REAL,
+                evaluation_status TEXT
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO shadow_decision_evaluations VALUES (?, ?, ?, ?)",
+            ("decision-1", "ANALYSIS_SNAPSHOT", 300.5, "COMPLETE"),
+        )
+
+        report = _evaluation_coverage(
+            connection,
+            [{"decision_id": "decision-1"}],
+        )
+
+    assert report == {
+        "evaluations_total": 0,
+        "decisions_with_evaluations": 0,
+        "decision_count": 1,
+        "status_counts": {},
+        "by_basis_horizon_status": {},
+    }
 
 
 def test_revision_validation_filters_by_git_commit_without_writing(tmp_path):

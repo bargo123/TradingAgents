@@ -43,13 +43,15 @@ def _safe_nonnegative_float(value: Any) -> float | None:
 
 
 def _safe_nonnegative_int(value: Any) -> int:
-    if isinstance(value, bool):
+    if type(value) is not int or value < 0:
         return 0
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError):
-        return 0
-    return max(parsed, 0)
+    return value
+
+
+def _safe_positive_int(value: Any) -> int | None:
+    if type(value) is not int or value <= 0:
+        return None
+    return value
 
 
 def _safe_db_bool(value: Any) -> bool | None:
@@ -199,7 +201,9 @@ def _evaluation_coverage(conn: sqlite3.Connection, rows: Iterable[sqlite3.Row]) 
         if decision_id not in decision_ids:
             continue
         basis = str(evaluation["evaluation_basis"])
-        horizon = _safe_nonnegative_int(evaluation["horizon_seconds"])
+        horizon = _safe_positive_int(evaluation["horizon_seconds"])
+        if horizon is None:
+            continue
         status = str(evaluation["evaluation_status"])
         observed_decisions.add(decision_id)
         status_counts[status] += 1
