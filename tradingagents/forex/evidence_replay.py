@@ -776,6 +776,8 @@ class SavedSnapshotReplay:
                 return fixed_runner
 
             runner_factory = fixed_factory
+        if runner_factory is not None and not callable(runner_factory):
+            raise TypeError("runner_factory must be callable")
         self.runner_factory = runner_factory
         self.generation_provider = generation_provider
 

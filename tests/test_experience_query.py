@@ -84,6 +84,24 @@ def test_default_query_excludes_tier_c_and_current_tombstones():
     assert result.active_generation_id == "g1"
 
 
+def test_query_service_preserves_falsey_custom_similarity_index():
+    class FalseyIndex:
+        def __bool__(self):
+            return False
+
+        def search(self, *_args, **_kwargs):
+            return ()
+
+    index = FalseyIndex()
+    service = ExperienceQueryService([row("a")], profile=profile(), index=index)
+    assert service.index is index
+
+
+def test_query_service_rejects_invalid_similarity_index():
+    with pytest.raises(TypeError, match="index"):
+        ExperienceQueryService([row("a")], profile=profile(), index=False)
+
+
 def test_query_service_rejects_non_mapping_profiles():
     with pytest.raises(ValueError, match="profiles"):
         ExperienceQueryService([row("a")], profile=profile(), profiles=[])

@@ -96,9 +96,14 @@ class ExperienceQueryService:
             raise ValueError("feature_vectors must be a mapping")
         else:
             vectors = dict(feature_vectors)
-        self.index = index or ExactSimilarityIndex(
-            vectors, {str(_get(r, "experience_id")): r for r in self.records}
-        )
+        if index is None:
+            self.index = ExactSimilarityIndex(
+                vectors, {str(_get(r, "experience_id")): r for r in self.records}
+            )
+        elif not callable(getattr(index, "search", None)):
+            raise TypeError("index must provide a callable search method")
+        else:
+            self.index = index
 
     def _profile(self, record, query):
         if self.profile is not None:

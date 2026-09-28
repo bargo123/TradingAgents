@@ -134,6 +134,11 @@ def test_replay_config_rejects_malformed_mapping_fields(tmp_path: Path, field: s
         replace(_config(tmp_path), **{field: value})
 
 
+def test_replay_rejects_invalid_runner_factory():
+    with pytest.raises(TypeError, match="runner_factory"):
+        SavedSnapshotReplay(runner_factory=False)
+
+
 @pytest.mark.parametrize("value", ["market,news", b"market,news", {"market": "news"}, None])
 def test_replay_config_rejects_scalar_or_invalid_analyst_collections(tmp_path: Path, value):
     with pytest.raises((TypeError, ValueError), match="analysts"):
