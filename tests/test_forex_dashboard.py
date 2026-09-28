@@ -170,6 +170,15 @@ def test_empty_database_snapshot_is_safe(tmp_path: Path) -> None:
     assert snapshot.health == "WARNING"
 
 
+@pytest.mark.parametrize("value", [float("inf"), True, "1.0"])
+def test_dashboard_rejects_invalid_busy_timeout(tmp_path: Path, value: object) -> None:
+    path = _init_db(tmp_path)
+    from tradingagents.forex.dashboard import _read_only_connection
+
+    with pytest.raises(ValueError, match="positive finite"):
+        _read_only_connection(path, value)
+
+
 def test_valid_collection_requires_all_runtime_gates(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     ShadowDecisionStore(path).record(_decision("valid"))

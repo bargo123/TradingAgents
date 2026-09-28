@@ -13,6 +13,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -131,8 +132,13 @@ def _series(values: Iterable[Any]) -> dict[str, float | int | None]:
 
 
 def _read_only_connection(path: Path, busy_timeout_seconds: float) -> sqlite3.Connection:
-    if busy_timeout_seconds <= 0:
-        raise ValueError("busy_timeout_seconds must be positive")
+    if (
+        isinstance(busy_timeout_seconds, bool)
+        or not isinstance(busy_timeout_seconds, Real)
+        or not math.isfinite(float(busy_timeout_seconds))
+        or busy_timeout_seconds <= 0
+    ):
+        raise ValueError("busy_timeout_seconds must be a positive finite number")
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise DashboardReadError(f"database does not exist: {resolved}")
