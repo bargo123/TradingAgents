@@ -1084,12 +1084,21 @@ class ForexShadowRunner:
         started = time.perf_counter()
         if db_path is not None:
             self.store = ShadowDecisionStore(db_path)
+        if analysts is None:
+            selected_analysts = self.selected_analysts
+        elif isinstance(analysts, (str, bytes, bytearray, Mapping)):
+            raise ValueError("analysts must be a sequence of analyst names")
+        else:
+            try:
+                selected_analysts = tuple(analysts)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("analysts must be a sequence of analyst names") from exc
         result = self.analyze(
             symbol=symbol,
             count=count,
             analysis_date=analysis_date,
             terminal_path=terminal_path,
-            analysts=analysts,
+            analysts=selected_analysts,
             callbacks=callbacks,
             analysis_profile=analysis_profile,
             source_run_id=source_run_id,
@@ -1160,7 +1169,7 @@ class ForexShadowRunner:
                 "provider_snapshot_calls": metrics.get("provider_snapshot_calls", 1),
                 "elapsed_seconds": time.perf_counter() - started,
                 "market_data_mode": "forex_mt5",
-                "selected_analysts": self.selected_analysts if analysts is None else tuple(analysts),
+                "selected_analysts": selected_analysts,
                 "analysis_profile": result.profile_name,
                 "bars_used": {
                     timeframe: result.snapshot_json.get("features", {}).get(timeframe, {}).get("candle_count", 0)

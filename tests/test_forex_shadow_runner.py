@@ -387,10 +387,12 @@ def test_runner_passes_callbacks_and_reports_llm_metrics(tmp_path):
     result = runner.run(
         symbol="EURUSD",
         analysis_date="2026-09-08",
+        analysts=iter(("market", "news")),
         callbacks=[callback],
     )
 
     assert graph.invocations[0][1]["config"]["callbacks"] == [callback]
+    assert result.metrics["selected_analysts"] == ("market", "news")
     assert result.metrics["llm_calls"] == 17
     assert result.metrics["tool_calls"] == 4
     assert result.metrics["tokens_in"] == 100
@@ -779,6 +781,7 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
         {"count": 0},
         {"analysts": ("market", "fundamentals")},
         {"analysts": {"market": True, "news": True}},
+        {"analysts": 0},
         {"callbacks": {"callback": True}},
         {"callbacks": 0},
     ):
