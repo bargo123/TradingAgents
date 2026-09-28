@@ -10,6 +10,7 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -151,6 +152,26 @@ def _verified_snapshot_matches(
         and not isinstance(verified_length, bool)
         and verified_length >= config.context_length
         and payload.get("openai_probe_ok") is True
+    )
+
+
+def _refresh_openai_probe(runtime: Any, health: OllamaHealth) -> OllamaHealth:
+    """Refresh the scalar OpenAI-compatibility probe after model prewarming."""
+
+    probe = getattr(runtime, "probe_openai_compatible", None)
+    if not callable(probe) or health.openai_probe_ok is True:
+        return health
+    try:
+        error_code = probe()
+    except Exception as exc:  # health reporting remains bounded and sanitized
+        error_code = type(exc).__name__.upper()
+    if error_code is None:
+        return replace(health, openai_probe_ok=True)
+    return replace(
+        health,
+        status="DEGRADED",
+        error_code=f"OPENAI_PROBE_{error_code}",
+        openai_probe_ok=False,
     )
 
 
@@ -343,6 +364,7 @@ class ForexSupervisor:
             if prewarm:
                 runtime.prewarm()
                 health = runtime.health()
+                health = _refresh_openai_probe(runtime, health)
                 if not health.healthy:
                     print(f"FOREX SUPERVISOR: OLLAMA_{health.error_code or health.status}")
                     return 1

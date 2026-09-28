@@ -480,6 +480,7 @@ def test_supervisor_run_persists_scalar_health_snapshot(tmp_path):
     db_path.touch()
     store = SimpleNamespace(active_lease=lambda _now: None)
     config = ForexShadowRuntimeConfig()
+    probe_calls = []
 
     class Runtime:
         def ensure_healthy(self):
@@ -495,7 +496,7 @@ def test_supervisor_run_persists_scalar_health_snapshot(tmp_path):
                 True,
                 True,
                 config.context_length,
-                True,
+                None,
                 8640,
                 0,
             )
@@ -505,6 +506,10 @@ def test_supervisor_run_persists_scalar_health_snapshot(tmp_path):
 
         def health(self):
             return self.ensure_healthy()
+
+        def probe_openai_compatible(self):
+            probe_calls.append(True)
+            return None
 
         def shutdown(self):
             return None
@@ -516,10 +521,12 @@ def test_supervisor_run_persists_scalar_health_snapshot(tmp_path):
     )
 
     assert supervisor.run(db_path=db_path, watch_main=lambda *_a, **_k: 0) == 0
+    assert probe_calls == [True]
     snapshot = json.loads(Path(f"{db_path}.ollama-health.json").read_text(encoding="utf-8"))
     assert snapshot["status"] == "HEALTHY"
     assert snapshot["quick_context_verified"] is True
     assert snapshot["deep_context_verified"] is True
+    assert snapshot["openai_probe_ok"] is True
     assert "prompt" not in snapshot
     assert "completion" not in snapshot
 
