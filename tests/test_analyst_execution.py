@@ -21,6 +21,10 @@ class AnalystExecutionPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_analyst_execution_plan(["market", "macro"])
 
+    def test_rejects_duplicate_analyst_keys(self):
+        with self.assertRaises(ValueError, msg="duplicate analyst keys"):
+            build_analyst_execution_plan(["market", "market"])
+
     def test_rejects_mapping_as_analyst_collection(self):
         with self.assertRaises(ValueError):
             build_analyst_execution_plan({"market": True, "news": True})

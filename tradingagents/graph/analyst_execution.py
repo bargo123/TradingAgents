@@ -59,7 +59,13 @@ def build_analyst_execution_plan(
     if isinstance(selected_analysts, (str, bytes, bytearray, Mapping)):
         raise ValueError("selected_analysts must be a sequence")
     specs: list[AnalystNodeSpec] = []
+    seen: set[str] = set()
     for analyst_key in selected_analysts:
+        if not isinstance(analyst_key, str):
+            raise ValueError("analyst keys must be strings")
+        if analyst_key in seen:
+            raise ValueError(f"duplicate analyst key: {analyst_key}")
+        seen.add(analyst_key)
         spec = ANALYST_NODE_SPECS.get(analyst_key)
         if spec is None:
             raise ValueError(f"unknown analyst key: {analyst_key}")
