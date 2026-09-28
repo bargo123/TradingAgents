@@ -71,6 +71,17 @@ def test_runtime_rejects_invalid_probe_and_recovery_controls(kwargs):
         DedicatedOllamaRuntime(ForexShadowRuntimeConfig(), **kwargs)
 
 
+@pytest.mark.parametrize("field", ["http", "process_launcher", "version_runner", "sleep"])
+def test_runtime_rejects_invalid_injected_dependencies(field):
+    with pytest.raises(TypeError, match=field):
+        DedicatedOllamaRuntime(ForexShadowRuntimeConfig(), **{field: False})
+
+
+def test_runtime_rejects_invalid_config_type():
+    with pytest.raises(TypeError, match="config"):
+        DedicatedOllamaRuntime(False)
+
+
 def test_dedicated_runtime_health_checks_models_and_context():
     http = _Http()
     runtime = DedicatedOllamaRuntime(
@@ -441,6 +452,9 @@ def test_owned_server_does_not_leave_unread_stderr_pipe():
 
     class OfflineHttp:
         def get(self, _url, **_kwargs):
+            raise OSError("offline")
+
+        def post(self, _url, **_kwargs):
             raise OSError("offline")
 
     def launch(command, **kwargs):

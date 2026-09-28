@@ -98,6 +98,17 @@ class DedicatedOllamaRuntime:
         max_recovery_attempts: int = 2,
         prewarm_timeout_seconds: float = 30.0,
     ) -> None:
+        if not isinstance(config, ForexShadowRuntimeConfig):
+            raise TypeError("config must be ForexShadowRuntimeConfig")
+        if not callable(getattr(http, "get", None)) or not callable(getattr(http, "post", None)):
+            raise TypeError("http must expose callable get and post methods")
+        for name, dependency in (
+            ("process_launcher", process_launcher),
+            ("version_runner", version_runner),
+            ("sleep", sleep),
+        ):
+            if not callable(dependency):
+                raise TypeError(f"{name} must be callable")
         if isinstance(probe_attempts, bool) or not isinstance(probe_attempts, int) or probe_attempts <= 0:
             raise ValueError("probe_attempts must be a positive integer")
         if (
