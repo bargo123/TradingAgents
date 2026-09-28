@@ -138,7 +138,9 @@ def _read_json(path: Path) -> dict[str, Any]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ProvenanceError("invalid model config.json") from exc
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        raise ProvenanceError("model config.json must be an object")
+    return value
 
 
 def _collect_files(model: Path, tokenizer: Path) -> tuple[dict[str, Any], ...]:

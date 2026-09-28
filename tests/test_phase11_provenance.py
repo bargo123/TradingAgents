@@ -88,3 +88,13 @@ def test_missing_local_snapshot_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ProvenanceError, match="local|snapshot"):
         ModelProvenance.inspect(tmp_path / "missing", revision="local-snapshot")
+
+
+def test_non_object_model_config_is_rejected(tmp_path: Path) -> None:
+    from tradingagents.finetuning.provenance import ModelProvenance, ProvenanceError
+
+    model = _fixture(tmp_path / "model")
+    (model / "config.json").write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ProvenanceError, match="config"):
+        ModelProvenance.inspect(model, revision="local-snapshot", tokenizer_path=model)
