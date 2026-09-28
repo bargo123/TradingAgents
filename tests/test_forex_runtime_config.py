@@ -132,6 +132,12 @@ def test_extra_is_detached_and_immutable():
         runtime.extra["nested"]["value"] = 2
 
 
+@pytest.mark.parametrize("key", ["", "   "])
+def test_extra_rejects_blank_mapping_keys(key: str) -> None:
+    with pytest.raises(ValueError, match="extra mapping keys"):
+        ForexShadowRuntimeConfig(extra={key: 1})
+
+
 def test_runtime_provenance_is_safe_and_source_attributable(tmp_path):
     calls = []
 

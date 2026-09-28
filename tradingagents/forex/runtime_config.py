@@ -42,8 +42,8 @@ _RUNTIME_OWNED_CONFIG_KEYS = frozenset(
 
 def _normalize_extra(item: Any) -> Any:
     if isinstance(item, Mapping):
-        if any(not isinstance(key, str) for key in item):
-            raise ValueError("extra mapping keys must be strings")
+        if any(not isinstance(key, str) or not key.strip() for key in item):
+            raise ValueError("extra mapping keys must be non-empty strings")
         return {key: _normalize_extra(item[key]) for key in sorted(item)}
     if isinstance(item, (list, tuple)):
         return [_normalize_extra(child) for child in item]
