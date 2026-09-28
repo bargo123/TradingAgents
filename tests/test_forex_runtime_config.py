@@ -193,3 +193,29 @@ def test_runtime_provenance_can_use_effective_direct_watch_config(tmp_path):
     assert provenance["collector_contract_version"] == "forex-watch.v1"
     assert provenance["application_version"] == "dev"
     assert json.loads(provenance["safe_config_json"]) == effective
+
+
+def test_runtime_provenance_preserves_falsey_safe_config_mapping(tmp_path):
+    class FalseMapping(dict):
+        def __bool__(self):
+            return False
+
+    safe_config = FalseMapping(
+        {
+            "llm_provider": "ollama",
+            "backend_url": "http://localhost:11434/v1",
+            "prompt_config_version": "forex-shadow.v1",
+            "collector_contract_version": "forex-watch.v1",
+            "application_version": "dev",
+            "custom_value": "preserved",
+        }
+    )
+
+    provenance = collect_runtime_provenance(
+        None,
+        safe_config=safe_config,
+        repo_root=tmp_path,
+        git_runner=lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="abc\n"),
+    )
+
+    assert json.loads(provenance["safe_config_json"])["custom_value"] == "preserved"

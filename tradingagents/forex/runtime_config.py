@@ -299,7 +299,10 @@ def collect_runtime_provenance(
         version = (
             runtime.application_version
             if runtime is not None
-            else str((safe_config or {}).get("application_version") or "unknown")
+            else str(
+                ({} if safe_config is None else safe_config).get("application_version")
+                or "unknown"
+            )
         )
     if runtime is not None:
         safe_values = runtime.safe_dict()
@@ -307,7 +310,10 @@ def collect_runtime_provenance(
         collector_version = runtime.collector_contract_version
         application_version = runtime.application_version
     else:
-        safe_values = {str(key): value for key, value in (safe_config or {}).items()}
+        safe_values = {
+            str(key): value
+            for key, value in ({} if safe_config is None else safe_config).items()
+        }
         prompt_version = str(safe_values.get("prompt_config_version") or "forex-shadow.v1")
         collector_version = str(
             safe_values.get("collector_contract_version") or "forex-watch.v1"
