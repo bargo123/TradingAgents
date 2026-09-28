@@ -1055,6 +1055,11 @@ def test_event_sink_rejects_malformed_payload_mapping(payload):
         EventSink([]).emit("ANALYSIS_FINISHED", payload)
 
 
+def test_event_sink_rejects_non_appendable_target():
+    with pytest.raises(TypeError, match="target"):
+        EventSink({})
+
+
 def test_cooldown_selects_only_newest_current_candidate(tmp_path):
     harness = _Harness(tmp_path, symbols=("EURUSD", "USDJPY"))
     harness.start()

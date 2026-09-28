@@ -843,6 +843,11 @@ class EventSink:
     )
 
     def __init__(self, target: list[dict[str, Any]] | None = None) -> None:
+        if target is not None and (
+            isinstance(target, (str, bytes, bytearray, Mapping))
+            or not callable(getattr(target, "append", None))
+        ):
+            raise TypeError("target must be an appendable collection")
         self.target = target if target is not None else []
 
     def emit(self, event: str, payload: Mapping[str, Any] | None = None) -> None:
