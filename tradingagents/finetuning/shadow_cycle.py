@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import subprocess
@@ -52,6 +53,7 @@ class ShadowCycleConfig:
     horizon_seconds: int = 300
     observation_tolerance_seconds: int = 30
     mode: str = "collect"
+    command_timeout_seconds: float = 7200.0
 
     def __post_init__(self) -> None:
         try:
@@ -105,18 +107,39 @@ class ShadowCycleConfig:
             raise ValueError("the bounded lifecycle requires market,news analysts")
         if self.horizon_seconds <= 0 or self.observation_tolerance_seconds < 0:
             raise ValueError("horizon and tolerance must be non-negative/positive")
+        try:
+            command_timeout_seconds = float(self.command_timeout_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("command timeout must be a positive finite number") from exc
+        if (
+            isinstance(self.command_timeout_seconds, bool)
+            or not isinstance(self.command_timeout_seconds, (int, float))
+            or not math.isfinite(command_timeout_seconds)
+            or command_timeout_seconds <= 0
+        ):
+            raise ValueError("command timeout must be a positive finite number")
+        object.__setattr__(self, "command_timeout_seconds", command_timeout_seconds)
         if self.mode not in {"collect", "evaluate"}:
             raise ValueError("mode must be collect or evaluate")
 
 
-def _subprocess_runner(command: Sequence[str], env: Mapping[str, str]) -> Any:
-    return subprocess.run(
-        list(command),
-        env=dict(env),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def _subprocess_runner(
+    command: Sequence[str],
+    env: Mapping[str, str],
+    *,
+    timeout_seconds: float = 7200.0,
+) -> Any:
+    try:
+        return subprocess.run(
+            list(command),
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ShadowCycleError("bounded shadow-cycle subprocess timed out") from exc
 
 
 def _fresh_output_root(path: Path) -> None:
@@ -314,7 +337,13 @@ def run_shadow_cycle(
     if not isinstance(config, ShadowCycleConfig):
         raise TypeError("config must be ShadowCycleConfig")
     _fresh_output_root(config.phase10_output_root)
-    runner = command_runner or _subprocess_runner
+    runner = command_runner or (
+        lambda command, env: _subprocess_runner(
+            command,
+            env,
+            timeout_seconds=config.command_timeout_seconds,
+        )
+    )
     env = _environment(config)
     phase8_before = _sync_phase8(config)
     if config.mode == "collect":

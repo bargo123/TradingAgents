@@ -79,7 +79,9 @@ explicit failure.
 
 ## Failure behavior
 
-Any subprocess error, missing path, stale lease, invalid source, or non-zero
+Each collector/evaluator subprocess is bounded by an explicit operator timeout
+(7200 seconds by default, configurable through the CLI). A timeout is a typed
+failure, not an implicit infinite wait. Any subprocess error, missing path, stale lease, invalid source, or non-zero
 collector result stops the cycle with a typed status and bounded error type.
 The wrapper never retries a graph/LLM failure and never converts an incomplete
 decision into a training example.

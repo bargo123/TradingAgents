@@ -21,6 +21,24 @@ def test_parser_defaults_to_eurusd_and_shortest_horizon(tmp_path: Path) -> None:
     assert args.symbol == "EURUSD"
     assert args.horizon_seconds == 300
     assert args.analysts == "market,news"
+    assert args.command_timeout_seconds == 7200.0
+
+
+def test_parser_accepts_explicit_positive_command_timeout(tmp_path: Path) -> None:
+    args = phase11_shadow_cycle.build_parser().parse_args(
+        [
+            "collect",
+            "--db-path",
+            str(tmp_path / "shadow.db"),
+            "--phase8-root",
+            str(tmp_path / "phase8"),
+            "--phase10-output-root",
+            str(tmp_path / "phase10"),
+            "--command-timeout-seconds",
+            "13.5",
+        ]
+    )
+    assert args.command_timeout_seconds == 13.5
 
 
 def test_main_prints_shadow_banner_and_bounded_json(monkeypatch, capsys, tmp_path: Path) -> None:

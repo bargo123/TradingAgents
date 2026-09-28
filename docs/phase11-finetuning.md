@@ -84,7 +84,10 @@ python scripts/phase11_shadow_cycle.py collect `
 ```
 
 The command prints `SHADOW ONLY — NO ORDER WILL BE SENT` and emits bounded JSON
-metadata. After the approved shortest horizon (300 seconds plus the existing
+metadata. Child collector/evaluator processes use a bounded 7200-second
+timeout by default; override it explicitly with `--command-timeout-seconds`
+when a different operator budget is required. After the approved shortest
+horizon (300 seconds plus the existing
 30-second observation tolerance) has elapsed, run the evaluation stage once:
 
 ```powershell

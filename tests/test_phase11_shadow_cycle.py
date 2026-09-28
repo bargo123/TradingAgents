@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 from contextlib import closing
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from tests.fixtures.experience_source_db import create_source_db
 from tradingagents.finetuning.shadow_cycle import (
     ShadowCycleConfig,
     ShadowCycleError,
+    _subprocess_runner,
     _sync_phase8,
     run_shadow_cycle,
 )
@@ -62,6 +65,79 @@ class _Result:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+def test_subprocess_runner_passes_a_bounded_timeout(monkeypatch) -> None:
+    calls = {}
+
+    def fake_run(command, **kwargs):
+        calls.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr("tradingagents.finetuning.shadow_cycle.subprocess.run", fake_run)
+
+    _subprocess_runner(("python", "-c", "pass"), {"SAFE": "1"})
+
+    assert calls["timeout"] > 0
+
+
+def test_subprocess_runner_timeout_fails_closed(monkeypatch) -> None:
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd="python", timeout=1)
+
+    monkeypatch.setattr("tradingagents.finetuning.shadow_cycle.subprocess.run", fake_run)
+
+    with pytest.raises(ShadowCycleError, match="timed out"):
+        _subprocess_runner(("python", "-c", "pass"), {"SAFE": "1"})
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan"), 10**1000, True])
+def test_config_rejects_invalid_command_timeout(tmp_path: Path, value) -> None:
+    with pytest.raises(ValueError, match="command timeout"):
+        replace(_config(tmp_path), command_timeout_seconds=value)
+
+
+def test_config_preserves_existing_positional_mode_contract(tmp_path: Path) -> None:
+    config = ShadowCycleConfig(
+        tmp_path / "shadow.db",
+        tmp_path / "phase8",
+        tmp_path / "phase10",
+        tmp_path / "phase9-audit.sqlite3",
+        tmp_path / "phase7",
+        tmp_path / "embedding",
+        None,
+        None,
+        "EURUSD",
+        "INTRADAY",
+        ("market", "news"),
+        "M15",
+        300,
+        30,
+        "collect",
+    )
+
+    assert config.mode == "collect"
+    assert config.command_timeout_seconds == 7200.0
+
+
+def test_collect_uses_configured_command_timeout(monkeypatch, tmp_path: Path) -> None:
+    config = replace(_config(tmp_path), command_timeout_seconds=13.5)
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "tradingagents.finetuning.shadow_cycle._sync_phase8",
+        lambda _config: {},
+    )
+
+    def fake_run(_command, **kwargs):
+        calls.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr("tradingagents.finetuning.shadow_cycle.subprocess.run", fake_run)
+    result = run_shadow_cycle(config)
+
+    assert result["status"] == "COLLECTED"
+    assert calls["timeout"] == 13.5
 
 
 def test_collect_orders_phase8_initialization_watch_and_phase8_refresh(monkeypatch, tmp_path: Path) -> None:

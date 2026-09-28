@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -34,6 +35,16 @@ def _nonnegative(value: str) -> int:
     return parsed
 
 
+def _positive_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
+    return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="phase11-shadow-cycle",
@@ -57,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--horizon-seconds", type=_positive, default=300)
         command.add_argument(
             "--observation-tolerance-seconds", type=_nonnegative, default=30
+        )
+        command.add_argument(
+            "--command-timeout-seconds", type=_positive_float, default=7200.0
         )
     return parser
 
@@ -98,6 +112,7 @@ def _config(args: argparse.Namespace) -> ShadowCycleConfig:
         schedule_timeframe=args.schedule_timeframe,
         horizon_seconds=args.horizon_seconds,
         observation_tolerance_seconds=args.observation_tolerance_seconds,
+        command_timeout_seconds=args.command_timeout_seconds,
         mode=args.mode,
     )
 
