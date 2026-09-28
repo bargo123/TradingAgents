@@ -1076,10 +1076,9 @@ def _db_bool(value: Any, name: str) -> bool:
 
 
 def _db_horizon(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("horizon_seconds must be an integer") from exc
+    if type(value) is not int or value <= 0:
+        raise ValueError("horizon_seconds must be a positive integer")
+    return value
 
 
 @dataclass(frozen=True, slots=True)

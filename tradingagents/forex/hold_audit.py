@@ -71,10 +71,9 @@ def _finite(value: Any) -> float | None:
 
 
 def _horizon_seconds(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise HoldAuditSchemaError("horizon_seconds must be an integer") from exc
+    if type(value) is not int or value <= 0:
+        raise HoldAuditSchemaError("horizon_seconds must be a positive integer")
+    return value
 
 
 def _is_true(value: Any) -> bool:
