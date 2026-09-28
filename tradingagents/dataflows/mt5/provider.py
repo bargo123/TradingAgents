@@ -142,6 +142,10 @@ class MT5Provider:
         clock_config: BrokerClockConfig | None = None,
         clock_now: Callable[[], datetime] | None = None,
     ) -> None:
+        if broker_clock is not None and not isinstance(broker_clock, Mt5BrokerClock):
+            raise TypeError("broker_clock must be Mt5BrokerClock")
+        if clock_now is not None and not callable(clock_now):
+            raise TypeError("clock_now must be callable")
         self._api = api
         self._terminal_path = terminal_path
         self._initialized = False

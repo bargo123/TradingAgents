@@ -689,6 +689,18 @@ def test_evidence_service_rejects_invalid_policy(value):
         )
 
 
+@pytest.mark.parametrize("field", ["clock", "process_factory"])
+def test_evidence_service_rejects_invalid_worker_dependencies(field):
+    with pytest.raises(TypeError, match=field):
+        EvidenceIntegrationService(
+            policy=None,
+            orchestrator_factory=None,
+            generation_provider=None,
+            provider_endpoint=None,
+            **{field: False},
+        )
+
+
 @pytest.mark.parametrize(
     "value",
     [

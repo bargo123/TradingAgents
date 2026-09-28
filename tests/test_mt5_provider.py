@@ -213,6 +213,12 @@ def test_provider_rejects_invalid_clock_config(fake_api):
         MT5Provider(api=fake_api, clock_config=False)
 
 
+@pytest.mark.parametrize("field", ["broker_clock", "clock_now"])
+def test_provider_rejects_invalid_clock_dependencies(fake_api, field):
+    with pytest.raises(TypeError, match=field):
+        MT5Provider(api=fake_api, **{field: False})
+
+
 def test_shutdown_clears_clock_and_is_reusable_after_reinitialize(fake_api):
     provider = initialized_provider(fake_api)
     assert provider.broker_clock is not None

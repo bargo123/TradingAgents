@@ -812,6 +812,12 @@ class EvidenceIntegrationService:
     ) -> None:
         if policy is not None and not isinstance(policy, EvidenceQueryPolicy):
             raise TypeError("policy must be EvidenceQueryPolicy")
+        for name, dependency in (
+            ("clock", clock),
+            ("process_factory", process_factory),
+        ):
+            if dependency is not None and not callable(dependency):
+                raise TypeError(f"{name} must be callable")
         self.policy = policy
         self.orchestrator_factory = orchestrator_factory
         self.generation_provider = generation_provider

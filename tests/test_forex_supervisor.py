@@ -20,6 +20,12 @@ def test_supervisor_rejects_invalid_runtime_config() -> None:
         ForexSupervisor(runtime_config=False)
 
 
+@pytest.mark.parametrize("field", ["runtime_factory", "store_factory"])
+def test_supervisor_rejects_invalid_factories(field) -> None:
+    with pytest.raises(TypeError, match=field):
+        ForexSupervisor(**{field: False})
+
+
 def test_supervisor_rejects_invalid_restart_controls_before_runtime_start():
     constructed = []
 

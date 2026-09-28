@@ -59,6 +59,12 @@ class ForexSupervisor:
         runtime_factory: Callable[..., DedicatedOllamaRuntime] = DedicatedOllamaRuntime,
         store_factory: Callable[..., WatcherStore] = WatcherStore,
     ) -> None:
+        for name, factory in (
+            ("runtime_factory", runtime_factory),
+            ("store_factory", store_factory),
+        ):
+            if not callable(factory):
+                raise TypeError(f"{name} must be callable")
         self.runtime_config = (
             ForexShadowRuntimeConfig() if runtime_config is None else runtime_config
         )
