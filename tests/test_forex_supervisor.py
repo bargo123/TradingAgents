@@ -444,6 +444,65 @@ def test_supervisor_status_uses_verified_health_snapshot_for_active_owner(tmp_pa
     assert report["ollama"]["openai_probe_ok"] is True
 
 
+def test_supervisor_status_does_not_reuse_snapshot_after_live_context_regresses(tmp_path):
+    db_path = tmp_path / "watch.db"
+    db_path.touch()
+    config = ForexShadowRuntimeConfig()
+    Path(f"{db_path}.ollama-health.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "observed_at": "2026-09-28T20:00:00+00:00",
+                "supervisor_pid": 4321,
+                "config_fingerprint": config.fingerprint,
+                "endpoint": config.ollama_base_url,
+                "quick_model": config.quick_model,
+                "deep_model": config.deep_model,
+                "context_length": config.context_length,
+                "status": "HEALTHY",
+                "models": [config.quick_model, config.deep_model],
+                "quick_context_verified": True,
+                "deep_context_verified": True,
+                "verified_context_length": config.context_length,
+                "openai_probe_ok": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    now = datetime.now(UTC)
+    watcher = {"lifecycle_status": "IDLE", "owner_pid": 4321, "circuit_reason": None}
+    lease = SimpleNamespace(lease_expires_at=now + timedelta(minutes=5), pid=4321)
+
+    class Store:
+        def read_only_summary(self, _now):
+            return watcher
+
+        def read_only_active_lease(self, _now):
+            return lease
+
+    class Runtime:
+        def health(self):
+            return OllamaHealth(
+                "DEGRADED",
+                config.ollama_base_url,
+                "v",
+                (config.quick_model, config.deep_model),
+                8192,
+                "CONTEXT_TOO_SMALL",
+                True,
+                (config.deep_model,),
+            )
+
+    report = ForexSupervisor(
+        config,
+        runtime_factory=lambda _config: Runtime(),
+        store_factory=lambda _path: Store(),
+    ).status(db_path)
+
+    assert report["health_level"] == "DEGRADED"
+    assert report["health_reason"] == "CONTEXT_TOO_SMALL"
+
+
 def test_supervisor_status_marks_unverified_live_context_unknown():
     watcher = {"lifecycle_status": "IDLE", "circuit_reason": None}
 

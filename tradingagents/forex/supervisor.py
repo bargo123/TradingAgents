@@ -136,8 +136,13 @@ def _verified_snapshot_matches(
     lease_pid = getattr(lease, "pid", None)
     models = payload.get("models")
     verified_length = payload.get("verified_context_length")
+    loaded_models = set(health.loaded_models)
+    live_context_valid = health.context_length is None or health.context_length >= config.context_length
     return bool(
         health.server_healthy
+        and health.error_code != "CONTEXT_TOO_SMALL"
+        and live_context_valid
+        and loaded_models.issubset(required)
         and payload.get("status") == "HEALTHY"
         and payload.get("supervisor_pid") == lease_pid
         and payload.get("config_fingerprint") == config.fingerprint
