@@ -66,7 +66,7 @@ def test_experience_search_result_rejects_non_hit_values(value: object) -> None:
 
 
 @pytest.mark.parametrize("field", ["query_normalization_fingerprint", "active_generation_id"])
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "", "   "])
 def test_experience_search_result_rejects_non_text_metadata(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
         ExperienceSearchResult(**{field: value})
@@ -116,7 +116,7 @@ def test_experience_record_requires_analysis_snapshot_timestamp() -> None:
         "source_decision_fingerprint",
     ],
 )
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "", "   "])
 def test_experience_record_rejects_non_text_optional_identity(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
         ExperienceRecord(
@@ -139,7 +139,7 @@ def test_experience_hit_rejects_invalid_identity(value: object) -> None:
     "field",
     ["source_decision_id", "action", "feature_schema_version", "similarity_profile_version"],
 )
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "", "   "])
 def test_experience_hit_rejects_non_text_optional_identity(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
         ExperienceHit("exp-1", **{field: value})
@@ -326,7 +326,7 @@ def test_evidence_bundle_rejects_scalar_collections(field: str) -> None:
         EvidenceBundle(**{field: "not-a-sequence"})
 
 
-@pytest.mark.parametrize("value", [False, 0, [], {}])
+@pytest.mark.parametrize("value", [False, 0, [], {}, "", "   "])
 def test_orchestration_provenance_rejects_non_text_fingerprint(value: object) -> None:
     with pytest.raises(ValueError, match="query_normalization_fingerprint"):
         OrchestrationProvenance(query_normalization_fingerprint=value)

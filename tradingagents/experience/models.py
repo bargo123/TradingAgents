@@ -115,6 +115,12 @@ def _optional_text(value: Any, name: str) -> str | None:
     return value
 
 
+def _optional_nonempty_text(value: Any, name: str) -> str | None:
+    if value is None:
+        return None
+    return _required_text(value, name).strip()
+
+
 def _required_text(value: Any, name: str, *, max_length: int = 256) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > max_length:
         raise ValueError(f"{name} must be a non-empty bounded string")
@@ -236,7 +242,7 @@ class ExperienceRecord(Serializable):
             "analysis_timeframe",
             "source_decision_fingerprint",
         ):
-            _optional_text(getattr(self, name), name)
+            object.__setattr__(self, name, _optional_nonempty_text(getattr(self, name), name))
         if not isinstance(self.analysis_snapshot_timestamp, datetime):
             raise ValueError("analysis_snapshot_timestamp is required")
         object.__setattr__(
@@ -358,7 +364,7 @@ class ExperienceHit(Serializable):
             "feature_schema_version",
             "similarity_profile_version",
         ):
-            _optional_text(getattr(self, name), name)
+            object.__setattr__(self, name, _optional_nonempty_text(getattr(self, name), name))
         if self.trust_tier is not None:
             object.__setattr__(self, "trust_tier", TrustTier(self.trust_tier))
         for n in ("market_state", "timestamps", "outcome_availability", "provenance"):
@@ -390,12 +396,14 @@ class ExperienceSearchResult(Serializable):
         object.__setattr__(
             self,
             "query_normalization_fingerprint",
-            _optional_text(self.query_normalization_fingerprint, "query_normalization_fingerprint"),
+            _optional_nonempty_text(
+                self.query_normalization_fingerprint, "query_normalization_fingerprint"
+            ),
         )
         object.__setattr__(
             self,
             "active_generation_id",
-            _optional_text(self.active_generation_id, "active_generation_id"),
+            _optional_nonempty_text(self.active_generation_id, "active_generation_id"),
         )
         object.__setattr__(self, "candidate_count", _non_negative_int(self.candidate_count, "candidate_count"))
         object.__setattr__(
@@ -750,7 +758,9 @@ class OrchestrationProvenance(Serializable):
         object.__setattr__(
             self,
             "query_normalization_fingerprint",
-            _optional_text(self.query_normalization_fingerprint, "query_normalization_fingerprint"),
+            _optional_nonempty_text(
+                self.query_normalization_fingerprint, "query_normalization_fingerprint"
+            ),
         )
         for name in ("knowledge_requested", "experience_requested"):
             if not isinstance(getattr(self, name), bool):
