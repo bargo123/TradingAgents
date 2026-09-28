@@ -738,9 +738,7 @@ def _telemetry(result: Any) -> Mapping[str, Any]:
             result: dict[Any, Any] = {}
             for key, child in item.items():
                 if is_safe_count_key(key):
-                    if isinstance(child, bool) or not isinstance(child, (int, float)):
-                        continue
-                    if isinstance(child, float) and not math.isfinite(child):
+                    if type(child) is not int or child < 0:
                         continue
                     result[key] = child
                 elif not _privacy_forbidden(str(key)):

@@ -705,6 +705,17 @@ def test_replay_telemetry_redacts_camel_case_credentials_but_keeps_counts():
     }
 
 
+def test_replay_telemetry_rejects_fractional_token_counts():
+    class Result:
+        analysis_telemetry = {
+            "tokens_in": 12.5,
+            "tokens_out": -1,
+            "reasoning_tokens": 3,
+        }
+
+    assert _telemetry(Result()) == {"reasoning_tokens": 3}
+
+
 @pytest.mark.parametrize("value", ["apiKey", "accessToken", "authorization", "secret", "bearer"])
 def test_audit_privacy_rejects_credential_variants(value):
     assert _contains_forbidden(value)
