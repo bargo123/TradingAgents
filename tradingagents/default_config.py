@@ -3,6 +3,13 @@ import os
 
 _TRADINGAGENTS_HOME = os.path.join(os.path.expanduser("~"), ".tradingagents")
 
+
+def _env_path_or_default(name: str, default: str) -> str:
+    """Use a configured path unless the environment explicitly supplies blank text."""
+
+    value = os.getenv(name)
+    return value if value is not None and value.strip() else default
+
 # Single source of truth for env-var → config-key overrides. To expose
 # a new config key for environment-based override, add a row here — no
 # entry-point script changes required. Coercion is driven by the type
@@ -128,9 +135,16 @@ def _apply_env_overrides(config: dict) -> dict:
 
 DEFAULT_CONFIG = _apply_env_overrides({
     "project_dir": os.path.abspath(os.path.join(os.path.dirname(__file__), ".")),
-    "results_dir": os.getenv("TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")),
-    "data_cache_dir": os.getenv("TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")),
-    "memory_log_path": os.getenv("TRADINGAGENTS_MEMORY_LOG_PATH", os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md")),
+    "results_dir": _env_path_or_default(
+        "TRADINGAGENTS_RESULTS_DIR", os.path.join(_TRADINGAGENTS_HOME, "logs")
+    ),
+    "data_cache_dir": _env_path_or_default(
+        "TRADINGAGENTS_CACHE_DIR", os.path.join(_TRADINGAGENTS_HOME, "cache")
+    ),
+    "memory_log_path": _env_path_or_default(
+        "TRADINGAGENTS_MEMORY_LOG_PATH",
+        os.path.join(_TRADINGAGENTS_HOME, "memory", "trading_memory.md"),
+    ),
     # Optional cap on the number of resolved memory log entries. When set,
     # the oldest resolved entries are pruned once this limit is exceeded.
     # Pending entries are never pruned. None disables rotation entirely.

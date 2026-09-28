@@ -28,6 +28,20 @@ def test_no_env_uses_built_in_defaults(monkeypatch):
     assert dc.DEFAULT_CONFIG["checkpoint_enabled"] is False
 
 
+def test_empty_path_environment_values_use_built_in_defaults(monkeypatch):
+    dc = _reload_with_env(
+        monkeypatch,
+        TRADINGAGENTS_RESULTS_DIR="",
+        TRADINGAGENTS_CACHE_DIR="",
+        TRADINGAGENTS_MEMORY_LOG_PATH="",
+    )
+
+    home = dc._TRADINGAGENTS_HOME
+    assert dc.DEFAULT_CONFIG["results_dir"] == f"{home}\\logs"
+    assert dc.DEFAULT_CONFIG["data_cache_dir"] == f"{home}\\cache"
+    assert dc.DEFAULT_CONFIG["memory_log_path"] == f"{home}\\memory\\trading_memory.md"
+
+
 def test_string_overrides(monkeypatch):
     dc = _reload_with_env(
         monkeypatch,
