@@ -47,6 +47,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.news import get_forex_global_news
 from tradingagents.forex.profile import resolve_forex_profile
 from tradingagents.llm_clients import create_llm_client
+from tradingagents.path_utils import require_nonempty_path
 from tradingagents.reporting import write_report_tree
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
@@ -658,8 +659,11 @@ class TradingAgentsGraph:
         """
         if save_path is None:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            results_root = require_nonempty_path(
+                self.config.get("results_dir"), "results_dir"
+            )
             save_path = (
-                Path(self.config["results_dir"])
+                results_root
                 / "reports"
                 / f"{safe_ticker_component(ticker)}_{stamp}"
             )
@@ -774,7 +778,10 @@ class TradingAgentsGraph:
         # Save to file. Reject ticker values that would escape the
         # results directory when joined as a path component.
         safe_ticker = safe_ticker_component(self.ticker)
-        directory = Path(self.config["results_dir"]) / safe_ticker / "TradingAgentsStrategy_logs"
+        results_root = require_nonempty_path(
+            self.config.get("results_dir"), "results_dir"
+        )
+        directory = results_root / safe_ticker / "TradingAgentsStrategy_logs"
         directory.mkdir(parents=True, exist_ok=True)
 
         log_path = directory / f"full_states_log_{trade_date}.json"

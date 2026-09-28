@@ -55,3 +55,13 @@ def test_save_reports_defaults_under_results_dir(tmp_path):
     assert out.exists()
     assert out.parent.parent.name == "reports"  # results_dir/reports/AAPL_<stamp>/...
     assert out.parent.name.startswith("AAPL_")
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_save_reports_rejects_empty_results_dir(value):
+    with pytest.raises((TypeError, ValueError), match="results_dir"):
+        TradingAgentsGraph.save_reports(
+            SimpleNamespace(config={"results_dir": value}),
+            _state(),
+            "AAPL",
+        )
