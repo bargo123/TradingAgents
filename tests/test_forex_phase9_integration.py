@@ -678,6 +678,17 @@ def test_evidence_service_rejects_invalid_artifact_roots(value):
         )
 
 
+@pytest.mark.parametrize("value", [{}, False, 0, "invalid"])
+def test_evidence_service_rejects_invalid_policy(value):
+    with pytest.raises(TypeError, match="policy"):
+        EvidenceIntegrationService(
+            policy=value,
+            orchestrator_factory=None,
+            generation_provider=None,
+            provider_endpoint=None,
+        )
+
+
 @pytest.mark.parametrize(
     "value",
     [

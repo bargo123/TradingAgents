@@ -146,7 +146,11 @@ class MT5Provider:
         self._terminal_path = terminal_path
         self._initialized = False
         self._broker_clock = broker_clock
-        self._clock_config = clock_config or BrokerClockConfig()
+        self._clock_config = (
+            BrokerClockConfig() if clock_config is None else clock_config
+        )
+        if not isinstance(self._clock_config, BrokerClockConfig):
+            raise TypeError("clock_config must be BrokerClockConfig")
         self._clock_now = clock_now or (lambda: datetime.now(timezone.utc))
 
     @property

@@ -15,6 +15,11 @@ from tradingagents.forex.supervisor import ForexSupervisor
 UTC = timezone.utc
 
 
+def test_supervisor_rejects_invalid_runtime_config() -> None:
+    with pytest.raises(TypeError, match="runtime_config"):
+        ForexSupervisor(runtime_config=False)
+
+
 def test_supervisor_rejects_invalid_restart_controls_before_runtime_start():
     constructed = []
 

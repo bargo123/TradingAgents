@@ -810,6 +810,8 @@ class EvidenceIntegrationService:
         process_factory: Callable[..., Any] | None = None,
         artifact_roots: Mapping[str, str | Path] | None = None,
     ) -> None:
+        if policy is not None and not isinstance(policy, EvidenceQueryPolicy):
+            raise TypeError("policy must be EvidenceQueryPolicy")
         self.policy = policy
         self.orchestrator_factory = orchestrator_factory
         self.generation_provider = generation_provider

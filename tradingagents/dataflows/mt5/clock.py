@@ -258,7 +258,9 @@ def calibrate_broker_clock(
 ) -> Mt5BrokerClock:
     """Select one validated broker offset from bounded live observations."""
 
-    resolved_config = config or BrokerClockConfig()
+    resolved_config = BrokerClockConfig() if config is None else config
+    if not isinstance(resolved_config, BrokerClockConfig):
+        raise TypeError("config must be BrokerClockConfig")
     samples = tuple(samples)
     if not samples:
         return Mt5BrokerClock(

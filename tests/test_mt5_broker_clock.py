@@ -82,6 +82,14 @@ def test_calibration_fails_closed_for_unavailable_samples() -> None:
     assert clock.offset_seconds is None
 
 
+@pytest.mark.parametrize("config", [{}, False, 0])
+def test_calibration_rejects_invalid_config(config) -> None:
+    with pytest.raises(TypeError, match="BrokerClockConfig"):
+        calibrate_broker_clock(
+            [], server="Test", symbol="EURUSD", config=config
+        )
+
+
 def test_calibration_fails_closed_for_ambiguous_candidates() -> None:
     config = BrokerClockConfig(max_tick_age_seconds=1_400)
     clock = calibrate_broker_clock(

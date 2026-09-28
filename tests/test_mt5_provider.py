@@ -208,6 +208,11 @@ def test_initialize_success_and_shutdown(fake_api):
     assert provider.is_connected() is False
 
 
+def test_provider_rejects_invalid_clock_config(fake_api):
+    with pytest.raises(TypeError, match="BrokerClockConfig"):
+        MT5Provider(api=fake_api, clock_config=False)
+
+
 def test_shutdown_clears_clock_and_is_reusable_after_reinitialize(fake_api):
     provider = initialized_provider(fake_api)
     assert provider.broker_clock is not None

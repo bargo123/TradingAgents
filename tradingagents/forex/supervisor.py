@@ -59,7 +59,11 @@ class ForexSupervisor:
         runtime_factory: Callable[..., DedicatedOllamaRuntime] = DedicatedOllamaRuntime,
         store_factory: Callable[..., WatcherStore] = WatcherStore,
     ) -> None:
-        self.runtime_config = runtime_config or ForexShadowRuntimeConfig()
+        self.runtime_config = (
+            ForexShadowRuntimeConfig() if runtime_config is None else runtime_config
+        )
+        if not isinstance(self.runtime_config, ForexShadowRuntimeConfig):
+            raise TypeError("runtime_config must be ForexShadowRuntimeConfig")
         self.runtime_factory = runtime_factory
         self.store_factory = store_factory
 
