@@ -9,6 +9,7 @@ from typing import TypedDict
 from langgraph.graph import END, StateGraph
 
 from tradingagents.graph.checkpointer import (
+    _db_path,
     checkpoint_step,
     clear_checkpoint,
     get_checkpointer,
@@ -77,6 +78,11 @@ class TestCheckpointResume(unittest.TestCase):
 
         # analyst added 1, trader added 10 → 11
         self.assertEqual(result["count"], 11)
+
+    def test_empty_checkpoint_root_is_rejected(self):
+        for value in ("", "   ", Path("."), Path("   ")):
+            with self.assertRaises((TypeError, ValueError)):
+                _db_path(value, self.ticker)
 
     def test_clear_checkpoint_allows_fresh_start(self):
         """After clearing, the graph starts from scratch."""

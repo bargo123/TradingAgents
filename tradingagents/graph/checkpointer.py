@@ -14,13 +14,14 @@ from pathlib import Path
 from langgraph.checkpoint.sqlite import SqliteSaver
 
 from tradingagents.dataflows.utils import safe_ticker_component
+from tradingagents.path_utils import require_nonempty_path
 
 
 def _db_path(data_dir: str | Path, ticker: str) -> Path:
     """Return the SQLite checkpoint DB path for a ticker."""
     # Reject ticker values that would escape the checkpoints directory.
     safe = safe_ticker_component(ticker).upper()
-    p = Path(data_dir) / "checkpoints"
+    p = require_nonempty_path(data_dir, "checkpoint data directory") / "checkpoints"
     p.mkdir(parents=True, exist_ok=True)
     return p / f"{safe}.db"
 
@@ -72,7 +73,7 @@ def checkpoint_step(data_dir: str | Path, ticker: str, date: str, signature: str
 
 def clear_all_checkpoints(data_dir: str | Path) -> int:
     """Remove all checkpoint DBs. Returns number of files deleted."""
-    cp_dir = Path(data_dir) / "checkpoints"
+    cp_dir = require_nonempty_path(data_dir, "checkpoint data directory") / "checkpoints"
     if not cp_dir.exists():
         return 0
     dbs = list(cp_dir.glob("*.db"))
