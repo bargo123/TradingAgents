@@ -15,6 +15,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from numbers import Real
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -287,8 +288,18 @@ class _EvaluationRow:
 
 
 def _readonly_connection(path: Path, busy_timeout_seconds: float) -> sqlite3.Connection:
-    if busy_timeout_seconds <= 0 or not math.isfinite(busy_timeout_seconds):
+    try:
+        timeout = float(busy_timeout_seconds)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("busy_timeout_seconds must be a positive finite number") from exc
+    if (
+        isinstance(busy_timeout_seconds, bool)
+        or not isinstance(busy_timeout_seconds, Real)
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
         raise ValueError("busy_timeout_seconds must be a positive finite number")
+    busy_timeout_seconds = timeout
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise HoldAuditReadError(f"database does not exist: {resolved}")
