@@ -211,6 +211,24 @@ def test_runner_rejects_empty_data_cache_dir(value):
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("provider_factory", False),
+        ("graph_factory", False),
+        ("evidence_service_factory", False),
+        ("evidence_audit_store_factory", False),
+        ("store", False),
+    ],
+)
+def test_runner_rejects_invalid_injected_dependencies(tmp_path, field, value):
+    with pytest.raises(TypeError, match=field):
+        ForexShadowRunner(
+            **{field: value},
+            config={"data_cache_dir": str(tmp_path)},
+        )
+
+
 def test_runner_audit_factory_rejects_mutated_empty_data_cache_dir(tmp_path):
     runner, _, _, _ = _make_runner(tmp_path, {})
     runner.config["data_cache_dir"] = "   "

@@ -5,6 +5,7 @@ from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,8 +110,28 @@ def test_evaluation_config_defaults_and_validation() -> None:
 def test_evaluator_rejects_falsey_invalid_config(invalid_config) -> None:
     with pytest.raises(TypeError, match="EvaluationConfig"):
         ShadowOutcomeEvaluator(
-            decision_store=object(), evaluation_store=object(), config=invalid_config
+            decision_store=object(),
+            evaluation_store=SimpleNamespace(
+                list_for_decision=lambda _decision_id: [],
+                upsert=lambda _records: None,
+            ),
+            config=invalid_config,
         )
+
+
+@pytest.mark.parametrize("field", ["evaluation_store", "provider_factory"])
+def test_evaluator_rejects_invalid_injected_dependencies(field) -> None:
+    kwargs = {
+        "decision_store": SimpleNamespace(path=Path("evaluation-test.db")),
+        "evaluation_store": SimpleNamespace(
+            list_for_decision=lambda _decision_id: [],
+            upsert=lambda _records: None,
+        ),
+        "provider_factory": lambda **_kwargs: None,
+    }
+    kwargs[field] = False
+    with pytest.raises(TypeError, match=field):
+        ShadowOutcomeEvaluator(**kwargs)
 
 
 def test_source_context_eligibility_is_separate_from_training() -> None:

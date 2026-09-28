@@ -502,7 +502,17 @@ class ForexShadowRunner:
         evidence_service_factory: Callable[..., Any] | None = None,
         evidence_audit_store_factory: Callable[..., Any] | None = None,
     ) -> None:
-        self.provider_factory = provider_factory or self._default_provider_factory
+        for name, factory in (
+            ("provider_factory", provider_factory),
+            ("graph_factory", graph_factory),
+            ("evidence_service_factory", evidence_service_factory),
+            ("evidence_audit_store_factory", evidence_audit_store_factory),
+        ):
+            if factory is not None and not callable(factory):
+                raise TypeError(f"{name} must be callable")
+        self.provider_factory = (
+            self._default_provider_factory if provider_factory is None else provider_factory
+        )
         self.graph_factory = graph_factory
         # Keep programmatic/CLI overrides partial and non-secret while still
         # supplying every setting required by TradingAgentsGraph.
@@ -514,9 +524,12 @@ class ForexShadowRunner:
             self.config.get("data_cache_dir", "data_cache"), "data_cache_dir"
         )
         self.config["data_cache_dir"] = str(data_cache_dir)
-        self.store = store or ShadowDecisionStore(
-            data_cache_dir / "shadow_decisions.db"
-        )
+        if store is None:
+            self.store = ShadowDecisionStore(data_cache_dir / "shadow_decisions.db")
+        elif not callable(getattr(store, "record", None)):
+            raise TypeError("store must provide a callable record method")
+        else:
+            self.store = store
         # Retained as a compatibility convenience; run() is the public place
         # to choose analysts and defaults to exactly market/news.
         if isinstance(selected_analysts, (str, bytes, bytearray, Mapping)):

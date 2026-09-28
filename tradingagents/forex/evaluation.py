@@ -1129,13 +1129,27 @@ class ShadowOutcomeEvaluator:
         provider_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.decision_store = decision_store
-        self.evaluation_store = evaluation_store or ShadowEvaluationStore(
-            decision_store.path
-        )
+        if evaluation_store is None:
+            self.evaluation_store = ShadowEvaluationStore(decision_store.path)
+        elif not all(
+            callable(getattr(evaluation_store, name, None))
+            for name in ("list_for_decision", "upsert")
+        ):
+            raise TypeError(
+                "evaluation_store must provide callable list_for_decision and upsert"
+            )
+        else:
+            self.evaluation_store = evaluation_store
         self.config = EvaluationConfig() if config is None else config
         if not isinstance(self.config, EvaluationConfig):
             raise TypeError("config must be EvaluationConfig")
-        self.provider_factory = provider_factory or self._default_provider_factory
+        if provider_factory is not None and not callable(provider_factory):
+            raise TypeError("provider_factory must be callable")
+        self.provider_factory = (
+            self._default_provider_factory
+            if provider_factory is None
+            else provider_factory
+        )
 
     @staticmethod
     def _default_provider_factory(terminal_path: str | None = None) -> Any:
