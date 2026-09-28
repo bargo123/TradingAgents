@@ -440,6 +440,22 @@ def test_summary_exposes_evaluation_quality_counts_without_training_labels(tmp_p
     assert "training_eligible" not in summary
 
 
+@pytest.mark.parametrize("source_run_id", [False, 0, "", " "])
+def test_claim_opportunity_rejects_invalid_source_run_id(tmp_path, source_run_id):
+    store = WatcherStore(tmp_path / "watch.db")
+    acquired = store.acquire_lease(owner(), NOW)
+    item = _opportunity("invalid-source-id")
+    store.observe_opportunity(item, NOW)
+
+    with pytest.raises(ValueError, match="source_run_id"):
+        store.claim_opportunity(
+            acquired.owner_token,
+            item.opportunity_key,
+            NOW,
+            source_run_id=source_run_id,
+        )
+
+
 @pytest.mark.parametrize("counters", [{"mt5": 1.5}, {"analysis": True}, {"unknown": 1}])
 def test_update_circuit_rejects_invalid_counter_contract(tmp_path, counters):
     store = WatcherStore(tmp_path / "watch.db")

@@ -858,7 +858,10 @@ class WatcherStore:
         current = self.active_lease(now)
         if current is not None and owner_token != current.owner_token and opportunity_key == current.owner_token:
             owner_token, opportunity_key = opportunity_key, owner_token
-        source_run_id = source_run_id or str(uuid.uuid4())
+        if source_run_id is None:
+            source_run_id = str(uuid.uuid4())
+        elif not isinstance(source_run_id, str) or not source_run_id.strip():
+            raise ValueError("source_run_id must be a non-empty string")
         run_id = str(uuid.uuid4())
         self.initialize()
         with self._transaction(immediate=True) as conn:

@@ -159,9 +159,13 @@ def _fresh_reference_quote_until_post_completion(
         raise ValueError("reference quote poll interval must be finite and non-negative")
     if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or max_attempts <= 0:
         raise ValueError("reference quote max attempts must be a positive integer")
+    if monotonic is not None and not callable(monotonic):
+        raise TypeError("monotonic must be callable")
+    if sleeper is not None and not callable(sleeper):
+        raise TypeError("sleeper must be callable")
 
-    clock = monotonic or time.monotonic
-    wait = sleeper or time.sleep
+    clock = time.monotonic if monotonic is None else monotonic
+    wait = time.sleep if sleeper is None else sleeper
     started = clock()
     attempts = 0
     waited_seconds = 0.0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
@@ -1056,6 +1057,27 @@ def _poll_reference(provider, *, clock, timeout=2.0, interval=0.5, max_attempts=
         monotonic=clock.monotonic,
         sleeper=clock.sleep,
     )
+
+
+@pytest.mark.parametrize("field", ["monotonic", "sleeper"])
+def test_reference_poll_rejects_invalid_clock_hooks(field) -> None:
+    events: list[str] = []
+    provider = _TemporalProvider(events, spread_timestamps=[COMPLETION_TIMESTAMP])
+    kwargs = {
+        "monotonic": time.monotonic,
+        "sleeper": time.sleep,
+    }
+    kwargs[field] = False
+    with pytest.raises(TypeError, match=field):
+        runner_module._fresh_reference_quote_until_post_completion(
+            provider,
+            "EURUSDm",
+            COMPLETION_TIMESTAMP,
+            timeout_seconds=1.0,
+            poll_interval_seconds=0.1,
+            max_attempts=2,
+            **kwargs,
+        )
 
 
 def test_reference_poll_retries_older_tick_until_post_completion() -> None:
