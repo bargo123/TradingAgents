@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
@@ -52,6 +53,17 @@ def test_config_rejects_source_or_artifact_policy_violations(tmp_path):
 
     with pytest.raises(ValueError, match="offline"):
         KnowledgeConfig(source_root=source, artifact_root=tmp_path / "out", offline=False)
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_config_rejects_empty_source_and_artifact_roots(tmp_path, value):
+    source = tmp_path / "source"
+    source.mkdir()
+
+    with pytest.raises((TypeError, ValueError), match="source_root"):
+        KnowledgeConfig(source_root=value, artifact_root=tmp_path / "out-source")
+    with pytest.raises((TypeError, ValueError), match="artifact_root"):
+        KnowledgeConfig(source_root=source, artifact_root=value)
 
 
 @pytest.mark.parametrize("worker_count", (0, 7))

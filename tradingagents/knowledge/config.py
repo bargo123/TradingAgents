@@ -10,13 +10,15 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 _DEFAULT_SOURCE_ROOT = Path(r"C:\Users\Zaid barghouthi\Downloads\new books")
 _DEFAULT_ARTIFACT_ROOT = Path(__file__).resolve().parents[2] / "data_cache" / "knowledge"
 
 
 def _resolved_path(value: str | Path, name: str) -> Path:
     try:
-        return Path(value).expanduser().resolve(strict=False)
+        return require_nonempty_path(value, name).expanduser().resolve(strict=False)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be a local filesystem path") from exc
 
