@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .errors import (
     SourceDatabaseUnavailableError,
     SourceSchemaIncompatibleError,
@@ -168,7 +170,7 @@ def _utc(value: Any, field: str) -> Any:
 
 class ReadonlySourceReader:
     def __init__(self, path: str | os.PathLike[str]) -> None:
-        self.path = Path(path).expanduser().resolve()
+        self.path = require_nonempty_path(path, "path").expanduser().resolve()
         self._connection: sqlite3.Connection | None = None
 
     @property

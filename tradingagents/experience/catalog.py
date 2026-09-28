@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .diagnostics import diagnostic_label
 from .errors import SourceDecisionConflictError
 from .models import ExperienceRecord, TrustTier
@@ -91,7 +93,7 @@ class ExperienceCatalog:
     """Owns only ``artifact_root/catalog.sqlite3`` and never opens source DBs."""
 
     def __init__(self, artifact_root: str | Path):
-        self.artifact_root = Path(artifact_root).resolve()
+        self.artifact_root = require_nonempty_path(artifact_root, "artifact_root").resolve()
         self.artifact_root.mkdir(parents=True, exist_ok=True)
         self.database_path = self.artifact_root / "catalog.sqlite3"
         self._transaction_connection: sqlite3.Connection | None = None
