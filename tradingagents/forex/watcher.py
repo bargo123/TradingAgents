@@ -275,8 +275,10 @@ def _accepts_keyword(callable_value: Any, keyword: str) -> bool | None:
 def safe_effective_config(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Return an allow-listed, JSON-safe config without credentials."""
 
+    if config is not None and not isinstance(config, Mapping):
+        raise TypeError("config must be a mapping")
     merged: dict[str, Any] = dict(DEFAULT_CONFIG)
-    if config:
+    if config is not None:
         merged.update(dict(config))
     safe: dict[str, Any] = {}
     for key, value in merged.items():
@@ -624,6 +626,8 @@ class ReadOnlyMarketProbe:
     """One short read-only provider lifecycle used as an analysis preflight."""
 
     def __init__(self, provider_factory: Callable[..., Any], terminal_path: str | None = None):
+        if not callable(provider_factory):
+            raise TypeError("provider_factory must be callable")
         self.provider_factory = provider_factory
         self.terminal_path = terminal_path
         self.calls: list[str] = []

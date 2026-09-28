@@ -195,6 +195,12 @@ def test_safe_effective_config_excludes_credentials():
     assert "secret" not in repr(safe)
 
 
+@pytest.mark.parametrize("value", [False, 0, [], ""])
+def test_safe_effective_config_rejects_invalid_config(value):
+    with pytest.raises(TypeError, match="config"):
+        safe_effective_config(value)
+
+
 def test_safe_effective_config_strips_backend_url_userinfo():
     safe = safe_effective_config(
         {"backend_url": "http://user:secret@127.0.0.1:11434/v1?token=also-secret"}
@@ -253,6 +259,11 @@ def test_operation_gate_rejects_nested_or_concurrent_operation():
     gate = SerializedMt5OperationGate()
     with gate.acquire("runner"), pytest.raises(Mt5OperationBusy), gate.acquire("evaluator"):
         pass
+
+
+def test_market_probe_rejects_invalid_provider_factory():
+    with pytest.raises(TypeError, match="provider_factory"):
+        ReadOnlyMarketProbe(False)
 
 
 class FakeSubmitter:
