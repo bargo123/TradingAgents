@@ -200,6 +200,24 @@ def _make_runner(tmp_path: Path, final_state: dict):
     return runner, provider, graph, store
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_runner_rejects_empty_data_cache_dir(value):
+    with pytest.raises((TypeError, ValueError), match="data_cache_dir"):
+        ForexShadowRunner(
+            provider_factory=lambda: None,
+            graph_factory=lambda **_kwargs: None,
+            config={"data_cache_dir": value},
+        )
+
+
+def test_runner_audit_factory_rejects_mutated_empty_data_cache_dir(tmp_path):
+    runner, _, _, _ = _make_runner(tmp_path, {})
+    runner.config["data_cache_dir"] = "   "
+
+    with pytest.raises(ValueError, match="data_cache_dir"):
+        runner._default_evidence_audit_store_factory(config=runner.config)
+
+
 def test_runner_fetches_one_snapshot_and_persists_normalized_decision(tmp_path):
     runner, provider, graph, store = _make_runner(
         tmp_path,

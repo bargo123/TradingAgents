@@ -42,6 +42,7 @@ from tradingagents.forex.shadow import (
 )
 from tradingagents.forex.telemetry import capture_state_trace, stage_timings_from_trace
 from tradingagents.forex.tools import MT5ToolAdapter
+from tradingagents.path_utils import require_nonempty_path
 
 
 def _utc_now() -> datetime:
@@ -509,9 +510,12 @@ class ForexShadowRunner:
         if config is not None and not isinstance(config, Mapping):
             raise ValueError("config must be a mapping")
         self.config.update({} if config is None else config)
+        data_cache_dir = require_nonempty_path(
+            self.config.get("data_cache_dir", "data_cache"), "data_cache_dir"
+        )
+        self.config["data_cache_dir"] = str(data_cache_dir)
         self.store = store or ShadowDecisionStore(
-            Path(self.config.get("data_cache_dir", "data_cache"))
-            / "shadow_decisions.db"
+            data_cache_dir / "shadow_decisions.db"
         )
         # Retained as a compatibility convenience; run() is the public place
         # to choose analysts and defaults to exactly market/news.
@@ -669,7 +673,10 @@ class ForexShadowRunner:
 
     def _default_evidence_audit_store_factory(self, **kwargs: Any) -> EvidenceAuditStore:
         config = kwargs.get("config", self.config)
-        root = Path(config.get("data_cache_dir", "data_cache")) / "evidence_runtime"
+        data_cache_dir = require_nonempty_path(
+            config.get("data_cache_dir", "data_cache"), "data_cache_dir"
+        )
+        root = data_cache_dir / "evidence_runtime"
         return EvidenceAuditStore(root / "evidence_audit.sqlite3")
 
     @staticmethod
@@ -1190,7 +1197,10 @@ class ForexShadowRunner:
                 )
             try:
                 audit_factory = self.evidence_audit_store_factory or self._default_evidence_audit_store_factory
-                audit_path = Path(self.config.get("data_cache_dir", "data_cache")) / "evidence_runtime" / "evidence_audit.sqlite3"
+                data_cache_dir = require_nonempty_path(
+                    self.config.get("data_cache_dir", "data_cache"), "data_cache_dir"
+                )
+                audit_path = data_cache_dir / "evidence_runtime" / "evidence_audit.sqlite3"
                 audit_store = self._call_factory(
                     audit_factory,
                     config=self.config,
