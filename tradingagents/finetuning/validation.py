@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .artifacts import validate_run_hashes
 from .fingerprints import directory_hash
 from .models import ADAPTER_PACKAGE_VERSION, RUN_MANIFEST_VERSION, Phase11Status, ValidationReport
@@ -262,7 +264,10 @@ def _normalise_base_name(name: str) -> str:
 
 def validate_run(path: str | Path) -> ValidationReport:
     """Validate one immutable run and return a bounded fail-closed report."""
-    root = Path(path).resolve()
+    try:
+        root = require_nonempty_path(path, "run artifact path").resolve()
+    except (TypeError, ValueError):
+        return ValidationReport(False, Phase11Status.ADAPTER_INVALID, ("run artifact path is invalid",))
     errors: list[str] = []
     warnings: list[str] = []
     try:

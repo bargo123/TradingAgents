@@ -19,6 +19,7 @@ from tradingagents.datasets.models import (
     SPLIT_POLICY_VERSION,
     CanonicalExampleV1,
 )
+from tradingagents.path_utils import require_nonempty_path
 
 from .errors import EmptyEligibleSetError, Phase10InvalidError
 from .models import DatasetBinding
@@ -114,7 +115,10 @@ class Phase10Generation:
 
     @classmethod
     def open(cls, path: str | Path) -> Phase10Generation:
-        root = Path(path).resolve()
+        try:
+            root = require_nonempty_path(path, "Phase 10 generation path").resolve()
+        except (TypeError, ValueError) as exc:
+            raise Phase10InvalidError("Phase 10 generation path must be non-empty") from exc
         try:
             report = writer.validate_generation(root)
             valid = bool(getattr(report, "valid", False))

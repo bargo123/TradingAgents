@@ -47,6 +47,12 @@ def test_invalid_or_empty_generation_fails_closed(tmp_path: Path) -> None:
         Phase10Generation.open(_generation(tmp_path, empty=True))
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_empty_generation_path_fails_closed(value) -> None:
+    with pytest.raises(Phase10InvalidError, match="generation path"):
+        Phase10Generation.open(value)
+
+
 def test_validator_is_called_and_test_rows_are_not_consumed(tmp_path: Path, monkeypatch) -> None:
     path = _generation(tmp_path)
     called = []

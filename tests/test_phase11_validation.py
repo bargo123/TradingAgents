@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tradingagents.finetuning import validation
 from tradingagents.finetuning.artifacts import publish_run
 
@@ -49,6 +51,13 @@ def test_valid_tiny_adapter_passes_without_optional_dependencies(tmp_path, monke
     monkeypatch.setattr(validation, "_reload_smoke", lambda *args: None)
     report = validation.validate_run(_run(tmp_path))
     assert report.valid
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_validate_run_rejects_empty_path(value):
+    report = validation.validate_run(value)
+    assert report.valid is False
+    assert report.status.value == "ADAPTER_INVALID"
 
 
 def test_tampered_adapter_is_invalid(tmp_path, monkeypatch):

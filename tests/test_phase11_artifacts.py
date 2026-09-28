@@ -60,6 +60,11 @@ def test_publish_run_rejects_empty_artifact_root(value):
         publish_run(value, run_id="empty-root", config={}, dataset={}, metrics={})
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_validate_run_hashes_rejects_empty_path(value):
+    assert validate_run_hashes(value) is False
+
+
 def test_publish_layout_hashes_and_create_only(tmp_path: Path) -> None:
     prepared = tmp_path / "train.sft.jsonl"
     prepared.write_text('{"example_id":"x"}\n', encoding="utf-8")

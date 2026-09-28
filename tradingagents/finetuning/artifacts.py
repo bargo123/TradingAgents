@@ -105,8 +105,8 @@ def publish_run(root: str | Path, *, run_id: str | None = None,
 
 
 def validate_run_hashes(path: str | Path) -> bool:
-    root = Path(path).resolve()
     try:
+        root = require_nonempty_path(path, "run artifact path").resolve()
         manifest = json.loads((root / "run_manifest.json").read_text(encoding="utf-8"))
         if not isinstance(manifest, Mapping):
             return False
