@@ -325,8 +325,8 @@ def main(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = build_parser().parse_args(argv)
-    reader = snapshot_reader or read_dashboard_snapshot
-    output = console or Console(legacy_windows=False)
+    reader = read_dashboard_snapshot if snapshot_reader is None else snapshot_reader
+    output = Console(legacy_windows=False) if console is None else console
     last_snapshot: DashboardSnapshot | None = None
     warning: str | None = None
 

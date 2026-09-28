@@ -408,6 +408,37 @@ def test_once_cli_renders_and_exits(tmp_path: Path, capsys) -> None:
     assert "FOREX SHADOW COLLECTION DASHBOARD" in capsys.readouterr().out
 
 
+def test_once_cli_preserves_falsey_snapshot_reader(tmp_path: Path, monkeypatch) -> None:
+    path = _init_db(tmp_path)
+    from cli import forex_dashboard
+    from tradingagents.forex.dashboard import read_dashboard_snapshot
+
+    snapshot = read_dashboard_snapshot(path)
+
+    class FalseReader:
+        def __bool__(self):
+            return False
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, _path):
+            self.calls += 1
+            return snapshot
+
+    reader = FalseReader()
+    monkeypatch.setattr(
+        forex_dashboard,
+        "read_dashboard_snapshot",
+        lambda _path: (_ for _ in ()).throw(AssertionError("falsey reader was ignored")),
+    )
+
+    assert forex_dashboard.main(
+        ["--db-path", str(path), "--once"], snapshot_reader=reader
+    ) == 0
+    assert reader.calls == 1
+
+
 def test_live_cli_keeps_last_snapshot_after_bounded_read_failure(tmp_path: Path) -> None:
     path = _init_db(tmp_path)
     from cli.forex_dashboard import main
