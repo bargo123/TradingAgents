@@ -362,6 +362,11 @@ class ShadowTradeDecision:
             raise ValueError("source_run_id must be a non-empty string when provided")
         if self.normalization_status not in ("NORMALIZED", "FAILED"):
             raise ValueError("normalization_status must be NORMALIZED or FAILED")
+        if self.normalization_status == "NORMALIZED":
+            if self.normalization_error is not None:
+                raise ValueError("normalization_error must be None for normalized decisions")
+        elif not isinstance(self.normalization_error, str) or not self.normalization_error.strip():
+            raise ValueError("normalization_error is required for failed decisions")
         if self.decision_context_status not in ("COMPLETE", "INCOMPLETE"):
             raise ValueError("decision_context_status must be COMPLETE or INCOMPLETE")
         if self.future_evaluation_status not in ("PENDING", "RESOLVED"):

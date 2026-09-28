@@ -289,6 +289,20 @@ def test_shadow_decision_rejects_executed_true_and_invalid_status() -> None:
 
 
 @pytest.mark.parametrize(
+    "overrides",
+    [
+        {"normalization_status": "NORMALIZED", "normalization_error": "unexpected"},
+        {"action": None, "normalization_status": "FAILED", "normalization_error": None},
+        {"action": None, "normalization_status": "FAILED", "normalization_error": ""},
+        {"action": None, "normalization_status": "FAILED", "normalization_error": 1},
+    ],
+)
+def test_shadow_decision_requires_consistent_normalization_diagnostic(overrides) -> None:
+    with pytest.raises(ValueError, match="normalization_error"):
+        make_decision(**overrides)
+
+
+@pytest.mark.parametrize(
     ("field", "value"),
     (
         ("requested_symbol", " "),
