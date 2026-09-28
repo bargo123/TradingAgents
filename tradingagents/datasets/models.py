@@ -162,6 +162,8 @@ class DatasetConfig(Contract):
     allow_empty: bool = True
 
     def __post_init__(self):
+        if isinstance(self.source_db_paths, (str, bytes, bytearray, Mapping)):
+            raise DatasetConfigError("source database paths must be a sequence")
         try:
             paths = tuple(
                 require_nonempty_path(p, "source database path").resolve()

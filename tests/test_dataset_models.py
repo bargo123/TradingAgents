@@ -91,6 +91,12 @@ def test_config_rejects_empty_storage_paths(tmp_path, field):
         DatasetConfig(**values)
 
 
+@pytest.mark.parametrize("value", ["source.sqlite", b"source.sqlite", {"path": "source.sqlite"}])
+def test_config_rejects_scalar_source_database_collection(value, tmp_path):
+    with pytest.raises(DatasetConfigError, match="source database"):
+        DatasetConfig(value, tmp_path / "p8", None, tmp_path / "out")
+
+
 def test_refs_rejected_must_be_structured_with_closed_reason():
     with pytest.raises(ValueError, match="refs_rejected"):
         EvidenceObservation(refs_rejected=("K1",))
