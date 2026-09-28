@@ -7,6 +7,7 @@ import math
 import socket
 import sys
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -143,6 +144,14 @@ def test_embedding_provider_rejects_wrong_dimension_and_non_finite_values():
     non_finite = FakeEmbeddingProvider(dimensions=3, vectors=((1.0, math.nan, 3.0),))
     with pytest.raises(EmbeddingContractError, match="finite"):
         non_finite.embed(("OFI",))
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_embedding_artifact_store_rejects_empty_root(value):
+    from tradingagents.knowledge.embeddings import EmbeddingArtifactStore
+
+    with pytest.raises((TypeError, ValueError), match="root"):
+        EmbeddingArtifactStore(value)
 
 
 def test_embedding_cache_skips_repeat_work_only_for_matching_complete_model_spec(tmp_path):

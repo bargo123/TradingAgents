@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .identity import document_id_for
 from .models import ContentType, DiscoveredResource, DocumentMetadata, ParsedBlock, ParsedDocument
 from .parser import DocumentParser, ParseFailure, ParserDependencyUnavailable
@@ -106,7 +108,7 @@ class CachedPdfiumParser:
     cache_schema = "pdfium-parse-cache-v1"
 
     def __init__(self, cache_root: str | Path, parser: DocumentParser | None = None) -> None:
-        self.cache_root = Path(cache_root)
+        self.cache_root = require_nonempty_path(cache_root, "cache_root")
         self.parser = parser or PdfiumParser()
         self.cache_root.mkdir(parents=True, exist_ok=True)
 

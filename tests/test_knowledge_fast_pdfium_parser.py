@@ -8,6 +8,8 @@ import types
 from dataclasses import dataclass
 from pathlib import Path
 
+import pytest
+
 from tradingagents.knowledge.fast_pdfium_parser import CachedPdfiumParser, PdfiumParser
 from tradingagents.knowledge.identity import resource_id_for
 from tradingagents.knowledge.models import (
@@ -92,6 +94,12 @@ def test_image_only_document_is_needs_ocr_without_generated_text(tmp_path, monke
     assert decision.state is IngestionState.NEEDS_OCR
     assert document.text_blocks == ()
     assert document.parser_provenance["ocr"] is False
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_cached_pdfium_parser_rejects_empty_cache_root(value):
+    with pytest.raises((TypeError, ValueError), match="cache_root"):
+        CachedPdfiumParser(value, parser=object())
 
 
 def test_cached_pdfium_parser_persists_and_reuses_validated_document(tmp_path):

@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .config import KnowledgeConfig
 from .models import ChunkRecord, EmbeddingSpec
 
@@ -480,7 +482,7 @@ class EmbeddingArtifactStore:
     """One exact document-vector artifact per model/version/specification."""
 
     def __init__(self, root: str | Path) -> None:
-        self.root = Path(root)
+        self.root = require_nonempty_path(root, "embedding artifact root")
 
     def load_or_compute(
         self,
