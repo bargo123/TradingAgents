@@ -9,6 +9,19 @@ from cli.forex_evaluate import build_parser, main
 from tradingagents.forex.watch_store import LeaseOwner, WatcherStore
 
 
+class _FalseCallable:
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def __bool__(self):
+        return False
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.value(*args, **kwargs) if callable(self.value) else self.value
+
+
 def _fake_result() -> SimpleNamespace:
     decision = SimpleNamespace(
         decision_id="decision-cli-001",
@@ -77,6 +90,27 @@ def test_forex_evaluate_cli_labels_bases_and_reports_zero_llm_calls(capsys, tmp_
     assert "LLM CALLS: 0" in output
     assert calls == [("construct", 45), ("decision-cli-001", "terminal.exe")]
     assert not (tmp_path / "evaluate.db").exists()
+
+
+def test_forex_evaluate_preserves_falsey_evaluator_factory(monkeypatch, tmp_path) -> None:
+    class FakeEvaluator:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def evaluate_decision(self, decision_id, *, now=None, terminal_path=None):
+            del decision_id, now, terminal_path
+            return _fake_result()
+
+    factory = _FalseCallable(FakeEvaluator)
+    monkeypatch.setattr(
+        "cli.forex_evaluate.ShadowOutcomeEvaluator",
+        lambda **_: (_ for _ in ()).throw(AssertionError("falsey factory was ignored")),
+    )
+    assert main(
+        ["--decision-id", "decision-cli-001", "--db-path", str(tmp_path / "evaluate.db")],
+        evaluator_factory=factory,
+    ) == 0
+    assert factory.calls == 1
 
 
 def test_forex_evaluate_cli_returns_nonzero_on_provider_failure(capsys) -> None:

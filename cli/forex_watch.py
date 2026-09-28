@@ -210,7 +210,8 @@ def _watcher_lease_is_active(
     now: datetime,
     store_factory: Any | None = None,
 ) -> bool:
-    store = (store_factory or WatcherStore)(db_path)
+    factory = WatcherStore if store_factory is None else store_factory
+    store = factory(db_path)
     reader = getattr(store, "read_only_active_lease", None)
     lease = reader(now) if callable(reader) else store.active_lease(now)
     return lease is not None and lease.lease_expires_at > now
@@ -293,7 +294,8 @@ def main(
     args = build_parser().parse_args(argv)
     if args.command == "status":
         try:
-            store = (store_factory or WatcherStore)(Path(args.db_path))
+            factory = WatcherStore if store_factory is None else store_factory
+            store = factory(Path(args.db_path))
             if args.probe:
                 now = datetime.now(timezone.utc)
                 lease = _read_only_lease(store, now)
@@ -324,10 +326,11 @@ def main(
         ):
             print("FOREX WATCH ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
             return 1
+        factory = _make_coordinator if coordinator_factory is None else coordinator_factory
         if runtime_config is None:
-            coordinator = (coordinator_factory or _make_coordinator)(args, config)
+            coordinator = factory(args, config)
         else:
-            coordinator = (coordinator_factory or _make_coordinator)(
+            coordinator = factory(
                 args, config, runtime_config=runtime_config
             )
         if args.command == "once":

@@ -294,3 +294,36 @@ def test_trading_agents_graph_rejects_mapping_analysts() -> None:
 def test_trading_agents_graph_rejects_mapping_callbacks() -> None:
     with pytest.raises(ValueError, match="callbacks"):
         TradingAgentsGraph(callbacks={"callback": True})
+
+
+def test_trading_agents_graph_rejects_falsey_non_mapping_config(monkeypatch) -> None:
+    class FakeClient:
+        def get_llm(self):
+            return SimpleNamespace()
+
+    class FakeWorkflow:
+        def compile(self):
+            return SimpleNamespace()
+
+    class FakeSetup:
+        def __init__(self, *args, **kwargs):
+            del args, kwargs
+
+        def setup_graph(self, *_args, **_kwargs):
+            return FakeWorkflow()
+
+    monkeypatch.setattr(
+        "tradingagents.graph.trading_graph.create_llm_client",
+        lambda **_kwargs: FakeClient(),
+    )
+    monkeypatch.setattr("tradingagents.graph.trading_graph.GraphSetup", FakeSetup)
+    monkeypatch.setattr(
+        "tradingagents.graph.trading_graph.TradingAgentsGraph._create_tool_nodes",
+        lambda _self: {},
+    )
+    monkeypatch.setattr("tradingagents.graph.trading_graph.TradingMemoryLog", lambda *_a, **_k: SimpleNamespace())
+    monkeypatch.setattr("tradingagents.graph.trading_graph.set_config", lambda _config: None)
+    monkeypatch.setattr("tradingagents.graph.trading_graph.os.makedirs", lambda *_a, **_k: None)
+
+    with pytest.raises((TypeError, ValueError), match="config"):
+        TradingAgentsGraph(config=False)

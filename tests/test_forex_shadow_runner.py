@@ -34,6 +34,19 @@ from tradingagents.forex.shadow import ShadowDecisionStore
 from tradingagents.graph.propagation import Propagator
 
 
+class _FalseCallable:
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def __bool__(self):
+        return False
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.value(*args, **kwargs)
+
+
 def _snapshot() -> ForexMarketSnapshot:
     timestamp = datetime(2026, 9, 8, 12, 0, tzinfo=timezone.utc)
     bar = Mt5Bar(
@@ -1361,6 +1374,7 @@ def _phase9_runner(
     audit_store=None,
     evidence_service_factory=None,
     evidence_audit_store_factory=None,
+    graph_factory=None,
 ):
     event_log = events if events is not None else []
     provider = _FakeProvider(_snapshot())
@@ -1376,7 +1390,7 @@ def _phase9_runner(
     store = ShadowDecisionStore(tmp_path / "shadow.db")
     runner = ForexShadowRunner(
         provider_factory=lambda terminal_path=None: provider,
-        graph_factory=lambda **kwargs: graph,
+        graph_factory=(lambda **kwargs: graph) if graph_factory is None else graph_factory,
         store=store,
         config={
             "llm_provider": "local",
@@ -1388,8 +1402,16 @@ def _phase9_runner(
             "max_recur_limit": 16,
             "forex_evidence_enabled": enabled,
         },
-        evidence_service_factory=evidence_service_factory or (lambda **kwargs: service),
-        evidence_audit_store_factory=evidence_audit_store_factory or (lambda **kwargs: audit_store),
+        evidence_service_factory=(
+            (lambda **kwargs: service)
+            if evidence_service_factory is None
+            else evidence_service_factory
+        ),
+        evidence_audit_store_factory=(
+            (lambda **kwargs: audit_store)
+            if evidence_audit_store_factory is None
+            else evidence_audit_store_factory
+        ),
     )
     return runner, provider, graph, store, service, event_log
 
@@ -1407,6 +1429,37 @@ def test_enabled_runner_retrieves_once_after_snapshot(tmp_path):
     assert service.calls == 1
     assert events.index("evidence") > events.index("snapshot")
     assert result.metrics["evidence_integration_status"] == "INJECTED"
+
+
+def test_runner_preserves_falsey_graph_factory(tmp_path):
+    graph = _FakeGraph(
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}}
+    )
+    factory = _FalseCallable(lambda **_kwargs: graph)
+    runner, _, _, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        enabled=False,
+        graph_factory=factory,
+    )
+
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert factory.calls == 1
+
+
+def test_runner_preserves_falsey_evidence_service_factory(tmp_path):
+    service = _RunnerEvidenceService([], None)
+    factory = _FalseCallable(lambda **_kwargs: service)
+    runner, _, _, _, _, _ = _phase9_runner(
+        tmp_path,
+        {"final_trade_decision": {"rating": "Hold"}, "portfolio_manager_raw_result": {"rating": "Hold"}},
+        evidence_service_factory=factory,
+    )
+
+    runner.run(symbol="EURUSD", analysis_date="2026-09-08")
+
+    assert factory.calls == 1
 
 
 def test_enabled_runner_passes_snapshot_as_of(tmp_path):

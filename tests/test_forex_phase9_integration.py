@@ -61,6 +61,17 @@ from tradingagents.knowledge.vector_index import VectorIndexReader
 _REAL_SPAWN_TIMEOUT_SECONDS = 30.0 if sys.platform == "win32" else 5.0
 
 
+class _FalseCallable:
+    def __init__(self, value):
+        self.value = value
+
+    def __bool__(self):
+        return False
+
+    def __call__(self, *args, **kwargs):
+        return self.value(*args, **kwargs)
+
+
 def _snapshot() -> ForexMarketSnapshot:
     return ForexMarketSnapshot(
         timestamp=datetime(2026, 1, 2, 3, 4, tzinfo=timezone.utc),
@@ -699,6 +710,21 @@ def test_evidence_service_rejects_invalid_worker_dependencies(field):
             provider_endpoint=None,
             **{field: False},
         )
+
+
+def test_evidence_service_preserves_falsey_worker_dependencies():
+    clock = _FalseCallable(lambda: datetime(2030, 1, 1, tzinfo=timezone.utc))
+    process_factory = _FalseCallable(lambda **_kwargs: None)
+    service = EvidenceIntegrationService(
+        policy=None,
+        orchestrator_factory=None,
+        generation_provider=None,
+        provider_endpoint=None,
+        clock=clock,
+        process_factory=process_factory,
+    )
+    assert service.clock is clock
+    assert service.process_factory is process_factory
 
 
 @pytest.mark.parametrize(

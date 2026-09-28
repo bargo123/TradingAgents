@@ -20,6 +20,19 @@ def _owner():
     )
 
 
+class _FalseCallable:
+    def __init__(self, value):
+        self.value = value
+        self.calls = 0
+
+    def __bool__(self):
+        return False
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        return self.value(*args, **kwargs) if callable(self.value) else self.value
+
+
 def test_forex_watch_defaults_and_subcommands():
     parser = build_parser()
     args = parser.parse_args(["once"])
@@ -174,6 +187,26 @@ def test_status_prefers_read_only_summary(capsys, tmp_path):
     assert "WATCHER STATUS" in capsys.readouterr().out
 
 
+def test_status_preserves_falsey_store_factory(capsys, tmp_path):
+    class Store:
+        def read_only_summary(self):
+            return {
+                "lifecycle_status": "STOPPED",
+                "lease_expires_at": None,
+                "current_run_id": None,
+                "evaluation_due_pending": False,
+                "database_path": str(tmp_path / "watch.db"),
+            }
+
+    factory = _FalseCallable(lambda _path: Store())
+    assert main(
+        ["status", "--db-path", str(tmp_path / "watch.db")],
+        store_factory=factory,
+    ) == 0
+    assert factory.calls == 1
+    assert not (tmp_path / "watch.db").exists()
+
+
 def test_status_probe_prefers_read_only_lease(capsys, tmp_path, monkeypatch):
     class Store:
         def read_only_active_lease(self, _now):
@@ -292,6 +325,32 @@ def test_main_accepts_injected_coordinator_factory_for_deterministic_smoke(
         coordinator_factory=factory,
     ) == 1
     assert calls and calls[0][0] == "once"
+
+
+def test_main_preserves_falsey_coordinator_factory(tmp_path, monkeypatch):
+    class FakeCoordinator:
+        def start(self):
+            return SimpleNamespace(status=LeaseStatus.ACQUIRED)
+
+        def run_once(self):
+            return SimpleNamespace(active_run_id=None, error_code=None)
+
+        def shutdown(self):
+            return None
+
+    factory = _FalseCallable(lambda _args, _config: FakeCoordinator())
+    monkeypatch.setattr("cli.forex_watch._watcher_lease_is_active", lambda *args: False)
+    monkeypatch.setattr(
+        "cli.forex_watch._make_coordinator",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("falsey coordinator factory was ignored")
+        ),
+    )
+    assert main(
+        ["once", "--db-path", str(tmp_path / "watch.db")],
+        coordinator_factory=factory,
+    ) == 0
+    assert factory.calls == 1
 
 
 def test_pyproject_registers_only_new_forex_watch_script():

@@ -822,7 +822,7 @@ class EvidenceIntegrationService:
         self.orchestrator_factory = orchestrator_factory
         self.generation_provider = generation_provider
         self.provider_endpoint = provider_endpoint
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = (lambda: datetime.now(timezone.utc)) if clock is None else clock
         self.process_factory = process_factory
         if artifact_roots is not None and not isinstance(artifact_roots, Mapping):
             raise TypeError("artifact_roots must be a mapping")
@@ -886,7 +886,11 @@ class EvidenceIntegrationService:
         if self._query_issued:
             raise RuntimeError("evidence boundary permits one orchestrator query")
         self._query_issued = True
-        process_factory = self.process_factory or multiprocessing.get_context("spawn").Process
+        process_factory = (
+            multiprocessing.get_context("spawn").Process
+            if self.process_factory is None
+            else self.process_factory
+        )
         recv_conn, send_conn = multiprocessing.Pipe(duplex=False)
         envelope = {
             "request": _request_payload(request),

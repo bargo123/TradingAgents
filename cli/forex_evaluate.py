@@ -118,7 +118,7 @@ def main(
         config = EvaluationConfig(
             observation_tolerance_seconds=args.observation_tolerance_seconds
         )
-        factory = evaluator_factory or ShadowOutcomeEvaluator
+        factory = ShadowOutcomeEvaluator if evaluator_factory is None else evaluator_factory
         evaluator = factory(
             decision_store=decision_store,
             evaluation_store=evaluation_store,

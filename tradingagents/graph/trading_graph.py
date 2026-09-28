@@ -168,8 +168,10 @@ class TradingAgentsGraph:
         except (TypeError, ValueError) as exc:
             raise ValueError("callbacks must be a sequence") from exc
 
+        if config is not None and not isinstance(config, Mapping):
+            raise ValueError("config must be a mapping")
         self.debug = debug
-        self.config = config or DEFAULT_CONFIG
+        self.config = DEFAULT_CONFIG if config is None else config
         _validate_graph_storage_paths(self.config)
         self.callbacks = callbacks
         self.market_data_mode = market_data_mode

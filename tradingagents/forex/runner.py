@@ -892,7 +892,11 @@ class ForexShadowRunner:
                     pinned_phase8_generation_id,
                 )
             if effective_evidence_enabled:
-                factory = self.evidence_service_factory or self._default_evidence_service_factory
+                factory = (
+                    self._default_evidence_service_factory
+                    if self.evidence_service_factory is None
+                    else self.evidence_service_factory
+                )
                 started_retrieval = time.perf_counter()
                 service: Any | None = None
                 try:
@@ -927,7 +931,9 @@ class ForexShadowRunner:
             market_context = build_forex_market_context(snapshot, profile)
             instrument_context = build_instrument_context(resolved_symbol, "forex", {})
             adapter = MT5ToolAdapter(mt5_provider, snapshot)
-            graph_factory = self.graph_factory or self._default_graph_factory
+            graph_factory = (
+                self._default_graph_factory if self.graph_factory is None else self.graph_factory
+            )
             graph = graph_factory(
                 selected_analysts=selected_analysts,
                 market_data_mode="forex_mt5",
@@ -1234,7 +1240,11 @@ class ForexShadowRunner:
                     ),
                 )
             try:
-                audit_factory = self.evidence_audit_store_factory or self._default_evidence_audit_store_factory
+                audit_factory = (
+                    self._default_evidence_audit_store_factory
+                    if self.evidence_audit_store_factory is None
+                    else self.evidence_audit_store_factory
+                )
                 data_cache_dir = require_nonempty_path(
                     self.config.get("data_cache_dir", "data_cache"), "data_cache_dir"
                 )
