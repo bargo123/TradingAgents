@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -372,6 +374,154 @@ def test_supervisor_status_prefers_read_only_summary():
     ).status("watch.db")
 
     assert report["watcher_status"] == "IDLE"
+
+
+def test_supervisor_status_uses_verified_health_snapshot_for_active_owner(tmp_path):
+    db_path = tmp_path / "watch.db"
+    db_path.touch()
+    config = ForexShadowRuntimeConfig()
+    snapshot_path = Path(f"{db_path}.ollama-health.json")
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "observed_at": "2026-09-28T20:00:00+00:00",
+                "supervisor_pid": 4321,
+                "config_fingerprint": config.fingerprint,
+                "endpoint": config.ollama_base_url,
+                "quick_model": config.quick_model,
+                "deep_model": config.deep_model,
+                "context_length": config.context_length,
+                "status": "HEALTHY",
+                "version": "ollama version 0.34.2",
+                "models": [config.quick_model, config.deep_model],
+                "loaded_models": [config.deep_model],
+                "quick_context_verified": True,
+                "deep_context_verified": True,
+                "verified_context_length": config.context_length,
+                "openai_probe_ok": True,
+                "dedicated_pid": 8640,
+                "recovery_attempts": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    now = datetime.now(UTC)
+    watcher = {
+        "lifecycle_status": "IDLE",
+        "owner_pid": 4321,
+        "circuit_reason": None,
+    }
+    lease = SimpleNamespace(lease_expires_at=now + timedelta(minutes=5), pid=4321)
+
+    class Store:
+        def read_only_summary(self, _now):
+            return watcher
+
+        def read_only_active_lease(self, _now):
+            return lease
+
+    class Runtime:
+        def health(self):
+            return OllamaHealth(
+                "DEGRADED",
+                config.ollama_base_url,
+                "ollama version 0.34.2",
+                (config.quick_model, config.deep_model),
+                None,
+                "CONTEXT_NOT_VERIFIED",
+                True,
+            )
+
+    report = ForexSupervisor(
+        config,
+        runtime_factory=lambda _config: Runtime(),
+        store_factory=lambda _path: Store(),
+    ).status(db_path)
+
+    assert report["health_level"] == "HEALTHY"
+    assert report["ollama"]["verified_context_length"] == 16384
+    assert report["ollama"]["openai_probe_ok"] is True
+
+
+def test_supervisor_status_marks_unverified_live_context_unknown():
+    watcher = {"lifecycle_status": "IDLE", "circuit_reason": None}
+
+    class Store:
+        def read_only_summary(self, _now):
+            return watcher
+
+        def read_only_active_lease(self, _now):
+            return None
+
+    class Runtime:
+        def health(self):
+            return OllamaHealth(
+                "DEGRADED",
+                "http://127.0.0.1:11435",
+                "v",
+                ("qwen3.5:2b", "qwen3.5:4b"),
+                16384,
+                "CONTEXT_NOT_VERIFIED",
+                True,
+            )
+
+    report = ForexSupervisor(
+        runtime_factory=lambda _config: Runtime(),
+        store_factory=lambda _path: Store(),
+    ).status("missing-watch.db")
+
+    assert report["health_level"] == "UNKNOWN"
+    assert report["health_reason"] == "OLLAMA_CONTEXT_NOT_VERIFIED"
+
+
+def test_supervisor_run_persists_scalar_health_snapshot(tmp_path):
+    db_path = tmp_path / "watch.db"
+    db_path.touch()
+    store = SimpleNamespace(active_lease=lambda _now: None)
+    config = ForexShadowRuntimeConfig()
+
+    class Runtime:
+        def ensure_healthy(self):
+            return OllamaHealth(
+                "HEALTHY",
+                config.ollama_base_url,
+                "v",
+                (config.quick_model, config.deep_model),
+                config.context_length,
+                None,
+                True,
+                (config.deep_model,),
+                True,
+                True,
+                config.context_length,
+                True,
+                8640,
+                0,
+            )
+
+        def prewarm(self):
+            return {}
+
+        def health(self):
+            return self.ensure_healthy()
+
+        def shutdown(self):
+            return None
+
+    supervisor = ForexSupervisor(
+        config,
+        runtime_factory=lambda _config: Runtime(),
+        store_factory=lambda _path: store,
+    )
+
+    assert supervisor.run(db_path=db_path, watch_main=lambda *_a, **_k: 0) == 0
+    snapshot = json.loads(Path(f"{db_path}.ollama-health.json").read_text(encoding="utf-8"))
+    assert snapshot["status"] == "HEALTHY"
+    assert snapshot["quick_context_verified"] is True
+    assert snapshot["deep_context_verified"] is True
+    assert "prompt" not in snapshot
+    assert "completion" not in snapshot
 
 
 def test_supervisor_status_reports_database_error_without_traceback(capsys):
