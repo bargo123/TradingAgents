@@ -1,5 +1,6 @@
 # TradingAgents/graph/setup.py
 
+from collections.abc import Mapping
 from typing import Any
 
 try:  # pragma: no cover - fallback for minimal test environments
@@ -153,6 +154,12 @@ class GraphSetup:
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
         """
+        if isinstance(selected_analysts, (str, bytes, bytearray, Mapping)):
+            raise ValueError("selected_analysts must be a sequence")
+        try:
+            selected_analysts = tuple(selected_analysts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("selected_analysts must be a sequence") from exc
         if self.market_data_mode == "forex_mt5":
             validate_read_only_mt5_tools(self.mt5_tools)
             forbidden = [name for name in selected_analysts if name in {"social", "fundamentals"}]

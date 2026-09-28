@@ -191,6 +191,34 @@ def test_forex_graph_setup_rejects_stock_specific_analysts(
 
 
 @pytest.mark.unit
+def test_forex_graph_setup_preserves_generator_analysts(
+    monkeypatch: pytest.MonkeyPatch,
+    forex_snapshot: ForexMarketSnapshot,
+) -> None:
+    adapter = MT5ToolAdapter(SimpleNamespace(), forex_snapshot)
+    setup = GraphSetup(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        {"market": SimpleNamespace(), "news": SimpleNamespace()},
+        ConditionalLogic(max_debate_rounds=1, max_risk_discuss_rounds=1),
+        market_data_mode="forex_mt5",
+        mt5_tools=adapter,
+    )
+    captured: list[str] = []
+
+    def capture_plan(selected):
+        captured.extend(selected)
+        raise RuntimeError("plan capture")
+
+    monkeypatch.setattr("tradingagents.graph.setup.build_analyst_execution_plan", capture_plan)
+
+    with pytest.raises(RuntimeError, match="plan capture"):
+        setup.setup_graph(iter(("market", "news")))
+
+    assert captured == ["market", "news"]
+
+
+@pytest.mark.unit
 def test_trading_agents_graph_accepts_forex_mode_arguments(
     monkeypatch: pytest.MonkeyPatch,
     forex_snapshot: ForexMarketSnapshot,
