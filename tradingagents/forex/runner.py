@@ -610,7 +610,8 @@ class ForexShadowRunner:
 
     @staticmethod
     def _invoke_compiled_graph(graph: Any, initial_state: Mapping[str, Any], graph_args: Mapping[str, Any]) -> Any:
-        compiled_graph = getattr(graph, "graph", None) or graph
+        candidate = getattr(graph, "graph", None)
+        compiled_graph = graph if candidate is None else candidate
         invoke = getattr(compiled_graph, "invoke", None)
         if not callable(invoke):
             raise TypeError("forex graph must expose a compiled graph invoke() method")
@@ -623,18 +624,40 @@ class ForexShadowRunner:
             parameters = inspect.signature(factory).parameters
         except (TypeError, ValueError):
             return factory()
-        if any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
-            return factory(**kwargs)
-        accepted = {name: value for name, value in kwargs.items() if name in parameters}
-        required_positional = [
-            parameter
+        has_var_keyword = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
             for parameter in parameters.values()
-            if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-            and parameter.default is inspect.Parameter.empty
-        ]
-        if required_positional and not accepted:
-            return factory(kwargs.get("config", {}))
-        return factory(**accepted)
+        )
+        positional_args: list[Any] = []
+        accepted_kwargs: dict[str, Any] = {}
+        missing_required: list[str] = []
+        for parameter in parameters.values():
+            if parameter.kind is inspect.Parameter.POSITIONAL_ONLY:
+                if parameter.name in kwargs:
+                    positional_args.append(kwargs[parameter.name])
+                elif parameter.default is inspect.Parameter.empty:
+                    missing_required.append(parameter.name)
+            elif parameter.kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            ):
+                if parameter.name in kwargs:
+                    accepted_kwargs[parameter.name] = kwargs[parameter.name]
+                elif parameter.default is inspect.Parameter.empty:
+                    missing_required.append(parameter.name)
+        if missing_required:
+            if not positional_args and not accepted_kwargs:
+                # Preserve the historical compatibility path for factories
+                # that expose one unnamed required positional config argument.
+                return factory(kwargs.get("config", {}))
+            raise TypeError(
+                "factory is missing required parameters: " + ", ".join(missing_required)
+            )
+        if has_var_keyword:
+            for name, value in kwargs.items():
+                if name not in parameters:
+                    accepted_kwargs[name] = value
+        return factory(*positional_args, **accepted_kwargs)
 
     @staticmethod
     def _evidence_is_enabled(config: Mapping[str, Any]) -> bool:

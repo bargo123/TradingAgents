@@ -1462,6 +1462,28 @@ def test_runner_preserves_falsey_evidence_service_factory(tmp_path):
     assert factory.calls == 1
 
 
+def test_invoke_compiled_graph_preserves_falsey_compiled_graph():
+    class FalseCompiled:
+        def __bool__(self):
+            return False
+
+        def invoke(self, state, **kwargs):
+            return {"state": state, "kwargs": kwargs}
+
+    wrapper = SimpleNamespace(graph=FalseCompiled())
+    assert ForexShadowRunner._invoke_compiled_graph(wrapper, {"x": 1}, {"config": {}}) == {
+        "state": {"x": 1},
+        "kwargs": {"config": {}},
+    }
+
+
+def test_factory_adapter_supports_positional_only_config():
+    def factory(config, /):
+        return config
+
+    assert ForexShadowRunner._call_factory(factory, config={"value": 1}) == {"value": 1}
+
+
 def test_enabled_runner_passes_snapshot_as_of(tmp_path):
     runner, _, _, _, service, _ = _phase9_runner(
         tmp_path,
