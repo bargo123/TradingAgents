@@ -231,18 +231,22 @@ def test_trading_agents_graph_accepts_forex_mode_arguments(
         def compile(self, checkpointer=None):
             return SimpleNamespace()
 
+    captured_analysts: list[tuple[str, ...]] = []
+
     monkeypatch.setattr(
         "tradingagents.graph.trading_graph.create_llm_client",
         lambda **kwargs: DummyLLMClient(),
     )
     monkeypatch.setattr(
         "tradingagents.graph.trading_graph.GraphSetup.setup_graph",
-        lambda self, selected_analysts=("market", "social", "news", "fundamentals"): DummyWorkflow(),
+        lambda self, selected_analysts=("market", "social", "news", "fundamentals"): (
+            captured_analysts.append(tuple(selected_analysts)) or DummyWorkflow()
+        ),
     )
 
     adapter = MT5ToolAdapter(SimpleNamespace(), forex_snapshot)
     graph = TradingAgentsGraph(
-        selected_analysts=("market", "news"),
+        selected_analysts=iter(("market", "news")),
         config={
             "data_cache_dir": "data",
             "results_dir": "results",
@@ -258,3 +262,11 @@ def test_trading_agents_graph_accepts_forex_mode_arguments(
 
     assert graph.market_data_mode == "forex_mt5"
     assert graph.mt5_tools is adapter
+    assert graph.selected_analysts == ("market", "news")
+    assert captured_analysts == [("market", "news")]
+
+
+@pytest.mark.unit
+def test_trading_agents_graph_rejects_mapping_analysts() -> None:
+    with pytest.raises(ValueError, match="selected_analysts"):
+        TradingAgentsGraph(selected_analysts={"market": True})

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta
 from numbers import Integral
@@ -154,6 +155,12 @@ class TradingAgentsGraph:
             getattr(mt5_tools, "as_tools", None)
         ):
             raise ValueError("forex_mt5 market_data_mode requires an MT5 adapter with as_tools()")
+        if isinstance(selected_analysts, (str, bytes, bytearray, Mapping)):
+            raise ValueError("selected_analysts must be a sequence")
+        try:
+            selected_analysts = tuple(selected_analysts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("selected_analysts must be a sequence") from exc
 
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
@@ -232,7 +239,7 @@ class TradingAgentsGraph:
         self.log_states_dict = {}  # date to full state dict
 
         # Graph-shape-affecting run choices, kept for the checkpoint signature.
-        self.selected_analysts = tuple(selected_analysts)
+        self.selected_analysts = selected_analysts
 
         # Set up the graph: keep the workflow for recompilation with a checkpointer.
         self.workflow = self.graph_setup.setup_graph(selected_analysts)
