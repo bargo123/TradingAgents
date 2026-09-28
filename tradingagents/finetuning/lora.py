@@ -61,7 +61,10 @@ class LoraAttachment:
 def _requested(value: LoraConfig | Iterable[str]) -> tuple[str, ...]:
     if isinstance(value, (str, bytes, bytearray, Mapping)):
         raise TargetModuleMissingError("invalid target module configuration")
-    modules = value.target_modules if isinstance(value, LoraConfig) else tuple(value)
+    try:
+        modules = value.target_modules if isinstance(value, LoraConfig) else tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise TargetModuleMissingError("invalid target module configuration") from exc
     if (
         not modules
         or any(not isinstance(item, str) or not item for item in modules)

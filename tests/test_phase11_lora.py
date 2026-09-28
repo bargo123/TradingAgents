@@ -75,6 +75,9 @@ def test_target_module_inspection_and_missing_module() -> None:
         inspect_target_modules(Model(), ("q_proj", 1))
     with pytest.raises(TargetModuleMissingError, match="configuration"):
         inspect_target_modules(Model(), {"q_proj": True})
+    for malformed in (None, 0, 1):
+        with pytest.raises(TargetModuleMissingError, match="configuration"):
+            inspect_target_modules(Model(), malformed)
 
 
 def test_attach_lora_freezes_base_and_exposes_counts() -> None:
