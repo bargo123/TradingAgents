@@ -27,7 +27,10 @@ class PreparationResult:
 
 def validate_prepared(output_root: str | Path) -> dict[str, Any]:
     """Validate a prepared manifest and its train/validation file hashes."""
-    root = Path(output_root).resolve()
+    try:
+        root = require_nonempty_path(output_root, "prepared output root").resolve()
+    except (TypeError, ValueError) as exc:
+        raise Phase10InvalidError("prepared output root must be non-empty") from exc
     folder = root / "prepared" if (root / "prepared").is_dir() else root
     manifest_path = folder / "manifest.json"
     if not manifest_path.is_file():

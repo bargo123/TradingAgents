@@ -141,6 +141,25 @@ def test_empty_preparation_short_circuits_before_optional_import(monkeypatch) ->
     assert not called
 
 
+@pytest.mark.parametrize("output_dir", ["", "   ", Path("."), Path("   ")])
+def test_training_rejects_empty_adapter_output_dir_before_optional_import(monkeypatch, output_dir) -> None:
+    from tradingagents.finetuning import training
+
+    monkeypatch.setattr(
+        training,
+        "_load_optional_stack",
+        lambda: (_ for _ in ()).throw(AssertionError("optional stack must not load")),
+    )
+    result = training.train(
+        {"train": [example()], "validation": []},
+        model=object(),
+        tokenizer_policy=TokenizationPolicy(tokenizer=TinyTokenizer()),
+        output_dir=output_dir,
+    )
+    assert result.status is Phase11Status.TRAINING_FAILED
+    assert "output directory" in result.message
+
+
 def test_missing_base_model_fails_before_optional_stack_load(monkeypatch) -> None:
     from tradingagents.finetuning import training
 

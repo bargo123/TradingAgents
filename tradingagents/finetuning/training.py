@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .errors import ContractError, SequenceTooLongError
 from .formatting import parse_target
 from .lora import (
@@ -217,6 +219,12 @@ def train(
         return _failed(Phase11Status.TRAINING_FAILED, f"malformed preparation: {exc}")
     if not train_rows:
         return _failed(Phase11Status.EMPTY_ELIGIBLE_SET, "no eligible training rows")
+    resolved_output_dir: Path | None = None
+    if output_dir is not None:
+        try:
+            resolved_output_dir = require_nonempty_path(output_dir, "adapter output directory").resolve()
+        except (TypeError, ValueError):
+            return _failed(Phase11Status.TRAINING_FAILED, "adapter output directory must be non-empty")
     resolved = config or TrainingConfig()
     if not isinstance(resolved, TrainingConfig):
         return _failed(Phase11Status.TRAINING_FAILED, "config must be TrainingConfig")
@@ -365,8 +373,8 @@ def train(
                 break
         runtime = max(0.0, time.perf_counter() - started)
         val_loss = _validation_loss(torch, model, encoded_validation, pad_id, resolved.batch_size)
-        if output_dir is not None:
-            adapter_path = Path(output_dir)
+        if resolved_output_dir is not None:
+            adapter_path = resolved_output_dir
             adapter_path.mkdir(parents=True, exist_ok=True)
             model.save_pretrained(adapter_path)
         else:

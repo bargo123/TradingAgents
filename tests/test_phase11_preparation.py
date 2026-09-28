@@ -42,6 +42,14 @@ def test_preparation_rejects_empty_output_root(tmp_path: Path, value) -> None:
         prepare_generation(gen, value, SFTFormatter(), policy)
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_validate_prepared_rejects_empty_output_root(value) -> None:
+    from tradingagents.finetuning.errors import Phase10InvalidError
+
+    with pytest.raises(Phase10InvalidError, match="output root"):
+        validate_prepared(value)
+
+
 def test_preparation_is_sorted_and_idempotent(tmp_path: Path) -> None:
     gen = Phase10Generation.open(generation(tmp_path / "gen"))
     policy = TokenizationPolicy(tokenizer=TinyTokenizer(), max_length=1000)
