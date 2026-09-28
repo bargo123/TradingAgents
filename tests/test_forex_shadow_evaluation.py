@@ -537,6 +537,24 @@ def test_evaluator_keeps_horizons_pending_before_tolerance_without_mt5_read(tmp_
     assert all(row.evaluation_status == "PENDING" for row in result.evaluations)
 
 
+@pytest.mark.parametrize("invalid_now", [False, 0, ""])
+def test_evaluator_rejects_invalid_now_without_defaulting_to_current_time(
+    tmp_path: Path, invalid_now
+) -> None:
+    evaluator, decision = _evaluator(tmp_path, _CountingEvaluationProvider())
+    with pytest.raises(ValueError, match="timestamp|datetime"):
+        evaluator.evaluate_decision(decision.decision_id, now=invalid_now)
+
+
+@pytest.mark.parametrize("invalid_now", [False, 0, ""])
+def test_pending_evaluator_rejects_invalid_now_without_defaulting_to_current_time(
+    tmp_path: Path, invalid_now
+) -> None:
+    evaluator, _ = _evaluator(tmp_path, _CountingEvaluationProvider())
+    with pytest.raises(ValueError, match="timestamp|datetime"):
+        evaluator.evaluate_pending(now=invalid_now)
+
+
 def test_evaluator_uses_one_shared_historical_range_and_separates_bases(tmp_path: Path) -> None:
     analysis_target = ANCHOR + timedelta(seconds=300)
     reference_target = REFERENCE + timedelta(seconds=300)

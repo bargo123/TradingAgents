@@ -1364,7 +1364,7 @@ class ShadowOutcomeEvaluator:
         try:
             result, provider, _, _ = self._evaluate_one(
                 decision,
-                now=_utc(now or _utc_now()),
+                now=_utc(_utc_now() if now is None else now),
                 terminal_path=terminal_path,
                 provider=None,
                 provider_initialized=False,
@@ -1390,7 +1390,7 @@ class ShadowOutcomeEvaluator:
         terminal_path: str | None = None,
     ) -> ShadowEvaluationBatchResult:
         started = time.perf_counter()
-        now = _utc(now or _utc_now())
+        now = _utc(_utc_now() if now is None else now)
         db_started = time.perf_counter()
         decisions = tuple(self.decision_store.list_pending())
         database_seconds = time.perf_counter() - db_started

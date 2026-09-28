@@ -300,7 +300,11 @@ def calibrate_broker_clock(
 
     offset = next(iter(valid_all))
     residuals = residuals_by_offset[offset]
-    calibration_time = calibrated_at_utc or max(sample.observed_after_utc for sample in samples)
+    calibration_time = (
+        max(sample.observed_after_utc for sample in samples)
+        if calibrated_at_utc is None
+        else _utc(calibrated_at_utc, "calibrated_at_utc")
+    )
     return Mt5BrokerClock(
         offset_seconds=float(offset),
         status="CALIBRATED",

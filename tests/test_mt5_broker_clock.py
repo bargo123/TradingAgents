@@ -90,6 +90,17 @@ def test_calibration_rejects_invalid_config(config) -> None:
         )
 
 
+@pytest.mark.parametrize("calibrated_at_utc", [False, 0, ""])
+def test_calibration_rejects_invalid_calibration_timestamp(calibrated_at_utc) -> None:
+    with pytest.raises(ValueError, match="calibrated_at_utc"):
+        calibrate_broker_clock(
+            [_sample(0)],
+            server="Test",
+            symbol="EURUSD",
+            calibrated_at_utc=calibrated_at_utc,
+        )
+
+
 def test_calibration_fails_closed_for_ambiguous_candidates() -> None:
     config = BrokerClockConfig(max_tick_age_seconds=1_400)
     clock = calibrate_broker_clock(
