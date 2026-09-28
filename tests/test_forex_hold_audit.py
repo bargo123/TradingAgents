@@ -13,6 +13,7 @@ from tradingagents.forex.hold_audit import (
     CATEGORY_DIRECTIONAL_TIE,
     CATEGORY_HOLD_BEST,
     CATEGORY_SELL_BETTER,
+    HoldAuditSchemaError,
     audit_hold_outcomes,
     classify_hold_outcome,
     percentile,
@@ -249,6 +250,20 @@ def test_data_unavailable_is_counted_but_not_a_hold_outcome(tmp_path: Path) -> N
     assert report.data_quality["DATA_UNAVAILABLE"] == 1
     assert report.data_quality_unavailable_reasons == {"NO_TICK": 1}
     assert report.all_population.horizons[300].complete_hold_samples == 0
+
+
+def test_malformed_horizon_is_reported_as_schema_error(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    _decision(path, "malformed-horizon")
+    _evaluation(path, "malformed-horizon", 300)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decision_evaluations SET horizon_seconds=? WHERE decision_id=?",
+            ("9" * 1000, "malformed-horizon"),
+        )
+
+    with pytest.raises(HoldAuditSchemaError, match="horizon_seconds"):
+        audit_hold_outcomes(path)
 
 
 def test_top_missed_opportunity_uses_largest_horizon_and_direction(tmp_path: Path) -> None:

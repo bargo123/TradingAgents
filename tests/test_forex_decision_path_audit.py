@@ -361,3 +361,17 @@ def test_schema_requires_watch_runs_and_evaluation_contract(tmp_path: Path) -> N
         db.execute("CREATE TABLE shadow_decisions (decision_id TEXT)")
     with pytest.raises(DecisionPathAuditSchemaError):
         audit_decision_path(path)
+
+
+def test_malformed_horizon_is_reported_as_schema_error(tmp_path: Path) -> None:
+    path = _init_db(tmp_path)
+    _decision(path, "malformed-horizon")
+    _evaluation(path, "malformed-horizon", 300)
+    with closing(sqlite3.connect(path)) as db, db:
+        db.execute(
+            "UPDATE shadow_decision_evaluations SET horizon_seconds=? WHERE decision_id=?",
+            ("9" * 1000, "malformed-horizon"),
+        )
+
+    with pytest.raises(DecisionPathAuditSchemaError, match="horizon_seconds"):
+        audit_decision_path(path)

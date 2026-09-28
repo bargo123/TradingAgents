@@ -70,6 +70,13 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _horizon_seconds(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DecisionPathAuditSchemaError("horizon_seconds must be an integer") from exc
+
+
 def _is_true(value: Any) -> bool:
     return value is True or value == 1 or value == "1" or value == "true"
 
@@ -435,7 +442,7 @@ def _load_evaluations(
         status_counts[status] += 1
         if row["training_eligible"] is None:
             training_null_count += 1
-        horizon = int(row["horizon_seconds"])
+        horizon = _horizon_seconds(row["horizon_seconds"])
         deduplicated[(decision_id, horizon)] = _Evaluation(
             decision_id=decision_id,
             horizon_seconds=horizon,

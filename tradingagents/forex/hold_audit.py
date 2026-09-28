@@ -70,6 +70,13 @@ def _finite(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _horizon_seconds(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise HoldAuditSchemaError("horizon_seconds must be an integer") from exc
+
+
 def _is_true(value: Any) -> bool:
     return value is True or value == 1 or value == "1" or value == "true"
 
@@ -382,7 +389,7 @@ def _row_to_evaluation(row: Mapping[str, Any]) -> _EvaluationRow:
     )
     return _EvaluationRow(
         decision_id=str(row.get("decision_id") or ""),
-        horizon_seconds=int(row.get("horizon_seconds") or 0),
+        horizon_seconds=_horizon_seconds(row.get("horizon_seconds")),
         symbol=str(row.get("decision_resolved_symbol") or row.get("resolved_symbol") or ""),
         source_context_eligible=_is_true(row.get("source_context_eligible")),
         status=str(row.get("evaluation_status") or "UNKNOWN"),
