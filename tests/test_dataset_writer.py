@@ -85,6 +85,18 @@ def test_write_generation_rejects_empty_output_root(value):
         )
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_validate_generation_rejects_empty_path(value):
+    report = validate_generation(value)
+    assert report.valid is False
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_generation_writer_rejects_empty_output_root(value):
+    with pytest.raises((TypeError, ValueError), match="output root"):
+        writer_module.GenerationWriter(value)
+
+
 def test_write_is_canonical_and_validates(tmp_path: Path):
     rows = (example(), example("ex-2", "2026-01-02T00:00:00+00:00"))
     root = write_generation(

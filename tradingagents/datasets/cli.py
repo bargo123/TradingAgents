@@ -8,6 +8,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .errors import DatasetError
 from .factory import DatasetFactory
 from .models import DatasetConfig
@@ -87,7 +89,7 @@ def _validate(args: argparse.Namespace) -> int:
 
 
 def _status(args: argparse.Namespace) -> int:
-    root = Path(args.output_root).resolve()
+    root = require_nonempty_path(args.output_root, "output root").resolve()
     generations = []
     if root.is_dir():
         for candidate in sorted(root.iterdir(), key=lambda item: item.name):

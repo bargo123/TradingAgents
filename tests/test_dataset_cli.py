@@ -59,6 +59,11 @@ def test_status_empty_is_explicit_and_does_not_construct_runtime(monkeypatch, tm
     }
 
 
+def test_status_rejects_empty_output_root(capsys):
+    assert cli.main(["status", "--output-root", "", "--json"]) != 0
+    assert "output root" in capsys.readouterr().err.lower()
+
+
 def test_status_lists_published_generations_without_writers(monkeypatch, tmp_path, capsys):
     output = tmp_path / "output"
     generation = output / "generation-a"

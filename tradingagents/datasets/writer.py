@@ -550,7 +550,7 @@ class GenerationWriter:
     """Small object facade useful to orchestration code and dependency injection."""
 
     def __init__(self, output_root: str | Path):
-        self.output_root = Path(output_root)
+        self.output_root = require_nonempty_path(output_root, "output root")
 
     def write(self, examples, exclusions, split_result, **kwargs) -> Path:
         return write_generation(self.output_root, examples, exclusions, split_result, **kwargs)
@@ -560,7 +560,10 @@ def validate_generation(path: str | Path):
     """Validate a published generation without writing to it."""
     from .models import ValidationReport
 
-    root = Path(path)
+    try:
+        root = require_nonempty_path(path, "generation path")
+    except (TypeError, ValueError):
+        return ValidationReport(False, errors=("generation path must be non-empty",))
     errors: list[str] = []
     try:
         manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
