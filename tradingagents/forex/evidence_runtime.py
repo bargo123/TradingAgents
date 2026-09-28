@@ -173,7 +173,7 @@ def _path_within(path: str | Path, root: str | Path) -> bool:
 
 class _ReadonlySQLite:
     def __init__(self, root: str | Path):
-        self.database_path = _database_path(root).resolve()
+        self.database_path = _database_path(require_nonempty_path(root, "root")).resolve()
         self.path = self.database_path
         self._connection = self._open()
 

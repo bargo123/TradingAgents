@@ -6,6 +6,10 @@ from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.source_reader import ReadonlySourceReader
 from tradingagents.forex.evaluation import ShadowEvaluationStore
 from tradingagents.forex.evidence_audit import EvidenceAuditStore
+from tradingagents.forex.evidence_runtime import (
+    ReadonlyExperienceCatalog,
+    ReadonlyKnowledgeCatalog,
+)
 from tradingagents.forex.shadow import ShadowDecisionStore
 from tradingagents.forex.watch_store import WatcherStore
 
@@ -19,6 +23,8 @@ from tradingagents.forex.watch_store import WatcherStore
         EvidenceAuditStore,
         ExperienceCatalog,
         ReadonlySourceReader,
+        ReadonlyKnowledgeCatalog,
+        ReadonlyExperienceCatalog,
     ],
 )
 @pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
