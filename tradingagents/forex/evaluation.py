@@ -1132,7 +1132,9 @@ class ShadowOutcomeEvaluator:
         self.evaluation_store = evaluation_store or ShadowEvaluationStore(
             decision_store.path
         )
-        self.config = config or EvaluationConfig()
+        self.config = EvaluationConfig() if config is None else config
+        if not isinstance(self.config, EvaluationConfig):
+            raise TypeError("config must be EvaluationConfig")
         self.provider_factory = provider_factory or self._default_provider_factory
 
     @staticmethod

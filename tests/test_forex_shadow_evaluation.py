@@ -105,6 +105,14 @@ def test_evaluation_config_defaults_and_validation() -> None:
         EvaluationConfig(observation_tolerance_seconds=-1)
 
 
+@pytest.mark.parametrize("invalid_config", [{}, False])
+def test_evaluator_rejects_falsey_invalid_config(invalid_config) -> None:
+    with pytest.raises(TypeError, match="EvaluationConfig"):
+        ShadowOutcomeEvaluator(
+            decision_store=object(), evaluation_store=object(), config=invalid_config
+        )
+
+
 def test_source_context_eligibility_is_separate_from_training() -> None:
     eligible = decision_source_eligibility(_decision())
     assert eligible.eligible is True
