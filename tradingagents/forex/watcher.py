@@ -375,8 +375,10 @@ class WatcherConfig:
         if not isinstance(self.evaluation_enabled, bool):
             raise ValueError("evaluation_enabled must be a bool")
         object.__setattr__(self, "db_path", Path(self.db_path))
-        if self.terminal_path is not None and not isinstance(self.terminal_path, str):
-            raise ValueError("terminal_path must be a string or None")
+        if self.terminal_path is not None:
+            if not isinstance(self.terminal_path, str) or not self.terminal_path.strip():
+                raise ValueError("terminal_path must be a non-empty string or None")
+            object.__setattr__(self, "terminal_path", self.terminal_path.strip())
 
     @property
     def safe_fingerprint(self) -> str:
