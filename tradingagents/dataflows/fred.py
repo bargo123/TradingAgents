@@ -9,6 +9,7 @@ A free API key (https://fred.stlouisfed.org/docs/api/api_key.html) is read from
 the routing layer treats it as "unavailable" rather than a hard crash.
 """
 import logging
+import math
 import os
 from datetime import datetime, timedelta
 
@@ -248,13 +249,18 @@ def get_macro_data(
     try:
         delta = float(last_val) - float(first_val)
         base = float(first_val)
-        pct = f" ({delta / base * 100:+.2f}%)" if base != 0 else ""
+        if not math.isfinite(delta) or not math.isfinite(base):
+            raise ValueError("non-finite FRED observation")
+        pct_value = delta / base * 100 if base != 0 else None
+        if pct_value is not None and not math.isfinite(pct_value):
+            raise ValueError("non-finite FRED percentage")
+        pct = f" ({pct_value:+.2f}%)" if pct_value is not None else ""
         summary = (
             f"\n**Latest:** {last_val} ({last_date}) | "
             f"**Change over window:** {delta:+.2f}{pct} "
             f"from {first_val} ({first_date})\n"
         )
-    except ValueError:
+    except (ValueError, OverflowError):
         summary = f"\n**Latest:** {last_val} ({last_date})\n"
 
     shown = points

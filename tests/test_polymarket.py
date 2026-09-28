@@ -84,6 +84,26 @@ class PolymarketFormatTests(unittest.TestCase):
         small_line = next(ln for ln in out.splitlines() if "Open small?" in ln)
         self.assertNotIn("1-week", small_line)
 
+    def test_non_finite_probability_is_skipped(self):
+        malformed = {
+            "events": [
+                {
+                    "markets": [
+                        _market(
+                            "Malformed probability?",
+                            1e300,
+                            volume=1_000_000,
+                            end_date="2030-12-31T00:00:00Z",
+                        )
+                    ]
+                }
+            ]
+        }
+        with mock.patch.object(polymarket, "_request", return_value=malformed):
+            out = polymarket.get_prediction_markets("anything", limit=10)
+        self.assertNotIn("Malformed probability?", out)
+        self.assertNotIn("inf", out.lower())
+
     def test_no_matches_reports_clearly(self):
         with mock.patch.object(polymarket, "_request", return_value={"events": []}):
             out = polymarket.get_prediction_markets("obscure ticker", limit=6)

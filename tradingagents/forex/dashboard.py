@@ -92,7 +92,7 @@ def _int(value: Any, default: int = 0) -> int:
 def _float(value: Any) -> float | None:
     try:
         result = None if value is None else float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return result if result is not None and math.isfinite(result) else None
 

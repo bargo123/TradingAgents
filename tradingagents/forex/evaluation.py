@@ -49,7 +49,7 @@ def _optional_utc(value: datetime | None) -> datetime | None:
 def _finite(value: Any, name: str) -> float:
     try:
         result = float(value)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{name} must be numeric") from exc
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")

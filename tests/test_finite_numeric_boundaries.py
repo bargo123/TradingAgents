@@ -8,7 +8,9 @@ from tradingagents.datasets.canonical import _snapshot
 from tradingagents.distillation.splits import GroupedSplitter
 from tradingagents.experience.features import _finite as experience_feature_finite
 from tradingagents.experience.models import _finite_float as experience_finite_float
+from tradingagents.forex.dashboard import _float as dashboard_float
 from tradingagents.forex.decision_path_audit import _finite as decision_finite
+from tradingagents.forex.evaluation import _finite as evaluation_finite
 from tradingagents.forex.evidence_audit import _non_negative_float
 from tradingagents.forex.evidence_context import EvidenceQueryPolicy
 from tradingagents.forex.evidence_replay import _number as replay_number
@@ -49,6 +51,15 @@ def test_numeric_configuration_rejects_oversized_integers(factory) -> None:
 
 def test_feature_extractor_quarantines_oversized_numeric_values() -> None:
     assert experience_feature_finite(HUGE_INTEGER) is None
+
+
+def test_dashboard_numeric_reader_quarantines_oversized_values() -> None:
+    assert dashboard_float(HUGE_INTEGER) is None
+
+
+def test_evaluation_numeric_reader_rejects_oversized_values() -> None:
+    with pytest.raises(ValueError, match="numeric|finite"):
+        evaluation_finite(HUGE_INTEGER, "value")
 
 
 def test_supervisor_rejects_oversized_restart_backoff() -> None:

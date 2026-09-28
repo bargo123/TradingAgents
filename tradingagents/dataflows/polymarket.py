@@ -11,6 +11,7 @@ outcomes (a "Yes" at 0.76 means the market prices a 76% chance).
 """
 import json
 import logging
+import math
 from datetime import datetime, timezone
 
 import requests
@@ -120,7 +121,9 @@ def get_prediction_markets(topic: str, limit: int | None = None) -> str:
         outcomes = _parse_json_list(m.get("outcomes"))
         try:
             prob = float(prices[0])
-        except (ValueError, IndexError):
+        except (ValueError, IndexError, OverflowError):
+            continue
+        if not math.isfinite(prob) or not 0 <= prob <= 1:
             continue
         label = outcomes[0] if outcomes else "Yes"
         volume = m.get("volumeNum") or 0

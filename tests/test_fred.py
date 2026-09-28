@@ -106,6 +106,19 @@ class FredFormattingTests(unittest.TestCase):
         # the "." observation must not appear as a row
         self.assertNotIn("2025-08-01", out)
 
+    def test_non_finite_values_degrade_without_nan_summary(self):
+        obs = {
+            "observations": [
+                {"date": "2025-06-01", "value": "1e10000"},
+                {"date": "2025-09-01", "value": "1e10000"},
+            ]
+        }
+        with mock.patch.object(fred, "_request", side_effect=_request_stub(obs=obs)):
+            out = fred.get_macro_data("unemployment", "2025-09-30", 365)
+        self.assertNotIn("nan", out.lower())
+        self.assertNotIn("inf", out.lower())
+        self.assertIn("**Latest:** 1e10000 (2025-09-01)", out)
+
     def test_empty_window_reports_no_observations(self):
         empty = {"observations": []}
         with mock.patch.object(fred, "_request", side_effect=_request_stub(obs=empty)):

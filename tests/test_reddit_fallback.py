@@ -157,6 +157,11 @@ class TestRss429Backoff:
             reddit._fetch_subreddit_rss("NVDA", "stocks", 5, 5.0)
         slept.assert_called_once_with(0.0)
 
+    def test_invalid_retry_after_numeric_value_is_ignored(self):
+        for value in ("-1", "1e10000"):
+            err = HTTPError("url", 429, "Too Many Requests", {"Retry-After": value}, None)
+            assert reddit._retry_after_seconds(err) is None
+
     def test_headerless_429_fallback_is_jittered(self):
         # No Retry-After -> our own ~5s fallback, jittered so concurrent runs
         # don't retry in lockstep (kept within a tight band).
