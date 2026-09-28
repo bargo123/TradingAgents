@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .models import TrustTier
 
 EXPERIENCE_SCHEMA_VERSION = "phase8.experience.v1"
@@ -27,21 +29,6 @@ def _version_text(value: object, name: str) -> str:
     return normalized
 
 
-def _path_value(value: object, name: str) -> Path:
-    """Normalize an explicitly supplied path without accepting empty targets."""
-    if isinstance(value, (bytes, bytearray)):
-        raise ValueError(f"{name} must be a non-empty path")
-    if isinstance(value, str) and not value.strip():
-        raise ValueError(f"{name} must be a non-empty path")
-    try:
-        path = Path(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a non-empty path") from exc
-    if not str(path).strip() or str(path) == ".":
-        raise ValueError(f"{name} must be a non-empty path")
-    return path
-
-
 @dataclass(frozen=True, slots=True)
 class ExperienceConfig:
     artifact_root: Path = Path("data_cache/experience")
@@ -56,11 +43,13 @@ class ExperienceConfig:
     trust_tiers: tuple[TrustTier, ...] = (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "artifact_root", _path_value(self.artifact_root, "artifact_root"))
+        object.__setattr__(self, "artifact_root", require_nonempty_path(self.artifact_root, "artifact_root"))
         if isinstance(self.source_databases, (str, bytes, bytearray, Mapping)):
             raise ValueError("source_databases must be a sequence of paths")
         try:
-            source_databases = tuple(_path_value(p, "source_databases") for p in self.source_databases)
+            source_databases = tuple(
+                require_nonempty_path(p, "source_databases") for p in self.source_databases
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError("source_databases must be a sequence of paths") from exc
         object.__setattr__(self, "source_databases", source_databases)

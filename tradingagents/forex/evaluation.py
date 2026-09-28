@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from tradingagents.dataflows.mt5.models import Mt5Tick
 from tradingagents.forex.shadow import ShadowTradeDecision
+from tradingagents.path_utils import require_nonempty_path
 
 EvaluationBasis = Literal["ANALYSIS_SNAPSHOT", "DECISION_REFERENCE"]
 EvaluationStatus = Literal["PENDING", "COMPLETE", "DATA_UNAVAILABLE", "INELIGIBLE"]
@@ -823,7 +824,7 @@ class ShadowEvaluationStore:
     """SQLite persistence for immutable-per-basis shadow outcome evidence."""
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = require_nonempty_path(path, "path")
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

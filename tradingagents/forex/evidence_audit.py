@@ -14,6 +14,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .evidence_context import (
     EvidenceAuditStatus,
     EvidenceBundleStatus,
@@ -315,7 +317,7 @@ class EvidenceUsageAudit:
 
 class EvidenceAuditStore:
     def __init__(self, path: str | Path = "data_cache/evidence_runtime/evidence_audit.sqlite3") -> None:
-        self.path = Path(path)
+        self.path = require_nonempty_path(path, "path")
 
     def initialize(self) -> None:
         try:

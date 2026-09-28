@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import quote
 
+from tradingagents.path_utils import require_nonempty_path
+
 if TYPE_CHECKING:
     from tradingagents.forex.shadow import ShadowDecisionStore, ShadowTradeDecision
     from tradingagents.forex.watcher import ScheduledOpportunity
@@ -313,7 +315,7 @@ class WatcherStore:
         busy_timeout_seconds: int = 5,
         provenance: Mapping[str, Any] | None = None,
     ) -> None:
-        self.path = Path(path)
+        self.path = require_nonempty_path(path, "path")
         for value, name in (
             (lease_ttl_seconds, "lease_ttl_seconds"),
             (busy_timeout_seconds, "busy_timeout_seconds"),

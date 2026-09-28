@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from tradingagents.path_utils import require_nonempty_path
+
 
 def _load_schemas_module():
     module_name = "tradingagents.agents.schemas"
@@ -610,7 +612,7 @@ class ShadowTradeDecision:
 
 class ShadowDecisionStore:
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = require_nonempty_path(path, "path")
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
