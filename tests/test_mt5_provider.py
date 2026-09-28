@@ -213,6 +213,20 @@ def test_provider_rejects_invalid_clock_config(fake_api):
         MT5Provider(api=fake_api, clock_config=False)
 
 
+def test_provider_preserves_falsey_clock_callable(fake_api):
+    class FalseClock:
+        def __bool__(self):
+            return False
+
+        def __call__(self):
+            return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    clock = FalseClock()
+    provider = MT5Provider(api=fake_api, clock_now=clock)
+
+    assert provider._clock_now is clock
+
+
 @pytest.mark.parametrize("field", ["broker_clock", "clock_now"])
 def test_provider_rejects_invalid_clock_dependencies(fake_api, field):
     with pytest.raises(TypeError, match=field):

@@ -188,7 +188,7 @@ class ForexShadowRuntimeConfig:
         from tradingagents.default_config import DEFAULT_CONFIG
 
         config = dict(DEFAULT_CONFIG)
-        if base:
+        if base is not None:
             config.update(dict(base))
         config.update(
             {

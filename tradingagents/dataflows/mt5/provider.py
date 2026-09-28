@@ -155,7 +155,9 @@ class MT5Provider:
         )
         if not isinstance(self._clock_config, BrokerClockConfig):
             raise TypeError("clock_config must be BrokerClockConfig")
-        self._clock_now = clock_now or (lambda: datetime.now(timezone.utc))
+        self._clock_now = (
+            (lambda: datetime.now(timezone.utc)) if clock_now is None else clock_now
+        )
 
     @property
     def broker_clock(self) -> Mt5BrokerClock | None:

@@ -35,6 +35,17 @@ def test_runtime_config_is_explicit_and_does_not_depend_on_shell_environment():
     assert len(runtime.fingerprint) == 64
 
 
+def test_runtime_config_preserves_falsey_base_mapping() -> None:
+    class FalseMapping(dict):
+        def __bool__(self):
+            return False
+
+    base = FalseMapping(custom_runtime_value="preserved")
+    config = ForexShadowRuntimeConfig().to_tradingagents_config(base)
+
+    assert config["custom_runtime_value"] == "preserved"
+
+
 def test_runtime_owned_fields_cannot_be_overridden_by_extra():
     with pytest.raises(ValueError, match="runtime-owned configuration"):
         ForexShadowRuntimeConfig(
