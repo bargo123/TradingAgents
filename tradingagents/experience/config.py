@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,15 @@ SIMILARITY_PROFILE_VERSION = "similarity-profile.v1"
 TRUST_POLICY_VERSION = "trust-policy.v1"
 STATISTICS_POLICY_VERSION = "statistics-policy.v1"
 PROJECTION_VERSION = "experience-projection.v1"
+
+
+def _version_text(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{name} must be a non-empty bounded string")
+    normalized = value.strip()
+    if not normalized or len(normalized) > 256:
+        raise ValueError(f"{name} must be a non-empty bounded string")
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +42,23 @@ class ExperienceConfig:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifact_root", Path(self.artifact_root))
-        object.__setattr__(self, "source_databases", tuple(Path(p) for p in self.source_databases))
+        if isinstance(self.source_databases, (str, bytes, bytearray, Mapping)):
+            raise ValueError("source_databases must be a sequence of paths")
+        try:
+            source_databases = tuple(Path(p) for p in self.source_databases)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("source_databases must be a sequence of paths") from exc
+        object.__setattr__(self, "source_databases", source_databases)
+        for name in (
+            "experience_schema_version",
+            "feature_schema_version",
+            "feature_extractor_version",
+            "similarity_profile_version",
+            "trust_policy_version",
+            "statistics_policy_version",
+            "projection_version",
+        ):
+            object.__setattr__(self, name, _version_text(getattr(self, name), name))
         object.__setattr__(self, "trust_tiers", tuple(TrustTier(v) for v in self.trust_tiers))
 
     def to_dict(self):
