@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tests.test_phase11_phase10 import FP
 from tradingagents.datasets.models import CanonicalExampleV1, SplitAssignment
 from tradingagents.datasets.splits import SplitResult
@@ -28,6 +30,16 @@ def generation(tmp_path: Path) -> Path:
     rows = tuple(CanonicalExampleV1(i, decision={"action": "BUY", "resolved_symbol": "EURUSD", "decision_id": i, "analysis_snapshot_timestamp": f"2026-01-01T00:0{n}:00+00:00"}, outcome={"evaluation_basis": "ANALYSIS_SNAPSHOT", "horizon_seconds": 300 + n}, provenance={"phase56": FP["phase56"], "phase8": {"source_fingerprint": FP["phase8"]}, "phase9": {"source_fingerprint": FP["phase9"]}}) for n, i in enumerate(("b", "a")))
     split = SplitResult((SplitAssignment("b", "train", "decision:b"), SplitAssignment("a", "validation", "decision:a")), "COMPLETE")
     return write_generation(tmp_path, rows, (), split, dataset_id="generation-a", source_fingerprints=FP)
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_preparation_rejects_empty_output_root(tmp_path: Path, value) -> None:
+    gen = Phase10Generation.open(generation(tmp_path / "gen"))
+    policy = TokenizationPolicy(tokenizer=TinyTokenizer(), max_length=1000)
+    from tradingagents.finetuning.errors import Phase10InvalidError
+
+    with pytest.raises(Phase10InvalidError, match="output root"):
+        prepare_generation(gen, value, SFTFormatter(), policy)
 
 
 def test_preparation_is_sorted_and_idempotent(tmp_path: Path) -> None:

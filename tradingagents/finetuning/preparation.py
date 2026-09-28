@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .errors import EmptyEligibleSetError, Phase10InvalidError
 from .formatting import SFTFormatter
 from .models import SFT_FORMAT_VERSION, canonical_json
@@ -99,17 +101,20 @@ def _row(ex):
 
 def prepare_generation(generation, output_root, formatter: SFTFormatter, tokenizer_policy: TokenizationPolicy) -> PreparationResult:
     try:
+        out = require_nonempty_path(output_root, "prepared output root").resolve()
+    except (TypeError, ValueError) as exc:
+        raise Phase10InvalidError("prepared output root must be non-empty") from exc
+    try:
         # Re-open an object as well as a path so every invocation re-checks the
         # immutable Phase 10 hashes before constructing a tokenizer.
         path = generation.path if isinstance(generation, Phase10Generation) else generation
         gen = Phase10Generation.open(path)
     except EmptyEligibleSetError:
-        return PreparationResult("EMPTY_ELIGIBLE_SET", {"status": "EMPTY_ELIGIBLE_SET"}, Path(output_root))
+        return PreparationResult("EMPTY_ELIGIBLE_SET", {"status": "EMPTY_ELIGIBLE_SET"}, out)
     except Exception as exc:
         if isinstance(exc, Phase10InvalidError):
             raise
         raise Phase10InvalidError(str(exc)) from exc
-    out = Path(output_root).resolve()
     if out == gen.path or gen.path in out.parents:
         raise Phase10InvalidError("prepared output must not overlap Phase 10 source")
     out.mkdir(parents=True, exist_ok=True)
