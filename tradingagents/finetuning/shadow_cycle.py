@@ -23,6 +23,7 @@ from tradingagents.datasets.sources import (
 )
 from tradingagents.experience.catalog import ExperienceCatalog
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
+from tradingagents.path_utils import require_nonempty_path
 
 from .shadow_audit import build_exclusion_audit, summarize_report
 
@@ -53,23 +54,51 @@ class ShadowCycleConfig:
     mode: str = "collect"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "db_path", Path(self.db_path).resolve())
-        object.__setattr__(self, "phase8_root", Path(self.phase8_root).resolve())
+        try:
+            db_path = require_nonempty_path(self.db_path, "shadow cycle database path").resolve()
+            phase8_root = require_nonempty_path(self.phase8_root, "Phase 8 artifact root").resolve()
+            phase10_output_root = require_nonempty_path(
+                self.phase10_output_root, "Phase 10 output root"
+            ).resolve()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("shadow cycle storage paths must be non-empty") from exc
+        object.__setattr__(self, "db_path", db_path)
+        object.__setattr__(self, "phase8_root", phase8_root)
         object.__setattr__(
             self,
             "phase10_output_root",
-            Path(self.phase10_output_root).resolve(),
+            phase10_output_root,
         )
         if self.phase9_audit_path is not None:
-            object.__setattr__(self, "phase9_audit_path", Path(self.phase9_audit_path).resolve())
+            try:
+                value = require_nonempty_path(
+                    self.phase9_audit_path, "Phase 9 audit path"
+                ).resolve()
+            except (TypeError, ValueError) as exc:
+                raise ValueError("shadow cycle storage paths must be non-empty") from exc
+            object.__setattr__(self, "phase9_audit_path", value)
         if self.phase7_root is not None:
-            object.__setattr__(self, "phase7_root", Path(self.phase7_root).resolve())
+            try:
+                value = require_nonempty_path(self.phase7_root, "Phase 7 artifact root").resolve()
+            except (TypeError, ValueError) as exc:
+                raise ValueError("shadow cycle storage paths must be non-empty") from exc
+            object.__setattr__(self, "phase7_root", value)
         if self.embedding_model_path is not None:
-            object.__setattr__(
-                self, "embedding_model_path", Path(self.embedding_model_path).resolve()
-            )
+            try:
+                value = require_nonempty_path(
+                    self.embedding_model_path, "embedding model path"
+                ).resolve()
+            except (TypeError, ValueError) as exc:
+                raise ValueError("shadow cycle storage paths must be non-empty") from exc
+            object.__setattr__(self, "embedding_model_path", value)
         if self.runtime_cache_dir is not None:
-            object.__setattr__(self, "runtime_cache_dir", Path(self.runtime_cache_dir).resolve())
+            try:
+                value = require_nonempty_path(
+                    self.runtime_cache_dir, "runtime cache directory"
+                ).resolve()
+            except (TypeError, ValueError) as exc:
+                raise ValueError("shadow cycle storage paths must be non-empty") from exc
+            object.__setattr__(self, "runtime_cache_dir", value)
         if self.symbol.upper() != "EURUSD":
             raise ValueError("the bounded first lifecycle supports EURUSD only")
         if self.analysts != ("market", "news"):

@@ -30,6 +30,33 @@ def _config(tmp_path: Path, *, mode: str = "collect") -> ShadowCycleConfig:
     )
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "db_path",
+        "phase8_root",
+        "phase10_output_root",
+        "phase9_audit_path",
+        "phase7_root",
+        "embedding_model_path",
+        "runtime_cache_dir",
+    ],
+)
+def test_config_rejects_empty_storage_paths(tmp_path: Path, field: str) -> None:
+    values = {
+        "db_path": tmp_path / "shadow.db",
+        "phase8_root": tmp_path / "phase8",
+        "phase10_output_root": tmp_path / "phase10",
+        "phase9_audit_path": tmp_path / "phase9-audit.sqlite3",
+        "phase7_root": tmp_path / "phase7",
+        "embedding_model_path": tmp_path / "embedding",
+        "runtime_cache_dir": tmp_path / "cache",
+    }
+    values[field] = ""
+    with pytest.raises(ValueError, match="path"):
+        ShadowCycleConfig(**values)
+
+
 class _Result:
     def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = ""):
         self.returncode = returncode
