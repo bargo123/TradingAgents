@@ -12,6 +12,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .catalog import KnowledgeCatalog
 from .embeddings import EmbeddingSpecMismatch
 from .lexical_index import LexicalIndexError, LexicalIndexReader, LexicalIndexWriter
@@ -53,7 +55,7 @@ class IndexGenerationManager:
             index_version = config.index_version
         if artifact_root is None:
             raise ValueError("artifact_root is required")
-        self.artifact_root = Path(artifact_root)
+        self.artifact_root = require_nonempty_path(artifact_root, "artifact_root")
         self.catalog = catalog or KnowledgeCatalog(self.artifact_root / "catalog.sqlite3")
         self.catalog.initialize()
         self.embedding_spec = embedding_spec or _embedding_spec_from_config(config)

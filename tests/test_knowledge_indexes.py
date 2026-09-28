@@ -164,6 +164,17 @@ def make_generation_manager(
     return manager
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_generation_manager_rejects_empty_artifact_root(value):
+    with pytest.raises((TypeError, ValueError), match="artifact_root"):
+        IndexGenerationManager(
+            artifact_root=value,
+            embedding_spec=make_embedding_spec(),
+            vector_writer=VectorIndexWriter(backend=FakeVectorBackend()),
+            lexical_writer=LexicalIndexWriter(),
+        )
+
+
 def test_failed_vector_build_does_not_swap_active_generation(tmp_path):
     manager = make_generation_manager(tmp_path)
     old = manager.active_generation()

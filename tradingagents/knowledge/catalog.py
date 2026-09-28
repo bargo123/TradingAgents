@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .diagnostics import QuarantineRecord, bounded_error_metadata
 from .models import (
     AliasRelation,
@@ -82,7 +84,7 @@ class KnowledgeCatalog:
     """
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+        self.path = require_nonempty_path(path, "catalog path")
 
     def _connect(self) -> sqlite3.Connection:
         connection: sqlite3.Connection | None = None

@@ -12,6 +12,7 @@ from tradingagents.forex.evidence_runtime import (
 )
 from tradingagents.forex.shadow import ShadowDecisionStore
 from tradingagents.forex.watch_store import WatcherStore
+from tradingagents.knowledge.catalog import KnowledgeCatalog
 
 
 @pytest.mark.parametrize(
@@ -25,6 +26,7 @@ from tradingagents.forex.watch_store import WatcherStore
         ReadonlySourceReader,
         ReadonlyKnowledgeCatalog,
         ReadonlyExperienceCatalog,
+        KnowledgeCatalog,
     ],
 )
 @pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
