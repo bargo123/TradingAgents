@@ -111,20 +111,28 @@ class DedicatedOllamaRuntime:
                 raise TypeError(f"{name} must be callable")
         if isinstance(probe_attempts, bool) or not isinstance(probe_attempts, int) or probe_attempts <= 0:
             raise ValueError("probe_attempts must be a positive integer")
+        try:
+            probe_interval = float(probe_interval_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("probe_interval_seconds must be finite and non-negative") from exc
         if (
             isinstance(probe_interval_seconds, bool)
             or not isinstance(probe_interval_seconds, (int, float))
-            or not math.isfinite(float(probe_interval_seconds))
-            or probe_interval_seconds < 0
+            or not math.isfinite(probe_interval)
+            or probe_interval < 0
         ):
             raise ValueError("probe_interval_seconds must be finite and non-negative")
         if isinstance(max_recovery_attempts, bool) or not isinstance(max_recovery_attempts, int) or max_recovery_attempts < 0:
             raise ValueError("max_recovery_attempts must be a non-negative integer")
+        try:
+            prewarm_timeout = float(prewarm_timeout_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("prewarm_timeout_seconds must be finite and positive") from exc
         if (
             isinstance(prewarm_timeout_seconds, bool)
             or not isinstance(prewarm_timeout_seconds, (int, float))
-            or not math.isfinite(float(prewarm_timeout_seconds))
-            or prewarm_timeout_seconds <= 0
+            or not math.isfinite(prewarm_timeout)
+            or prewarm_timeout <= 0
         ):
             raise ValueError("prewarm_timeout_seconds must be finite and positive")
         self.config = config
@@ -133,9 +141,9 @@ class DedicatedOllamaRuntime:
         self.version_runner = version_runner
         self.sleep = sleep
         self.probe_attempts = probe_attempts
-        self.probe_interval_seconds = float(probe_interval_seconds)
+        self.probe_interval_seconds = probe_interval
         self.max_recovery_attempts = max_recovery_attempts
-        self.prewarm_timeout_seconds = float(prewarm_timeout_seconds)
+        self.prewarm_timeout_seconds = prewarm_timeout
         self._owned_process: Any | None = None
         self._verified_contexts: dict[str, int] = {}
         self._recovery_attempts = 0

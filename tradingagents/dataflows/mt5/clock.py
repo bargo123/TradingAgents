@@ -36,7 +36,10 @@ def decode_mt5_epoch(value: object, *, milliseconds: bool = False) -> datetime:
         raise ValueError("MT5 epoch must be numeric")
     if not isinstance(value, Real):
         raise ValueError("MT5 epoch must be numeric")
-    numeric = float(value)
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("MT5 epoch must be finite") from exc
     if not math.isfinite(numeric):
         raise ValueError("MT5 epoch must be finite")
     if milliseconds:
@@ -83,7 +86,11 @@ class BrokerClockConfig:
         ):
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{name} must be a number")
-            if not math.isfinite(float(value)) or float(value) < 0:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"{name} must be finite and non-negative") from exc
+            if not math.isfinite(numeric) or numeric < 0:
                 raise ValueError(f"{name} must be finite and non-negative")
 
 
@@ -130,7 +137,11 @@ class Mt5BrokerClock:
         if self.offset_seconds is not None:
             if isinstance(self.offset_seconds, bool) or not isinstance(self.offset_seconds, (int, float)):
                 raise ValueError("offset_seconds must be numeric")
-            if not math.isfinite(float(self.offset_seconds)):
+            try:
+                offset = float(self.offset_seconds)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("offset_seconds must be finite") from exc
+            if not math.isfinite(offset):
                 raise ValueError("offset_seconds must be finite")
         if isinstance(self.sample_count, bool) or not isinstance(self.sample_count, int) or self.sample_count < 0:
             raise ValueError("sample_count must be non-negative")
@@ -151,7 +162,10 @@ class Mt5BrokerClock:
         if self.max_residual_seconds is not None:
             if isinstance(self.max_residual_seconds, bool) or not isinstance(self.max_residual_seconds, (int, float)):
                 raise ValueError("max_residual_seconds must be numeric")
-            residual = float(self.max_residual_seconds)
+            try:
+                residual = float(self.max_residual_seconds)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("max_residual_seconds must be finite and non-negative") from exc
             if not math.isfinite(residual) or residual < 0:
                 raise ValueError("max_residual_seconds must be finite and non-negative")
             object.__setattr__(self, "max_residual_seconds", residual)
@@ -166,9 +180,13 @@ class Mt5BrokerClock:
         if (
             isinstance(max_age_seconds, bool)
             or not isinstance(max_age_seconds, (int, float))
-            or not math.isfinite(float(max_age_seconds))
-            or float(max_age_seconds) < 0
         ):
+            raise ValueError("max_age_seconds must be finite and non-negative")
+        try:
+            max_age = float(max_age_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("max_age_seconds must be finite and non-negative") from exc
+        if not math.isfinite(max_age) or max_age < 0:
             raise ValueError("max_age_seconds must be finite and non-negative")
         now = _utc(now_utc, "now_utc")
         if not self.is_calibrated or self.calibrated_at_utc is None:
@@ -176,7 +194,7 @@ class Mt5BrokerClock:
                 f"broker clock calibration is {self.status.lower()}"
             )
         age = (now - self.calibrated_at_utc).total_seconds()
-        if age < 0 or age > float(max_age_seconds):
+        if age < 0 or age > max_age:
             raise Mt5BrokerClockError(
                 f"broker clock calibration is stale (age={age:.3f}s)"
             )

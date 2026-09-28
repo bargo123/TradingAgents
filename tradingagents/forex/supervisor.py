@@ -150,11 +150,15 @@ class ForexSupervisor:
 
         if isinstance(max_restarts, bool) or not isinstance(max_restarts, int) or max_restarts < 0:
             raise ValueError("max_restarts must be a non-negative integer")
+        try:
+            restart_backoff = float(restart_backoff_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("restart_backoff_seconds must be a finite non-negative number") from exc
         if (
             isinstance(restart_backoff_seconds, bool)
             or not isinstance(restart_backoff_seconds, (int, float))
-            or not math.isfinite(float(restart_backoff_seconds))
-            or restart_backoff_seconds < 0
+            or not math.isfinite(restart_backoff)
+            or restart_backoff < 0
         ):
             raise ValueError("restart_backoff_seconds must be a finite non-negative number")
 

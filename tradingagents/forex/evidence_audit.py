@@ -153,9 +153,13 @@ def _non_negative_float(value: Any, name: str) -> float | None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError(f"{name} must be a non-negative finite number")
-    if not math.isfinite(float(value)) or value < 0:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a non-negative finite number") from exc
+    if not math.isfinite(numeric) or value < 0:
         raise ValueError(f"{name} must be a non-negative finite number")
-    return float(value)
+    return numeric
 
 
 def _optional_text(value: Any, name: str, *, allow_empty: bool = False) -> str | None:

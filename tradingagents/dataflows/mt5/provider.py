@@ -537,7 +537,7 @@ class MT5Provider:
             bid, ask = _field(tick, "bid"), _field(tick, "ask")
             price = ask - bid
             return Mt5Spread(resolved, bid, ask, price, price / point, _utc_timestamp(tick, prefer_msc=True, broker_clock=clock))
-        except (TypeError, ValueError, OSError, ZeroDivisionError) as exc:
+        except (TypeError, ValueError, OSError, OverflowError, ZeroDivisionError) as exc:
             raise Mt5DataError(f"Invalid spread data for {resolved!r}") from exc
 
     def get_ticks_range(

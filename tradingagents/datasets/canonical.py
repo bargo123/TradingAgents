@@ -81,6 +81,16 @@ def _reject(value: Any, key: str = "") -> None:
 def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(_plain(value), sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
+
+def _finite_numeric(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _snapshot(value: Any, symbol: str, timestamp: Any) -> dict[str, Any]:
     """Project only bounded market facts; arbitrary source payloads are excluded."""
     if isinstance(value, str):
@@ -94,7 +104,7 @@ def _snapshot(value: Any, symbol: str, timestamp: Any) -> dict[str, Any]:
         raise ValueError("snapshot keys exceed bound")
     out: dict[str, Any] = {"symbol": symbol, "timestamp": timestamp}
     for key in ("point", "digits"):
-        if isinstance(value.get(key), (int, float)) and not isinstance(value[key], bool) and math.isfinite(float(value[key])):
+        if _finite_numeric(value.get(key)):
             out[key] = value[key]
     quote = value.get("quote")
     if "quote" in value and not isinstance(quote, Mapping):
@@ -102,7 +112,11 @@ def _snapshot(value: Any, symbol: str, timestamp: Any) -> dict[str, Any]:
     if isinstance(quote, Mapping):
         if len(quote) > 16:
             raise ValueError("snapshot quote keys exceed bound")
-        out["quote"] = {k: quote[k] for k in ("bid", "ask", "spread", "spread_points") if isinstance(quote.get(k), (int, float)) and not isinstance(quote[k], bool) and math.isfinite(float(quote[k]))}
+        out["quote"] = {
+            k: quote[k]
+            for k in ("bid", "ask", "spread", "spread_points")
+            if _finite_numeric(quote.get(k))
+        }
     features = value.get("features")
     if "features" in value and not isinstance(features, Mapping):
         raise ValueError("snapshot features must be a mapping")
@@ -119,7 +133,11 @@ def _snapshot(value: Any, symbol: str, timestamp: Any) -> dict[str, Any]:
                 raise ValueError("snapshot feature keys exceed bound")
             if any(k in {"return_over_bars", "range_pct", "close_position", "average_true_range"} and not isinstance(v, (int, float)) for k, v in section.items()):
                 raise ValueError("snapshot feature value is malformed")
-            vals = {str(k): v for k, v in list(section.items())[:32] if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(float(v))}
+            vals = {
+                str(k): v
+                for k, v in list(section.items())[:32]
+                if _finite_numeric(v)
+            }
             if vals:
                 projected[str(tf)[:32]] = vals
         if projected:

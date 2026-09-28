@@ -79,14 +79,18 @@ class ReadonlyEvidenceRuntimeConfiguration:
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifact_roots", _normalize_artifact_roots(self.artifact_roots))
         timeout = self.evidence_timeout_seconds
+        try:
+            timeout_value = float(timeout)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("evidence_timeout_seconds must be a finite non-negative number") from exc
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
-            or not math.isfinite(float(timeout))
+            or not math.isfinite(timeout_value)
             or timeout < 0
         ):
             raise ValueError("evidence_timeout_seconds must be a finite non-negative number")
-        object.__setattr__(self, "evidence_timeout_seconds", float(timeout))
+        object.__setattr__(self, "evidence_timeout_seconds", timeout_value)
 
     @classmethod
     def from_envelope(cls, envelope: Mapping[str, Any]) -> ReadonlyEvidenceRuntimeConfiguration:
@@ -100,7 +104,10 @@ class ReadonlyEvidenceRuntimeConfiguration:
         raw_timeout = envelope.get("evidence_timeout_seconds", 10.0)
         if isinstance(raw_timeout, bool) or not isinstance(raw_timeout, (int, float)):
             raise TypeError("evidence_timeout_seconds must be a finite non-negative number")
-        timeout = float(raw_timeout)
+        try:
+            timeout = float(raw_timeout)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("evidence_timeout_seconds must be a finite non-negative number") from exc
         if not math.isfinite(timeout) or timeout < 0:
             raise ValueError("evidence_timeout_seconds must be a finite non-negative number")
         return cls(tuple(roots.items()), timeout)

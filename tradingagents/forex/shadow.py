@@ -550,7 +550,11 @@ class ShadowTradeDecision:
                 continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{field_name} must be a finite numeric value")
-            if not math.isfinite(float(value)):
+            try:
+                finite_value = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"{field_name} must be finite when provided") from exc
+            if not math.isfinite(finite_value):
                 raise ValueError(f"{field_name} must be finite when provided")
         for field_name in ("reference_bid", "reference_ask", "reference_mid"):
             if getattr(self, field_name) <= 0:

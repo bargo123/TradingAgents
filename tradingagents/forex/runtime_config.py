@@ -153,12 +153,16 @@ class ForexShadowRuntimeConfig:
                 name,
                 _required_version(getattr(self, name), name),
             )
+        try:
+            temperature = float(self.temperature)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("temperature must be between 0 and 2") from exc
         if (
             isinstance(self.temperature, bool)
             or not isinstance(self.temperature, (int, float))
-            or not math.isfinite(float(self.temperature))
-            or self.temperature < 0
-            or self.temperature > 2
+            or not math.isfinite(temperature)
+            or temperature < 0
+            or temperature > 2
         ):
             raise ValueError("temperature must be between 0 and 2")
         for name in ("max_tokens", "context_length"):

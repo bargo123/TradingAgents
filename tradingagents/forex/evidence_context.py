@@ -182,10 +182,14 @@ class EvidenceQueryPolicy:
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be positive")
         timeout = self.evidence_timeout_seconds
+        try:
+            timeout_value = float(timeout)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("evidence_timeout_seconds must be non-negative") from exc
         if (
             isinstance(timeout, bool)
             or not isinstance(timeout, (int, float))
-            or not math.isfinite(float(timeout))
+            or not math.isfinite(timeout_value)
             or timeout < 0
         ):
             raise ValueError("evidence_timeout_seconds must be non-negative")
