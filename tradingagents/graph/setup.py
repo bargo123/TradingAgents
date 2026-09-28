@@ -168,6 +168,13 @@ class GraphSetup:
                     f"Forex mode does not allow these analysts: {', '.join(forbidden)}"
                 )
         plan = build_analyst_execution_plan(selected_analysts)
+        if not isinstance(self.tool_nodes, Mapping):
+            raise ValueError("tool_nodes must be a mapping")
+        missing_tools = [spec.key for spec in plan.specs if spec.key not in self.tool_nodes]
+        if missing_tools:
+            raise ValueError(
+                "missing analyst tool node(s): " + ", ".join(dict.fromkeys(missing_tools))
+            )
 
         if self.market_data_mode == "forex_mt5":
             analyst_factories = {

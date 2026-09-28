@@ -219,6 +219,24 @@ def test_forex_graph_setup_preserves_generator_analysts(
 
 
 @pytest.mark.unit
+def test_forex_graph_setup_rejects_missing_analyst_tool_node(
+    forex_snapshot: ForexMarketSnapshot,
+) -> None:
+    adapter = MT5ToolAdapter(SimpleNamespace(), forex_snapshot)
+    setup = GraphSetup(
+        SimpleNamespace(),
+        SimpleNamespace(),
+        {"market": SimpleNamespace()},
+        ConditionalLogic(max_debate_rounds=1, max_risk_discuss_rounds=1),
+        market_data_mode="forex_mt5",
+        mt5_tools=adapter,
+    )
+
+    with pytest.raises(ValueError, match="tool node.*news|news.*tool node"):
+        setup.setup_graph(("market", "news"))
+
+
+@pytest.mark.unit
 def test_trading_agents_graph_accepts_forex_mode_arguments(
     monkeypatch: pytest.MonkeyPatch,
     forex_snapshot: ForexMarketSnapshot,
