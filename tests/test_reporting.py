@@ -6,7 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.graph.trading_graph import (
+    TradingAgentsGraph,
+    _validate_graph_storage_paths,
+)
 from tradingagents.reporting import write_report_tree
 
 
@@ -64,4 +67,16 @@ def test_save_reports_rejects_empty_results_dir(value):
             SimpleNamespace(config={"results_dir": value}),
             _state(),
             "AAPL",
+        )
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_graph_storage_paths_reject_empty_roots(value):
+    with pytest.raises((TypeError, ValueError), match="data_cache_dir"):
+        _validate_graph_storage_paths(
+            {"data_cache_dir": value, "results_dir": "results"}
+        )
+    with pytest.raises((TypeError, ValueError), match="results_dir"):
+        _validate_graph_storage_paths(
+            {"data_cache_dir": "cache", "results_dir": value}
         )

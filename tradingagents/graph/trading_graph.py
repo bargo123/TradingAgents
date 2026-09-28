@@ -62,6 +62,13 @@ logger = logging.getLogger(__name__)
 SUPPORTED_MARKET_DATA_MODES = frozenset({"stock", "forex_mt5"})
 
 
+def _validate_graph_storage_paths(config: Any) -> None:
+    """Reject storage roots that would silently resolve to the working directory."""
+
+    require_nonempty_path(config.get("data_cache_dir"), "data_cache_dir")
+    require_nonempty_path(config.get("results_dir"), "results_dir")
+
+
 def _coerce_max_retries(value):
     """Validate an ``llm_max_retries`` value to a non-negative int.
 
@@ -150,6 +157,7 @@ class TradingAgentsGraph:
 
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
+        _validate_graph_storage_paths(self.config)
         self.callbacks = callbacks or []
         self.market_data_mode = market_data_mode
         self.mt5_tools = mt5_tools
