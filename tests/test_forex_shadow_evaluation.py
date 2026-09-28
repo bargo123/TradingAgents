@@ -83,6 +83,13 @@ def _tick(timestamp: datetime, bid: float, ask: float) -> Mt5Tick:
     return Mt5Tick(symbol="EURUSDm", timestamp=timestamp, bid=bid, ask=ask)
 
 
+@pytest.mark.parametrize("records", ["abc", b"abc", bytearray(b"abc"), {}, 0, False])
+def test_evaluation_store_rejects_malformed_record_batches(tmp_path, records) -> None:
+    store = ShadowEvaluationStore(tmp_path / "malformed-batch.db")
+    with pytest.raises(ValueError, match="records"):
+        store.upsert(records)
+
+
 def test_evaluation_config_defaults_and_validation() -> None:
     config = EvaluationConfig()
     assert config.horizons_seconds == (300, 900, 1800, 3600)

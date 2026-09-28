@@ -935,7 +935,14 @@ class ShadowEvaluationStore:
 
     def upsert(self, records: Sequence[ShadowOutcomeEvaluation]) -> None:
         self.initialize()
-        records = tuple(records)
+        if isinstance(records, (str, bytes, bytearray, Mapping)):
+            raise ValueError("records must be a sequence of ShadowOutcomeEvaluation")
+        try:
+            records = tuple(records)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("records must be a sequence of ShadowOutcomeEvaluation") from exc
+        if any(not isinstance(record, ShadowOutcomeEvaluation) for record in records):
+            raise ValueError("records must be a sequence of ShadowOutcomeEvaluation")
         if not records:
             return
         with closing(sqlite3.connect(self.path)) as conn, conn:
