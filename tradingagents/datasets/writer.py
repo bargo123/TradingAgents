@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tradingagents.path_utils import require_nonempty_path
+
 from .models import (
     CANONICALIZATION_VERSION,
     DATASET_SCHEMA_VERSION,
@@ -428,7 +430,7 @@ def write_generation(
         rows, excluded, assignment_items, split_status, fingerprints, policies, metadata,
     )
     generation_id = dataset_id or _default_id(identity_digest)
-    root = Path(output_root)
+    root = require_nonempty_path(output_root, "output root")
     root.mkdir(parents=True, exist_ok=True)
     destination = root / generation_id
     if os.path.lexists(destination):

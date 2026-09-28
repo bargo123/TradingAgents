@@ -71,6 +71,20 @@ def splits(rows):
     )
 
 
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_write_generation_rejects_empty_output_root(value):
+    with pytest.raises((TypeError, ValueError), match="output root"):
+        write_generation(
+            value,
+            (example(),),
+            (),
+            SplitResult((), "INSUFFICIENT_DATA"),
+            dataset_id="empty-root",
+            source_fingerprints=FINGERPRINTS,
+            policy_versions=POLICIES,
+        )
+
+
 def test_write_is_canonical_and_validates(tmp_path: Path):
     rows = (example(), example("ex-2", "2026-01-02T00:00:00+00:00"))
     root = write_generation(
