@@ -144,7 +144,10 @@ def _content_type(value: ContentType | str) -> ContentType:
 
 
 def _finite_float(value: float | int, name: str) -> float:
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be finite") from exc
     if not math.isfinite(result):
         raise ValueError(f"{name} must be finite")
     return result

@@ -168,7 +168,10 @@ def _float_mapping(value: Any, name: str) -> Mapping[str, float]:
 def _finite_float(value: Any, name: str) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(f"{name} must be finite")
-    normalized = float(value)
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be finite") from exc
     if not math.isfinite(normalized):
         raise ValueError(f"{name} must be finite")
     return normalized

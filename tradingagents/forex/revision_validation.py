@@ -35,7 +35,7 @@ def _safe_nonnegative_float(value: Any) -> float | None:
         return None
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     if not math.isfinite(parsed) or parsed < 0:
         return None

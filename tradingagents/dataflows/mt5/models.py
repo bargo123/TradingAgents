@@ -18,7 +18,10 @@ def _utc_timestamp(value: Any, name: str) -> datetime:
 def _finite_number(value: Any, name: str, *, positive: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(f"{name} must be a finite numeric value")
-    result = float(value)
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite numeric value") from exc
     if not math.isfinite(result) or (positive and result <= 0):
         qualifier = "positive " if positive else ""
         raise ValueError(f"{name} must be a finite {qualifier}numeric value")

@@ -65,7 +65,7 @@ def _parse_utc(value: Any) -> datetime | None:
 def _finite(value: Any) -> float | None:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
 

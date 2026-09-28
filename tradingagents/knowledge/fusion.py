@@ -11,7 +11,10 @@ from typing import Any
 def _finite_score(value: float | int, name: str) -> float:
     """Normalize a retrieval score without allowing non-finite ordering keys."""
 
-    score = float(value)
+    try:
+        score = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be finite") from exc
     if not math.isfinite(score):
         raise ValueError(f"{name} must be finite")
     return score

@@ -3,13 +3,22 @@ from __future__ import annotations
 import pytest
 
 from tradingagents.dataflows.mt5.clock import BrokerClockConfig
+from tradingagents.dataflows.mt5.models import _finite_number
 from tradingagents.datasets.canonical import _snapshot
+from tradingagents.distillation.splits import GroupedSplitter
+from tradingagents.experience.models import _finite_float as experience_finite_float
+from tradingagents.forex.decision_path_audit import _finite as decision_finite
 from tradingagents.forex.evidence_audit import _non_negative_float
 from tradingagents.forex.evidence_context import EvidenceQueryPolicy
+from tradingagents.forex.evidence_replay import _number as replay_number
 from tradingagents.forex.evidence_runtime import ReadonlyEvidenceRuntimeConfiguration
+from tradingagents.forex.hold_audit import _finite as hold_finite
 from tradingagents.forex.ollama_runtime import DedicatedOllamaRuntime
+from tradingagents.forex.revision_validation import _safe_nonnegative_float
 from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
 from tradingagents.forex.supervisor import ForexSupervisor
+from tradingagents.knowledge.fusion import _finite_score
+from tradingagents.knowledge.models import _finite_float as knowledge_finite_float
 
 HUGE_INTEGER = 10**1000
 
@@ -25,6 +34,11 @@ HUGE_INTEGER = 10**1000
         lambda: DedicatedOllamaRuntime(
             ForexShadowRuntimeConfig(), probe_interval_seconds=HUGE_INTEGER
         ),
+        lambda: experience_finite_float(HUGE_INTEGER, "value"),
+        lambda: knowledge_finite_float(HUGE_INTEGER, "value"),
+        lambda: _finite_number(HUGE_INTEGER, "value"),
+        lambda: _finite_score(HUGE_INTEGER, "value"),
+        lambda: replay_number(HUGE_INTEGER, "value"),
     ),
 )
 def test_numeric_configuration_rejects_oversized_integers(factory) -> None:
@@ -53,3 +67,13 @@ def test_snapshot_projection_ignores_oversized_numeric_values() -> None:
     )
     assert "point" not in result
     assert result["quote"] == {}
+
+
+@pytest.mark.parametrize("reader", (decision_finite, hold_finite, _safe_nonnegative_float))
+def test_audit_numeric_readers_quarantine_oversized_values(reader) -> None:
+    assert reader(HUGE_INTEGER) is None
+
+
+def test_grouped_splitter_rejects_oversized_ratio() -> None:
+    with pytest.raises(ValueError):
+        GroupedSplitter(ratios=(HUGE_INTEGER, 0.1, 0.1))

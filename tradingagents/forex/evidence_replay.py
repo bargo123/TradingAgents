@@ -69,7 +69,10 @@ def _number(value: Any, name: str, *, integer: bool = False) -> float | int:
     else:
         if not isinstance(value, Real):
             raise SnapshotReplayError(f"{name} must be numeric")
-        parsed = float(value)
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise SnapshotReplayError(f"{name} must be finite") from exc
     if isinstance(parsed, float) and not math.isfinite(parsed):
         raise SnapshotReplayError(f"{name} must be finite")
     return parsed

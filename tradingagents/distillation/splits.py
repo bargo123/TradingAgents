@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from typing import Any
 
 
 class GroupedSplitter:
     def __init__(self, *, ratios=(0.70, 0.15, 0.15), min_groups=3):
-        if len(ratios) != 3 or any(float(x) <= 0 for x in ratios) or abs(sum(ratios) - 1.0) > 1e-6:
+        try:
+            normalized_ratios = tuple(float(x) for x in ratios)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("ratios must be three positive values summing to one") from exc
+        if (
+            len(normalized_ratios) != 3
+            or any(not math.isfinite(x) or x <= 0 for x in normalized_ratios)
+            or abs(sum(normalized_ratios) - 1.0) > 1e-6
+        ):
             raise ValueError("ratios must be three positive values summing to one")
         if isinstance(min_groups, bool) or not isinstance(min_groups, int) or min_groups < 1:
             raise ValueError("min_groups must be a positive integer")
-        self.ratios = ratios
+        self.ratios = normalized_ratios
         self.min_groups = min_groups
 
     def assign(self, examples: list[Any]) -> dict[str, str]:
