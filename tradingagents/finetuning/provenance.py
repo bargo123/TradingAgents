@@ -103,7 +103,10 @@ class ModelProvenance:
 
         config = _read_json(model_path / "config.json")
         architecture = _as_tuple(config.get("architectures"))
-        dtype = _string(config.get("torch_dtype") or config.get("dtype"))
+        raw_dtype = config.get("torch_dtype")
+        if raw_dtype is None:
+            raw_dtype = config.get("dtype")
+        dtype = _string(raw_dtype)
         files = _collect_files(model_path, tok_path)
         config_files = tuple(item for item in files if item["path"] == "config.json")
         tokenizer_files = tuple(item for item in files if item["kind"] == "tokenizer")
@@ -122,7 +125,11 @@ def _canonical(value: Any) -> bytes:
 
 
 def _string(value: Any) -> str | None:
-    return str(value) if value is not None else None
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ProvenanceError("dtype must be a non-empty string")
+    return value
 
 
 def _as_tuple(value: Any) -> tuple[str, ...]:

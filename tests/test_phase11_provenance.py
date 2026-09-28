@@ -111,3 +111,17 @@ def test_malformed_architectures_are_rejected(tmp_path: Path, architectures) -> 
 
     with pytest.raises(ProvenanceError, match="architectures"):
         ModelProvenance.inspect(model, revision="local-snapshot", tokenizer_path=model)
+
+
+@pytest.mark.parametrize("dtype", [1, False, {}, []])
+def test_malformed_dtype_is_rejected(tmp_path: Path, dtype) -> None:
+    from tradingagents.finetuning.provenance import ModelProvenance, ProvenanceError
+
+    model = _fixture(tmp_path / "model")
+    (model / "config.json").write_text(
+        json.dumps({"architectures": ["TinyLM"], "torch_dtype": dtype}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProvenanceError, match="dtype"):
+        ModelProvenance.inspect(model, revision="local-snapshot", tokenizer_path=model)
