@@ -314,6 +314,79 @@ def test_malformed_persisted_run_status_fields_fail_closed(tmp_path, column, val
         store.get_run(run.run_id)
 
 
+def test_malformed_persisted_opportunity_attempt_count_fails_closed(tmp_path):
+    path = tmp_path / "opportunity-attempt.db"
+    store = WatcherStore(path)
+    item = _opportunity("bad-attempt-count")
+    store.observe_opportunity(item, NOW)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE forex_watch_opportunities SET attempt_count=? WHERE opportunity_key=?",
+            (float("inf"), item.opportunity_key),
+        )
+
+    with pytest.raises(ValueError, match="attempt_count"):
+        store.get_opportunity(item.opportunity_key)
+
+
+def test_malformed_persisted_run_attempt_number_fails_closed(tmp_path):
+    path = tmp_path / "run-attempt.db"
+    store = WatcherStore(path)
+    acquired = store.acquire_lease(owner(), NOW)
+    run = _insert_running_run(store, acquired.owner_token, source_run_id="bad-attempt-number")
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE forex_watch_runs SET attempt_number=? WHERE run_id=?",
+            ("not-an-integer", run.run_id),
+        )
+
+    with pytest.raises(ValueError, match="attempt_number"):
+        store.get_run(run.run_id)
+
+
+def test_malformed_persisted_attempt_count_fails_closed_before_claim(tmp_path):
+    path = tmp_path / "claim-attempt.db"
+    store = WatcherStore(path)
+    acquired = store.acquire_lease(owner(), NOW)
+    item = _opportunity("bad-claim-attempt")
+    store.observe_opportunity(item, NOW)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("PRAGMA ignore_check_constraints=ON")
+        conn.execute(
+            "UPDATE forex_watch_opportunities SET attempt_count=? WHERE opportunity_key=?",
+            (float("inf"), item.opportunity_key),
+        )
+
+    with pytest.raises(ValueError, match="attempt_count"):
+        store.claim_opportunity(acquired.owner_token, item.opportunity_key, NOW)
+
+
+def test_malformed_persisted_evaluation_horizon_fails_closed_in_summary(tmp_path):
+    path = tmp_path / "summary-horizon.db"
+    store = WatcherStore(path)
+    store.initialize()
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(
+            """
+            CREATE TABLE shadow_decision_evaluations (
+                decision_id TEXT NOT NULL,
+                evaluation_basis TEXT NOT NULL,
+                horizon_seconds INTEGER NOT NULL,
+                evaluation_status TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO shadow_decision_evaluations VALUES (?, ?, ?, ?)",
+            ("decision-1", "ANALYSIS_SNAPSHOT", float("inf"), "PENDING"),
+        )
+
+    with pytest.raises(ValueError, match="horizon_seconds"):
+        store.summary(NOW)
+
+
 def test_successful_evaluation_clears_previous_evaluation_error(tmp_path):
     store = WatcherStore(tmp_path / "watch.db")
     acquired = store.acquire_lease(owner(), NOW)

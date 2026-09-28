@@ -79,6 +79,16 @@ def _db_bool(value: Any, name: str) -> bool:
     raise ValueError(f"{name} must be boolean 0/1")
 
 
+def _db_int(value: Any, name: str, *, minimum: int | None = None) -> int:
+    """Decode an integer SQLite field without coercing malformed values."""
+
+    if type(value) is not int:
+        raise ValueError(f"{name} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    return value
+
+
 _LIFECYCLE_STATUSES = frozenset(
     {
         "STOPPED",
@@ -874,7 +884,7 @@ class WatcherStore:
                 raise KeyError(opportunity_key)
             if row["status"] != "ELIGIBLE":
                 raise RuntimeError(f"opportunity is not eligible: {row['status']}")
-            attempt = int(row["attempt_count"]) + 1
+            attempt = _db_int(row["attempt_count"], "attempt_count", minimum=0) + 1
             conn.execute(
                 "UPDATE forex_watch_opportunities SET status='RUNNING', attempt_count=?, run_id=?, updated_at=? WHERE opportunity_key=? AND status='ELIGIBLE'",
                 (attempt, run_id, _iso(now), opportunity_key),
@@ -1125,7 +1135,7 @@ class WatcherStore:
                 (_iso(now),),
             )
             row = conn.execute(f"SELECT {column} FROM forex_watcher_state WHERE singleton_id=1").fetchone()
-        return int(row[0])
+        return _db_int(row[0], column, minimum=0)
 
     def reconcile_stale_runs(
         self,
@@ -1343,9 +1353,9 @@ class WatcherStore:
                 status_counts: dict[str, int] = {}
                 for row in grouped:
                     basis = str(row["evaluation_basis"])
-                    horizon = int(row["horizon_seconds"])
+                    horizon = _db_int(row["horizon_seconds"], "horizon_seconds", minimum=1)
                     status = str(row["evaluation_status"])
-                    count = int(row["count"])
+                    count = _db_int(row["count"], "count", minimum=0)
                     by_key[f"{basis}/{horizon}/{status}"] = count
                     status_counts[status] = status_counts.get(status, 0) + count
                 terminal = conn.execute(
@@ -1454,7 +1464,7 @@ class WatcherStore:
             skip_detail=row["skip_detail"],
             run_id=row["run_id"],
             decision_id=row["decision_id"],
-            attempt_count=int(row["attempt_count"]),
+            attempt_count=_db_int(row["attempt_count"], "attempt_count", minimum=0),
             first_seen_at=_parse(row["first_seen_at"]),  # type: ignore[arg-type]
             updated_at=_parse(row["updated_at"]),  # type: ignore[arg-type]
         )
@@ -1468,7 +1478,7 @@ class WatcherStore:
         values = {field: _parse(row[field]) for field in dt_fields}
         return WatchRun(
             run_id=row["run_id"], opportunity_key=row["opportunity_key"],
-            attempt_number=int(row["attempt_number"]), owner_token=row["owner_token"],
+            attempt_number=_db_int(row["attempt_number"], "attempt_number", minimum=1), owner_token=row["owner_token"],
             run_status=_db_choice(
                 row["run_status"],
                 "run_status",
