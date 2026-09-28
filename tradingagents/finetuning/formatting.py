@@ -226,8 +226,9 @@ class SFTFormatter:
         example_id = _value(row, "example_id")
         if not isinstance(example_id, str) or not example_id.strip():
             raise ContractError("row example_id is required")
-        split = split or _value(row, "split", "train")
-        if split not in {"train", "validation"}:
+        if split is None:
+            split = _value(row, "split", "train")
+        if not isinstance(split, str) or split not in {"train", "validation"}:
             raise ContractError("invalid SFT split")
         decision = _value(row, "decision", {})
         market = _value(row, "market", {})

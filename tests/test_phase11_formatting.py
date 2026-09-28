@@ -35,6 +35,12 @@ def test_strict_target_actions(action: str) -> None:
     assert parse_target(SFTFormatter().format(row(action)).target)["action"] == action
 
 
+@pytest.mark.parametrize("explicit_split", ["", False, 0])
+def test_explicit_invalid_split_is_not_replaced_by_default(explicit_split) -> None:
+    with pytest.raises(ContractError, match="invalid SFT split"):
+        SFTFormatter().format(row(), explicit_split)
+
+
 def test_target_rejects_extra_missing_and_bad_evidence() -> None:
     with pytest.raises(ContractError):
         parse_target({"action": "BUY"})
