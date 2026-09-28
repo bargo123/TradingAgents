@@ -45,3 +45,15 @@ def test_config_rejects_invalid_version_metadata(field: str, value: object) -> N
 def test_config_rejects_scalar_source_databases(value: object) -> None:
     with pytest.raises((TypeError, ValueError), match="source_databases"):
         ExperienceConfig(source_databases=value)
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_config_rejects_empty_artifact_root(value: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="artifact_root"):
+        ExperienceConfig(artifact_root=value)
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_config_rejects_empty_source_database_path(value: object) -> None:
+    with pytest.raises((TypeError, ValueError), match="source_databases"):
+        ExperienceConfig(source_databases=(value,))
