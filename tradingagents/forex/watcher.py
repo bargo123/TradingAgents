@@ -58,6 +58,20 @@ def _require_nonnegative_int(value: Any, name: str) -> None:
         raise ValueError(f"{name} must be a non-negative integer")
 
 
+def _require_path(value: Any, name: str) -> Path:
+    if isinstance(value, (bytes, bytearray)):
+        raise ValueError(f"{name} must be a non-empty path")
+    if isinstance(value, str) and not value.strip():
+        raise ValueError(f"{name} must be a non-empty path")
+    try:
+        path = Path(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a non-empty path") from exc
+    if not str(path).strip() or str(path) == ".":
+        raise ValueError(f"{name} must be a non-empty path")
+    return path
+
+
 def _require_choice(value: Any, choices: set[str], name: str) -> None:
     if not isinstance(value, str) or value.strip().upper() not in choices:
         raise ValueError(f"{name} must be one of {', '.join(sorted(choices))}")
@@ -374,7 +388,7 @@ class WatcherConfig:
         _require_positive_int(self.db_busy_timeout_seconds, "db_busy_timeout_seconds")
         if not isinstance(self.evaluation_enabled, bool):
             raise ValueError("evaluation_enabled must be a bool")
-        object.__setattr__(self, "db_path", Path(self.db_path))
+        object.__setattr__(self, "db_path", _require_path(self.db_path, "db_path"))
         if self.terminal_path is not None:
             if not isinstance(self.terminal_path, str) or not self.terminal_path.strip():
                 raise ValueError("terminal_path must be a non-empty string or None")

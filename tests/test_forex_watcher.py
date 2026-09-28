@@ -66,14 +66,19 @@ def test_watcher_config_canonicalizes_analysis_profile(tmp_path):
         ("schedule_timeframe", "H4"),
         ("schedule_timeframe", None),
         ("analysis_profile", None),
+        ("db_path", ""),
+        ("db_path", "   "),
+        ("db_path", Path(".")),
+        ("db_path", Path("   ")),
         ("terminal_path", ""),
         ("terminal_path", "   "),
         ("terminal_path", 1),
     ],
 )
 def test_watcher_config_rejects_unsafe_or_invalid_values(tmp_path, field, value):
+    kwargs = {"db_path": tmp_path / "watch.db", field: value}
     with pytest.raises(ValueError):
-        WatcherConfig(db_path=tmp_path / "watch.db", **{field: value})
+        WatcherConfig(**kwargs)
 
 
 @pytest.mark.parametrize(
