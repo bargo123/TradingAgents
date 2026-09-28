@@ -1,6 +1,7 @@
 """Report parity: the shared writer produces the report tree for the CLI and the
 programmatic API alike (#1037)."""
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +32,12 @@ def test_write_report_tree_creates_files(tmp_path):
     complete = out.read_text()
     assert "Trading Analysis Report: AAPL" in complete
     assert "MKT" in complete and "PM DECISION" in complete
+
+
+@pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
+def test_write_report_tree_rejects_empty_save_path(value):
+    with pytest.raises((TypeError, ValueError), match="save_path"):
+        write_report_tree(_state(), "AAPL", value)
 
 
 @pytest.mark.unit

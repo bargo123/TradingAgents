@@ -9,10 +9,12 @@ run produces the same on-disk report tree a CLI run does.
 from datetime import datetime
 from pathlib import Path
 
+from tradingagents.path_utils import require_nonempty_path
+
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
-    save_path = Path(save_path)
+    save_path = require_nonempty_path(save_path, "save_path")
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
 
