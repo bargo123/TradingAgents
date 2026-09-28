@@ -102,7 +102,7 @@ class ModelProvenance:
             raise ProvenanceError("tokenizer path must be a local snapshot")
 
         config = _read_json(model_path / "config.json")
-        architecture = _as_tuple(config.get("architectures") or config.get("architectures", []))
+        architecture = _as_tuple(config.get("architectures"))
         dtype = _string(config.get("torch_dtype") or config.get("dtype"))
         files = _collect_files(model_path, tok_path)
         config_files = tuple(item for item in files if item["path"] == "config.json")
@@ -126,9 +126,17 @@ def _string(value: Any) -> str | None:
 
 
 def _as_tuple(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
     if isinstance(value, str):
-        return (value,)
-    return tuple(str(x) for x in value) if isinstance(value, (list, tuple)) else ()
+        if value:
+            return (value,)
+        raise ProvenanceError("architectures must contain non-empty strings")
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ProvenanceError("architectures must be a sequence of strings")
+    if any(not isinstance(item, str) or not item for item in value):
+        raise ProvenanceError("architectures must contain non-empty strings")
+    return tuple(value)
 
 
 def _read_json(path: Path) -> dict[str, Any]:

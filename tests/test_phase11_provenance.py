@@ -98,3 +98,16 @@ def test_non_object_model_config_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ProvenanceError, match="config"):
         ModelProvenance.inspect(model, revision="local-snapshot", tokenizer_path=model)
+
+
+@pytest.mark.parametrize("architectures", [42, False, {"name": "TinyLM"}, ["TinyLM", 1], [""]])
+def test_malformed_architectures_are_rejected(tmp_path: Path, architectures) -> None:
+    from tradingagents.finetuning.provenance import ModelProvenance, ProvenanceError
+
+    model = _fixture(tmp_path / "model")
+    (model / "config.json").write_text(
+        json.dumps({"architectures": architectures}), encoding="utf-8"
+    )
+
+    with pytest.raises(ProvenanceError, match="architectures"):
+        ModelProvenance.inspect(model, revision="local-snapshot", tokenizer_path=model)
