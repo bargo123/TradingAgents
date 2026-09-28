@@ -2,9 +2,11 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from tradingagents.datasets.eligibility import EligibilityResult
 from tradingagents.datasets.errors import SourceReadError
-from tradingagents.datasets.factory import DatasetFactory
+from tradingagents.datasets.factory import DatasetFactory, _manifest
 from tradingagents.datasets.models import (
     CanonicalExampleV1,
     DatasetConfig,
@@ -81,6 +83,30 @@ def test_factory_has_no_external_safety_counters():
         "tool_calls": 0,
         "mt5_calls": 0,
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("examples", "1"),
+        ("examples", True),
+        ("candidate_summary", {"candidates": "1", "eligible": 1, "excluded": 0}),
+        ("dataset_id", 123),
+    ],
+)
+def test_published_manifest_rejects_coerced_count_metadata(tmp_path: Path, field, value) -> None:
+    payload = {
+        "dataset_id": "generation-1",
+        "examples": 1,
+        "exclusions": 0,
+        "candidate_summary": {"candidates": 1, "eligible": 1, "excluded": 0},
+        "counts": {"reason_counts": {}},
+    }
+    payload[field] = value
+    (tmp_path / "manifest.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises((TypeError, ValueError)):
+        _manifest(tmp_path)
 
 
 def test_factory_records_changed_and_removed_source_rows(tmp_path, monkeypatch):

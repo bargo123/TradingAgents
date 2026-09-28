@@ -60,6 +60,12 @@ def test_publish_run_rejects_empty_artifact_root(value):
         publish_run(value, run_id="empty-root", config={}, dataset={}, metrics={})
 
 
+@pytest.mark.parametrize("run_id", ["", False, 0])
+def test_publish_run_rejects_explicit_falsey_run_id(tmp_path: Path, run_id) -> None:
+    with pytest.raises(ArtifactError, match="run_id"):
+        publish_run(tmp_path / "runs", run_id=run_id, config={}, dataset={}, metrics={})
+
+
 @pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
 def test_validate_run_hashes_rejects_empty_path(value):
     assert validate_run_hashes(value) is False

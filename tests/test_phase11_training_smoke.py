@@ -14,7 +14,7 @@ from tests.fixtures.phase11_training import (
 )
 from tradingagents.finetuning.artifacts import publish_run, validate_run_hashes
 from tradingagents.finetuning.formatting import SFTFormatter
-from tradingagents.finetuning.models import LoraConfig, Phase11Status, TrainingConfig
+from tradingagents.finetuning.models import LoraConfig, Phase11Status, SFTExample, TrainingConfig
 from tradingagents.finetuning.phase10 import Phase10Generation
 from tradingagents.finetuning.preparation import prepare_generation
 from tradingagents.finetuning.tokenization import TokenizationPolicy
@@ -26,6 +26,26 @@ pytestmark = pytest.mark.smoke
 
 def _training_stack_available() -> bool:
     return all(importlib.util.find_spec(name) is not None for name in ("torch", "transformers", "peft"))
+
+
+@pytest.mark.parametrize("invalid_config", [{}, False])
+def test_falsey_invalid_training_config_does_not_default(invalid_config) -> None:
+    target = {"action": "BUY", "evidence_refs": []}
+    example = SFTExample(
+        "ex-invalid-config",
+        "train",
+        (
+            {"role": "system", "content": "Use state."},
+            {"role": "user", "content": "{}"},
+            {"role": "assistant", "content": '{"action":"BUY","evidence_refs":[]}'},
+        ),
+        target,
+    )
+
+    result = train({"train": [example], "validation": []}, config=invalid_config)
+
+    assert result.status is Phase11Status.TRAINING_FAILED
+    assert result.message == "config must be TrainingConfig"
 
 
 def test_tiny_cpu_lora_smoke_is_offline_and_keeps_test_split_untouched(tmp_path: Path, monkeypatch) -> None:

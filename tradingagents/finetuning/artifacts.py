@@ -51,7 +51,7 @@ def publish_run(root: str | Path, *, run_id: str | None = None,
         root = require_nonempty_path(root, "artifact root")
     except (TypeError, ValueError) as exc:
         raise ArtifactError("artifact root must be a non-empty path") from exc
-    rid = run_id or new_run_id()
+    rid = new_run_id() if run_id is None else run_id
     if not isinstance(rid, str) or not rid or len(_safe_name(rid).parts) != 1:
         raise ArtifactError("run_id must be a relative single path component")
     destination = root / rid

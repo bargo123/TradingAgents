@@ -225,7 +225,7 @@ def train(
             resolved_output_dir = require_nonempty_path(output_dir, "adapter output directory").resolve()
         except (TypeError, ValueError):
             return _failed(Phase11Status.TRAINING_FAILED, "adapter output directory must be non-empty")
-    resolved = config or TrainingConfig()
+    resolved = TrainingConfig() if config is None else config
     if not isinstance(resolved, TrainingConfig):
         return _failed(Phase11Status.TRAINING_FAILED, "config must be TrainingConfig")
     if model is None and not resolved.base_model:

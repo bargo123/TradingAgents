@@ -58,19 +58,34 @@ def _fingerprint(result: SourceReadResult | Any, kind: str) -> dict[str, Any]:
 
 def _manifest(path: Path) -> DatasetManifest:
     data = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
+    if not isinstance(data, Mapping):
+        raise TypeError("manifest must be an object")
     counts = data.get("counts", {})
     candidate_summary = data.get("candidate_summary", {})
+    if not isinstance(counts, Mapping) or not isinstance(candidate_summary, Mapping):
+        raise TypeError("manifest count metadata must be mappings")
+    dataset_id = data.get("dataset_id")
+    if not isinstance(dataset_id, str):
+        raise TypeError("manifest dataset_id must be a string")
+
+    def count(value: Any, name: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"manifest {name} must be a non-negative integer")
+        return value
+
+    examples = count(data.get("examples", 0), "examples")
+    exclusions = count(data.get("exclusions", 0), "exclusions")
     return DatasetManifest(
-        dataset_id=str(data["dataset_id"]),
-        examples=int(data.get("examples", 0)),
-        exclusions=int(data.get("exclusions", 0)),
+        dataset_id=dataset_id,
+        examples=examples,
+        exclusions=exclusions,
         split_status=str(data.get("split_status", "INSUFFICIENT_DATA")),
         safety=data.get("safety", _SAFETY),
         source_fingerprints=data.get("source_fingerprints", {}),
         status=str(data.get("status", "EMPTY_ELIGIBLE_SET")),
-        candidate_count=int(candidate_summary.get("candidates", data.get("examples", 0) + data.get("exclusions", 0))),
-        eligible_count=int(candidate_summary.get("eligible", data.get("examples", 0))),
-        excluded_count=int(candidate_summary.get("excluded", data.get("exclusions", 0))),
+        candidate_count=count(candidate_summary.get("candidates", examples + exclusions), "candidate_count"),
+        eligible_count=count(candidate_summary.get("eligible", examples), "eligible_count"),
+        excluded_count=count(candidate_summary.get("excluded", exclusions), "excluded_count"),
         reason_counts=counts.get("reason_counts", {}),
     )
 
