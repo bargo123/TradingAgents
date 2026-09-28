@@ -277,7 +277,15 @@ class EvidenceReplayConfig:
     def __post_init__(self) -> None:
         if not isinstance(self.source_decision_id, str) or not self.source_decision_id.strip():
             raise ValueError("source_decision_id must be non-empty")
-        object.__setattr__(self, "analysts", tuple(self.analysts))
+        if isinstance(self.analysts, (str, bytes, bytearray, Mapping)):
+            raise ValueError("analysts must be a sequence")
+        try:
+            analysts = tuple(self.analysts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("analysts must be a sequence") from exc
+        if any(not isinstance(value, str) or not value.strip() for value in analysts):
+            raise ValueError("analysts must contain non-empty strings")
+        object.__setattr__(self, "analysts", analysts)
         for field in (
             "pinned_phase7_generation_id",
             "pinned_phase8_generation_id",

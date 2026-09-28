@@ -646,6 +646,12 @@ class EvidenceContext:
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
         for name in ("knowledge_items", "experience_items", "statistics_items"):
+            if isinstance(getattr(self, name), (str, bytes, bytearray, Mapping)):
+                raise ValueError(f"{name} must be a sequence")
+            try:
+                tuple(getattr(self, name))
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"{name} must be a sequence") from exc
             object.__setattr__(self, name, _freeze_items(getattr(self, name)))
         diagnostics = {} if self.diagnostics is None else self.diagnostics
         source_errors = {} if self.source_errors is None else self.source_errors

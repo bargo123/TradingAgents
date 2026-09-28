@@ -134,6 +134,12 @@ def test_replay_config_rejects_malformed_mapping_fields(tmp_path: Path, field: s
         replace(_config(tmp_path), **{field: value})
 
 
+@pytest.mark.parametrize("value", ["market,news", b"market,news", {"market": "news"}, None])
+def test_replay_config_rejects_scalar_or_invalid_analyst_collections(tmp_path: Path, value):
+    with pytest.raises((TypeError, ValueError), match="analysts"):
+        replace(_config(tmp_path), analysts=value)
+
+
 @pytest.mark.parametrize("value", [False, 0, [], {}])
 def test_generation_metadata_does_not_fallback_over_explicit_malformed_value(value):
     with pytest.raises(SnapshotReplayError, match="phase7"):

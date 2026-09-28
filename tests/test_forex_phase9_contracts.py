@@ -240,6 +240,13 @@ def test_collection_entries_are_deeply_immutable():
         context.statistics_items[0]["values"][0] = 9
 
 
+@pytest.mark.parametrize("field", ["knowledge_items", "experience_items", "statistics_items"])
+@pytest.mark.parametrize("value", ["K1", b"K1", {"display_id": "K1"}])
+def test_evidence_context_rejects_scalar_item_collections(field, value):
+    with pytest.raises(ValueError, match=field):
+        EvidenceContext(**{field: value})
+
+
 @pytest.mark.parametrize("score", [math.nan, math.inf, -math.inf])
 def test_canonical_evidence_item_rejects_non_finite_scores(score):
     with pytest.raises(ValueError, match="score must be finite"):

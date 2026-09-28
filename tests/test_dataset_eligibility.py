@@ -25,6 +25,12 @@ def test_eligibility_details_reject_falsey_malformed_mapping(details):
         EligibilityResult(False, details=details)
 
 
+@pytest.mark.parametrize("value", ["OUTCOME_UNAVAILABLE", b"OUTCOME_UNAVAILABLE", {"reason": "OUTCOME_UNAVAILABLE"}, ["OUTCOME_UNAVAILABLE"]])
+def test_eligibility_rejects_malformed_reason_collections(value):
+    with pytest.raises((TypeError, ValueError), match="reasons"):
+        EligibilityResult(False, reasons=value)
+
+
 def _config(tmp_path, **filters):
     return DatasetConfig((tmp_path / "source.sqlite",), tmp_path / "experience", None, tmp_path / "out", filters=filters)
 

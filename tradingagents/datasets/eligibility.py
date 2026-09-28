@@ -40,7 +40,15 @@ class EligibilityResult:
     details: Mapping[str, Any] = None
 
     def __post_init__(self):
-        object.__setattr__(self, "reasons", tuple(self.reasons))
+        if isinstance(self.reasons, (str, bytes, bytearray, Mapping)):
+            raise TypeError("reasons must be a sequence")
+        try:
+            reasons = tuple(self.reasons)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("reasons must be a sequence") from exc
+        if any(not isinstance(reason, DatasetExclusionReason) for reason in reasons):
+            raise ValueError("reasons must contain DatasetExclusionReason values")
+        object.__setattr__(self, "reasons", reasons)
         details = {} if self.details is None else self.details
         if not isinstance(details, Mapping):
             raise TypeError("details must be a mapping")
