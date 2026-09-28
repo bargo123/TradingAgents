@@ -83,20 +83,46 @@ def _mapping_metric(value: Any) -> dict[str, Any]:
     }
 
 
+def _nonnegative_count(value: Any, name: str) -> int:
+    if value is None:
+        return 0
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
 def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return safe presence/size metadata for the required state artifacts."""
     state_map = _mapping(state)
     evidence_context = state_map.get("evidence_context")
     evidence_context_hash = getattr(evidence_context, "rendered_context_hash", None)
     evidence_selected_counts = {
-        "knowledge": int(getattr(evidence_context, "selected_knowledge_count", 0) or 0),
-        "experience": int(getattr(evidence_context, "selected_experience_count", 0) or 0),
-        "statistics": int(getattr(evidence_context, "selected_statistics_count", 0) or 0),
+        "knowledge": _nonnegative_count(
+            getattr(evidence_context, "selected_knowledge_count", 0),
+            "selected_knowledge_count",
+        ),
+        "experience": _nonnegative_count(
+            getattr(evidence_context, "selected_experience_count", 0),
+            "selected_experience_count",
+        ),
+        "statistics": _nonnegative_count(
+            getattr(evidence_context, "selected_statistics_count", 0),
+            "selected_statistics_count",
+        ),
     }
     evidence_dropped_counts = {
-        "knowledge": int(getattr(evidence_context, "dropped_knowledge_count", 0) or 0),
-        "experience": int(getattr(evidence_context, "dropped_experience_count", 0) or 0),
-        "statistics": int(getattr(evidence_context, "dropped_statistics_count", 0) or 0),
+        "knowledge": _nonnegative_count(
+            getattr(evidence_context, "dropped_knowledge_count", 0),
+            "dropped_knowledge_count",
+        ),
+        "experience": _nonnegative_count(
+            getattr(evidence_context, "dropped_experience_count", 0),
+            "dropped_experience_count",
+        ),
+        "statistics": _nonnegative_count(
+            getattr(evidence_context, "dropped_statistics_count", 0),
+            "dropped_statistics_count",
+        ),
     }
     investment = _mapping(state_map.get("investment_debate_state"))
     risk = _mapping(state_map.get("risk_debate_state"))
@@ -134,7 +160,10 @@ def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
     return {
         "evidence_context_present": evidence_context is not None,
         "evidence_context_hash": evidence_context_hash,
-        "evidence_rendered_chars": int(getattr(evidence_context, "rendered_character_count", 0) or 0),
+        "evidence_rendered_chars": _nonnegative_count(
+            getattr(evidence_context, "rendered_character_count", 0),
+            "rendered_character_count",
+        ),
         "evidence_selected_counts": evidence_selected_counts,
         "evidence_dropped_counts": evidence_dropped_counts,
         "market": {

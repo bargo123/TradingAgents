@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from tradingagents.forex.context_integrity import evaluate_context_integrity, state_artifact_metrics
 from tradingagents.forex.evidence_context import EvidenceContext
 from tradingagents.forex.telemetry import capture_state_trace, instrument_agent_node
@@ -78,6 +80,22 @@ def test_trace_contains_hash_counts_and_no_text():
         "evidence_selected_counts": {"knowledge": 2, "experience": 1, "statistics": 0},
         "evidence_dropped_counts": {"knowledge": 3, "experience": 4, "statistics": 5},
     }
+
+
+def test_context_integrity_rejects_malformed_evidence_counts():
+    context = SimpleNamespace(
+        rendered_context_hash="hash-123",
+        rendered_character_count=0,
+        selected_knowledge_count=1.5,
+        selected_experience_count=0,
+        selected_statistics_count=0,
+        dropped_knowledge_count=0,
+        dropped_experience_count=0,
+        dropped_statistics_count=0,
+    )
+
+    with pytest.raises(ValueError, match="selected_knowledge_count"):
+        state_artifact_metrics({"evidence_context": context})
 
 
 def test_trace_exposes_only_canonical_signal_handoff_metadata():
