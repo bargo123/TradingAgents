@@ -40,6 +40,12 @@ def row(
     }
 
 
+@pytest.mark.parametrize("rows", ["abc", b"abc", bytearray(b"abc"), {}, 0, False])
+def test_build_profile_rejects_malformed_row_collections(rows):
+    with pytest.raises(ValueError, match="rows"):
+        build_profile(rows, cohort=COHORT)
+
+
 def test_zero_iqr_uses_mad_then_versioned_fallback():
     when = datetime(2026, 1, 1, tzinfo=UTC)
     rows = [row(1.0, when) for _ in range(5)]

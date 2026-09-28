@@ -125,6 +125,17 @@ def _digest(value: Any) -> str:
     ).hexdigest()
 
 
+def _row_collection(value: Any) -> tuple[Any, ...]:
+    """Materialize normalization rows without consuming scalar inputs."""
+
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise ValueError("rows must be a sequence")
+    try:
+        return tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("rows must be a sequence") from exc
+
+
 def _utc(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -264,6 +275,7 @@ def build_profile(
     *,
     epsilon: float = DEFAULT_EPSILON,
 ) -> SimilarityProfileV1:
+    rows = _row_collection(rows)
     cohort = (
         cohort
         if isinstance(cohort, NormalizationCohortV1)
