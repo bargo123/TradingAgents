@@ -92,6 +92,8 @@ def test_evaluation_config_defaults_and_validation() -> None:
         EvaluationConfig(horizons_seconds=(300, 300))
     with pytest.raises(ValueError, match="positive"):
         EvaluationConfig(horizons_seconds=(0, 300))
+    with pytest.raises(ValueError, match="horizons_seconds"):
+        EvaluationConfig(horizons_seconds={300: True, 900: True})
     with pytest.raises(ValueError, match="tolerance"):
         EvaluationConfig(observation_tolerance_seconds=-1)
 

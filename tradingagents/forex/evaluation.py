@@ -64,6 +64,8 @@ class EvaluationConfig:
     market_data_source: str = "MT5"
 
     def __post_init__(self) -> None:
+        if isinstance(self.horizons_seconds, (str, bytes, bytearray, Mapping)):
+            raise ValueError("horizons_seconds must be a sequence")
         horizons = tuple(self.horizons_seconds)
         if not horizons:
             raise ValueError("horizons_seconds must not be empty")

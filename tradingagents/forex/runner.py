@@ -519,7 +519,12 @@ class ForexShadowRunner:
         )
         # Retained as a compatibility convenience; run() is the public place
         # to choose analysts and defaults to exactly market/news.
-        self.selected_analysts = tuple(selected_analysts)
+        if isinstance(selected_analysts, (str, bytes, bytearray, Mapping)):
+            raise ValueError("selected_analysts must be a sequence")
+        try:
+            self.selected_analysts = tuple(selected_analysts)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("selected_analysts must be a sequence") from exc
         self.evidence_service_factory = evidence_service_factory
         self.evidence_audit_store_factory = evidence_audit_store_factory
 
@@ -547,7 +552,7 @@ class ForexShadowRunner:
             parsed_date = _as_date(analysis_date)
         except (TypeError, ValueError) as exc:
             raise ValueError("analysis_date must be an ISO date") from exc
-        if isinstance(analysts, (str, bytes)):
+        if isinstance(analysts, (str, bytes, bytearray, Mapping)):
             raise ValueError("analysts must be a sequence of analyst names")
         selected = tuple(analysts)
         if not selected:
@@ -757,6 +762,8 @@ class ForexShadowRunner:
         """Analyze one snapshot without constructing or writing a shadow store row."""
         if persist:
             raise ValueError("analyze() is non-persisting; use run() for normal shadow persistence")
+        if analysts is not None and isinstance(analysts, (str, bytes, bytearray, Mapping)):
+            raise ValueError("analysts must be a sequence of analyst names")
         selected_analysts = self.selected_analysts if analysts is None else tuple(analysts)
         parsed_date = self._validate_inputs(symbol, count, analysis_date, selected_analysts)
         if snapshot is not None and not isinstance(snapshot, ForexMarketSnapshot):

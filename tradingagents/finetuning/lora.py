@@ -7,7 +7,7 @@ actual attachment remains a standard PEFT ``get_peft_model`` operation.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,7 +59,7 @@ class LoraAttachment:
 
 
 def _requested(value: LoraConfig | Iterable[str]) -> tuple[str, ...]:
-    if isinstance(value, str):
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
         raise TargetModuleMissingError("invalid target module configuration")
     modules = value.target_modules if isinstance(value, LoraConfig) else tuple(value)
     if (

@@ -456,6 +456,20 @@ def test_outcome_stats_request_rejects_string_experience_ids() -> None:
         OutcomeStatsRequest("exp-1", horizon_seconds=300)
 
 
+@pytest.mark.parametrize("value", [{"exp-1": True}, {"TIER_A_HIGH_TRUST": True}])
+def test_experience_contracts_reject_mapping_sequence_inputs(value: object) -> None:
+    with pytest.raises(ValueError, match="(experience_ids|trust_tiers)"):
+        if "exp-1" in value:
+            OutcomeStatsRequest(value, horizon_seconds=300)
+        else:
+            ExperienceQuery({}, trust_tiers=value)
+
+
+def test_evidence_request_rejects_mapping_trust_tiers() -> None:
+    with pytest.raises(ValueError, match="trust_tiers"):
+        EvidenceRequest(trust_tiers={"TIER_A_HIGH_TRUST": True})
+
+
 @pytest.mark.parametrize("value", [None, False, 0, [], {}])
 def test_outcome_stats_request_rejects_non_text_basis(value: object) -> None:
     with pytest.raises(ValueError, match="evaluation_basis"):

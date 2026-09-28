@@ -83,7 +83,13 @@ def _utc(value: datetime | None, name: str = "timestamp") -> datetime | None:
 def _tiers(value: Sequence[TrustTier | str] | None) -> tuple[TrustTier, ...]:
     if value is None:
         return (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED)
-    return tuple(TrustTier(v) for v in value)
+    if isinstance(value, (str, bytes, bytearray, Mapping)):
+        raise ValueError("trust_tiers must be a sequence")
+    try:
+        values = tuple(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("trust_tiers must be a sequence") from exc
+    return tuple(TrustTier(v) for v in values)
 
 
 def _freeze(value: Any) -> Any:
@@ -422,7 +428,7 @@ class OutcomeStatsRequest(Serializable):
     as_of: datetime | None = None
 
     def __post_init__(self) -> None:
-        if isinstance(self.experience_ids, (str, bytes)):
+        if isinstance(self.experience_ids, (str, bytes, bytearray, Mapping)):
             raise ValueError("experience_ids must be a sequence of strings")
         try:
             experience_ids = tuple(self.experience_ids)
@@ -661,7 +667,7 @@ class EvidenceRequest(Serializable):
         ):
             raise ValueError("horizon_seconds must be a non-negative integer")
         object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
-        object.__setattr__(self, "trust_tiers", tuple(TrustTier(v) for v in self.trust_tiers))
+        object.__setattr__(self, "trust_tiers", _tiers(self.trust_tiers))
         if self.market_state is not None and not isinstance(self.market_state, Mapping):
             raise ValueError("market_state must be a mapping")
         for name in ("content_types", "document_ids"):

@@ -65,7 +65,7 @@ def _require_choice(value: Any, choices: set[str], name: str) -> None:
 
 
 def _normalize_symbol_tuple(values: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(values, bytes):
+    if isinstance(values, (bytes, bytearray, Mapping)):
         raise ValueError("symbols must contain strings")
     if isinstance(values, str):
         values = (values,)
@@ -84,7 +84,7 @@ def _normalize_symbol_tuple(values: Sequence[str]) -> tuple[str, ...]:
 
 
 def _normalize_analyst_tuple(values: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(values, bytes):
+    if isinstance(values, (bytes, bytearray, Mapping)):
         raise ValueError("analysts must contain strings")
     if isinstance(values, str):
         values = tuple(part.strip() for part in values.split(","))

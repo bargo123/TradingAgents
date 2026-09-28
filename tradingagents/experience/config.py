@@ -63,7 +63,13 @@ class ExperienceConfig:
             "projection_version",
         ):
             object.__setattr__(self, name, _version_text(getattr(self, name), name))
-        object.__setattr__(self, "trust_tiers", tuple(TrustTier(v) for v in self.trust_tiers))
+        if isinstance(self.trust_tiers, (str, bytes, bytearray, Mapping)):
+            raise ValueError("trust_tiers must be a sequence")
+        try:
+            trust_tiers = tuple(TrustTier(v) for v in self.trust_tiers)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("trust_tiers must be a sequence of TrustTier values") from exc
+        object.__setattr__(self, "trust_tiers", trust_tiers)
 
     def to_dict(self):
         return {

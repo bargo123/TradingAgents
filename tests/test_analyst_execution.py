@@ -21,6 +21,10 @@ class AnalystExecutionPlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_analyst_execution_plan(["market", "macro"])
 
+    def test_rejects_mapping_as_analyst_collection(self):
+        with self.assertRaises(ValueError):
+            build_analyst_execution_plan({"market": True, "news": True})
+
     def test_get_initial_analyst_node_uses_plan_metadata(self):
         plan = build_analyst_execution_plan(["fundamentals", "news"])
 

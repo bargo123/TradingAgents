@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from time import monotonic
 
@@ -56,6 +56,8 @@ ANALYST_NODE_SPECS: dict[str, AnalystNodeSpec] = {
 def build_analyst_execution_plan(
     selected_analysts: Iterable[str],
 ) -> AnalystExecutionPlan:
+    if isinstance(selected_analysts, (str, bytes, bytearray, Mapping)):
+        raise ValueError("selected_analysts must be a sequence")
     specs: list[AnalystNodeSpec] = []
     for analyst_key in selected_analysts:
         spec = ANALYST_NODE_SPECS.get(analyst_key)

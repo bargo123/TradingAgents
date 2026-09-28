@@ -189,7 +189,13 @@ class EvidenceQueryPolicy:
             or timeout < 0
         ):
             raise ValueError("evidence_timeout_seconds must be non-negative")
-        object.__setattr__(self, "trust_tiers", tuple(TrustTier(tier) for tier in self.trust_tiers))
+        if isinstance(self.trust_tiers, (str, bytes, bytearray, Mapping)):
+            raise ValueError("trust_tiers must be a sequence")
+        try:
+            trust_tiers = tuple(TrustTier(tier) for tier in self.trust_tiers)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("trust_tiers must be a sequence of TrustTier values") from exc
+        object.__setattr__(self, "trust_tiers", trust_tiers)
         if any(tier not in (TrustTier.TIER_A_HIGH_TRUST, TrustTier.TIER_B_LIMITED) for tier in self.trust_tiers):
             raise ValueError("trust_tiers contains an unapproved tier")
         if self.evaluation_basis not in {"ANALYSIS_SNAPSHOT", "DECISION_REFERENCE"}:

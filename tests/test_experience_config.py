@@ -47,6 +47,11 @@ def test_config_rejects_scalar_source_databases(value: object) -> None:
         ExperienceConfig(source_databases=value)
 
 
+def test_config_rejects_mapping_trust_tiers() -> None:
+    with pytest.raises(ValueError, match="trust_tiers"):
+        ExperienceConfig(trust_tiers={"TIER_A_HIGH_TRUST": True})
+
+
 @pytest.mark.parametrize("value", ["", "   ", Path("."), Path("   ")])
 def test_config_rejects_empty_artifact_root(value: object) -> None:
     with pytest.raises((TypeError, ValueError), match="artifact_root"):

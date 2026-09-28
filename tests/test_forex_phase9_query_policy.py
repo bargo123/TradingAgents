@@ -80,6 +80,11 @@ def test_tier_c_is_never_an_experience_item():
     assert all("TIER_C" not in tier.value for tier in EvidenceQueryPolicy().trust_tiers)
 
 
+def test_query_policy_rejects_mapping_trust_tiers():
+    with pytest.raises(ValueError, match="trust_tiers"):
+        EvidenceQueryPolicy(trust_tiers={"TIER_A_HIGH_TRUST": True})
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

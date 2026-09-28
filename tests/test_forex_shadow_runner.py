@@ -179,7 +179,7 @@ class _FakeGraph:
         return self.final_state
 
 
-def _make_runner(tmp_path: Path, final_state: dict):
+def _make_runner(tmp_path: Path, final_state: dict, *, selected_analysts=("market", "news")):
     provider = _FakeProvider(_snapshot())
     graph = _FakeGraph(final_state)
     store = ShadowDecisionStore(tmp_path / "shadow.db")
@@ -187,6 +187,7 @@ def _make_runner(tmp_path: Path, final_state: dict):
         provider_factory=lambda terminal_path=None: provider,
         graph_factory=lambda **kwargs: graph,
         store=store,
+        selected_analysts=selected_analysts,
         config={
             "llm_provider": "local",
             "quick_think_llm": "qwen",
@@ -777,6 +778,7 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
     for kwargs in (
         {"count": 0},
         {"analysts": ("market", "fundamentals")},
+        {"analysts": {"market": True, "news": True}},
     ):
         try:
             runner.run(symbol="EURUSD", analysis_date="2026-09-08", **kwargs)
@@ -787,6 +789,11 @@ def test_runner_rejects_invalid_inputs_and_still_shuts_down(tmp_path):
 
     assert provider.initialize_calls == 0
     assert provider.shutdown_calls == 0
+
+
+def test_runner_rejects_mapping_constructor_analysts(tmp_path):
+    with pytest.raises(ValueError, match="selected_analysts"):
+        _make_runner(tmp_path, {"final_trade_decision": None}, selected_analysts={"market": True, "news": True})
 
 
 def test_runner_rejects_non_string_symbol_before_saved_snapshot_comparison(tmp_path):
