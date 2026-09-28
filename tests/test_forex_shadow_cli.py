@@ -101,6 +101,13 @@ def test_runtime_config_uses_default_off():
     assert "forex_evidence_enabled" not in __import__("cli.forex_shadow", fromlist=["_runtime_config"])._runtime_config(args)
 
 
+def test_empty_explicit_db_path_is_rejected() -> None:
+    import cli.forex_shadow as forex_shadow
+
+    with pytest.raises(ValueError, match="db_path"):
+        forex_shadow._watcher_database_path("")
+
+
 def test_cli_passes_evidence_flag_without_constructing_stock_graph(monkeypatch, tmp_path):
     captured = {}
 

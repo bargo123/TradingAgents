@@ -149,9 +149,11 @@ def _metric(metrics: Mapping[str, Any], key: str) -> Any:
 
 
 def _watcher_database_path(db_path: str | None) -> Path:
-    if db_path:
-        return Path(db_path)
-    return Path(DEFAULT_CONFIG.get("data_cache_dir", "data_cache")) / "shadow_decisions.db"
+    if db_path is None:
+        return Path(DEFAULT_CONFIG.get("data_cache_dir", "data_cache")) / "shadow_decisions.db"
+    if not isinstance(db_path, str) or not db_path.strip():
+        raise ValueError("db_path must be a non-empty path when provided")
+    return Path(db_path)
 
 
 def _watcher_lease_is_active(db_path: str | None, now: datetime) -> bool:
