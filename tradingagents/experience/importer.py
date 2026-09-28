@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -142,6 +142,12 @@ class ExperienceImporter:
         return added
 
     def import_sources(self, source_paths: Iterable[str | os.PathLike[str]]) -> ImportReport:
+        if isinstance(source_paths, (str, bytes, bytearray, Mapping)):
+            raise ValueError("source_paths must be a sequence of paths")
+        try:
+            source_paths = tuple(Path(path) for path in source_paths)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("source_paths must be a sequence of paths") from exc
         run_id = uuid.uuid4().hex
         lock = self._lock()
         staging = self.catalog.artifact_root / ".staging" / run_id
@@ -150,7 +156,7 @@ class ExperienceImporter:
         try:
             self.catalog.reconcile_interrupted_imports()
             self.catalog.record_import_event("RUNNING", detail={"run_id": run_id})
-            for path in sorted((Path(p) for p in source_paths), key=lambda p: str(p.resolve())):
+            for path in sorted(source_paths, key=lambda p: str(p.resolve())):
                 committed_counts = (indexed, unchanged, aliases, quarantined, eval_count)
                 try:
                     reader = self.reader_factory(path)

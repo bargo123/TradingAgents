@@ -22,6 +22,13 @@ from tradingagents.experience.errors import ExperienceImportLockedError, Provena
 from tradingagents.experience.importer import ExperienceImporter, ExperienceRebuilder
 
 
+@pytest.mark.parametrize("source_paths", ["source.sqlite3", b"source.sqlite3", bytearray(b"source.sqlite3"), {}, 0, False])
+def test_import_rejects_malformed_source_collections(tmp_path, source_paths):
+    catalog = ExperienceCatalog(tmp_path / "artifact")
+    with pytest.raises(ValueError, match="source_paths"):
+        ExperienceImporter(catalog).import_sources(source_paths)
+
+
 def test_first_import_is_idempotent(tmp_path):
     source = create_source_db(tmp_path / "source.sqlite3")
     catalog = ExperienceCatalog(tmp_path / "artifact")

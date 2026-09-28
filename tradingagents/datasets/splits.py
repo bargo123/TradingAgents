@@ -103,7 +103,15 @@ def assign_splits(examples: Iterable[CanonicalExampleV1]) -> SplitResult:
     Fewer than three groups cannot populate all three requested partitions and
     therefore returns an explicit insufficient status with no fabricated rows.
     """
-    rows = sorted(examples, key=_sort_key)
+    if isinstance(examples, (str, bytes, bytearray, Mapping)):
+        raise ValueError("examples must be a sequence of canonical examples")
+    try:
+        example_rows = tuple(examples)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("examples must be a sequence of canonical examples") from exc
+    if any(not isinstance(row, CanonicalExampleV1) and not isinstance(row, Mapping) for row in example_rows):
+        raise ValueError("examples must contain canonical example records")
+    rows = sorted(example_rows, key=_sort_key)
     group_count = len({_group_id(row) for row in rows})
     if group_count < 3:
         return SplitResult((), SPLIT_STATUS_INSUFFICIENT_DATA)
@@ -145,7 +153,14 @@ def validate_split_assignments(
         rows = tuple(assignments.assignments)
     else:
         result_status = status or SPLIT_STATUS_COMPLETE
-        rows = tuple(assignments)
+        if isinstance(assignments, (str, bytes, bytearray, Mapping)):
+            raise ValueError("assignments must be a sequence")
+        try:
+            rows = tuple(assignments)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("assignments must be a sequence") from exc
+        if any(not isinstance(item, SplitAssignment) for item in rows):
+            raise ValueError("assignments must contain SplitAssignment values")
     if result_status not in {SPLIT_STATUS_COMPLETE, SPLIT_STATUS_INSUFFICIENT_DATA}:
         raise ValueError("malformed split status")
     if result_status == SPLIT_STATUS_INSUFFICIENT_DATA:
@@ -165,7 +180,12 @@ def validate_split_assignments(
         raise ValueError("cross-split group")
     if examples is None:
         return
-    example_rows = tuple(examples)
+    if isinstance(examples, (str, bytes, bytearray, Mapping)):
+        raise ValueError("examples must be a sequence")
+    try:
+        example_rows = tuple(examples)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("examples must be a sequence") from exc
     by_id = {_value(row, "example_id"): row for row in example_rows}
     if len(by_id) != len(example_rows):
         raise ValueError("duplicate example key")

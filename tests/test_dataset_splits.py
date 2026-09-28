@@ -23,6 +23,12 @@ def example(i, stamp, *, run=None, decision=None, basis="ANALYSIS_SNAPSHOT", hor
     )
 
 
+@pytest.mark.parametrize("examples", ["abc", b"abc", bytearray(b"abc"), {}, 0, False])
+def test_assign_splits_rejects_malformed_example_collections(examples):
+    with pytest.raises(ValueError, match="examples"):
+        assign_splits(examples)
+
+
 def test_assigns_chronological_grouped_largest_remainder_boundaries():
     rows = [example(i, i, run=f"r{i}") for i in range(10)]
     result = assign_splits(rows)
@@ -139,3 +145,9 @@ def test_validator_rejects_malformed_status():
     result = assign_splits([example(i, i) for i in range(6)])
     with pytest.raises(ValueError, match="status"):
         validate_split_assignments(result.assignments, [example(i, i) for i in range(6)], status="BOGUS")
+
+
+@pytest.mark.parametrize("assignments", ["abc", b"abc", bytearray(b"abc"), {}, 0, False])
+def test_validator_rejects_malformed_assignment_collections(assignments):
+    with pytest.raises(ValueError, match="assignments"):
+        validate_split_assignments(assignments)
