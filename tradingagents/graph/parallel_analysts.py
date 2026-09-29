@@ -14,7 +14,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from tradingagents.forex.telemetry import capture_state_trace, extend_state_trace
+from tradingagents.forex.telemetry import (
+    capture_state_trace,
+    capture_timing_trace,
+    extend_state_trace,
+    extend_timing_trace,
+)
 
 try:  # pragma: no cover - fallback is for minimal test environments
     from langgraph.graph.message import add_messages
@@ -77,9 +82,9 @@ def _run_branch(
     initial_state: Mapping[str, Any],
     config: Any | None,
     max_steps: int,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     state = _copy_branch_state(initial_state)
-    with capture_state_trace() as branch_trace:
+    with capture_state_trace() as branch_trace, capture_timing_trace() as timing_trace:
         for _ in range(max_steps):
             update = branch.node(state)
             if not isinstance(update, Mapping):
@@ -94,7 +99,11 @@ def _run_branch(
                 if not isinstance(clear_update, Mapping):
                     raise TypeError(f"{branch.clear_node} must return a mapping")
                 _apply_update(state, clear_update)
-                return str(state.get(branch.report_key, "") or ""), list(branch_trace)
+                return (
+                    str(state.get(branch.report_key, "") or ""),
+                    list(branch_trace),
+                    list(timing_trace),
+                )
             raise RuntimeError(
                 f"{branch.agent_node} routed to unexpected target {target!r}"
             )
@@ -128,8 +137,9 @@ def run_parallel_analysts(
         results = [future.result() for future in futures]
 
     merged: dict[str, str] = {}
-    for branch, (report, branch_trace) in zip(branches, results, strict=True):
+    for branch, (report, branch_trace, timing_trace) in zip(branches, results, strict=True):
         extend_state_trace(branch_trace)
+        extend_timing_trace(timing_trace)
         merged[branch.report_key] = report
     return merged
 

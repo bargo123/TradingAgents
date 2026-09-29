@@ -40,7 +40,13 @@ from tradingagents.forex.shadow import (
     ShadowTradeDecision,
     normalize_portfolio_manager_result,
 )
-from tradingagents.forex.telemetry import capture_state_trace, stage_timings_from_trace
+from tradingagents.forex.telemetry import (
+    FOREX_DEPENDENCY_EDGES,
+    capture_state_trace,
+    capture_timing_trace,
+    critical_path_from_intervals,
+    stage_timings_from_trace,
+)
 from tradingagents.forex.tools import MT5ToolAdapter
 from tradingagents.path_utils import require_nonempty_path
 
@@ -996,7 +1002,7 @@ class ForexShadowRunner:
             graph_args_config["forex_evidence_enabled"] = effective_evidence_enabled
             graph_args_config["forex_evidence_context_hash"] = context_hash
             graph_args["config"] = graph_args_config
-            with capture_state_trace() as state_trace:
+            with capture_state_trace() as state_trace, capture_timing_trace() as timing_trace:
                 final_state = self._invoke_compiled_graph(graph, initial_state, graph_args)
             if not isinstance(final_state, Mapping):
                 raise TypeError("compiled forex graph must return a mapping state")
@@ -1060,6 +1066,10 @@ class ForexShadowRunner:
                 valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
             analysis_telemetry.update(_callback_metrics(callback_list))
             analysis_telemetry["stage_timings"] = stage_timings_from_trace(state_trace)
+            analysis_telemetry["critical_path"] = critical_path_from_intervals(
+                timing_trace,
+                FOREX_DEPENDENCY_EDGES,
+            )
             analysis_telemetry["signal_path"] = {
                 "research_manager_recommendation": final_state.get(
                     "research_manager_recommendation"

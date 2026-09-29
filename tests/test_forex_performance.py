@@ -15,6 +15,7 @@ from tradingagents.forex.performance import (
     load_replay_case,
     run_benchmark,
 )
+from tradingagents.forex.telemetry import critical_path_from_intervals
 
 
 def _snapshot() -> ForexMarketSnapshot:
@@ -156,3 +157,39 @@ def test_run_benchmark_is_replay_only_and_does_not_write_source(
 
 def _snapshot_bytes(snapshot: ForexMarketSnapshot) -> bytes:
     return json.dumps(snapshot_to_dict(snapshot), sort_keys=True).encode()
+
+
+def test_critical_path_accounts_for_overlap_and_dependency_wait() -> None:
+    intervals = [
+        {"node": "Market Analyst", "started": 0.0, "finished": 4.0},
+        {"node": "News Analyst", "started": 0.0, "finished": 3.0},
+        {"node": "Research Manager", "started": 5.0, "finished": 7.0},
+        {"node": "Trader", "started": 7.0, "finished": 9.0},
+    ]
+    report = critical_path_from_intervals(
+        intervals,
+        (("Market Analyst", "Research Manager"), ("News Analyst", "Research Manager"), ("Research Manager", "Trader")),
+    )
+
+    assert report["wall_seconds"] == 9.0
+    assert report["total_node_seconds"] == 11.0
+    assert report["overlap_seconds"] == 2.0
+    assert report["idle_wait_seconds"] == 1.0
+    assert report["critical_path_seconds"] == 9.0
+    assert report["critical_path_nodes"] == ["Market Analyst", "Research Manager", "Trader"]
+
+
+def test_critical_path_ignores_malformed_intervals_without_inventing_timings() -> None:
+    report = critical_path_from_intervals(
+        [
+            {"node": "valid", "started": 1.0, "finished": 2.0},
+            {"node": "missing", "started": 2.0},
+            {"node": "negative", "started": 4.0, "finished": 3.0},
+        ],
+        (),
+    )
+
+    assert report["wall_seconds"] == 1.0
+    assert report["total_node_seconds"] == 1.0
+    assert report["critical_path_seconds"] == 1.0
+    assert report["unknown_intervals"] == 2
