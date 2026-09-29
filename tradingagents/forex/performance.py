@@ -134,14 +134,49 @@ def _read_only_row(database: Path, run_id: str) -> dict[str, Any]:
     try:
         with sqlite3.connect(uri, uri=True) as connection:
             connection.row_factory = sqlite3.Row
-            row = connection.execute(
-                "SELECT * FROM forex_watch_runs WHERE run_id = ?", (run_id,)
-            ).fetchone()
+            tables = {
+                str(item[0])
+                for item in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            row = None
+            if "forex_watch_runs" in tables:
+                columns = {
+                    str(item[1])
+                    for item in connection.execute('PRAGMA table_info("forex_watch_runs")')
+                }
+                if "snapshot_json" in columns:
+                    row = connection.execute(
+                        "SELECT * FROM forex_watch_runs WHERE run_id = ?", (run_id,)
+                    ).fetchone()
+                elif "shadow_decisions" in tables and "decision_id" in columns:
+                    order_clause = (
+                        "ORDER BY r.attempt_number DESC"
+                        if "attempt_number" in columns
+                        else ""
+                    )
+                    row = connection.execute(
+                        f"""
+                        SELECT d.*, r.run_id AS replay_run_id, r.run_status AS replay_run_status
+                        FROM forex_watch_runs AS r
+                        JOIN shadow_decisions AS d ON d.decision_id = r.decision_id
+                        WHERE r.run_id = ? OR r.decision_id = ? OR d.decision_id = ?
+                        {order_clause}
+                        LIMIT 1
+                        """,
+                        (run_id, run_id, run_id),
+                    ).fetchone()
+            if row is not None:
+                result = dict(row)
+                if "replay_run_status" in result:
+                    result["run_status"] = result.pop("replay_run_status")
+                if "replay_run_id" in result:
+                    result["run_id"] = result.pop("replay_run_id")
+                return result
     except sqlite3.Error as exc:
         raise BenchmarkError("could not read forex_watch_runs in read-only mode") from exc
-    if row is None:
-        raise BenchmarkError(f"source run not found: {run_id}")
-    return dict(row)
+    raise BenchmarkError(f"source run not found: {run_id}")
 
 
 def load_replay_case(database: str | Path, run_id: str) -> ReplayCase:

@@ -95,6 +95,31 @@ def _source_db(path: Path, snapshot: ForexMarketSnapshot) -> bytes:
     return path.read_bytes()
 
 
+def _split_source_db(path: Path, snapshot: ForexMarketSnapshot) -> bytes:
+    encoded = json.dumps(snapshot_to_dict(snapshot), sort_keys=True)
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE forex_watch_runs (run_id TEXT PRIMARY KEY, decision_id TEXT, run_status TEXT)"
+        )
+        db.execute(
+            "CREATE TABLE shadow_decisions (decision_id TEXT PRIMARY KEY, snapshot_json TEXT, resolved_symbol TEXT, analysis_snapshot_timestamp TEXT)"
+        )
+        db.execute(
+            "INSERT INTO forex_watch_runs VALUES (?, ?, ?)",
+            ("run-split", "decision-1", "SUCCEEDED"),
+        )
+        db.execute(
+            "INSERT INTO shadow_decisions VALUES (?, ?, ?, ?)",
+            (
+                "decision-1",
+                encoded,
+                snapshot.symbol,
+                snapshot.timestamp.isoformat().replace("+00:00", "Z"),
+            ),
+        )
+    return path.read_bytes()
+
+
 def test_load_replay_case_decodes_one_causal_saved_snapshot(tmp_path: Path) -> None:
     snapshot = _snapshot()
     database = tmp_path / "source.sqlite3"
@@ -109,6 +134,18 @@ def test_load_replay_case_decodes_one_causal_saved_snapshot(tmp_path: Path) -> N
         snapshot_to_dict(snapshot), sort_keys=True
     ).encode()
     assert case.case_fingerprint == hashlib.sha256(case.snapshot_bytes).hexdigest()
+    assert database.read_bytes() == before
+
+
+def test_load_replay_case_reads_current_run_decision_split_schema(tmp_path: Path) -> None:
+    snapshot = _snapshot()
+    database = tmp_path / "split.sqlite3"
+    before = _split_source_db(database, snapshot)
+
+    case = load_replay_case(database, "run-split")
+
+    assert case.source_run_id == "run-split"
+    assert case.snapshot == snapshot
     assert database.read_bytes() == before
 
 
