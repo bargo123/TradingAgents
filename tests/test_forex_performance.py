@@ -8,13 +8,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar, Mt5SymbolInfo
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.performance import (
     BenchmarkConfig,
+    BenchmarkReport,
+    ComparisonReport,
     ModelBenchmarkResult,
     ReplayCase,
     benchmark_models,
+    compare_benchmarks,
+    directional_distribution,
     load_replay_case,
     run_benchmark,
 )
@@ -254,3 +260,89 @@ def test_model_benchmark_reports_candidates_without_auto_selecting(tmp_path: Pat
     assert all(result.case_fingerprint for result in results)
     assert results[0].configuration_fingerprint != results[1].configuration_fingerprint
     assert all(result.selected is False for result in results)
+
+
+def _benchmark_report(
+    *,
+    case_fingerprint: str = "case",
+    configuration_fingerprint: str = "config",
+    action: str | None = "HOLD",
+    signal_path: Mapping[str, object] | None = None,
+    elapsed: float = 10.0,
+) -> BenchmarkReport:
+    return BenchmarkReport(
+        report_version=1,
+        run_kind="REPLAY",
+        source_run_id="run-1",
+        case_fingerprint=case_fingerprint,
+        configuration_fingerprint=configuration_fingerprint,
+        symbol="EURUSD",
+        analysis_timestamp="2026-01-02T12:00:00+00:00",
+        replay_status="COMPLETE",
+        normalized_action=action,
+        normalization_status="NORMALIZED" if action else "FAILED",
+        decision_context_status="COMPLETE" if action else "INCOMPLETE",
+        metrics={
+            "elapsed_seconds": elapsed,
+            "llm_calls": 12,
+            "tokens_in": 100,
+            "tokens_out": 20,
+            "critical_path": {"critical_path_seconds": elapsed - 1},
+            "signal_path": signal_path or {
+                "research_manager_recommendation": "BUY",
+                "trader_action": "HOLD",
+                "portfolio_manager_rating": "Hold",
+            },
+        },
+    )
+
+
+def test_compare_benchmarks_accepts_same_case_and_reports_scalar_deltas() -> None:
+    baseline = _benchmark_report(elapsed=10.0)
+    candidate = _benchmark_report(elapsed=8.0)
+
+    result = compare_benchmarks(baseline, candidate)
+
+    assert isinstance(result, ComparisonReport)
+    assert result.valid is True
+    assert result.deltas["elapsed_seconds"] == pytest.approx(-2.0)
+    assert result.deltas["critical_path_seconds"] == pytest.approx(-2.0)
+    assert result.validity["baseline_context"] == "COMPLETE"
+    assert result.validity["candidate_context"] == "COMPLETE"
+
+
+def test_compare_benchmarks_rejects_mismatched_case_or_configuration() -> None:
+    baseline = _benchmark_report()
+
+    mismatched_case = compare_benchmarks(
+        baseline, _benchmark_report(case_fingerprint="other")
+    )
+    mismatched_config = compare_benchmarks(
+        baseline, _benchmark_report(configuration_fingerprint="other")
+    )
+
+    assert mismatched_case.valid is False
+    assert mismatched_case.reason == "CASE_FINGERPRINT_MISMATCH"
+    assert mismatched_config.valid is False
+    assert mismatched_config.reason == "CONFIGURATION_FINGERPRINT_MISMATCH"
+
+
+def test_directional_distribution_reports_transitions_without_holding_penalty() -> None:
+    reports = [
+        _benchmark_report(),
+        _benchmark_report(
+            action="BUY",
+            signal_path={
+                "research_manager_recommendation": "SELL",
+                "trader_action": "SELL",
+                "portfolio_manager_rating": "Underweight",
+            },
+        ),
+    ]
+
+    distribution = directional_distribution(reports)
+
+    assert distribution["count"] == 2
+    assert distribution["portfolio_manager_ratings"] == {"Hold": 1, "Underweight": 1}
+    assert distribution["transitions"] == {"BUY->HOLD->Hold": 1, "SELL->SELL->Underweight": 1}
+    assert distribution["hold_count"] == 1

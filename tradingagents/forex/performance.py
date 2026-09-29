@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import tempfile
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,6 +75,7 @@ class BenchmarkReport:
     run_kind: str
     source_run_id: str
     case_fingerprint: str
+    configuration_fingerprint: str
     symbol: str
     analysis_timestamp: str
     replay_status: str
@@ -102,6 +104,23 @@ class ModelBenchmarkResult:
     metrics: Mapping[str, Any]
     failure_category: str | None = None
     selected: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ComparisonReport:
+    """Scalar same-case comparison; invalid inputs never produce deltas."""
+
+    valid: bool
+    reason: str | None
+    case_fingerprint: str | None
+    configuration_fingerprint: str | None
+    deltas: Mapping[str, float]
+    validity: Mapping[str, Any]
+    safety: Mapping[str, Any]
+    action_transition: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -227,6 +246,134 @@ def _configuration_fingerprint(config: BenchmarkConfig, model_config: Mapping[st
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _report_number(report: BenchmarkReport | ModelBenchmarkResult, key: str) -> float | None:
+    value = report.metrics.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(float(value)):
+        return None
+    return float(value)
+
+
+def _report_critical_path(report: BenchmarkReport | ModelBenchmarkResult) -> float | None:
+    value = report.metrics.get("critical_path")
+    if not isinstance(value, Mapping):
+        return None
+    candidate = value.get("critical_path_seconds")
+    if isinstance(candidate, bool) or not isinstance(candidate, (int, float)):
+        return None
+    if not math.isfinite(float(candidate)):
+        return None
+    return float(candidate)
+
+
+def compare_benchmarks(
+    baseline: BenchmarkReport | ModelBenchmarkResult,
+    candidate: BenchmarkReport | ModelBenchmarkResult,
+) -> ComparisonReport:
+    """Compare two reports only when causal case/configuration identity matches."""
+
+    if baseline.case_fingerprint != candidate.case_fingerprint:
+        return ComparisonReport(
+            valid=False,
+            reason="CASE_FINGERPRINT_MISMATCH",
+            case_fingerprint=None,
+            configuration_fingerprint=None,
+            deltas={},
+            validity={},
+            safety={"replay_only": True},
+            action_transition=None,
+        )
+    if baseline.configuration_fingerprint != candidate.configuration_fingerprint:
+        return ComparisonReport(
+            valid=False,
+            reason="CONFIGURATION_FINGERPRINT_MISMATCH",
+            case_fingerprint=baseline.case_fingerprint,
+            configuration_fingerprint=None,
+            deltas={},
+            validity={},
+            safety={"replay_only": True},
+            action_transition=None,
+        )
+    deltas: dict[str, float] = {}
+    for key in ("elapsed_seconds", "llm_calls", "tool_calls", "tokens_in", "tokens_out"):
+        before = _report_number(baseline, key)
+        after = _report_number(candidate, key)
+        if before is not None and after is not None:
+            deltas[key] = after - before
+    baseline_path = _report_critical_path(baseline)
+    candidate_path = _report_critical_path(candidate)
+    if baseline_path is not None and candidate_path is not None:
+        deltas["critical_path_seconds"] = candidate_path - baseline_path
+    validity = {
+        "baseline_replay": baseline.replay_status,
+        "candidate_replay": candidate.replay_status,
+        "baseline_context": baseline.decision_context_status,
+        "candidate_context": candidate.decision_context_status,
+        "baseline_normalization": baseline.normalization_status,
+        "candidate_normalization": candidate.normalization_status,
+    }
+    valid = baseline.replay_status == candidate.replay_status == "COMPLETE"
+    reason = None if valid else "REPLAY_STATUS_MISMATCH"
+    transition = f"{baseline.normalized_action or 'UNAVAILABLE'}->{candidate.normalized_action or 'UNAVAILABLE'}"
+    return ComparisonReport(
+        valid=valid,
+        reason=reason,
+        case_fingerprint=baseline.case_fingerprint,
+        configuration_fingerprint=baseline.configuration_fingerprint,
+        deltas=deltas,
+        validity=validity,
+        safety={"replay_only": True, "source_writes": False, "order_calls": False},
+        action_transition=transition,
+    )
+
+
+def directional_distribution(
+    reports: Sequence[BenchmarkReport | ModelBenchmarkResult],
+) -> dict[str, Any]:
+    """Summarize scalar research/trader/PM signals without outcomes or labels."""
+
+    from collections import Counter
+
+    research: Counter[str] = Counter()
+    trader: Counter[str] = Counter()
+    portfolio: Counter[str] = Counter()
+    transitions: Counter[str] = Counter()
+    actions: Counter[str] = Counter()
+    skipped = 0
+    for report in reports:
+        signal_path = report.metrics.get("signal_path")
+        if not isinstance(signal_path, Mapping):
+            skipped += 1
+            continue
+        values = {
+            "research": signal_path.get("research_manager_recommendation"),
+            "trader": signal_path.get("trader_action"),
+            "portfolio": signal_path.get("portfolio_manager_rating"),
+        }
+        if isinstance(values["research"], str) and values["research"]:
+            research[values["research"]] += 1
+        if isinstance(values["trader"], str) and values["trader"]:
+            trader[values["trader"]] += 1
+        if isinstance(values["portfolio"], str) and values["portfolio"]:
+            portfolio[values["portfolio"]] += 1
+        if report.normalized_action:
+            actions[report.normalized_action] += 1
+        transitions[
+            "->".join(str(values[key]) if values[key] is not None else "UNAVAILABLE" for key in ("research", "trader", "portfolio"))
+        ] += 1
+    return {
+        "count": len(reports),
+        "skipped": skipped,
+        "research_manager_recommendations": dict(sorted(research.items())),
+        "trader_actions": dict(sorted(trader.items())),
+        "portfolio_manager_ratings": dict(sorted(portfolio.items())),
+        "normalized_actions": dict(sorted(actions.items())),
+        "transitions": dict(sorted(transitions.items())),
+        "hold_count": actions.get("HOLD", 0),
+    }
+
+
 def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
     """Run one explicit replay and write only a scalar benchmark artifact."""
 
@@ -255,6 +402,7 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
         run_kind="REPLAY",
         source_run_id=case.source_run_id,
         case_fingerprint=case.case_fingerprint,
+        configuration_fingerprint=_configuration_fingerprint(config, config.models),
         symbol=case.symbol,
         analysis_timestamp=case.snapshot.timestamp.isoformat(),
         replay_status="COMPLETE",
@@ -319,7 +467,7 @@ def benchmark_models(
                 candidate=candidate,
                 model_config=dict(model_config),
                 case_fingerprint=report.case_fingerprint,
-                configuration_fingerprint=_configuration_fingerprint(config, model_config),
+                configuration_fingerprint=report.configuration_fingerprint,
                 elapsed_seconds=max(0.0, time.perf_counter() - started),
                 replay_status=report.replay_status,
                 normalized_action=report.normalized_action,
@@ -336,9 +484,12 @@ __all__ = [
     "BenchmarkConfig",
     "BenchmarkError",
     "BenchmarkReport",
+    "ComparisonReport",
     "ModelBenchmarkResult",
     "ReplayCase",
     "benchmark_models",
+    "compare_benchmarks",
+    "directional_distribution",
     "load_replay_case",
     "run_benchmark",
 ]
