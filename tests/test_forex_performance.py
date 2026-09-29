@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar, Mt5SymbolInfo
-from tradingagents.forex.context import snapshot_to_dict
+from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.performance import (
     BenchmarkConfig,
     ReplayCase,
@@ -193,3 +193,15 @@ def test_critical_path_ignores_malformed_intervals_without_inventing_timings() -
     assert report["total_node_seconds"] == 1.0
     assert report["critical_path_seconds"] == 1.0
     assert report["unknown_intervals"] == 2
+
+
+def test_forex_market_context_uses_causal_features_without_raw_candle_payload() -> None:
+    snapshot = _snapshot()
+    payload = snapshot_to_dict(snapshot, include_candles=False)
+    context = build_forex_market_context(snapshot, "INTRADAY")
+
+    assert "candles" not in payload
+    assert set(payload["features"]) == {"M1", "M5", "M15", "H1"}
+    assert "average_true_range" in context
+    assert "range_pct" in context
+    assert "Snapshot UTC:" in context
