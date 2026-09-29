@@ -7,6 +7,9 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from tradingagents.agents.risk_mgmt.aggressive_debator import create_aggressive_debator
+from tradingagents.agents.risk_mgmt.conservative_debator import create_conservative_debator
+from tradingagents.agents.risk_mgmt.neutral_debator import create_neutral_debator
 from tradingagents.graph.parallel_analysts import (
     ParallelAnalystBranch,
     run_parallel_analysts,
@@ -132,3 +135,48 @@ def test_parallel_branch_preserves_message_reducer_through_tool_loop():
 
     assert result["market_report"] == "complete"
     assert seen_lengths == [1, 3]
+
+
+@pytest.mark.unit
+def test_forex_risk_prompts_consume_prior_speaker_state_sequentially():
+    prompts: list[str] = []
+
+    class FakeLLM:
+        def invoke(self, prompt):
+            prompts.append(prompt)
+            return SimpleNamespace(content=f"argument-{len(prompts)}")
+
+    base_state = {
+        "asset_type": "forex",
+        "instrument_context": "EURUSD snapshot",
+        "market_report": "market",
+        "sentiment_report": "",
+        "news_report": "macro news",
+        "fundamentals_report": "",
+        "trader_investment_plan": "HOLD proposal",
+        "risk_debate_state": {
+            "history": "",
+            "aggressive_history": "",
+            "conservative_history": "",
+            "neutral_history": "",
+            "latest_speaker": "",
+            "current_aggressive_response": "",
+            "current_conservative_response": "",
+            "current_neutral_response": "",
+            "judge_decision": "",
+            "count": 0,
+        },
+    }
+    aggressive = create_aggressive_debator(FakeLLM())
+    conservative = create_conservative_debator(FakeLLM())
+    neutral = create_neutral_debator(FakeLLM())
+
+    aggressive_update = aggressive(base_state)
+    after_aggressive = {**base_state, **aggressive_update}
+    conservative_update = conservative(after_aggressive)
+    after_conservative = {**after_aggressive, **conservative_update}
+    neutral(after_conservative)
+
+    assert "Aggressive Analyst: argument-1" in prompts[1]
+    assert "Aggressive Analyst: argument-1" in prompts[2]
+    assert "Conservative Analyst: argument-2" in prompts[2]
