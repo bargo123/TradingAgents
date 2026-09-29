@@ -176,6 +176,7 @@ def test_run_benchmark_is_replay_only_and_does_not_write_source(
                     "tokens_in": 0,
                     "tokens_out": 0,
                     "stage_timings": {},
+                    "critical_path": {"critical_path_seconds": 0.75},
                 },
             )
 
@@ -193,6 +194,7 @@ def test_run_benchmark_is_replay_only_and_does_not_write_source(
     assert report.run_kind == "REPLAY"
     assert report.source_run_id == "run-1"
     assert report.replay_status == "COMPLETE"
+    assert report.metrics["critical_path"] == {"critical_path_seconds": 0.75}
     assert output.exists()
     assert fake.calls[0]["persist"] is False
     assert fake.calls[0]["snapshot_bytes"] == _snapshot_bytes(snapshot)

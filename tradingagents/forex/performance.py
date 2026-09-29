@@ -222,6 +222,7 @@ def _scalar_metrics(value: Any) -> dict[str, Any]:
         "reasoning_tokens",
         "telemetry_status",
         "stage_timings",
+        "critical_path",
         "agents",
         "signal_path",
         "reference_poll_attempts",
@@ -232,7 +233,13 @@ def _scalar_metrics(value: Any) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in allowed:
         item = value.get(key)
-        if key in {"stage_timings", "agents"} and isinstance(item, Mapping):
+        if key == "critical_path" and isinstance(item, Mapping):
+            result[key] = {
+                str(metric): metric_value
+                for metric, metric_value in item.items()
+                if isinstance(metric_value, (str, int, float, bool)) or metric_value is None
+            }
+        elif key in {"stage_timings", "agents"} and isinstance(item, Mapping):
             result[key] = {
                 str(name): {
                     str(metric): metric_value
