@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import tempfile
+import time
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -79,6 +81,27 @@ class BenchmarkReport:
     normalization_status: str | None
     decision_context_status: str | None
     metrics: Mapping[str, Any]
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelBenchmarkResult:
+    """One factual model candidate result; candidates are never auto-selected."""
+
+    candidate: str
+    model_config: Mapping[str, Any]
+    case_fingerprint: str
+    configuration_fingerprint: str
+    elapsed_seconds: float
+    replay_status: str
+    normalized_action: str | None
+    normalization_status: str | None
+    decision_context_status: str | None
+    metrics: Mapping[str, Any]
+    failure_category: str | None = None
+    selected: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -188,6 +211,22 @@ def _write_report(path: Path, report: BenchmarkReport) -> None:
     temporary.replace(path)
 
 
+def _configuration_fingerprint(config: BenchmarkConfig, model_config: Mapping[str, Any]) -> str:
+    """Hash only replay/model scalar settings; never persist prompts or responses."""
+
+    payload = {
+        "provider": config.provider,
+        "models": {str(key): str(value) for key, value in sorted(model_config.items())},
+        "model_settings": {
+            str(key): value
+            for key, value in sorted(config.model_settings.items())
+            if isinstance(value, (str, int, float, bool)) or value is None
+        },
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
     """Run one explicit replay and write only a scalar benchmark artifact."""
 
@@ -228,11 +267,78 @@ def run_benchmark(config: BenchmarkConfig) -> BenchmarkReport:
     return report
 
 
+def benchmark_models(
+    config: BenchmarkConfig,
+    candidates: Mapping[str, Mapping[str, Any]],
+) -> tuple[ModelBenchmarkResult, ...]:
+    """Run explicit model candidates sequentially on one replay case."""
+
+    if not isinstance(candidates, Mapping) or not candidates:
+        raise ValueError("candidates must be a non-empty mapping")
+    case_fingerprint = load_replay_case(
+        config.source_database_path, config.source_run_id
+    ).case_fingerprint
+    results: list[ModelBenchmarkResult] = []
+    for raw_candidate, model_config in candidates.items():
+        candidate = str(raw_candidate).strip()
+        if not candidate:
+            raise ValueError("candidate names must be non-empty")
+        if not isinstance(model_config, Mapping):
+            raise ValueError("each candidate model config must be a mapping")
+        candidate_output = config.output_path.with_name(
+            f"{config.output_path.stem}.{re.sub(r'[^A-Za-z0-9_.-]+', '_', candidate)}.json"
+        )
+        candidate_config = replace(
+            config,
+            output_path=candidate_output,
+            models=dict(model_config),
+        )
+        started = time.perf_counter()
+        try:
+            report = run_benchmark(candidate_config)
+        except Exception as exc:  # noqa: BLE001 — candidate failures are reported, not retried
+            results.append(
+                ModelBenchmarkResult(
+                    candidate=candidate,
+                    model_config=dict(model_config),
+                    case_fingerprint=case_fingerprint,
+                    configuration_fingerprint=_configuration_fingerprint(config, model_config),
+                    elapsed_seconds=max(0.0, time.perf_counter() - started),
+                    replay_status="FAILED",
+                    normalized_action=None,
+                    normalization_status=None,
+                    decision_context_status=None,
+                    metrics={},
+                    failure_category=type(exc).__name__,
+                    selected=False,
+                )
+            )
+            continue
+        results.append(
+            ModelBenchmarkResult(
+                candidate=candidate,
+                model_config=dict(model_config),
+                case_fingerprint=report.case_fingerprint,
+                configuration_fingerprint=_configuration_fingerprint(config, model_config),
+                elapsed_seconds=max(0.0, time.perf_counter() - started),
+                replay_status=report.replay_status,
+                normalized_action=report.normalized_action,
+                normalization_status=report.normalization_status,
+                decision_context_status=report.decision_context_status,
+                metrics=report.metrics,
+                selected=False,
+            )
+        )
+    return tuple(results)
+
+
 __all__ = [
     "BenchmarkConfig",
     "BenchmarkError",
     "BenchmarkReport",
+    "ModelBenchmarkResult",
     "ReplayCase",
+    "benchmark_models",
     "load_replay_case",
     "run_benchmark",
 ]

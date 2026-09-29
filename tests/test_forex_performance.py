@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,9 @@ from tradingagents.dataflows.mt5.models import ForexMarketSnapshot, Mt5Bar, Mt5S
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.performance import (
     BenchmarkConfig,
+    ModelBenchmarkResult,
     ReplayCase,
+    benchmark_models,
     load_replay_case,
     run_benchmark,
 )
@@ -205,3 +208,49 @@ def test_forex_market_context_uses_causal_features_without_raw_candle_payload() 
     assert "average_true_range" in context
     assert "range_pct" in context
     assert "Snapshot UTC:" in context
+
+
+def test_model_benchmark_reports_candidates_without_auto_selecting(tmp_path: Path) -> None:
+    snapshot = _snapshot()
+    database = tmp_path / "source.sqlite3"
+    _source_db(database, snapshot)
+    seen_models: list[Mapping[str, object]] = []
+
+    class FakeRunner:
+        def analyze(self, **kwargs):
+            config = kwargs["models"]
+            seen_models.append(config)
+            return SimpleNamespace(
+                normalized_action="HOLD",
+                normalization_status="NORMALIZED",
+                decision_context_status="COMPLETE",
+                metrics={"elapsed_seconds": 1.0, "llm_calls": 1, "tokens_in": 4, "tokens_out": 2},
+            )
+
+    config = BenchmarkConfig(
+        source_database_path=database,
+        source_run_id="run-1",
+        output_path=tmp_path / "benchmark.json",
+        runner_factory=lambda **_: FakeRunner(),
+    )
+    results = benchmark_models(
+        config,
+        {
+            "quick-2b": {"quick": "qwen3.5:2b"},
+            "quick-4b": {"quick": "qwen3.5:4b"},
+        },
+    )
+
+    assert all(isinstance(result, ModelBenchmarkResult) for result in results)
+    assert [result.candidate for result in results] == ["quick-2b", "quick-4b"]
+    assert [result.model_config for result in results] == [
+        {"quick": "qwen3.5:2b"},
+        {"quick": "qwen3.5:4b"},
+    ]
+    assert seen_models == [
+        {"quick": "qwen3.5:2b"},
+        {"quick": "qwen3.5:4b"},
+    ]
+    assert all(result.case_fingerprint for result in results)
+    assert results[0].configuration_fingerprint != results[1].configuration_fingerprint
+    assert all(result.selected is False for result in results)
