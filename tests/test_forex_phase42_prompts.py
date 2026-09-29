@@ -194,6 +194,42 @@ def test_forex_portfolio_manager_uses_forex_schema_and_validity_language():
     assert "3-6 months" not in ForexPortfolioDecision.model_json_schema()["properties"]["time_horizon"]["description"]
 
 
+def test_forex_portfolio_manager_keeps_each_combined_history_once():
+    llm = _PromptCaptureLLM(
+        ForexPortfolioDecision(
+            rating=PortfolioRating.HOLD,
+            executive_summary="Wait.",
+            investment_thesis="Mixed evidence.",
+            time_horizon="minutes to hours",
+        )
+    )
+    state = _forex_state()
+    state["investment_debate_state"] = {
+        "history": "Bull Analyst: BULL\nBear Analyst: BEAR",
+        "bull_history": "Bull Analyst: BULL",
+        "bear_history": "Bear Analyst: BEAR",
+        "current_response": "",
+        "count": 2,
+    }
+    state["risk_debate_state"] = {
+        "history": "Aggressive Analyst: AGGRESSIVE\nConservative Analyst: CONSERVATIVE\nNeutral Analyst: NEUTRAL",
+        "aggressive_history": "Aggressive Analyst: AGGRESSIVE",
+        "conservative_history": "Conservative Analyst: CONSERVATIVE",
+        "neutral_history": "Neutral Analyst: NEUTRAL",
+        "latest_speaker": "Neutral",
+        "current_aggressive_response": "",
+        "current_conservative_response": "",
+        "current_neutral_response": "",
+        "count": 3,
+    }
+
+    create_portfolio_manager(llm)(state)
+    prompt = _prompt_text(llm.prompts[0])
+
+    for marker in ("BULL", "BEAR", "AGGRESSIVE", "CONSERVATIVE", "NEUTRAL"):
+        assert prompt.count(marker) == 1
+
+
 def test_stock_research_manager_prompt_does_not_receive_forex_profile():
     llm = _PromptCaptureLLM()
     create_research_manager(llm)(
