@@ -244,6 +244,18 @@ class HftShadowStore:
             if current is not None and current.lease_expires_at > now:
                 db.rollback()
                 return HftLeaseResult(HftLeaseStatus.HFT_ALREADY_RUNNING, current.owner_token)
+            # A dead worker can leave a RUNNING ledger row behind after its
+            # lease expires. Reconcile only rows predating the expired lease;
+            # never rewrite a run belonging to the new owner.
+            cutoff = current.lease_acquired_at if current is not None else now
+            db.execute(
+                """
+                UPDATE hft_runs
+                   SET ended_at=?, status='STOPPED'
+                 WHERE status='RUNNING' AND started_at < ?
+                """,
+                (_iso(now), _iso(cutoff)),
+            )
             expires = now + timedelta(seconds=self.lease_ttl_seconds)
             db.execute(
                 "INSERT OR REPLACE INTO hft_lease(singleton_id,owner_token,owner_pid,owner_host,process_started_at,lease_acquired_at,heartbeat_at,lease_expires_at) VALUES(1,?,?,?,?,?,?,?)",
