@@ -490,7 +490,7 @@ class MT5Provider:
             raise self._failed_collection("positions_get")
         try:
             parsed = tuple(
-                Mt5Position(ticket=_field(raw, "ticket"), symbol=_field(raw, "symbol"), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw, broker_clock=clock))
+                Mt5Position(ticket=_field(raw, "ticket"), symbol=_field(raw, "symbol"), type=_field(raw, "type"), volume=_field(raw, "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), profit=_field(raw, "profit"), time=_utc_timestamp(raw, broker_clock=clock), magic=_field(raw, "magic"), comment=_field(raw, "comment"))
                 for raw in raw_positions
             )
         except (TypeError, ValueError, OSError) as exc:

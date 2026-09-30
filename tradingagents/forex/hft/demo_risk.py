@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from decimal import Decimal, ROUND_DOWN
+from decimal import ROUND_DOWN, Decimal
 
 
 def _positive(value: float, name: str) -> float:

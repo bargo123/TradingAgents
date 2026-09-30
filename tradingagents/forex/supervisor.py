@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -119,11 +120,29 @@ class _SharedReadOnlyMt5Provider:
     def get_account_info(self) -> Any:
         return self._provider.get_account_info()
 
+    def get_terminal_info(self) -> Any:
+        return self._provider.get_terminal_info()
+
+    def get_symbols(self) -> Any:
+        return self._provider.get_symbols()
+
     def get_positions(self, symbol: str | None = None) -> Any:
         return self._provider.get_positions(symbol)
 
     def get_spread(self, symbol: str) -> Any:
         return self._provider.get_spread(symbol)
+
+    def demo_api(self) -> Any:
+        """Return the initialized native API only for the DEMO gateway seam."""
+
+        api = getattr(self._provider, "_api", None)
+        if api is None:
+            loader = getattr(self._provider, "_load_api", None)
+            if callable(loader):
+                api = loader()
+        if api is None:
+            raise RuntimeError("MT5 DEMO order API unavailable")
+        return api
 
 
 def _health_snapshot_path(db_path: str | Path) -> Path:
@@ -364,6 +383,8 @@ class ForexSupervisor:
         max_ticks: int,
         poll_interval_seconds: float,
         gate: Any,
+        demo_execute: bool = False,
+        demo_db_path: str | Path | None = None,
     ) -> HftShadowSupervisorContext:
         from tradingagents.dataflows.mt5.provider import MT5Provider
         from tradingagents.forex.hft.plan_store import AtomicPlanStore
@@ -386,6 +407,7 @@ class ForexSupervisor:
         plan_store = AtomicPlanStore()
         hft_store = HftShadowStore(resolved_hft_path)
         config = HftShadowConfig(
+            execution_mode="DEMO" if demo_execute else "SHADOW",
             symbol=symbol,
             artifact_path=resolved_hft_path,
             max_ticks=max_ticks,
@@ -396,6 +418,54 @@ class ForexSupervisor:
         # missing git executable is fail-closed by retaining a bounded marker;
         # it never affects MT5 or execution behavior.
         git_commit = str(provenance.get("git_commit") or "unknown")
+        demo_runtime_factory = None
+        if demo_execute:
+            from tradingagents.forex.hft.demo_gateway import VerifiedDemoExecutionGateway
+            from tradingagents.forex.hft.demo_runtime import DemoHftRuntime, DemoRuntimeConfig
+            from tradingagents.forex.hft.demo_store import DemoExecutionStore
+
+            resolved_demo_path = (
+                Path(demo_db_path).expanduser()
+                if demo_db_path is not None
+                else resolved_hft_path.with_suffix(".demo.sqlite3")
+            )
+            demo_store = DemoExecutionStore(resolved_demo_path)
+            demo_run_id = str(uuid.uuid4())
+
+            def demo_runtime_factory(provider: Any) -> Any:
+                broker_api = shared_provider.demo_api()
+                demo_trade_mode = getattr(broker_api, "ACCOUNT_TRADE_MODE_DEMO", None)
+                if isinstance(demo_trade_mode, bool) or not isinstance(demo_trade_mode, int):
+                    raise RuntimeError("MT5 DEMO trade-mode constant unavailable")
+                with gate.acquire("demo_account_preflight"):
+                    account = VerifiedDemoExecutionGateway.read_account(provider)
+                VerifiedDemoExecutionGateway.require_demo_account(account, demo_trade_mode)
+                gateway = VerifiedDemoExecutionGateway(
+                    provider,
+                    broker_api,
+                    demo_store,
+                    run_id=demo_run_id,
+                    demo_trade_mode=demo_trade_mode,
+                    magic=12012012,
+                    comment="TradingAgents-P12D-DEMO",
+                    volume_cap=0.01,
+                    gate=gate,
+                )
+                return DemoHftRuntime(
+                    provider,
+                    plan_store,
+                    gateway=gateway,
+                    store=demo_store,
+                    config=DemoRuntimeConfig(
+                        symbol=symbol,
+                        artifact_path=resolved_demo_path,
+                        max_ticks=max_ticks,
+                        poll_interval_seconds=poll_interval_seconds,
+                    ),
+                    mt5_gate=gate,
+                    lease_store=hft_store,
+                )
+
         worker = HftShadowWorker(
             provider_factory,
             plan_store,
@@ -405,6 +475,7 @@ class ForexSupervisor:
             mt5_gate=gate,
             git_commit=git_commit,
             decision_validator=ShadowDecisionStore(source_db_path).is_execution_eligible,
+            runtime_factory=demo_runtime_factory,
         )
         with suppress(Exception):
             latest = ShadowDecisionStore(source_db_path).latest_eligible(symbol)
@@ -424,6 +495,7 @@ class ForexSupervisor:
         db_path: str | Path,
         *,
         hft_db_path: str | Path | None = None,
+        demo_db_path: str | Path | None = None,
     ) -> dict[str, Any]:
         runtime = self._runtime()
         health = runtime.health()
@@ -462,7 +534,18 @@ class ForexSupervisor:
             if hft_db_path is not None
             else Path(db_path).with_suffix(".hft.sqlite3")
         )
+        demo_report = self.demo_status(demo_db_path) if demo_db_path is not None else {
+            "status": "DISABLED",
+            "execution_mode": "DEMO",
+            "real_money": False,
+            "orders": 0,
+            "positions": 0,
+            "reconciliation": 0,
+        }
         level, reason = _health_level(health, watcher, hft_report)
+        if demo_report["status"] in {"DEGRADED", "RECONCILIATION_REQUIRED", "OPERATOR_REVIEW_REQUIRED"}:
+            level = "OPERATOR_REVIEW_REQUIRED"
+            reason = f"DEMO_{demo_report['status']}"
         watcher_status = watcher.get("lifecycle_status")
         watcher_pid = watcher.get("owner_pid")
         endpoint = urlparse(health.endpoint)
@@ -517,6 +600,62 @@ class ForexSupervisor:
                 "ACTIVE" if hft_report["hft_lease_status"] == "ACTIVE" else "INACTIVE"
             ),
             "hft": hft_report,
+            "demo": demo_report,
+            "demo_execution_health": demo_report["status"],
+        }
+
+    def demo_status(self, db_path: str | Path | None) -> dict[str, Any]:
+        """Read scalar DEMO ledger health without opening MT5 or Ollama."""
+
+        if db_path is None:
+            return {
+                "status": "DISABLED",
+                "execution_mode": "DEMO",
+                "real_money": False,
+                "orders": 0,
+                "positions": 0,
+                "reconciliation": 0,
+            }
+        from tradingagents.forex.hft.demo_store import DemoExecutionStore
+
+        path = Path(db_path).expanduser()
+        if not path.is_file():
+            return {
+                "status": "DISABLED",
+                "execution_mode": "DEMO",
+                "real_money": False,
+                "orders": 0,
+                "positions": 0,
+                "reconciliation": 0,
+                "database_path": str(path),
+            }
+        store = DemoExecutionStore(path)
+        counts = store.read_only_snapshot()
+        circuit = store.read_only_circuit_state()
+        if not counts:
+            return {
+                "status": "OPERATOR_REVIEW_REQUIRED",
+                "execution_mode": "DEMO",
+                "real_money": False,
+                "orders": 0,
+                "positions": 0,
+                "reconciliation": 0,
+                "database_path": str(path),
+            }
+        status = "READY"
+        if counts.get("reconciliation", 0):
+            status = "RECONCILIATION_REQUIRED"
+        elif str(circuit.get("status", "READY")) not in {"READY", "OPEN"}:
+            status = "DEGRADED"
+        elif counts.get("positions", 0):
+            status = "POSITION_OPEN"
+        return {
+            "status": status,
+            "execution_mode": "DEMO",
+            "real_money": False,
+            "database_path": str(path),
+            **counts,
+            "circuit_status": circuit.get("status"),
         }
 
     def hft_status(self, db_path: str | Path) -> dict[str, Any]:
@@ -591,6 +730,8 @@ class ForexSupervisor:
         hft_symbol: str = "EURUSD",
         hft_max_ticks: int = 0,
         hft_poll_interval_seconds: float = 1.0,
+        demo_execute: bool = False,
+        demo_db_path: str | Path | None = None,
     ) -> int:
         """Start the dedicated runtime then delegate to the existing watcher.
 
@@ -613,6 +754,10 @@ class ForexSupervisor:
             raise ValueError("restart_backoff_seconds must be a finite non-negative number")
         if not isinstance(hft_shadow, bool):
             raise ValueError("hft_shadow must be boolean")
+        if not isinstance(demo_execute, bool):
+            raise ValueError("demo_execute must be boolean")
+        if demo_execute and not hft_shadow:
+            raise ValueError("--demo-execute requires --hft-shadow")
         if isinstance(hft_max_ticks, bool) or not isinstance(hft_max_ticks, int) or hft_max_ticks < 0:
             raise ValueError("hft_max_ticks must be a non-negative integer")
         try:
@@ -665,6 +810,8 @@ class ForexSupervisor:
                     max_ticks=hft_max_ticks,
                     poll_interval_seconds=hft_poll_interval,
                     gate=shared_gate,
+                    demo_execute=demo_execute,
+                    demo_db_path=demo_db_path,
                 )
             if prewarm:
                 runtime.prewarm()
@@ -706,7 +853,9 @@ class ForexSupervisor:
             print(f"QUICK MODEL: {self.runtime_config.quick_model}")
             print(f"DEEP MODEL: {self.runtime_config.deep_model}")
             print(f"OLLAMA CONTEXT: {self.runtime_config.context_length}")
-            print("NO ORDER WILL BE SENT")
+            print("MT5 FOREX — DEMO MODE" if demo_execute else "NO ORDER WILL BE SENT")
+            if demo_execute:
+                print("DEMO ACCOUNT ONLY — NO REAL-MONEY ORDERS")
             result = 0
             for attempt in range(max_restarts + 1):
                 if hft_context is None:

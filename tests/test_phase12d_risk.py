@@ -2,9 +2,12 @@ from datetime import datetime, timezone
 
 import pytest
 
-from tradingagents.forex.hft.demo_risk import DemoCircuitBreaker, normalize_volume, validate_stop_levels
 from tradingagents.dataflows.mt5.models import Mt5SymbolInfo
-
+from tradingagents.forex.hft.demo_risk import (
+    DemoCircuitBreaker,
+    normalize_volume,
+    validate_stop_levels,
+)
 
 UTC = timezone.utc
 

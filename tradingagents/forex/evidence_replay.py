@@ -135,6 +135,8 @@ def _position(value: Any, name: str) -> Mt5Position:
     for key in ("volume", "price_open", "price_current", "profit"):
         kwargs[key] = None if raw.get(key) is None else _number(raw[key], f"{name}.{key}")
     kwargs["time"] = None if raw.get("time") is None else _utc(raw["time"], f"{name}.time")
+    kwargs["magic"] = None if raw.get("magic") is None else _number(raw["magic"], f"{name}.magic", integer=True)
+    kwargs["comment"] = raw.get("comment")
     return Mt5Position(**kwargs)
 
 

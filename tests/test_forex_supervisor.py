@@ -40,6 +40,15 @@ def test_supervisor_parser_exposes_only_bounded_hft_shadow_options():
     assert "--execute" not in options
 
 
+def test_supervisor_parser_requires_explicit_demo_flag_name():
+    args = build_parser().parse_args(["run", "--hft-shadow", "--demo-execute", "--demo-db-path", "demo.sqlite3"])
+    assert args.demo_execute is True
+    assert args.demo_db_path == "demo.sqlite3"
+    options = {option for action in build_parser()._actions for option in action.option_strings}
+    assert "--live" not in options
+    assert "--real" not in options
+
+
 def test_supervisor_rejects_invalid_runtime_config() -> None:
     with pytest.raises(TypeError, match="runtime_config"):
         ForexSupervisor(runtime_config=False)

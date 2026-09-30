@@ -143,6 +143,28 @@ def test_worker_runs_one_tick_and_stops_without_execution(tmp_path: Path):
     worker.stop()
 
 
+def test_worker_accepts_explicit_runtime_factory_without_changing_shadow_default(tmp_path: Path):
+    artifact = tmp_path / "hft.sqlite3"
+    calls = []
+
+    class Runtime:
+        def run(self, *, stop_event):
+            calls.append(stop_event)
+            return {"execution_mode": "DEMO", "broker_order_sent": 0}
+
+    worker = HftShadowWorker(
+        lambda **_: _Provider(),
+        AtomicPlanStore(),
+        config=HftShadowConfig(max_ticks=1, artifact_path=artifact),
+        store=HftShadowStore(artifact),
+        runtime_factory=lambda _provider: Runtime(),
+    )
+    worker.start()
+    assert worker.join(timeout=5) is True
+    assert worker.result == {"execution_mode": "DEMO", "broker_order_sent": 0}
+    assert len(calls) == 1
+
+
 def test_worker_recovers_read_only_disconnect_without_duplicate_worker(tmp_path: Path):
     artifact = tmp_path / "hft.sqlite3"
     reconnected = Event()

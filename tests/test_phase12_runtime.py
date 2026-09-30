@@ -18,6 +18,16 @@ from tradingagents.forex.watcher import SerializedMt5OperationGate
 UTC = timezone.utc
 
 
+def test_demo_execution_mode_cannot_use_shadow_runtime():
+    source = _Source([])
+    with pytest.raises(ValueError, match="dedicated demo runtime"):
+        HftShadowRuntime(
+            source,
+            AtomicPlanStore(),
+            config=HftShadowConfig(execution_mode="DEMO"),
+        )
+
+
 def _plan(start):
     return StrategicExecutionPlan(
         symbol="EURUSD", created_at=start, expires_at=start + timedelta(minutes=5), allowed_until=start + timedelta(minutes=4), timeframe="M1", regime="TREND", primary_direction=Direction.BOTH, confidence=0.5, strategy_family="range_rejection", entry_constraints=EntryConstraints(max_spread_points=20), risk_posture=RiskPosture.NORMAL, stop_policy=StopPolicy(stop_distance_points=20, take_profit_distance_points=30, time_stop_seconds=60), plan_id="plan-1",

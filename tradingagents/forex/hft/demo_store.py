@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from .demo_models import DemoAccountSnapshot, DemoOrderIntent, ExecutionMode
-
 
 DEMO_SCHEMA_VERSION = 1
 
@@ -109,6 +109,39 @@ class DemoExecutionStore:
                     account_trade_mode INTEGER NOT NULL,
                     broker_order_sent INTEGER NOT NULL DEFAULT 0 CHECK(broker_order_sent IN (0,1)),
                     request_payload TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL CHECK(execution_mode='DEMO'),
+                    real_money INTEGER NOT NULL CHECK(real_money=0)
+                );
+                CREATE TABLE IF NOT EXISTS demo_signals(
+                    signal_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES demo_runs(run_id),
+                    tick_timestamp TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    plan_id TEXT,
+                    payload_json TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL CHECK(execution_mode='DEMO'),
+                    real_money INTEGER NOT NULL CHECK(real_money=0)
+                );
+                CREATE TABLE IF NOT EXISTS demo_plans(
+                    plan_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES demo_runs(run_id),
+                    symbol TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    execution_mode TEXT NOT NULL CHECK(execution_mode='DEMO'),
+                    real_money INTEGER NOT NULL CHECK(real_money=0)
+                );
+                CREATE TABLE IF NOT EXISTS demo_risk_decisions(
+                    action_id TEXT PRIMARY KEY,
+                    signal_id TEXT NOT NULL REFERENCES demo_signals(signal_id),
+                    accepted INTEGER NOT NULL CHECK(accepted IN (0,1)),
+                    reason_code TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    risk_fraction REAL NOT NULL,
+                    payload_json TEXT NOT NULL,
                     execution_mode TEXT NOT NULL CHECK(execution_mode='DEMO'),
                     real_money INTEGER NOT NULL CHECK(real_money=0)
                 );
@@ -292,6 +325,87 @@ class DemoExecutionStore:
                 ),
             )
 
+    def record_signal(
+        self,
+        *,
+        run_id: str,
+        signal_id: str,
+        tick_timestamp: datetime,
+        symbol: str,
+        action: str,
+        reason: str,
+        plan_id: str | None,
+        payload: Mapping[str, Any],
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT OR IGNORE INTO demo_signals(
+                    signal_id,run_id,tick_timestamp,symbol,action,reason,plan_id,
+                    payload_json,execution_mode,real_money
+                ) VALUES(?,?,?,?,?,?,?,?, 'DEMO',0)
+                """,
+                (
+                    str(signal_id),
+                    str(run_id),
+                    _iso(tick_timestamp),
+                    str(symbol).upper(),
+                    str(action),
+                    str(reason),
+                    None if plan_id is None else str(plan_id),
+                    _json(payload),
+                ),
+            )
+
+    def record_plan(self, run_id: str, plan: Any) -> None:
+        """Persist the validated plan snapshot separately from shadow data."""
+
+        plan_id = str(getattr(plan, "plan_id", "")).strip()
+        symbol = str(getattr(plan, "symbol", "")).strip().upper()
+        created_at = getattr(plan, "created_at", None)
+        expires_at = getattr(plan, "expires_at", None)
+        if not plan_id or not symbol or not isinstance(created_at, datetime) or not isinstance(expires_at, datetime):
+            raise ValueError("DEMO plan metadata is invalid")
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT OR REPLACE INTO demo_plans(
+                    plan_id,run_id,symbol,created_at,expires_at,payload_json,execution_mode,real_money
+                ) VALUES(?,?,?,?,?,?, 'DEMO',0)
+                """,
+                (plan_id, str(run_id), symbol, _iso(created_at), _iso(expires_at), _json(plan)),
+            )
+
+    def record_risk_decision(
+        self,
+        *,
+        action_id: str,
+        signal_id: str,
+        accepted: bool,
+        reason_code: str,
+        reason: str,
+        risk_fraction: float,
+        payload: Mapping[str, Any],
+    ) -> None:
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT OR REPLACE INTO demo_risk_decisions(
+                    action_id,signal_id,accepted,reason_code,reason,risk_fraction,
+                    payload_json,execution_mode,real_money
+                ) VALUES(?,?,?,?,?,?,?,'DEMO',0)
+                """,
+                (
+                    str(action_id),
+                    str(signal_id),
+                    int(bool(accepted)),
+                    str(reason_code),
+                    str(reason),
+                    float(risk_fraction),
+                    _json(payload),
+                ),
+            )
+
     def record_order_result(
         self,
         *,
@@ -440,6 +554,9 @@ class DemoExecutionStore:
         tables = {
             "runs": "demo_runs",
             "account_snapshots": "demo_account_snapshots",
+            "plans": "demo_plans",
+            "signals": "demo_signals",
+            "risk_decisions": "demo_risk_decisions",
             "orders": "demo_order_intents",
             "results": "demo_order_results",
             "positions": "demo_positions",
@@ -448,6 +565,44 @@ class DemoExecutionStore:
         }
         with self._connect() as db:
             return {name: int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for name, table in tables.items()}
+
+    def read_only_snapshot(self) -> dict[str, int]:
+        """Read DEMO counts without creating or mutating the ledger."""
+
+        resolved = self.path.expanduser().resolve()
+        if not resolved.is_file():
+            return {}
+        uri = f"file:{resolved.as_posix()}?mode=ro"
+        tables = {
+            "runs": "demo_runs",
+            "account_snapshots": "demo_account_snapshots",
+            "plans": "demo_plans",
+            "signals": "demo_signals",
+            "risk_decisions": "demo_risk_decisions",
+            "orders": "demo_order_intents",
+            "results": "demo_order_results",
+            "positions": "demo_positions",
+            "exits": "demo_exits",
+            "reconciliation": "demo_reconciliation",
+        }
+        with sqlite3.connect(uri, uri=True, timeout=0) as db:
+            available = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not set(tables.values()).issubset(available):
+                return {}
+            return {name: int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for name, table in tables.items()}
+
+    def read_only_circuit_state(self) -> dict[str, Any]:
+        resolved = self.path.expanduser().resolve()
+        if not resolved.is_file():
+            return {}
+        uri = f"file:{resolved.as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=0) as db:
+            db.row_factory = sqlite3.Row
+            try:
+                row = db.execute("SELECT * FROM demo_circuit_state WHERE singleton_id=1").fetchone()
+            except sqlite3.Error:
+                return {}
+            return {} if row is None else dict(row)
 
 
 __all__ = ["DEMO_SCHEMA_VERSION", "DemoExecutionStore"]

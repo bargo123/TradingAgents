@@ -60,9 +60,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--hft-poll-interval-seconds", type=_nonnegative_float, default=1.0
     )
+    run.add_argument(
+        "--demo-execute",
+        action="store_true",
+        help="explicitly enable verified MT5 DEMO execution; requires --hft-shadow",
+    )
+    run.add_argument("--demo-db-path", default=None)
     status = subparsers.add_parser("status", help="show scalar runtime and watcher health")
     status.add_argument("--db-path", default="data_cache/shadow_decisions.db")
     status.add_argument("--hft-db-path", default=None)
+    status.add_argument("--demo-db-path", default=None)
     status.add_argument("--json", action="store_true")
     return parser
 
@@ -78,9 +85,13 @@ def main(
         try:
             supervisor = supervisor_factory(ForexShadowRuntimeConfig())
             if args.hft_db_path is None:
-                report = supervisor.status(args.db_path)
+                report = supervisor.status(args.db_path, demo_db_path=args.demo_db_path)
             else:
-                report = supervisor.status(args.db_path, hft_db_path=args.hft_db_path)
+                report = supervisor.status(
+                    args.db_path,
+                    hft_db_path=args.hft_db_path,
+                    demo_db_path=args.demo_db_path,
+                )
             if args.json:
                 print(json.dumps(report, sort_keys=True, default=str))
             else:
@@ -93,6 +104,7 @@ def main(
                 print(f"CONTEXT: {ollama.get('context_length') or 'unknown'}")
                 print(f"WATCHER: {report['watcher'].get('lifecycle_status', 'STOPPED')}")
                 print(f"HFT SHADOW: {report['hft_engine_health']}")
+                print(f"DEMO EXECUTION: {report.get('demo_execution_health', 'DISABLED')}")
                 print(f"MT5 READ-ONLY: {report['mt5_read_only_health']}")
                 print("NO ORDER WILL BE SENT")
             return 0 if report["health_level"] != "OPERATOR_REVIEW_REQUIRED" else 1
@@ -123,6 +135,8 @@ def main(
             hft_symbol=args.hft_symbol,
             hft_max_ticks=args.hft_max_ticks,
             hft_poll_interval_seconds=args.hft_poll_interval_seconds,
+            demo_execute=args.demo_execute,
+            demo_db_path=args.demo_db_path,
         )
     except Exception as exc:
         print(f"FOREX SUPERVISOR ERROR: {exc}", file=sys.stderr)

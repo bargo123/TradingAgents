@@ -61,8 +61,13 @@ class HftShadowConfig:
     slippage_points: float = 0.0
     latency_ms: float = 0.0
     source_fingerprint: str = "MT5_READ_ONLY"
+    execution_mode: str = "SHADOW"
 
     def __post_init__(self) -> None:
+        mode = str(self.execution_mode).strip().upper()
+        if mode not in {"SHADOW", "TEST_ONLY", "DEMO"}:
+            raise ValueError("execution_mode must be SHADOW, TEST_ONLY, or DEMO")
+        object.__setattr__(self, "execution_mode", mode)
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
         object.__setattr__(self, "artifact_path", Path(self.artifact_path))
         if not self.symbol:
@@ -114,6 +119,8 @@ class HftShadowRuntime:
         clock: Callable[[], datetime] | None = None,
         on_tick: Callable[[], None] | None = None,
     ) -> None:
+        if config.execution_mode == "DEMO":
+            raise ValueError("DEMO requires the dedicated demo runtime")
         if not callable(getattr(tick_source, "get_tick", None)):
             raise TypeError("tick_source must expose read-only get_tick")
         self.tick_source = tick_source

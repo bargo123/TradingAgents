@@ -6,7 +6,6 @@ import pytest
 from tradingagents.forex.hft.demo_models import DemoAccountSnapshot, DemoOrderIntent, ExecutionMode
 from tradingagents.forex.hft.demo_store import DemoExecutionStore
 
-
 UTC = timezone.utc
 
 

@@ -47,6 +47,7 @@ class HftShadowWorker:
         mt5_gate: SerializedMt5OperationGate | None = None,
         git_commit: str = "unknown",
         decision_validator: Callable[[Any], bool] | None = None,
+        runtime_factory: Callable[[Any], Any] | None = None,
     ) -> None:
         if not callable(provider_factory):
             raise TypeError("provider_factory must be callable")
@@ -55,6 +56,8 @@ class HftShadowWorker:
         self.provider_factory = provider_factory
         self.plan_store = plan_store
         self.config = config
+        if config.execution_mode == "DEMO" and runtime_factory is None:
+            raise ValueError("DEMO worker requires a dedicated runtime factory")
         self.store = store or HftShadowStore(config.artifact_path)
         self.terminal_path = terminal_path
         self.mt5_gate = mt5_gate or SerializedMt5OperationGate()
@@ -62,6 +65,9 @@ class HftShadowWorker:
         if decision_validator is not None and not callable(decision_validator):
             raise TypeError("decision_validator must be callable")
         self.decision_validator = decision_validator
+        if runtime_factory is not None and not callable(runtime_factory):
+            raise TypeError("runtime_factory must be callable")
+        self.runtime_factory = runtime_factory
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._result: dict[str, object] | None = None
@@ -238,14 +244,19 @@ class HftShadowWorker:
                     terminal_status = "OPERATOR_REVIEW_REQUIRED"
                     return
             while not self._stop.is_set():
-                runtime = HftShadowRuntime(
-                    MT5ReadOnlyTickSource(provider, point=self.config.point),
-                    self.plan_store,
-                    config=self.config,
-                    store=self.store,
-                    mt5_gate=self.mt5_gate,
-                    on_tick=self._mark_healthy_tick,
-                )
+                if self.runtime_factory is None:
+                    runtime = HftShadowRuntime(
+                        MT5ReadOnlyTickSource(provider, point=self.config.point),
+                        self.plan_store,
+                        config=self.config,
+                        store=self.store,
+                        mt5_gate=self.mt5_gate,
+                        on_tick=self._mark_healthy_tick,
+                    )
+                else:
+                    runtime = self.runtime_factory(provider)
+                    if runtime is None or not callable(getattr(runtime, "run", None)):
+                        raise TypeError("runtime_factory must return a runnable runtime")
                 self._set_health("RUNNING", error_code=None)
                 try:
                     self._result = runtime.run(stop_event=self._stop)

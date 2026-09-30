@@ -202,6 +202,8 @@ class Mt5Position:
     price_current: float | None = None
     profit: float | None = None
     time: datetime | None = None
+    magic: int | None = None
+    comment: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ticket", _nonnegative_integral(self.ticket, "position ticket"))
@@ -217,6 +219,10 @@ class Mt5Position:
             object.__setattr__(self, "profit", value)
         if self.time is not None:
             object.__setattr__(self, "time", _utc_timestamp(self.time, "position time"))
+        if self.magic is not None:
+            object.__setattr__(self, "magic", _nonnegative_integral(self.magic, "position magic"))
+        if self.comment is not None:
+            object.__setattr__(self, "comment", _nonempty_text(self.comment, "position comment"))
 
 @dataclass(frozen=True, slots=True)
 class Mt5Order:

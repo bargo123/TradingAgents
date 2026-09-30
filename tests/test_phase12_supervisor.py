@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from tradingagents.forex.hft.store import HftLeaseOwner, HftShadowStore
 from tradingagents.forex.ollama_runtime import OllamaHealth
 from tradingagents.forex.supervisor import ForexSupervisor
@@ -114,3 +116,16 @@ def test_supervisor_hft_mode_refuses_active_hft_lease_before_runtime(tmp_path):
         hft_db_path=hft_path,
     ) == 1
     assert constructed == []
+
+
+def test_supervisor_rejects_demo_without_explicit_hft_shadow_before_runtime():
+    supervisor = ForexSupervisor(
+        runtime_factory=lambda _config: (_ for _ in ()).throw(AssertionError("must not start")),
+        store_factory=lambda _path: SimpleNamespace(read_only_active_lease=lambda _now: None),
+    )
+    with pytest.raises(ValueError, match="requires --hft-shadow"):
+        supervisor.run(
+            db_path="watch.db",
+            watch_main=lambda *args, **kwargs: 0,
+            demo_execute=True,
+        )

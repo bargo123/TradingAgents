@@ -9,7 +9,6 @@ from tradingagents.forex.hft.demo_models import (
     ExecutionMode,
 )
 
-
 UTC = timezone.utc
 
 

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import Enum
 from numbers import Real
-from typing import Any, Mapping
+from typing import Any
 
 from .models import utc
 

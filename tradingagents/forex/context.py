@@ -111,6 +111,8 @@ def _position_to_dict(position: Any) -> dict[str, Any]:
         "price_current": getattr(position, "price_current", None),
         "profit": getattr(position, "profit", None),
         "time": _utc_iso(opened_at) if opened_at else None,
+        "magic": getattr(position, "magic", None),
+        "comment": getattr(position, "comment", None),
     }
 
 

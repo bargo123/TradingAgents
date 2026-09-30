@@ -1,0 +1,187 @@
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tradingagents.forex.hft.demo_gateway import (
+    DemoExecutionForbidden,
+    VerifiedDemoExecutionGateway,
+)
+from tradingagents.forex.hft.demo_models import DemoOrderIntent
+from tradingagents.forex.hft.demo_store import DemoExecutionStore
+
+UTC = timezone.utc
+
+
+def _intent(**overrides):
+    values = {
+        "intent_id": "intent-1",
+        "plan_id": "plan-1",
+        "source_decision_id": "decision-1",
+        "source_run_id": "source-run-1",
+        "strategy_id": "strategic_shadow",
+        "symbol": "EURUSD",
+        "direction": "LONG",
+        "volume": 0.01,
+        "requested_price": 1.1001,
+        "stop_loss": 1.0991,
+        "take_profit": 1.1021,
+        "deviation_points": 20,
+        "created_at": datetime(2026, 9, 30, tzinfo=UTC),
+        "git_commit": "abc123",
+        "account_trade_mode": 0,
+    }
+    values.update(overrides)
+    return DemoOrderIntent(**values)
+
+
+class _Provider:
+    def __init__(self, modes):
+        self.modes = list(modes)
+        self.calls = 0
+
+    def get_account_info(self):
+        index = min(self.calls, len(self.modes) - 1)
+        self.calls += 1
+        return SimpleNamespace(
+            login=7,
+            server="Broker-Demo",
+            currency="USD",
+            trade_mode=self.modes[index],
+            balance=1000.0,
+            equity=1000.0,
+            margin=0.0,
+            free_margin=1000.0,
+        )
+
+    def get_terminal_info(self):
+        return SimpleNamespace(company="Broker", connected=True)
+
+    def get_positions(self, symbol=None):
+        return (SimpleNamespace(ticket=11, symbol=symbol or "EURUSD", magic=12012012, comment="TradingAgents-P12D-DEMO"),)
+
+
+class _Api:
+    TRADE_ACTION_DEAL = 1
+    ORDER_TYPE_BUY = 0
+    ORDER_TYPE_SELL = 1
+    ORDER_FILLING_IOC = 1
+    ORDER_TIME_GTC = 0
+    TRADE_RETCODE_DONE = 10009
+
+    def __init__(self):
+        self.order_calls = []
+
+    def order_send(self, request):
+        self.order_calls.append(request)
+        return SimpleNamespace(
+            retcode=10009,
+            order=11,
+            deal=12,
+            price=1.1002,
+            volume=0.01,
+            comment="done",
+            time_msc=1_790_000_000_000,
+        )
+
+
+def _gateway(tmp_path: Path, *, modes=(0, 0), api=None):
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    store.initialize()
+    store.start_run("demo-run", git_commit="abc123")
+    api = api or _Api()
+    gateway = VerifiedDemoExecutionGateway(
+        _Provider(modes),
+        api,
+        store,
+        run_id="demo-run",
+        demo_trade_mode=0,
+        magic=12012012,
+        comment="TradingAgents-P12D-DEMO",
+    )
+    return gateway, api
+
+
+def test_demo_account_can_submit_and_persists_result(tmp_path: Path):
+    gateway, api = _gateway(tmp_path)
+
+    result = gateway.submit(_intent())
+
+    assert result.classification == "FILLED"
+    assert result.broker_order_sent is True
+    assert result.real_money is False
+    assert len(api.order_calls) == 1
+    assert api.order_calls[0]["comment"] == "TradingAgents-P12D-DEMO"
+
+
+@pytest.mark.parametrize("trade_mode", [1, 2, None])
+def test_non_demo_account_fails_before_order_send(tmp_path: Path, trade_mode):
+    gateway, api = _gateway(tmp_path, modes=(trade_mode,))
+
+    with pytest.raises(DemoExecutionForbidden, match="DEMO_EXECUTION_FORBIDDEN"):
+        gateway.submit(_intent())
+
+    assert api.order_calls == []
+
+
+def test_account_preflight_can_reject_before_gateway_construction(tmp_path: Path):
+    provider = _Provider((2,))
+    account = VerifiedDemoExecutionGateway.read_account(provider)
+
+    with pytest.raises(DemoExecutionForbidden, match="authoritative trade_mode"):
+        VerifiedDemoExecutionGateway.require_demo_account(account, 0)
+
+    assert not (tmp_path / "demo.sqlite3").exists()
+
+
+def test_demo_server_name_does_not_override_real_trade_mode(tmp_path: Path):
+    gateway, api = _gateway(tmp_path, modes=(1,))
+
+    with pytest.raises(DemoExecutionForbidden):
+        gateway.submit(_intent())
+
+    assert api.order_calls == []
+
+
+def test_account_mode_change_before_send_blocks_second_validation(tmp_path: Path):
+    gateway, api = _gateway(tmp_path, modes=(0, 1))
+
+    with pytest.raises(DemoExecutionForbidden, match="DEMO_EXECUTION_FORBIDDEN"):
+        gateway.submit(_intent())
+
+    assert api.order_calls == []
+
+
+def test_close_requires_owned_broker_position_and_uses_opposite_order(tmp_path: Path):
+    gateway, api = _gateway(tmp_path)
+    entry = gateway.submit(_intent())
+    gateway.store.record_position(
+        {
+            "ticket": entry.order_ticket,
+            "intent_id": "intent-1",
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "volume": 0.01,
+            "price_open": 1.1002,
+            "stop_loss": 1.0991,
+            "take_profit": 1.1021,
+            "state": "OPEN",
+        }
+    )
+    exit_intent = _intent(intent_id="exit-1", direction="SHORT", requested_price=1.1, stop_loss=1.099, take_profit=1.102)
+
+    result = gateway.submit(exit_intent, position_ticket=entry.order_ticket, exit_reason="TAKE_PROFIT")
+
+    assert result.classification == "FILLED"
+    assert api.order_calls[-1]["position"] == entry.order_ticket
+    assert api.order_calls[-1]["type"] == api.ORDER_TYPE_SELL
+
+
+def test_close_of_unowned_position_is_rejected(tmp_path: Path):
+    gateway, api = _gateway(tmp_path)
+
+    with pytest.raises(DemoExecutionForbidden, match="owned"):
+        gateway.submit(_intent(intent_id="exit-1", direction="SHORT"), position_ticket=999, exit_reason="STOP_LOSS")
+
+    assert api.order_calls == []
