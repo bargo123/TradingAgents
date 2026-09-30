@@ -68,13 +68,15 @@ class RiskEngine:
     def __init__(self, config: RiskConfig | None = None) -> None:
         self.config = config or RiskConfig()
 
-    def evaluate(self, action: FastAction, tick: Tick, context: RiskContext, *, plan_expired: bool = False) -> RiskDecision:
+    def evaluate(self, action: FastAction, tick: Tick, context: RiskContext, *, plan_expired: bool = False, allowed_sessions: tuple[str, ...] | None = None) -> RiskDecision:
         if not isinstance(action, FastAction):
             action = FastAction(action)
         if plan_expired:
             return RiskDecision(False, "PLAN_EXPIRED", "strategic plan is expired")
         if action not in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
             return RiskDecision(True, "NON_ENTRY", "non-entry action does not add exposure", 0.0)
+        if allowed_sessions and context.session.upper() not in {value.upper() for value in allowed_sessions}:
+            return RiskDecision(False, "SESSION_LIMIT", "session is outside the plan constraint")
         age = (context.observed_at - context.tick_timestamp).total_seconds()
         if age > self.config.stale_after_seconds:
             return RiskDecision(False, "STALE_TICK", "tick is older than the stale-data bound")

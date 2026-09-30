@@ -55,3 +55,12 @@ def test_fast_engine_invalidates_expired_plan_and_exits_stop():
     stop_tick = Tick("EURUSD", plan.created_at + timedelta(seconds=2), 1.0998, 1.0999)
     assert engine.on_tick(plan, features.update(stop_tick), position_state=PositionState.LONG, entry_price=1.1, entry_at=plan.created_at).action is FastAction.EXIT
 
+
+def test_fast_engine_uses_tick_point_for_stop_distance():
+    features = TickFeatureEngine(window=2)
+    engine = FastExecutionEngine()
+    plan = _plan()
+    start = plan.created_at
+    engine.on_tick(plan, features.update(Tick("EURUSD", start, 1.1, 1.1001, point=0.001)), position_state=PositionState.FLAT)
+    tick = Tick("EURUSD", start + timedelta(seconds=1), 1.0985, 1.0995, point=0.001)
+    assert engine.on_tick(plan, features.update(tick), position_state=PositionState.LONG, entry_price=1.1, entry_at=start).action is FastAction.EXIT

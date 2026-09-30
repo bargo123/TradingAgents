@@ -38,3 +38,7 @@ def test_features_reject_out_of_order_or_symbol_switch():
     with pytest.raises(ValueError, match="symbol"):
         engine.update(Tick("USDJPY", datetime(2026, 1, 1, 12, 0, 3, tzinfo=UTC), 150, 150.01))
 
+
+def test_features_preserve_symbol_point_for_exit_distance_calculations():
+    snapshot = TickFeatureEngine().update(Tick("USDJPY", datetime(2026, 1, 1, 12, 0, tzinfo=UTC), 150.0, 150.001, point=0.001))
+    assert snapshot.point == pytest.approx(0.001)

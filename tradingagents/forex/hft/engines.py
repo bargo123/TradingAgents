@@ -49,7 +49,7 @@ class FastExecutionEngine:
     def _exit_reason(plan, features, position_state, entry_price, entry_at):
         if entry_price is None or entry_price <= 0:
             return "POSITION_PRICE_UNAVAILABLE"
-        point = 0.00001
+        point = features.point
         stop = plan.stop_policy.stop_distance_points * point
         target = plan.stop_policy.take_profit_distance_points * point
         if position_state is PositionState.LONG:

@@ -111,7 +111,7 @@ class HftShadowRuntime:
             observed_at=now,
             session=snapshot.session,
         )
-        risk = self.risk.evaluate(decision.action, tick, context, plan_expired=plan is None)
+        risk = self.risk.evaluate(decision.action, tick, context, plan_expired=plan is None, allowed_sessions=None if plan is None else plan.session_constraints)
         self.store.record_risk(action_id, asdict(risk))
         if risk.accepted and decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
             fill = self.fills.fill(decision.action, tick, size=1.0)

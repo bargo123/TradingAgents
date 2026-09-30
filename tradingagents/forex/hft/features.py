@@ -30,6 +30,7 @@ class TickFeatures:
     mid: float
     spread: float
     spread_points: float
+    point: float
     return_1: float
     momentum: float
     velocity: float
@@ -118,6 +119,7 @@ class TickFeatureEngine:
             mid=tick.mid,
             spread=tick.spread,
             spread_points=tick.spread_points,
+            point=tick.point,
             return_1=return_1,
             momentum=momentum,
             velocity=velocity,

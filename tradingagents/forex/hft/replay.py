@@ -187,7 +187,7 @@ class TickReplay:
             actions += 1
             if decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
                 context = RiskContext(100.0, 0.0, 0.0, 0.0, 0, tick.timestamp, tick.timestamp, snapshot.session)
-                gate = risk.evaluate(decision.action, tick, context)
+                gate = risk.evaluate(decision.action, tick, context, allowed_sessions=self.plan.session_constraints)
                 if gate.accepted:
                     fill = fills.fill(decision.action, tick, size=1.0)
                     position = positions.open(tick, decision.action, size=1.0, stop=None, target=None, strategy_id=self.plan.strategy_family, entry_price=fill.price)

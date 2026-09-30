@@ -43,3 +43,10 @@ def test_risk_engine_rejects_stale_ticks_and_expired_exposure():
     context = _context(observed_at=old.timestamp + timedelta(seconds=6))
     assert engine.evaluate(FastAction.ENTER_LONG, old, context).reason_code == "STALE_TICK"
     assert engine.evaluate(FastAction.ENTER_LONG, _tick(), _context(drawdown=0.21)).reason_code == "DRAWDOWN_LIMIT"
+
+
+def test_risk_engine_enforces_explicit_session_constraints():
+    engine = RiskEngine()
+    decision = engine.evaluate(FastAction.ENTER_LONG, _tick(), _context(session="ASIA"), allowed_sessions=("LONDON",))
+    assert decision.accepted is False
+    assert decision.reason_code == "SESSION_LIMIT"
