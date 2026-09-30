@@ -15,6 +15,16 @@ from .features import TickFeatures
 from .models import FastAction, Tick
 
 HFT_SCHEMA_VERSION = 1
+_HFT_RUNTIME_STATUSES = frozenset(
+    {
+        "STARTING",
+        "RUNNING",
+        "DEGRADED",
+        "RECOVERING",
+        "OPERATOR_REVIEW_REQUIRED",
+        "STOPPED",
+    }
+)
 
 
 def _utc(value: datetime, name: str = "timestamp") -> datetime:
@@ -197,6 +207,16 @@ class HftShadowStore:
                     error_code TEXT,
                     observed_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS hft_runtime_state (
+                    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                    status TEXT NOT NULL,
+                    error_code TEXT,
+                    last_disconnect_at TEXT,
+                    last_recovery_attempt_at TEXT,
+                    recovery_count INTEGER NOT NULL DEFAULT 0 CHECK (recovery_count >= 0),
+                    last_recovery_result TEXT,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             row = db.execute("SELECT schema_version FROM hft_meta LIMIT 1").fetchone()
@@ -204,6 +224,109 @@ class HftShadowStore:
                 db.execute("INSERT INTO hft_meta VALUES (?, ?)", (HFT_SCHEMA_VERSION, _iso(datetime.now(timezone.utc))))
             elif row[0] != HFT_SCHEMA_VERSION:
                 raise ValueError("unsupported HFT schema version")
+            db.execute(
+                """
+                INSERT OR IGNORE INTO hft_runtime_state(
+                    singleton_id,status,recovery_count,updated_at
+                ) VALUES(1,'STOPPED',0,?)
+                """,
+                (_iso(datetime.now(timezone.utc)),),
+            )
+
+    @staticmethod
+    def _runtime_state_defaults() -> dict[str, Any]:
+        return {
+            "status": "NOT_INITIALIZED",
+            "error_code": None,
+            "last_disconnect_at": None,
+            "last_recovery_attempt_at": None,
+            "recovery_count": 0,
+            "last_recovery_result": None,
+            "updated_at": None,
+        }
+
+    def read_runtime_state(self) -> dict[str, Any]:
+        """Read bounded HFT lifecycle state for the owning worker."""
+
+        if not self.path.is_file():
+            return self._runtime_state_defaults()
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT status,error_code,last_disconnect_at,last_recovery_attempt_at,
+                       recovery_count,last_recovery_result,updated_at
+                  FROM hft_runtime_state
+                 WHERE singleton_id=1
+                """
+            ).fetchone()
+        if row is None:
+            return self._runtime_state_defaults()
+        return {
+            "status": str(row[0]),
+            "error_code": row[1],
+            "last_disconnect_at": row[2],
+            "last_recovery_attempt_at": row[3],
+            "recovery_count": int(row[4]),
+            "last_recovery_result": row[5],
+            "updated_at": row[6],
+        }
+
+    def set_runtime_state(
+        self,
+        status: str,
+        *,
+        error_code: str | None = None,
+        last_disconnect_at: datetime | None = None,
+        last_recovery_attempt_at: datetime | None = None,
+        recovery_count: int = 0,
+        last_recovery_result: str | None = None,
+        now: datetime | None = None,
+    ) -> None:
+        """Persist scalar lifecycle state without model or prompt content."""
+
+        status = str(status).strip().upper()
+        if status not in _HFT_RUNTIME_STATUSES:
+            raise ValueError("unsupported HFT runtime status")
+        if isinstance(recovery_count, bool) or not isinstance(recovery_count, int) or recovery_count < 0:
+            raise ValueError("recovery_count must be a non-negative integer")
+        if error_code is not None:
+            error_code = str(error_code).strip().upper()[:80] or None
+        if last_recovery_result is not None:
+            last_recovery_result = str(last_recovery_result).strip().upper()[:80] or None
+        observed = datetime.now(timezone.utc) if now is None else _utc(now, "now")
+        disconnect = None if last_disconnect_at is None else _iso(last_disconnect_at)
+        recovery_attempt = (
+            None
+            if last_recovery_attempt_at is None
+            else _iso(last_recovery_attempt_at)
+        )
+        self.initialize()
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO hft_runtime_state(
+                    singleton_id,status,error_code,last_disconnect_at,
+                    last_recovery_attempt_at,recovery_count,last_recovery_result,updated_at
+                ) VALUES(1,?,?,?,?,?,?,?)
+                ON CONFLICT(singleton_id) DO UPDATE SET
+                    status=excluded.status,
+                    error_code=excluded.error_code,
+                    last_disconnect_at=excluded.last_disconnect_at,
+                    last_recovery_attempt_at=excluded.last_recovery_attempt_at,
+                    recovery_count=excluded.recovery_count,
+                    last_recovery_result=excluded.last_recovery_result,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    status,
+                    error_code,
+                    disconnect,
+                    recovery_attempt,
+                    recovery_count,
+                    last_recovery_result,
+                    _iso(observed),
+                ),
+            )
 
     def _read_lease(self, db: sqlite3.Connection) -> HftLeaseRecord | None:
         row = db.execute(

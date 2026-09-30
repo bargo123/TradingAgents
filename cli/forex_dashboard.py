@@ -302,6 +302,9 @@ def _hft_panel(snapshot: HftDashboardSnapshot) -> Panel:
     lines = [
         "PHASE 12C — SHADOW HFT",
         f"Status: {snapshot.status}",
+        f"Worker: {snapshot.runtime_status} (recoveries {snapshot.recovery_count})",
+        f"Last disconnect: {_fmt_timestamp(snapshot.last_disconnect_at)}",
+        f"Last recovery: {snapshot.last_recovery_result or '-'}",
         f"Lease: {snapshot.hft_lease_status}",
         f"Active plan: {snapshot.active_plan_id or '-'} / {snapshot.active_plan_direction or '-'}",
         f"Plan strategy: {snapshot.active_plan_strategy_family or '-'}",

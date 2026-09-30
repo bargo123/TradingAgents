@@ -75,6 +75,19 @@ class _SharedReadOnlyMt5Provider:
             self._initialized = initialized
             return initialized
 
+    def reinitialize(self) -> bool:
+        """Refresh the supervisor-owned read-only MT5 session after a disconnect."""
+
+        with self._lock:
+            if self._initialized:
+                try:
+                    self._provider.shutdown()
+                finally:
+                    self._initialized = False
+            initialized = bool(self._provider.initialize())
+            self._initialized = initialized
+            return initialized
+
     def shutdown(self) -> None:
         # Consumer lifecycles (runner/probe/evaluator/worker) must not tear
         # down the supervisor-owned session.  `close()` is the sole owner.
@@ -269,13 +282,25 @@ def _refresh_openai_probe(runtime: Any, health: OllamaHealth) -> OllamaHealth:
     )
 
 
-def _health_level(ollama: OllamaHealth, watcher: Mapping[str, Any]) -> tuple[str, str | None]:
+def _health_level(
+    ollama: OllamaHealth,
+    watcher: Mapping[str, Any],
+    hft: Mapping[str, Any] | None = None,
+) -> tuple[str, str | None]:
     if ollama.status == "UNAVAILABLE":
         return "OPERATOR_REVIEW_REQUIRED", ollama.error_code or "OLLAMA_UNAVAILABLE"
     if ollama.status != "HEALTHY":
         if ollama.server_healthy and ollama.error_code == "CONTEXT_NOT_VERIFIED":
             return "UNKNOWN", "OLLAMA_CONTEXT_NOT_VERIFIED"
         return "DEGRADED", ollama.error_code or "OLLAMA_DEGRADED"
+    if hft is not None:
+        hft_status = str(hft.get("status") or "")
+        if hft_status == "OPERATOR_REVIEW_REQUIRED":
+            return "OPERATOR_REVIEW_REQUIRED", str(
+                hft.get("last_error_code") or "HFT_OPERATOR_REVIEW_REQUIRED"
+            )
+        if hft_status == "DEGRADED":
+            return "DEGRADED", str(hft.get("last_error_code") or "HFT_DEGRADED")
     if watcher.get("circuit_reason"):
         return "OPERATOR_REVIEW_REQUIRED", str(watcher["circuit_reason"])
     if watcher.get("last_evaluation_status") == "ERROR":
@@ -432,12 +457,12 @@ class ForexSupervisor:
                     )
                     verification_source = "PERSISTED_VERIFICATION"
                     verification_observed_at = observed_at.isoformat()
-        level, reason = _health_level(health, watcher)
         hft_report = self.hft_status(
             hft_db_path
             if hft_db_path is not None
             else Path(db_path).with_suffix(".hft.sqlite3")
         )
+        level, reason = _health_level(health, watcher, hft_report)
         watcher_status = watcher.get("lifecycle_status")
         watcher_pid = watcher.get("owner_pid")
         endpoint = urlparse(health.endpoint)
@@ -534,6 +559,11 @@ class ForexSupervisor:
             "stale_ticks": snapshot.stale_ticks,
             "out_of_order_ticks": snapshot.out_of_order_ticks,
             "last_error_code": snapshot.last_error_code,
+            "runtime_status": snapshot.runtime_status,
+            "last_disconnect_at": snapshot.last_disconnect_at,
+            "last_recovery_attempt_at": snapshot.last_recovery_attempt_at,
+            "recovery_count": snapshot.recovery_count,
+            "last_recovery_result": snapshot.last_recovery_result,
             "unique_ticks": snapshot.unique_ticks,
             "tick_quality_status": snapshot.tick_quality_status,
             "dataset_first_timestamp": snapshot.dataset_first_timestamp,

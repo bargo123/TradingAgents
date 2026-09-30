@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import socket
 import threading
@@ -52,6 +53,8 @@ class HftShadowConfig:
     point: float = 0.00001
     require_plan_provenance: bool = True
     lease_ttl_seconds: int = 30
+    max_reconnect_attempts: int = 3
+    reconnect_backoff_seconds: float = 5.0
     initial_balance: float = 100.0
     risk_fraction: float = 0.005
     compounding_mode: CompoundingMode = CompoundingMode.COMPOUNDING_RISK
@@ -72,6 +75,19 @@ class HftShadowConfig:
             raise ValueError("require_plan_provenance must be boolean")
         if isinstance(self.lease_ttl_seconds, bool) or not isinstance(self.lease_ttl_seconds, int) or self.lease_ttl_seconds <= 0:
             raise ValueError("lease_ttl_seconds must be positive")
+        if (
+            isinstance(self.max_reconnect_attempts, bool)
+            or not isinstance(self.max_reconnect_attempts, int)
+            or self.max_reconnect_attempts < 0
+        ):
+            raise ValueError("max reconnect attempts must be a non-negative integer")
+        try:
+            reconnect_backoff = float(self.reconnect_backoff_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("reconnect backoff must be finite and non-negative") from exc
+        if not math.isfinite(reconnect_backoff) or reconnect_backoff < 0:
+            raise ValueError("reconnect backoff must be finite and non-negative")
+        object.__setattr__(self, "reconnect_backoff_seconds", reconnect_backoff)
         if self.initial_balance <= 0 or not 0 < self.risk_fraction <= 0.1:
             raise ValueError("account configuration is invalid")
         object.__setattr__(self, "compounding_mode", CompoundingMode(self.compounding_mode))
@@ -96,6 +112,7 @@ class HftShadowRuntime:
         store: HftShadowStore | None = None,
         mt5_gate: SerializedMt5OperationGate | None = None,
         clock: Callable[[], datetime] | None = None,
+        on_tick: Callable[[], None] | None = None,
     ) -> None:
         if not callable(getattr(tick_source, "get_tick", None)):
             raise TypeError("tick_source must expose read-only get_tick")
@@ -105,6 +122,9 @@ class HftShadowRuntime:
         self.store = store or HftShadowStore(config.artifact_path)
         self.mt5_gate = mt5_gate or SerializedMt5OperationGate()
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        if on_tick is not None and not callable(on_tick):
+            raise TypeError("on_tick must be callable")
+        self.on_tick = on_tick
         self.features = TickFeatureEngine()
         self.fast = FastExecutionEngine()
         self.risk = RiskEngine(RiskConfig())
@@ -151,6 +171,8 @@ class HftShadowRuntime:
             }
         if not isinstance(tick, Tick):
             raise TypeError("tick source must return Tick")
+        if self.on_tick is not None:
+            self.on_tick()
         if self._last_tick_timestamp is not None:
             if tick.timestamp == self._last_tick_timestamp:
                 self._dropped_ticks += 1

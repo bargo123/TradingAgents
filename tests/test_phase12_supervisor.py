@@ -16,6 +16,38 @@ def test_supervisor_hft_status_is_scalar_and_shadow_only(tmp_path):
     assert report["executed"] is False
 
 
+def test_supervisor_health_degrades_when_hft_worker_requires_review(tmp_path):
+    hft_path = tmp_path / "hft.sqlite3"
+    hft_store = HftShadowStore(hft_path)
+    hft_store.initialize()
+    hft_store.set_runtime_state(
+        "OPERATOR_REVIEW_REQUIRED",
+        error_code="MT5ACCOUNTDISCONNECTEDERROR",
+        recovery_count=3,
+        last_recovery_result="OPERATOR_REVIEW_REQUIRED",
+    )
+
+    class Runtime:
+        def health(self):
+            return OllamaHealth(
+                "HEALTHY", "http://127.0.0.1:11435", "v", ("qwen3.5:2b",), 16384
+            )
+
+    supervisor = ForexSupervisor(
+        runtime_factory=lambda _config: Runtime(),
+        store_factory=lambda _path: SimpleNamespace(
+            read_only_active_lease=lambda _now: None,
+            read_only_summary=lambda _now: {"lifecycle_status": "IDLE"},
+        ),
+    )
+
+    report = supervisor.status(tmp_path / "strategic.db", hft_db_path=hft_path)
+
+    assert report["hft_engine_health"] == "OPERATOR_REVIEW_REQUIRED"
+    assert report["health_level"] == "OPERATOR_REVIEW_REQUIRED"
+    assert report["health_reason"] == "MT5ACCOUNTDISCONNECTEDERROR"
+
+
 def test_supervisor_hft_mode_forwards_one_context_to_existing_watcher(tmp_path):
     calls = []
 

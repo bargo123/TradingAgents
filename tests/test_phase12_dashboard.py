@@ -109,6 +109,37 @@ def test_hft_dashboard_error_is_scoped_to_latest_run(tmp_path):
     assert read_hft_dashboard(path).last_error_code is None
 
 
+def test_hft_dashboard_reports_worker_failure_instead_of_healthy(tmp_path):
+    path = tmp_path / "hft.sqlite3"
+    store = HftShadowStore(path)
+    store.initialize()
+    store.set_runtime_state(
+        "OPERATOR_REVIEW_REQUIRED",
+        error_code="MT5ACCOUNTDISCONNECTEDERROR",
+        recovery_count=3,
+        last_recovery_result="OPERATOR_REVIEW_REQUIRED",
+    )
+
+    snapshot = read_hft_dashboard(path)
+
+    assert snapshot.status == "OPERATOR_REVIEW_REQUIRED"
+    assert snapshot.runtime_status == "OPERATOR_REVIEW_REQUIRED"
+    assert snapshot.last_error_code == "MT5ACCOUNTDISCONNECTEDERROR"
+    assert snapshot.recovery_count == 3
+
+
+def test_hft_dashboard_detects_running_state_without_lease(tmp_path):
+    path = tmp_path / "hft.sqlite3"
+    store = HftShadowStore(path)
+    store.initialize()
+    store.set_runtime_state("RUNNING")
+
+    snapshot = read_hft_dashboard(path)
+
+    assert snapshot.status == "DEGRADED"
+    assert snapshot.hft_lease_status == "INACTIVE"
+
+
 def test_hft_dashboard_panel_exposes_dataset_coverage(tmp_path):
     from rich.console import Console
 

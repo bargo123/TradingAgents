@@ -1,6 +1,9 @@
+import sqlite3
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 from tradingagents.forex.hft.models import Direction
@@ -71,6 +74,40 @@ class _Provider:
         self.closed = True
 
 
+class MT5ACCOUNTDISCONNECTEDERROR(RuntimeError):
+    pass
+
+
+class _RecoveringProvider(_Provider):
+    def __init__(
+        self,
+        *,
+        failures: int = 1,
+        release: Event | None = None,
+        tick_offset_seconds: float = 0.0,
+    ):
+        super().__init__()
+        self.failures = failures
+        self.release = release
+        self.tick_offset_seconds = tick_offset_seconds
+        self.initializations = 0
+
+    def initialize(self):
+        self.initializations += 1
+        return True
+
+    def get_tick(self, symbol):
+        if self.failures:
+            self.failures -= 1
+            raise MT5ACCOUNTDISCONNECTEDERROR("terminal disconnected")
+        if self.release is not None:
+            self.release.set()
+            time.sleep(0.01)
+        tick = super().get_tick(symbol)
+        tick.timestamp += timedelta(seconds=self.tick_offset_seconds)
+        return tick
+
+
 def test_worker_accepts_only_valid_plan_and_hold_is_none(tmp_path: Path):
     artifact = tmp_path / "hft.sqlite3"
     plans = AtomicPlanStore()
@@ -104,6 +141,123 @@ def test_worker_runs_one_tick_and_stops_without_execution(tmp_path: Path):
     assert worker.result["executed"] is False
     assert provider.calls == 1
     worker.stop()
+
+
+def test_worker_recovers_read_only_disconnect_without_duplicate_worker(tmp_path: Path):
+    artifact = tmp_path / "hft.sqlite3"
+    reconnected = Event()
+    provider = _RecoveringProvider(release=reconnected)
+    worker = HftShadowWorker(
+        lambda **_: provider,
+        AtomicPlanStore(),
+        config=HftShadowConfig(
+            artifact_path=artifact,
+            max_reconnect_attempts=2,
+            reconnect_backoff_seconds=0,
+        ),
+        store=HftShadowStore(artifact),
+        git_commit="abc123",
+    )
+
+    worker.start()
+    assert reconnected.wait(timeout=5)
+    assert worker.running is True
+    assert worker.health["status"] == "RUNNING"
+    worker.stop()
+    assert worker.join(timeout=5) is True
+
+    state = HftShadowStore(artifact).read_runtime_state()
+    assert state["status"] == "STOPPED"
+    assert state["recovery_count"] == 1
+    assert state["last_recovery_result"] == "RECOVERED"
+    assert provider.initializations == 2
+    assert HftShadowStore(artifact).read_only_active_lease() is None
+
+
+def test_disconnect_with_valid_plan_does_not_process_until_reconnect(tmp_path: Path):
+    artifact = tmp_path / "hft.sqlite3"
+    provider = _RecoveringProvider(tick_offset_seconds=120)
+    plans = AtomicPlanStore()
+    worker = HftShadowWorker(
+        lambda **_: provider,
+        plans,
+        config=HftShadowConfig(
+            artifact_path=artifact,
+            max_ticks=1,
+            max_reconnect_attempts=2,
+            reconnect_backoff_seconds=0,
+        ),
+        store=HftShadowStore(artifact),
+        git_commit="abc123",
+    )
+    assert worker.handle_decision(_decision("BUY")) is True
+    worker.start()
+    assert worker.join(timeout=5) is True
+
+    with sqlite3.connect(artifact) as db:
+        assert db.execute("SELECT COUNT(*) FROM hft_actions").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM hft_runs").fetchone()[0] == 2
+    assert worker.result is not None
+    assert worker.result["executed"] is False
+
+
+def test_reconnect_after_plan_expiry_records_no_action(tmp_path: Path):
+    artifact = tmp_path / "hft.sqlite3"
+    provider = _RecoveringProvider(tick_offset_seconds=120)
+    plans = AtomicPlanStore()
+    worker = HftShadowWorker(
+        lambda **_: provider,
+        plans,
+        config=HftShadowConfig(
+            artifact_path=artifact,
+            max_ticks=1,
+            max_reconnect_attempts=2,
+            reconnect_backoff_seconds=0.05,
+        ),
+        store=HftShadowStore(artifact),
+        git_commit="abc123",
+    )
+    base_decision = _decision("BUY")
+    decision = replace(
+        base_decision,
+        snapshot_timestamp=base_decision.snapshot_timestamp - timedelta(minutes=3),
+        analysis_snapshot_timestamp=base_decision.analysis_snapshot_timestamp - timedelta(minutes=3),
+        analysis_latency_seconds=base_decision.analysis_latency_seconds + 180,
+        valid_until=base_decision.snapshot_timestamp - timedelta(minutes=3) + timedelta(seconds=300),
+    )
+    assert worker.handle_decision(decision) is True
+    worker.start()
+    assert worker.join(timeout=5) is True
+
+    with sqlite3.connect(artifact) as db:
+        action = db.execute("SELECT action,reason FROM hft_actions").fetchone()
+    # Existing deterministic engine represents expired-plan no-action as an
+    # INVALIDATE observation; it never reaches a fill or position mutation.
+    assert action[0] == "INVALIDATE"
+    assert "PLAN" in action[1].upper() or "EXPIRED" in action[1].upper()
+
+
+def test_repeated_disconnects_fail_closed_to_operator_review(tmp_path: Path):
+    artifact = tmp_path / "hft.sqlite3"
+    provider = _RecoveringProvider(failures=10)
+    worker = HftShadowWorker(
+        lambda **_: provider,
+        AtomicPlanStore(),
+        config=HftShadowConfig(
+            artifact_path=artifact,
+            max_reconnect_attempts=2,
+            reconnect_backoff_seconds=0,
+        ),
+        store=HftShadowStore(artifact),
+        git_commit="abc123",
+    )
+    worker.start()
+    assert worker.join(timeout=5) is True
+    assert worker.running is False
+    assert worker.health["status"] == "OPERATOR_REVIEW_REQUIRED"
+    assert worker.health["recovery_count"] == 2
+    assert worker.error_code == "MT5ACCOUNTDISCONNECTEDERROR"
+    assert HftShadowStore(artifact).read_only_active_lease() is None
 
 
 def test_worker_validator_rejects_source_decision_before_plan_creation(tmp_path: Path):
@@ -170,9 +324,12 @@ def test_supervisor_shared_provider_has_one_lifecycle_and_read_only_close():
     assert underlying.initializations == 1
     assert underlying.shutdowns == 0
     assert shared.get_tick("EURUSD") == "EURUSD"
-    shared.close()
-    shared.close()
+    assert shared.reinitialize() is True
+    assert underlying.initializations == 2
     assert underlying.shutdowns == 1
+    shared.close()
+    shared.close()
+    assert underlying.shutdowns == 2
     names = {name.casefold() for name in dir(shared)}
     assert not any(
         token in name

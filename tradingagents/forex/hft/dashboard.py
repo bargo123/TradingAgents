@@ -49,6 +49,11 @@ class HftDashboardSnapshot:
     stale_ticks: int = 0
     out_of_order_ticks: int = 0
     last_error_code: str | None = None
+    runtime_status: str = "NOT_INITIALIZED"
+    last_disconnect_at: str | None = None
+    last_recovery_attempt_at: str | None = None
+    recovery_count: int = 0
+    last_recovery_result: str | None = None
     executed: bool = False
     unique_ticks: int = 0
     tick_quality_status: str = "NOT_INITIALIZED"
@@ -107,6 +112,11 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
         "stale_ticks": 0,
         "out_of_order_ticks": 0,
         "last_error_code": None,
+        "runtime_status": "NOT_INITIALIZED",
+        "last_disconnect_at": None,
+        "last_recovery_attempt_at": None,
+        "recovery_count": 0,
+        "last_recovery_result": None,
         "executed": False,
         "unique_ticks": 0,
         "tick_quality_status": "NOT_INITIALIZED",
@@ -128,6 +138,32 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "hft_runs" not in tables:
                 return HftDashboardSnapshot(**empty)
+            runtime_state = {
+                "status": "NOT_INITIALIZED",
+                "error_code": None,
+                "last_disconnect_at": None,
+                "last_recovery_attempt_at": None,
+                "recovery_count": 0,
+                "last_recovery_result": None,
+            }
+            if "hft_runtime_state" in tables:
+                runtime_row = db.execute(
+                    """
+                    SELECT status,error_code,last_disconnect_at,last_recovery_attempt_at,
+                           recovery_count,last_recovery_result
+                      FROM hft_runtime_state
+                     WHERE singleton_id=1
+                    """
+                ).fetchone()
+                if runtime_row is not None:
+                    runtime_state = {
+                        "status": str(runtime_row[0]),
+                        "error_code": runtime_row[1],
+                        "last_disconnect_at": runtime_row[2],
+                        "last_recovery_attempt_at": runtime_row[3],
+                        "recovery_count": int(runtime_row[4]),
+                        "last_recovery_result": runtime_row[5],
+                    }
             counts = {name: int(db.execute(f"SELECT COUNT(*) FROM hft_{name}").fetchone()[0]) for name in ("runs", "ticks", "actions")}
             entries = int(db.execute("SELECT COUNT(*) FROM hft_actions WHERE action IN ('ENTER_LONG','ENTER_SHORT')").fetchone()[0])
             exits = int(db.execute("SELECT COUNT(*) FROM hft_actions WHERE action IN ('EXIT','REDUCE')").fetchone()[0])
@@ -196,11 +232,29 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                     """
                 ).fetchone()
                 last_error_code = None if error_row is None else str(error_row[0])
+            if runtime_state["error_code"]:
+                last_error_code = str(runtime_state["error_code"])
+            runtime_status = str(runtime_state["status"])
+            if runtime_status == "OPERATOR_REVIEW_REQUIRED":
+                dashboard_status = runtime_status
+            elif runtime_status in {"DEGRADED", "RECOVERING", "STARTING"}:
+                dashboard_status = "DEGRADED"
+            elif lease_status == "ACTIVE" and runtime_status in {"RUNNING", "NOT_INITIALIZED"}:
+                dashboard_status = "RUNNING"
+            elif runtime_status == "RUNNING":
+                # A worker claiming to be alive without its lease is not
+                # healthy; the lease is the durable single-owner proof.
+                dashboard_status = "DEGRADED"
+            elif runtime_status == "STOPPED":
+                dashboard_status = "INACTIVE"
+            else:
+                # Preserve legacy artifacts that predate runtime-state rows.
+                dashboard_status = "RUNNING" if lease_status == "ACTIVE" else "HEALTHY"
             tick_report = read_tick_dataset(source)
             actual = None if compound_return is None else float(compound_return)
             benchmark_difference = None if actual is None else actual - 0.10
             return HftDashboardSnapshot(
-                path=str(source), status="RUNNING" if lease_status == "ACTIVE" else "HEALTHY",
+                path=str(source), status=dashboard_status,
                 runs=counts["runs"], ticks=counts["ticks"], actions=counts["actions"], entries=entries,
                 exits=exits, open_positions=open_positions,
                 p50_processing_ms=_percentile(timings, 0.5), p95_processing_ms=_percentile(timings, 0.95),
@@ -220,6 +274,11 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 stale_ticks=stale_ticks,
                 out_of_order_ticks=out_of_order_ticks,
                 last_error_code=last_error_code,
+                runtime_status=runtime_status,
+                last_disconnect_at=runtime_state["last_disconnect_at"],
+                last_recovery_attempt_at=runtime_state["last_recovery_attempt_at"],
+                recovery_count=int(runtime_state["recovery_count"]),
+                last_recovery_result=runtime_state["last_recovery_result"],
                 executed=False,
                 unique_ticks=tick_report.unique_ticks,
                 tick_quality_status=tick_report.quality_status,
