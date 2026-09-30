@@ -261,7 +261,15 @@ def read_tick_dataset(
     first = min(timestamps)
     last = max(timestamps)
     duration = max(0.0, (last - first).total_seconds())
-    quality_flags = invalid or stale or out_of_order or negative_spread or executed_rows
+    quality_flags = (
+        invalid
+        or stale
+        or out_of_order
+        or zero_spread
+        or negative_spread
+        or large_gaps
+        or executed_rows
+    )
     return TickDatasetReport(
         database_path=str(source.resolve()),
         symbol=normalized_symbol,

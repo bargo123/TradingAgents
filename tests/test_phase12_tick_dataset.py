@@ -76,6 +76,21 @@ def test_tick_dataset_does_not_hide_rows_with_invalid_timestamps(tmp_path):
     assert report.quality_status == "FLAGGED"
 
 
+def test_tick_dataset_flags_zero_spread_without_rewriting_source(tmp_path):
+    path = tmp_path / "hft.sqlite3"
+    store = HftShadowStore(path)
+    store.initialize()
+    store.start_run("run-1", mode="SHADOW", source_fingerprint="MT5_READ_ONLY")
+    timestamp = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    _insert_raw(path, "run-1", "zero", timestamp, 1.1, 1.1)
+
+    report = read_tick_dataset(path, symbol="EURUSD")
+
+    assert report.invalid_ticks == 0
+    assert report.zero_spread_ticks == 1
+    assert report.quality_status == "FLAGGED"
+
+
 def test_tick_dataset_cli_is_read_only_and_supports_json(tmp_path, capsys):
     from cli.forex_tick_dataset import main
 
