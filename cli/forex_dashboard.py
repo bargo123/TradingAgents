@@ -21,6 +21,7 @@ from tradingagents.forex.dashboard import (
     DashboardSnapshot,
     read_dashboard_snapshot,
 )
+from tradingagents.forex.hft.dashboard import HftDashboardSnapshot, read_hft_dashboard
 
 UTC = timezone.utc
 
@@ -48,6 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="refresh interval for the live dashboard (default: 10)",
     )
     parser.add_argument("--once", action="store_true", help="render one snapshot and exit")
+    parser.add_argument("--hft-db-path", default=None, help="optional read-only Phase 12 HFT shadow ledger")
     return parser
 
 
@@ -296,7 +298,21 @@ def _recent_table(snapshot: DashboardSnapshot) -> Table:
     return table
 
 
-def render_dashboard(snapshot: DashboardSnapshot, *, warning: str | None = None) -> RenderableType:
+def _hft_panel(snapshot: HftDashboardSnapshot) -> Panel:
+    lines = [
+        "HFT SHADOW (read-only)",
+        f"Status: {snapshot.status}",
+        f"Ticks/actions: {snapshot.ticks}/{snapshot.actions}",
+        f"Entries/exits: {snapshot.entries}/{snapshot.exits}",
+        f"Open shadow positions: {snapshot.open_positions}",
+        f"Processing p50/p95: {_fmt(snapshot.p50_processing_ms)} / {_fmt(snapshot.p95_processing_ms)} ms",
+        f"Equity/drawdown: {_fmt(snapshot.equity)} / {_fmt(snapshot.drawdown)}",
+        "EXECUTED: FALSE",
+    ]
+    return Panel("\n".join(lines), title="PHASE 12", border_style="cyan")
+
+
+def render_dashboard(snapshot: DashboardSnapshot, *, warning: str | None = None, hft: HftDashboardSnapshot | None = None) -> RenderableType:
     """Build the terminal view without performing any I/O."""
     alerts = (
         Panel("\n".join(snapshot.health_reasons), title="ALERTS", border_style="red")
@@ -305,7 +321,7 @@ def render_dashboard(snapshot: DashboardSnapshot, *, warning: str | None = None)
     )
     columns = Table.grid(padding=(0, 1), expand=True)
     columns.add_row(_collection_table(snapshot), _action_reliability_table(snapshot))
-    return Group(
+    items = [
         _header(snapshot, warning),
         columns,
         _latency_table(snapshot),
@@ -314,7 +330,10 @@ def render_dashboard(snapshot: DashboardSnapshot, *, warning: str | None = None)
         _training_panel(snapshot),
         _recent_table(snapshot),
         alerts,
-    )
+    ]
+    if hft is not None:
+        items.append(_hft_panel(hft))
+    return Group(*items)
 
 
 def main(
@@ -328,12 +347,14 @@ def main(
     reader = read_dashboard_snapshot if snapshot_reader is None else snapshot_reader
     output = Console(legacy_windows=False) if console is None else console
     last_snapshot: DashboardSnapshot | None = None
+    last_hft: HftDashboardSnapshot | None = None
     warning: str | None = None
 
     def refresh() -> None:
-        nonlocal last_snapshot, warning
+        nonlocal last_snapshot, last_hft, warning
         try:
             last_snapshot = reader(args.db_path)
+            last_hft = read_hft_dashboard(args.hft_db_path) if args.hft_db_path else None
             warning = None
         except DashboardReadError as exc:
             warning = str(exc)
@@ -346,7 +367,7 @@ def main(
         except DashboardReadError as exc:
             print(f"FOREX DASHBOARD ERROR: {exc}", file=sys.stderr)
             return 1
-        output.print(render_dashboard(last_snapshot, warning=warning))
+        output.print(render_dashboard(last_snapshot, warning=warning, hft=last_hft))
         return 0
 
     try:
@@ -358,9 +379,9 @@ def main(
                     if last_snapshot is None:
                         live.update(Text(f"FOREX DASHBOARD: {warning}", style="yellow"))
                     else:
-                        live.update(render_dashboard(last_snapshot, warning=warning))
+                        live.update(render_dashboard(last_snapshot, warning=warning, hft=last_hft))
                 else:
-                    live.update(render_dashboard(last_snapshot, warning=warning))
+                        live.update(render_dashboard(last_snapshot, warning=warning, hft=last_hft))
                 sleep(args.refresh_seconds)
     except KeyboardInterrupt:
         return 0

@@ -323,6 +323,28 @@ class ForexSupervisor:
             "executed": False,
         }
 
+    def hft_status(self, db_path: str | Path) -> dict[str, Any]:
+        """Read HFT shadow health without constructing MT5 or Ollama."""
+
+        from .hft.dashboard import read_hft_dashboard
+
+        snapshot = read_hft_dashboard(db_path)
+        return {
+            "status": snapshot.status,
+            "runs": snapshot.runs,
+            "ticks": snapshot.ticks,
+            "actions": snapshot.actions,
+            "entries": snapshot.entries,
+            "exits": snapshot.exits,
+            "open_positions": snapshot.open_positions,
+            "p50_processing_ms": snapshot.p50_processing_ms,
+            "p95_processing_ms": snapshot.p95_processing_ms,
+            "balance": snapshot.balance,
+            "equity": snapshot.equity,
+            "drawdown": snapshot.drawdown,
+            "executed": False,
+        }
+
     def run(
         self,
         *,
