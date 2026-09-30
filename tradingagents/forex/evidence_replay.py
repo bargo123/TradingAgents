@@ -216,6 +216,11 @@ class SavedSnapshotCodec:
                 trade_mode=None if metadata.get("trade_mode") is None else _number(metadata["trade_mode"], "symbol_metadata.trade_mode", integer=True),
                 currency_base=metadata.get("currency_base"),
                 currency_profit=metadata.get("currency_profit"),
+                volume_min=None if metadata.get("volume_min") is None else _number(metadata["volume_min"], "symbol_metadata.volume_min"),
+                volume_max=None if metadata.get("volume_max") is None else _number(metadata["volume_max"], "symbol_metadata.volume_max"),
+                volume_step=None if metadata.get("volume_step") is None else _number(metadata["volume_step"], "symbol_metadata.volume_step"),
+                trade_stops_level=None if metadata.get("trade_stops_level") is None else _number(metadata["trade_stops_level"], "symbol_metadata.trade_stops_level", integer=True),
+                trade_freeze_level=None if metadata.get("trade_freeze_level") is None else _number(metadata["trade_freeze_level"], "symbol_metadata.trade_freeze_level", integer=True),
             )
 
         candles = _mapping(payload["candles"], "snapshot_json.candles")

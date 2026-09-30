@@ -106,6 +106,11 @@ class Mt5SymbolInfo:
     trade_mode: int | None = None
     currency_base: str | None = None
     currency_profit: str | None = None
+    volume_min: float | None = None
+    volume_max: float | None = None
+    volume_step: float | None = None
+    trade_stops_level: int | None = None
+    trade_freeze_level: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "name", _nonempty_text(self.name, "symbol name"))
@@ -121,6 +126,14 @@ class Mt5SymbolInfo:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _nonempty_text(value, name))
+        for name in ("volume_min", "volume_max", "volume_step"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _finite_number(value, name, positive=True))
+        for name in ("trade_stops_level", "trade_freeze_level"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _nonnegative_integral(value, name))
 
 @dataclass(frozen=True, slots=True)
 class Mt5Tick:

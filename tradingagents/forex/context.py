@@ -85,6 +85,11 @@ def _symbol_info_to_dict(snapshot: ForexMarketSnapshot) -> dict[str, Any]:
         "trade_mode": info.trade_mode,
         "currency_base": info.currency_base,
         "currency_profit": info.currency_profit,
+        "volume_min": info.volume_min,
+        "volume_max": info.volume_max,
+        "volume_step": info.volume_step,
+        "trade_stops_level": info.trade_stops_level,
+        "trade_freeze_level": info.trade_freeze_level,
     }
 
 
