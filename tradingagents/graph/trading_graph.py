@@ -552,8 +552,11 @@ class TradingAgentsGraph:
             f"asset={asset_type}",
             f"market_data_mode={getattr(self, 'market_data_mode', 'stock')}",
             f"forex_profile={getattr(self, 'forex_analysis_profile', 'INTRADAY')}",
-            f"phase12_strategic={getattr(self, 'phase12_strategic', False)}",
         ]
+        if getattr(self, "market_data_mode", "stock") == "forex_mt5":
+            signature_parts.append(
+                f"phase12_strategic={getattr(self, 'phase12_strategic', False)}"
+            )
         if getattr(self, "market_data_mode", "stock") == "forex_mt5":
             evidence_enabled = _coerce_bool(
                 self.config.get("forex_evidence_enabled", False),

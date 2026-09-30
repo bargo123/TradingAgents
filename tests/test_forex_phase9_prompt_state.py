@@ -102,6 +102,7 @@ def test_trace_exposes_only_canonical_signal_handoff_metadata():
     state = {
         "research_manager_recommendation": "BUY",
         "trader_investment_plan": "FINAL TRANSACTION PROPOSAL: **SELL**",
+        "trader_action": "SELL",
         "portfolio_manager_raw_result": {
             "rating": "Hold",
             "investment_thesis": "private text",
