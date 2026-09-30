@@ -163,7 +163,15 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                     int(value or 0) for value in quality
                 )
                 error_row = db.execute(
-                    "SELECT error_code FROM hft_run_health WHERE error_code IS NOT NULL ORDER BY observed_at DESC LIMIT 1"
+                    """
+                    SELECT health.error_code
+                    FROM hft_run_health AS health
+                    JOIN hft_runs AS runs ON runs.run_id = health.run_id
+                    WHERE health.error_code IS NOT NULL
+                      AND runs.run_id = (
+                          SELECT run_id FROM hft_runs ORDER BY started_at DESC LIMIT 1
+                      )
+                    """
                 ).fetchone()
                 last_error_code = None if error_row is None else str(error_row[0])
             actual = None if compound_return is None else float(compound_return)

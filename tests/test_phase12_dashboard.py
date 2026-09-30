@@ -89,3 +89,17 @@ def test_hft_dashboard_exposes_phase12c_latency_account_plan_and_lease_metrics(t
     assert snapshot.out_of_order_ticks == 1
     assert snapshot.last_error_code is None
     assert snapshot.executed is False
+
+
+def test_hft_dashboard_error_is_scoped_to_latest_run(tmp_path):
+    path = tmp_path / "hft.sqlite3"
+    store = HftShadowStore(path)
+    store.initialize()
+    store.start_run("old", mode="SHADOW", source_fingerprint="abc")
+    store.record_run_health(
+        "old", dropped_ticks=0, stale_ticks=0, out_of_order_ticks=0, error_code="OLD_ERROR"
+    )
+    store.close_run("old", status="STOPPED")
+    store.start_run("current", mode="SHADOW", source_fingerprint="abc")
+
+    assert read_hft_dashboard(path).last_error_code is None
