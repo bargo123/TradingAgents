@@ -22,6 +22,12 @@ def test_fill_semantics_use_ask_for_buy_and_bid_for_sell_with_slippage():
     assert sell.executed is False
 
 
+def test_exit_fill_requires_position_side_instead_of_midpoint_fallback():
+    engine = ShadowFillEngine()
+    with pytest.raises(ValueError, match="position_state"):
+        engine.fill(FastAction.EXIT, _tick(), size=1000)
+
+
 def test_position_ledger_tracks_open_close_and_excursions():
     ledger = ShadowPositionLedger()
     entry = ledger.open(_tick(), FastAction.ENTER_LONG, size=1000, stop=1.099, target=1.102, strategy_id="test")
@@ -33,4 +39,3 @@ def test_position_ledger_tracks_open_close_and_excursions():
     assert closed.holding_seconds == pytest.approx(2.0)
     with pytest.raises(ValueError, match="FLAT"):
         ledger.close(_tick(second=3), reason="duplicate")
-

@@ -42,8 +42,10 @@ class ShadowFillEngine:
             price = tick.ask + self.slippage_points * tick.point
         elif action is FastAction.ENTER_SHORT or (action is FastAction.EXIT and position_state is PositionState.LONG):
             price = tick.bid - self.slippage_points * tick.point
+        elif action is FastAction.EXIT:
+            raise ValueError("position_state is required for an EXIT fill")
         else:
-            price = tick.mid
+            raise ValueError("fill requires an entry or exit action")
         return ShadowFill(str(uuid.uuid4()), tick.symbol, tick.timestamp, action, price, float(size), self.slippage_points, self.latency_ms)
 
 
