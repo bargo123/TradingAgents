@@ -37,10 +37,11 @@ def _percentile(values: list[float], fraction: float) -> float | None:
 
 def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
     source = Path(path)
-    empty = dict(path=str(source), status="NOT_INITIALIZED", runs=0, ticks=0, actions=0, entries=0, exits=0, open_positions=0, p50_processing_ms=None, p95_processing_ms=None, balance=None, equity=None, drawdown=None, executed=False)
+    empty = {"path": str(source), "status": "NOT_INITIALIZED", "runs": 0, "ticks": 0, "actions": 0, "entries": 0, "exits": 0, "open_positions": 0, "p50_processing_ms": None, "p95_processing_ms": None, "balance": None, "equity": None, "drawdown": None, "executed": False}
     if not source.is_file():
         return HftDashboardSnapshot(**empty)
-    uri = f"file:{quote(str(source.resolve()).replace('\\', '/'), safe='/:' )}?mode=ro"
+    normalized = str(source.resolve()).replace("\\", "/")
+    uri = f"file:{quote(normalized, safe='/:')}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=0) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}

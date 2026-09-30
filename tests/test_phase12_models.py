@@ -11,7 +11,6 @@ from tradingagents.forex.hft.models import (
     Tick,
 )
 
-
 UTC = timezone.utc
 
 

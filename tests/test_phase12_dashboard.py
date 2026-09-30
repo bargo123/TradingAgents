@@ -1,8 +1,7 @@
-from datetime import datetime, timezone
+from datetime import timezone
 
 from tradingagents.forex.hft.dashboard import read_hft_dashboard
 from tradingagents.forex.hft.store import HftShadowStore
-
 
 UTC = timezone.utc
 

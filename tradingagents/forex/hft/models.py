@@ -9,7 +9,6 @@ from enum import Enum
 from numbers import Real
 from typing import Any
 
-
 UTC = timezone.utc
 
 

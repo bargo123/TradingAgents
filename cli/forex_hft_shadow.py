@@ -9,11 +9,17 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tradingagents.forex.watch_store import WatcherStore
-from tradingagents.forex.hft.models import Direction, EntryConstraints, RiskPosture, StopPolicy, StrategicExecutionPlan
+from tradingagents.forex.hft.models import (
+    Direction,
+    EntryConstraints,
+    RiskPosture,
+    StopPolicy,
+    StrategicExecutionPlan,
+)
 from tradingagents.forex.hft.plan_store import AtomicPlanStore
 from tradingagents.forex.hft.runtime import HftShadowConfig, HftShadowRuntime, MT5ReadOnlyTickSource
 from tradingagents.forex.hft.store import HftShadowStore
+from tradingagents.forex.watch_store import WatcherStore
 
 
 def build_parser() -> argparse.ArgumentParser:

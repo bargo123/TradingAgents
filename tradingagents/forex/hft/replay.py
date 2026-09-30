@@ -6,19 +6,27 @@ import csv
 import hashlib
 import json
 import math
-import statistics
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Iterable
 
 from .account import AccountSimulator, CompoundingMode
 from .engines import FastExecutionEngine
 from .features import TickFeatureEngine
-from .models import Direction, EntryConstraints, FastAction, PositionState, RiskPosture, StopPolicy, StrategicExecutionPlan, Tick
+from .models import (
+    Direction,
+    EntryConstraints,
+    FastAction,
+    PositionState,
+    RiskPosture,
+    StopPolicy,
+    StrategicExecutionPlan,
+    Tick,
+)
 from .risk import RiskContext, RiskEngine
 
 
@@ -119,7 +127,7 @@ def load_ticks(path: str | Path) -> tuple[Tick, ...]:
 
 def walk_forward_splits(ticks: Iterable[Tick], *, train_fraction: float = 0.5, dev_fraction: float = 0.2, validation_fraction: float = 0.15) -> WalkForwardSplits:
     values = tuple(ticks)
-    if len(values) < 8 or any(right.timestamp <= left.timestamp for left, right in zip(values, values[1:])):
+    if len(values) < 8 or any(right.timestamp <= left.timestamp for left, right in zip(values, values[1:], strict=True)):
         raise ReplayError("walk-forward input must contain at least 8 monotonic ticks")
     if not 0 < train_fraction < 1 or not 0 < dev_fraction < 1 or not 0 < validation_fraction < 1 or train_fraction + dev_fraction + validation_fraction >= 1:
         raise ValueError("walk-forward fractions must leave an unseen test partition")
@@ -147,7 +155,7 @@ class TickReplay:
         self.ticks = tuple(ticks)
         if not self.ticks:
             raise ReplayError("replay requires at least one tick")
-        if any(right.timestamp <= left.timestamp for left, right in zip(self.ticks, self.ticks[1:])):
+        if any(right.timestamp <= left.timestamp for left, right in zip(self.ticks, self.ticks[1:], strict=True)):
             raise ReplayError("replay ticks must be strictly monotonic")
         if self.ticks[-1].timestamp > datetime.now(timezone.utc):
             raise ReplayError("replay cannot consume future ticks")
@@ -191,7 +199,9 @@ class TickReplay:
                 trades += 1
             latencies.append((time.perf_counter() - started) * 1000.0)
         sorted_latencies = sorted(latencies)
-        percentile = lambda fraction: sorted_latencies[min(len(sorted_latencies) - 1, max(0, math.ceil(len(sorted_latencies) * fraction) - 1))]
+        def percentile(fraction: float) -> float:
+            index = min(len(sorted_latencies) - 1, max(0, math.ceil(len(sorted_latencies) * fraction) - 1))
+            return sorted_latencies[index]
         wins = [value for value in pnls if value > 0]
         losses = [value for value in pnls if value < 0]
         return ReplayReport(

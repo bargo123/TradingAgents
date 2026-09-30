@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 from tradingagents.forex.hft.models import Tick
 from tradingagents.forex.hft.replay import walk_forward_splits
 
-
 UTC = timezone.utc
 
 

@@ -1,10 +1,9 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
 from tradingagents.forex.hft.execution import ShadowFillEngine, ShadowPositionLedger
 from tradingagents.forex.hft.models import FastAction, PositionState, Tick
-
 
 UTC = timezone.utc
 

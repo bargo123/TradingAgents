@@ -4,7 +4,6 @@ import pytest
 
 from tradingagents.forex.hft.account import AccountSimulator, CompoundingMode
 
-
 UTC = timezone.utc
 
 

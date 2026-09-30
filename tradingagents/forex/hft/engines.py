@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from .features import TickFeatures, TickFeatureEngine
-from .models import FastAction, FastDecision, PositionState, StrategicExecutionPlan, Tick
+from .features import TickFeatures
+from .models import FastAction, FastDecision, PositionState, StrategicExecutionPlan
 
 
 class FastExecutionEngine:

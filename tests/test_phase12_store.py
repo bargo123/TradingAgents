@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from tradingagents.forex.hft.models import FastAction, Tick
 from tradingagents.forex.hft.store import HFT_SCHEMA_VERSION, HftShadowStore
 
-
 UTC = timezone.utc
 
 

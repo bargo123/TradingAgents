@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 
 from cli.forex_hft_replay import main
 
-
 UTC = timezone.utc
 
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from threading import RLock
 from datetime import datetime
+from threading import RLock
 
 from .models import StrategicExecutionPlan, utc
 

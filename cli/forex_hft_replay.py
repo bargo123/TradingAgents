@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
-from tradingagents.forex.hft.replay import StrategyFamily, TickReplay, build_strategy_plan, load_ticks
+from tradingagents.forex.hft.replay import (
+    StrategyFamily,
+    TickReplay,
+    build_strategy_plan,
+    load_ticks,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:

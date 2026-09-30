@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Protocol
 
 from tradingagents.forex.watcher import SerializedMt5OperationGate
 
 from .engines import FastExecutionEngine
-from .features import TickFeatureEngine
 from .execution import ShadowFillEngine, ShadowPositionLedger
-from .models import FastAction, PositionState, StrategicExecutionPlan, Tick, utc
+from .features import TickFeatureEngine
+from .models import FastAction, PositionState, Tick, utc
 from .plan_store import AtomicPlanStore
 from .risk import RiskConfig, RiskContext, RiskEngine
 from .store import HftShadowStore

@@ -3,9 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from tradingagents.forex.hft.models import Direction, EntryConstraints, RiskPosture, StopPolicy, StrategicExecutionPlan, Tick
+from tradingagents.forex.hft.models import (
+    Direction,
+    EntryConstraints,
+    RiskPosture,
+    StopPolicy,
+    StrategicExecutionPlan,
+    Tick,
+)
 from tradingagents.forex.hft.replay import ReplayError, TickReplay, load_ticks
-
 
 UTC = timezone.utc
 

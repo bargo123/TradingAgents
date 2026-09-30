@@ -1,10 +1,9 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
 from tradingagents.forex.hft.features import TickFeatureEngine
 from tradingagents.forex.hft.models import Tick
-
 
 UTC = timezone.utc
 

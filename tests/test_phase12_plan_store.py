@@ -2,10 +2,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from tradingagents.forex.hft.models import Direction, EntryConstraints, RiskPosture, StopPolicy
+from tradingagents.forex.hft.models import (
+    Direction,
+    EntryConstraints,
+    RiskPosture,
+    StopPolicy,
+    StrategicExecutionPlan,
+)
 from tradingagents.forex.hft.plan_store import AtomicPlanStore, PlanRejectedError
-from tradingagents.forex.hft.models import StrategicExecutionPlan
-
 
 UTC = timezone.utc
 
