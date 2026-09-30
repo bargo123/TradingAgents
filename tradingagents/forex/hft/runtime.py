@@ -116,11 +116,13 @@ class HftShadowRuntime:
         if risk.accepted and decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
             fill = self.fills.fill(decision.action, tick, size=1.0)
             self.store.record_fill(self.run_id, {**asdict(fill), "timestamp": fill.timestamp.isoformat()})
-            position = self.positions.open(tick, decision.action, size=1.0, stop=None, target=None, strategy_id=plan.strategy_family if plan else "none")
+            position = self.positions.open(tick, decision.action, size=1.0, stop=None, target=None, strategy_id=plan.strategy_family if plan else "none", entry_price=fill.price)
             self.store.record_position(self.run_id, asdict(position))
             self._entry_count += 1
         elif risk.accepted and decision.action is FastAction.EXIT and state in (PositionState.LONG, PositionState.SHORT):
-            position = self.positions.close(tick, reason=decision.reason)
+            fill = self.fills.fill(decision.action, tick, size=1.0, position_state=state)
+            self.store.record_fill(self.run_id, {**asdict(fill), "timestamp": fill.timestamp.isoformat()})
+            position = self.positions.close(tick, reason=decision.reason, exit_price=fill.price)
             self.store.record_position(self.run_id, asdict(position))
             self._exit_count += 1
         return {

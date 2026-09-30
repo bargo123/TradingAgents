@@ -80,13 +80,15 @@ class ShadowPositionLedger:
     def position(self) -> ShadowPosition | None:
         return self._position
 
-    def open(self, tick: Tick, action: FastAction, *, size: float, stop: float | None, target: float | None, strategy_id: str) -> ShadowPosition:
+    def open(self, tick: Tick, action: FastAction, *, size: float, stop: float | None, target: float | None, strategy_id: str, entry_price: float | None = None) -> ShadowPosition:
         if self._position is not None and self._position.state is not PositionState.CLOSED:
             raise ValueError("position ledger is not FLAT")
         if action not in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
             raise ValueError("open requires an entry action")
         direction = "LONG" if action is FastAction.ENTER_LONG else "SHORT"
-        price = tick.ask if direction == "LONG" else tick.bid
+        price = (tick.ask if direction == "LONG" else tick.bid) if entry_price is None else float(entry_price)
+        if price <= 0:
+            raise ValueError("entry_price must be positive")
         self._position = ShadowPosition(
             position_id=str(uuid.uuid4()), symbol=tick.symbol, state=PositionState.LONG if direction == "LONG" else PositionState.SHORT,
             direction=direction, size=float(size), entry_price=price, entry_timestamp=tick.timestamp,
@@ -110,9 +112,11 @@ class ShadowPositionLedger:
         )
         return self._position
 
-    def close(self, tick: Tick, *, reason: str) -> ShadowPosition:
+    def close(self, tick: Tick, *, reason: str, exit_price: float | None = None) -> ShadowPosition:
         position = self._require_open()
-        price = tick.bid if position.direction == "LONG" else tick.ask
+        price = (tick.bid if position.direction == "LONG" else tick.ask) if exit_price is None else float(exit_price)
+        if price <= 0:
+            raise ValueError("exit_price must be positive")
         gross = (price - position.entry_price) * position.size if position.direction == "LONG" else (position.entry_price - price) * position.size
         self._position = replace(
             position, state=PositionState.CLOSED, exit_price=price, exit_timestamp=tick.timestamp,

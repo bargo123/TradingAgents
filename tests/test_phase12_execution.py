@@ -30,11 +30,13 @@ def test_exit_fill_requires_position_side_instead_of_midpoint_fallback():
 
 def test_position_ledger_tracks_open_close_and_excursions():
     ledger = ShadowPositionLedger()
-    entry = ledger.open(_tick(), FastAction.ENTER_LONG, size=1000, stop=1.099, target=1.102, strategy_id="test")
+    entry = ledger.open(_tick(), FastAction.ENTER_LONG, size=1000, stop=1.099, target=1.102, strategy_id="test", entry_price=1.10012)
     assert entry.state is PositionState.LONG
+    assert entry.entry_price == pytest.approx(1.10012)
     ledger.observe(_tick(bid=1.101, ask=1.1011, second=1))
-    closed = ledger.close(_tick(bid=1.1008, ask=1.1009, second=2), reason="TAKE_PROFIT")
+    closed = ledger.close(_tick(bid=1.1008, ask=1.1009, second=2), reason="TAKE_PROFIT", exit_price=1.10075)
     assert closed.state is PositionState.CLOSED
+    assert closed.exit_price == pytest.approx(1.10075)
     assert closed.mfe > 0
     assert closed.holding_seconds == pytest.approx(2.0)
     with pytest.raises(ValueError, match="FLAT"):

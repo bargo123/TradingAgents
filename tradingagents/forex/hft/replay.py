@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .account import AccountSimulator, CompoundingMode
 from .engines import FastExecutionEngine
+from .execution import ShadowFillEngine, ShadowPositionLedger
 from .features import TickFeatureEngine
 from .models import (
     Direction,
@@ -168,6 +169,8 @@ class TickReplay:
         features = TickFeatureEngine()
         fast = FastExecutionEngine()
         risk = RiskEngine()
+        fills = ShadowFillEngine()
+        positions = ShadowPositionLedger()
         account = AccountSimulator(initial_balance=100.0, risk_fraction=0.005, mode=CompoundingMode.COMPOUNDING_RISK)
         position_state = PositionState.FLAT
         entry_price = None
@@ -178,21 +181,25 @@ class TickReplay:
         for tick in self.ticks:
             started = time.perf_counter()
             snapshot = features.update(tick, plan_created_at=self.plan.created_at)
+            if position_state in (PositionState.LONG, PositionState.SHORT):
+                positions.observe(tick)
             decision = fast.on_tick(self.plan, snapshot, position_state=position_state, entry_price=entry_price, entry_at=entry_at)
             actions += 1
             if decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
                 context = RiskContext(100.0, 0.0, 0.0, 0.0, 0, tick.timestamp, tick.timestamp, snapshot.session)
                 gate = risk.evaluate(decision.action, tick, context)
                 if gate.accepted:
+                    fill = fills.fill(decision.action, tick, size=1.0)
+                    position = positions.open(tick, decision.action, size=1.0, stop=None, target=None, strategy_id=self.plan.strategy_family, entry_price=fill.price)
                     position_state = PositionState.LONG if decision.action is FastAction.ENTER_LONG else PositionState.SHORT
-                    entry_price = tick.ask if position_state is PositionState.LONG else tick.bid
-                    entry_at = tick.timestamp
+                    entry_price = position.entry_price
+                    entry_at = position.entry_timestamp
                     entries += 1
             elif decision.action is FastAction.EXIT and position_state is not PositionState.FLAT:
-                exit_price = tick.bid if position_state is PositionState.LONG else tick.ask
-                pnl = (exit_price - entry_price) if position_state is PositionState.LONG else (entry_price - exit_price)
-                account.record_trade(tick.timestamp, pnl)
-                pnls.append(pnl)
+                fill = fills.fill(decision.action, tick, size=1.0, position_state=position_state)
+                closed = positions.close(tick, reason=decision.reason, exit_price=fill.price)
+                account.record_trade(tick.timestamp, closed.net_pnl)
+                pnls.append(closed.net_pnl)
                 position_state = PositionState.FLAT
                 entry_price = entry_at = None
                 exits += 1
