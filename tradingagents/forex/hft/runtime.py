@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -125,6 +126,11 @@ class HftShadowRuntime:
         self._exit_count = 0
         self._trade_count = 0
         self._plan_ids_recorded: set[str] = set()
+        self._last_tick_timestamp: datetime | None = None
+        self._dropped_ticks = 0
+        self._stale_ticks = 0
+        self._out_of_order_ticks = 0
+        self._runtime_error_code: str | None = None
 
     def run_once(self) -> dict[str, object]:
         now = utc(self.clock(), "now")
@@ -132,6 +138,25 @@ class HftShadowRuntime:
             tick = self.tick_source.get_tick(self.config.symbol)
         if not isinstance(tick, Tick):
             raise TypeError("tick source must return Tick")
+        if self._last_tick_timestamp is not None:
+            if tick.timestamp == self._last_tick_timestamp:
+                self._dropped_ticks += 1
+                self._stale_ticks += 1
+                return {
+                    "status": "DROPPED",
+                    "action": FastAction.NO_ACTION.value,
+                    "reason_code": "STALE_TICK",
+                    "executed": False,
+                }
+            if tick.timestamp < self._last_tick_timestamp:
+                self._dropped_ticks += 1
+                self._out_of_order_ticks += 1
+                return {
+                    "status": "DROPPED",
+                    "action": FastAction.NO_ACTION.value,
+                    "reason_code": "OUT_OF_ORDER_TICK",
+                    "executed": False,
+                }
         plan = self.plan_store.current(
             tick.timestamp,
             self.config.symbol,
@@ -141,6 +166,7 @@ class HftShadowRuntime:
             self.store.record_plan(self.run_id, plan.to_payload())
             self._plan_ids_recorded.add(plan.plan_id)
         snapshot = self.features.update(tick, plan_created_at=None if plan is None else plan.created_at)
+        self._last_tick_timestamp = tick.timestamp
         current = self.positions.position
         state = PositionState.FLAT if current is None else current.state
         if current is not None and state in (PositionState.LONG, PositionState.SHORT):
@@ -179,6 +205,7 @@ class HftShadowRuntime:
             self._trade_count += 1
         self.store.record_account(self.run_id, tick.timestamp, self.account.report())
         return {
+            "status": "PROCESSED",
             "action": decision.action.value,
             "risk_accepted": risk.accepted,
             "reason_code": risk.reason_code,
@@ -209,17 +236,31 @@ class HftShadowRuntime:
         started = time.perf_counter()
         status = "STOPPED"
         count = 0
+        observations = 0
         try:
-            while (limit == 0 or count < limit) and not (
+            while (limit == 0 or observations < limit) and not (
                 stop_event is not None and stop_event.is_set()
             ):
-                self.run_once()
-                count += 1
+                result = self.run_once()
+                observations += 1
+                if result.get("status") != "DROPPED":
+                    count += 1
                 self.store.heartbeat_lease(owner.owner_token, datetime.now(timezone.utc))
                 if limit == 0:
                     time.sleep(self.config.poll_interval_seconds)
             status = "COMPLETED"
+        except Exception as exc:
+            self._runtime_error_code = type(exc).__name__.upper()
+            raise
         finally:
+            with suppress(Exception):
+                self.store.record_run_health(
+                    self.run_id,
+                    dropped_ticks=self._dropped_ticks,
+                    stale_ticks=self._stale_ticks,
+                    out_of_order_ticks=self._out_of_order_ticks,
+                    error_code=self._runtime_error_code,
+                )
             self.store.close_run(self.run_id, status=status)
             self.store.release_lease(owner.owner_token)
         elapsed = max(0.0, time.perf_counter() - started)
@@ -231,6 +272,11 @@ class HftShadowRuntime:
             "trades": self._trade_count,
             "runtime_seconds": elapsed,
             "ticks_processed": count,
+            "observed_ticks": observations,
+            "dropped_ticks": self._dropped_ticks,
+            "stale_ticks": self._stale_ticks,
+            "out_of_order_ticks": self._out_of_order_ticks,
+            "error_code": self._runtime_error_code,
             "ticks_per_second": (count / elapsed) if elapsed else None,
             "account_metrics": self.account.report(),
             "executed": False,

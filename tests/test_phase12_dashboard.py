@@ -72,6 +72,10 @@ def test_hft_dashboard_exposes_phase12c_latency_account_plan_and_lease_metrics(t
                 ),
             ),
         )
+        db.execute(
+            "INSERT INTO hft_run_health(run_id,dropped_ticks,stale_ticks,out_of_order_ticks,observed_at) VALUES(?,?,?,?,?)",
+            ("run-1", 3, 2, 1, now.isoformat()),
+        )
         db.commit()
 
     snapshot = read_hft_dashboard(path)
@@ -80,4 +84,8 @@ def test_hft_dashboard_exposes_phase12c_latency_account_plan_and_lease_metrics(t
     assert snapshot.active_plan_id == "plan-1"
     assert snapshot.active_plan_direction == "NONE"
     assert snapshot.benchmark_target == 0.10
+    assert snapshot.dropped_ticks == 3
+    assert snapshot.stale_ticks == 2
+    assert snapshot.out_of_order_ticks == 1
+    assert snapshot.last_error_code is None
     assert snapshot.executed is False

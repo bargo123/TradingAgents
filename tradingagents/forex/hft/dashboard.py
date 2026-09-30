@@ -46,6 +46,7 @@ class HftDashboardSnapshot:
     dropped_ticks: int = 0
     stale_ticks: int = 0
     out_of_order_ticks: int = 0
+    last_error_code: str | None = None
     executed: bool = False
 
 
@@ -93,6 +94,7 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
         "dropped_ticks": 0,
         "stale_ticks": 0,
         "out_of_order_ticks": 0,
+        "last_error_code": None,
         "executed": False,
     }
     if not source.is_file():
@@ -151,6 +153,19 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 if seconds > 0 and math.isfinite(seconds):
                     durations.append(seconds)
             total_seconds = sum(durations)
+            dropped_ticks = stale_ticks = out_of_order_ticks = 0
+            last_error_code = None
+            if "hft_run_health" in tables:
+                quality = db.execute(
+                    "SELECT COALESCE(SUM(dropped_ticks),0), COALESCE(SUM(stale_ticks),0), COALESCE(SUM(out_of_order_ticks),0) FROM hft_run_health"
+                ).fetchone()
+                dropped_ticks, stale_ticks, out_of_order_ticks = (
+                    int(value or 0) for value in quality
+                )
+                error_row = db.execute(
+                    "SELECT error_code FROM hft_run_health WHERE error_code IS NOT NULL ORDER BY observed_at DESC LIMIT 1"
+                ).fetchone()
+                last_error_code = None if error_row is None else str(error_row[0])
             actual = None if compound_return is None else float(compound_return)
             benchmark_difference = None if actual is None else actual - 0.10
             return HftDashboardSnapshot(
@@ -169,7 +184,12 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 active_plan_direction=plan_payload.get("primary_direction") or plan_payload.get("direction"),
                 active_plan_strategy_family=plan_payload.get("strategy_family"),
                 active_plan_created_at=plan_payload.get("created_at"), active_plan_expires_at=plan_payload.get("expires_at"),
-                hft_lease_status=lease_status, executed=False,
+                hft_lease_status=lease_status,
+                dropped_ticks=dropped_ticks,
+                stale_ticks=stale_ticks,
+                out_of_order_ticks=out_of_order_ticks,
+                last_error_code=last_error_code,
+                executed=False,
             )
     except sqlite3.Error:
         return HftDashboardSnapshot(**{**empty, "status": "UNAVAILABLE"})

@@ -451,6 +451,7 @@ class ForexSupervisor:
             "dropped_ticks": snapshot.dropped_ticks,
             "stale_ticks": snapshot.stale_ticks,
             "out_of_order_ticks": snapshot.out_of_order_ticks,
+            "last_error_code": snapshot.last_error_code,
             "executed": False,
         }
 

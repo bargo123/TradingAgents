@@ -189,6 +189,14 @@ class HftShadowStore:
                     payload_json TEXT NOT NULL,
                     executed INTEGER NOT NULL DEFAULT 0 CHECK (executed = 0)
                 );
+                CREATE TABLE IF NOT EXISTS hft_run_health (
+                    run_id TEXT PRIMARY KEY REFERENCES hft_runs(run_id),
+                    dropped_ticks INTEGER NOT NULL DEFAULT 0,
+                    stale_ticks INTEGER NOT NULL DEFAULT 0,
+                    out_of_order_ticks INTEGER NOT NULL DEFAULT 0,
+                    error_code TEXT,
+                    observed_at TEXT NOT NULL
+                );
                 """
             )
             row = db.execute("SELECT schema_version FROM hft_meta LIMIT 1").fetchone()
@@ -313,6 +321,43 @@ class HftShadowStore:
     def record_account(self, run_id: str, timestamp: datetime, payload: Mapping[str, Any]) -> None:
         with self._connect() as db:
             db.execute("INSERT INTO hft_account(run_id,timestamp,payload_json) VALUES(?,?,?)", (run_id, _iso(timestamp), _json(dict(payload))))
+
+    def record_run_health(
+        self,
+        run_id: str,
+        *,
+        dropped_ticks: int,
+        stale_ticks: int,
+        out_of_order_ticks: int,
+        error_code: str | None = None,
+    ) -> None:
+        counters = (dropped_ticks, stale_ticks, out_of_order_ticks)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counters):
+            raise ValueError("tick-quality counters must be non-negative integers")
+        if error_code is not None:
+            error_code = str(error_code).strip().upper()[:80] or None
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO hft_run_health(
+                    run_id,dropped_ticks,stale_ticks,out_of_order_ticks,error_code,observed_at
+                ) VALUES(?,?,?,?,?,?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    dropped_ticks=excluded.dropped_ticks,
+                    stale_ticks=excluded.stale_ticks,
+                    out_of_order_ticks=excluded.out_of_order_ticks,
+                    error_code=excluded.error_code,
+                    observed_at=excluded.observed_at
+                """,
+                (
+                    run_id,
+                    dropped_ticks,
+                    stale_ticks,
+                    out_of_order_ticks,
+                    error_code,
+                    _iso(datetime.now(timezone.utc)),
+                ),
+            )
 
     def recover_open_positions(self) -> tuple[dict[str, Any], ...]:
         if not self.path.is_file():

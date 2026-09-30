@@ -37,3 +37,22 @@ def test_hft_store_recovers_open_positions_without_mutating_existing_rows(tmp_pa
     store.close_run("run-1", status="STOPPED")
     assert store.snapshot()["runs"] == 1
 
+
+def test_hft_store_persists_bounded_run_health(tmp_path):
+    path = tmp_path / "hft.sqlite3"
+    store = HftShadowStore(path)
+    store.initialize()
+    store.start_run("run-1", mode="SHADOW", source_fingerprint="abc")
+
+    store.record_run_health(
+        "run-1",
+        dropped_ticks=2,
+        stale_ticks=1,
+        out_of_order_ticks=1,
+        error_code="VALUEERROR",
+    )
+
+    with sqlite3.connect(path) as db:
+        assert db.execute(
+            "SELECT dropped_ticks,stale_ticks,out_of_order_ticks,error_code FROM hft_run_health"
+        ).fetchone() == (2, 1, 1, "VALUEERROR")
