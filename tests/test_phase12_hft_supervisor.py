@@ -8,6 +8,7 @@ from tradingagents.forex.hft.runtime import HftShadowConfig
 from tradingagents.forex.hft.store import HftShadowStore
 from tradingagents.forex.hft.supervisor import HftShadowWorker
 from tradingagents.forex.shadow import ShadowTradeDecision
+from tradingagents.forex.supervisor import _SharedReadOnlyMt5Provider
 
 UTC = timezone.utc
 
@@ -96,3 +97,39 @@ def test_worker_runs_one_tick_and_stops_without_execution(tmp_path: Path):
     assert worker.result["executed"] is False
     assert provider.calls == 1
     worker.stop()
+
+
+def test_supervisor_shared_provider_has_one_lifecycle_and_read_only_close():
+    class Provider:
+        def __init__(self):
+            self.initializations = 0
+            self.shutdowns = 0
+
+        def initialize(self):
+            self.initializations += 1
+            return True
+
+        def shutdown(self):
+            self.shutdowns += 1
+
+        def get_tick(self, symbol):
+            return symbol
+
+    underlying = Provider()
+    shared = _SharedReadOnlyMt5Provider(underlying)
+
+    assert shared.initialize() is True
+    assert shared.initialize() is True
+    shared.shutdown()
+    assert underlying.initializations == 1
+    assert underlying.shutdowns == 0
+    assert shared.get_tick("EURUSD") == "EURUSD"
+    shared.close()
+    shared.close()
+    assert underlying.shutdowns == 1
+    names = {name.casefold() for name in dir(shared)}
+    assert not any(
+        token in name
+        for name in names
+        for token in ("order_send", "buy", "sell", "close_position", "modify_position")
+    )

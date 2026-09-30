@@ -13,6 +13,7 @@ from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any
 from urllib.parse import urlparse
 
@@ -33,15 +34,77 @@ class HftShadowSupervisorContext:
     provider_factory: Callable[..., Any]
     plan_store: Any
     hft_db_path: Path
+    provider_session: Any | None = None
 
     def start(self) -> None:
         self.worker.start()
 
     def stop(self) -> None:
         self.worker.stop()
+        session = self.provider_session
+        close = getattr(session, "close", None)
+        if callable(close):
+            with self.gate.acquire("provider_close"):
+                close()
 
     def handle_decision(self, decision: Any) -> bool:
         return bool(self.worker.handle_decision(decision))
+
+
+class _SharedReadOnlyMt5Provider:
+    """Keep one MT5 module session behind all supervisor-owned consumers."""
+
+    def __init__(self, provider: Any) -> None:
+        if provider is None:
+            raise TypeError("provider is required")
+        self._provider = provider
+        self._lock = Lock()
+        self._initialized = False
+
+    def initialize(self) -> bool:
+        with self._lock:
+            if self._initialized:
+                return True
+            initialized = bool(self._provider.initialize())
+            self._initialized = initialized
+            return initialized
+
+    def shutdown(self) -> None:
+        # Consumer lifecycles (runner/probe/evaluator/worker) must not tear
+        # down the supervisor-owned session.  `close()` is the sole owner.
+        return None
+
+    def close(self) -> None:
+        with self._lock:
+            if self._initialized:
+                try:
+                    self._provider.shutdown()
+                finally:
+                    self._initialized = False
+
+    def ensure_symbol(self, symbol: str) -> Any:
+        return self._provider.ensure_symbol(symbol)
+
+    def get_market_snapshot(self, symbol: str, *, count: int = 100) -> Any:
+        return self._provider.get_market_snapshot(symbol, count=count)
+
+    def get_tick(self, symbol: str) -> Any:
+        return self._provider.get_tick(symbol)
+
+    def get_bars(self, symbol: str, timeframe: str, count: int) -> Any:
+        return self._provider.get_bars(symbol, timeframe, count)
+
+    def get_ticks_range(self, symbol: str, start: Any, end: Any) -> Any:
+        return self._provider.get_ticks_range(symbol, start, end)
+
+    def get_account_info(self) -> Any:
+        return self._provider.get_account_info()
+
+    def get_positions(self, symbol: str | None = None) -> Any:
+        return self._provider.get_positions(symbol)
+
+    def get_spread(self, symbol: str) -> Any:
+        return self._provider.get_spread(symbol)
 
 
 def _health_snapshot_path(db_path: str | Path) -> Path:
@@ -279,8 +342,13 @@ class ForexSupervisor:
 
         resolved_hft_path = Path(hft_db_path).expanduser()
 
+        shared_provider = _SharedReadOnlyMt5Provider(
+            MT5Provider(terminal_path=terminal_path)
+        )
+
         def provider_factory(terminal_path: str | None = None) -> Any:
-            return MT5Provider(terminal_path=terminal_path)
+            del terminal_path
+            return shared_provider
 
         plan_store = AtomicPlanStore()
         hft_store = HftShadowStore(resolved_hft_path)
@@ -310,6 +378,7 @@ class ForexSupervisor:
             provider_factory=provider_factory,
             plan_store=plan_store,
             hft_db_path=resolved_hft_path,
+            provider_session=shared_provider,
         )
 
     def status(
