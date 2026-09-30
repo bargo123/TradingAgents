@@ -72,6 +72,7 @@ class Mt5AccountInfo:
     login: int | None = None
     server: str | None = None
     currency: str | None = None
+    trade_mode: int | None = None
     balance: float | None = None
     equity: float | None = None
     profit: float | None = None
@@ -86,6 +87,8 @@ class Mt5AccountInfo:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, _nonempty_text(value, name))
+        if self.trade_mode is not None:
+            object.__setattr__(self, "trade_mode", _nonnegative_integral(self.trade_mode, "trade_mode"))
         for name in ("balance", "equity", "profit", "margin", "free_margin"):
             value = _optional_finite(getattr(self, name), name)
             if value is not None:

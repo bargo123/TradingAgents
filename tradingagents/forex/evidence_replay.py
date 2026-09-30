@@ -106,10 +106,10 @@ def _account(value: Any) -> Mt5AccountInfo | None:
     if value is None:
         return None
     raw = _mapping(value, "account")
-    integer_fields = {"login", "leverage"}
+    integer_fields = {"login", "trade_mode", "leverage"}
     numeric_fields = {"balance", "equity", "profit", "margin", "free_margin"}
     kwargs: dict[str, Any] = {}
-    for key in ("login", "server", "currency", "balance", "equity", "profit", "margin", "free_margin", "leverage"):
+    for key in ("login", "server", "currency", "trade_mode", "balance", "equity", "profit", "margin", "free_margin", "leverage"):
         item = raw.get(key)
         if item is not None and key in integer_fields:
             item = _number(item, f"account.{key}", integer=True)

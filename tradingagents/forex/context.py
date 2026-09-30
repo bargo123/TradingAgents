@@ -91,7 +91,7 @@ def _symbol_info_to_dict(snapshot: ForexMarketSnapshot) -> dict[str, Any]:
 def _account_to_dict(account: Any | None) -> dict[str, Any] | None:
     if account is None:
         return None
-    fields = ("login", "server", "currency", "balance", "equity", "profit", "margin", "free_margin", "leverage")
+    fields = ("login", "server", "currency", "trade_mode", "balance", "equity", "profit", "margin", "free_margin", "leverage")
     return {field: getattr(account, field, None) for field in fields}
 
 
