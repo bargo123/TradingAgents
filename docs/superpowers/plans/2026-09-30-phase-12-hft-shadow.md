@@ -36,10 +36,10 @@
 
 **Interfaces:** `StrategicExecutionPlan`, `Tick`, `FastAction`, `RiskDecision`, `ShadowPosition`, `utc`, `AtomicPlanStore.replace/current`.
 
-- [ ] Write RED tests for bounds, UTC, expiry, symbol mismatch, and atomic replacement.
-- [ ] Run `python -m pytest -q tests/test_phase12_models.py tests/test_phase12_plan_store.py` and observe the missing-contract failure.
-- [ ] Implement bounded frozen dataclasses and copy-on-write plan replacement.
-- [ ] Re-run focused tests to GREEN and commit `feat: add phase12 execution contracts`.
+- [x] Write RED tests for bounds, UTC, expiry, symbol mismatch, and atomic replacement.
+- [x] Run `python -m pytest -q tests/test_phase12_models.py tests/test_phase12_plan_store.py` and observe the missing-contract failure.
+- [x] Implement bounded frozen dataclasses and copy-on-write plan replacement.
+- [x] Re-run focused tests to GREEN and commit `feat: add phase12 execution contracts`.
 
 ### Task 2: Causal features and fast entry/exit engines
 
@@ -49,10 +49,10 @@
 
 **Interfaces:** `TickFeatureEngine.update`, `FastExecutionEngine.on_tick`, `ExitPolicy`.
 
-- [ ] Add RED tests for causal rolling values, monotonic timestamps, spread/momentum gates, exits, and millisecond telemetry.
-- [ ] Run focused tests and confirm RED.
-- [ ] Implement bounded deque features and deterministic entry/exit rules with no LLM calls.
-- [ ] Run tests GREEN and commit `feat: add deterministic phase12 fast engine`.
+- [x] Add RED tests for causal rolling values, monotonic timestamps, spread/momentum gates, exits, and millisecond telemetry.
+- [x] Run focused tests and confirm RED.
+- [x] Implement bounded deque features and deterministic entry/exit rules with no LLM calls.
+- [x] Run tests GREEN and commit `feat: add deterministic phase12 fast engine`.
 
 ### Task 3: Risk, fills, positions, and account simulation
 
@@ -62,10 +62,10 @@
 
 **Interfaces:** `RiskEngine.evaluate`, `ShadowFillEngine.fill`, `ShadowPositionLedger`, `AccountSimulator`, `CompoundingMode`.
 
-- [ ] Add RED tests for every risk limit, bid/ask fill side, slippage/latency, lifecycle, MAE/MFE, sizing, drawdown, and 10%-benchmark reporting.
-- [ ] Verify RED.
-- [ ] Implement deterministic bounded checks and transactional in-memory state.
-- [ ] Run focused tests GREEN and commit `feat: add phase12 shadow risk and fills`.
+- [x] Add RED tests for every risk limit, bid/ask fill side, slippage/latency, lifecycle, MAE/MFE, sizing, drawdown, and 10%-benchmark reporting.
+- [x] Verify RED.
+- [x] Implement deterministic bounded checks and transactional in-memory state.
+- [x] Run focused tests GREEN and commit `feat: add phase12 shadow risk and fills`.
 
 ### Task 4: SQLite ledger and crash recovery
 
@@ -75,10 +75,10 @@
 
 **Interfaces:** `HftShadowStore.initialize`, `record_tick`, `record_action`, `record_risk`, `record_fill`, `snapshot`, `recover_open_positions`.
 
-- [ ] Add RED tests for schema version, idempotent writes, executed=false, row isolation, and crash recovery.
-- [ ] Verify RED.
-- [ ] Implement explicit schema/version migrations and transaction boundaries.
-- [ ] Run GREEN and commit `feat: persist phase12 shadow ledger`.
+- [x] Add RED tests for schema version, idempotent writes, executed=false, row isolation, and crash recovery.
+- [x] Verify RED.
+- [x] Implement explicit schema/version migrations and transaction boundaries.
+- [x] Run GREEN and commit `feat: persist phase12 shadow ledger`.
 
 ### Task 5: Causal replay, walk-forward, and strategy lab
 
@@ -89,10 +89,10 @@
 
 **Interfaces:** `TickReplay`, `ReplayReport`, `walk_forward_splits`, `StrategyFamily`.
 
-- [ ] Add RED tests for source fingerprints, future/lookahead rejection, chronological splits, identical runtime engines, and scalar metrics.
-- [ ] Verify RED.
-- [ ] Implement CSV/JSONL tick loading, two bounded strategy families, replay reports, and explicit train/dev/validation/test partitions.
-- [ ] Run GREEN and commit `feat: add phase12 tick replay lab`.
+- [x] Add RED tests for source fingerprints, future/lookahead rejection, chronological splits, identical runtime engines, and scalar metrics.
+- [x] Verify RED.
+- [x] Implement CSV/JSONL tick loading, two bounded strategy families, replay reports, and explicit train/dev/validation/test partitions.
+- [x] Run GREEN and commit `feat: add phase12 tick replay lab`.
 
 ### Task 6: Read-only MT5 shadow runtime and CLI
 
@@ -103,10 +103,10 @@
 
 **Interfaces:** `HftShadowRuntime.run_once/run`, `ReadOnlyTickSource`, `PlanProvider`.
 
-- [ ] Add RED tests proving active lease refusal before provider construction, no mutation methods, one MT5 operation at a time, plan expiry fail-closed, and executed=false.
-- [ ] Verify RED.
-- [ ] Implement provider injection, existing serialized gate reuse, bounded loop, and prominent shadow banner.
-- [ ] Run GREEN and commit `feat: add phase12 read-only shadow runtime`.
+- [x] Add RED tests proving active lease refusal before provider construction, no mutation methods, one MT5 operation at a time, plan expiry fail-closed, and executed=false.
+- [x] Verify RED.
+- [x] Implement provider injection, existing serialized gate reuse, bounded loop, and prominent shadow banner.
+- [x] Run GREEN and commit `feat: add phase12 read-only shadow runtime`.
 
 ### Task 7: Supervisor/dashboard read-only metrics seam
 
@@ -114,17 +114,16 @@
 - Modify: `tradingagents/forex/supervisor.py`, `tradingagents/forex/dashboard.py`, `cli/forex_dashboard.py` only where tests prove a compatible read-only seam.
 - Test: `tests/test_phase12_supervisor.py`, `tests/test_phase12_dashboard.py`
 
-- [ ] Add RED tests for health/status, HFT SHADOW metrics, and duplicate-process refusal.
-- [ ] Implement minimal scalar read-only health/dashboard integration without changing stock CLI or watcher semantics.
-- [ ] Run focused tests GREEN and commit `feat: expose phase12 shadow health`.
+- [x] Add RED tests for health/status, HFT SHADOW metrics, and duplicate-process refusal.
+- [x] Implement minimal scalar read-only health/dashboard integration without changing stock CLI or watcher semantics.
+- [x] Run focused tests GREEN and commit `feat: expose phase12 shadow health`.
 
 ### Task 8: Acceptance verification and bounded 12C smoke
 
 **Files:** tests and reports only unless a defect is proven.
 
-- [ ] Run all Phase 12 focused tests, Ruff, compileall, and diff check.
-- [ ] Run the full suite at the major checkpoint and record all skips/failures exactly.
-- [ ] Run a deterministic replay acceptance on a fixture or existing read-only tick sample; require no lookahead, realistic fills, risk safety, and sub-millisecond/millisecond-class fast-path telemetry.
-- [ ] If and only if replay passes, run one bounded MT5 shadow smoke with positions/orders before/after and `executed=False`; do not retry graph/MT5 failures.
-- [ ] Final review explicitly confirms no Phase 7/11A changes, no order API, no 12D path, and clean worktree except pre-existing `watch_dashboard.py`.
-
+- [x] Run all Phase 12 focused tests, Ruff, compileall, and diff check.
+- [x] Run the full suite at the major checkpoint and record all skips/failures exactly.
+- [x] Run a deterministic replay acceptance on a fixture or existing read-only tick sample; require no lookahead, realistic fills, risk safety, and sub-millisecond/millisecond-class fast-path telemetry.
+- [x] Defer the bounded MT5 shadow smoke because the existing supervisor lease is active; the active-lease refusal and no-mutation tests pass, so no second MT5 owner was started.
+- [x] Final review explicitly confirms no Phase 7/11A changes, no order API, no 12D path, and clean worktree except pre-existing `watch_dashboard.py`.
