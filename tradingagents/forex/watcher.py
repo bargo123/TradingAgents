@@ -137,6 +137,7 @@ _SAFE_CONFIG_KEYS = frozenset(
         "forex_reference_poll_interval_seconds",
         "forex_reference_poll_max_attempts",
         "forex_deep_thinking",
+        "forex_phase12_strategic",
         "analysis_profile",
         "analysts",
         "schedule_timeframe",

@@ -52,7 +52,7 @@ from tradingagents.forex.telemetry import instrument_agent_node
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
-from .parallel_analysts import ParallelAnalystBranch, run_parallel_analysts
+from .parallel_analysts import ParallelAnalystBranch, run_parallel_analysts, run_parallel_nodes
 
 _FORBIDDEN_MT5_TOOL_TOKENS = (
     "order_send",
@@ -97,6 +97,8 @@ RISK_ANALYSIS_PATH_MAP = {
 }
 
 _FOREX_PARALLEL_ANALYST_NODE = "Forex Market and News Analysts"
+_PHASE12_RESEARCH_NODE = "Phase12 Bull Bear Research"
+_PHASE12_RISK_NODE = "Phase12 Risk Analysts"
 
 
 class GraphSetup:
@@ -112,6 +114,7 @@ class GraphSetup:
         mt5_tools: Any | None = None,
         forex_profile: str = "INTRADAY",
         forex_pm_max_tokens: int | None = None,
+        phase12_strategic: bool = False,
     ):
         """Initialize with required components."""
         if market_data_mode not in {"stock", "forex_mt5"}:
@@ -135,6 +138,9 @@ class GraphSetup:
         self.mt5_tools = mt5_tools
         self.forex_profile = forex_profile
         self.forex_pm_max_tokens = forex_pm_max_tokens
+        if not isinstance(phase12_strategic, bool):
+            raise ValueError("phase12_strategic must be boolean")
+        self.phase12_strategic = phase12_strategic
 
     def _instrument(self, node, agent_name: str, llm: Any):
         """Add forex-only callback attribution around an LLM-bearing node."""
@@ -175,6 +181,9 @@ class GraphSetup:
             raise ValueError(
                 "missing analyst tool node(s): " + ", ".join(dict.fromkeys(missing_tools))
             )
+
+        if self.phase12_strategic:
+            return self._setup_phase12_strategic_graph(plan)
 
         if self.market_data_mode == "forex_mt5":
             analyst_factories = {
@@ -344,4 +353,137 @@ class GraphSetup:
 
         workflow.add_edge("Portfolio Manager", END)
 
+        return workflow
+
+    def _setup_phase12_strategic_graph(self, plan):
+        """Build the explicit Phase 12 graph over independent causal views.
+
+        Legacy INTRADAY/stock setup stays in ``setup_graph`` above.  This mode
+        overlaps only Bull/Bear and the three risk assessments; all existing
+        factories, prompts, strict schemas, evidence context and MT5 read-only
+        tools are reused.
+        """
+
+        if self.market_data_mode != "forex_mt5" or {spec.key for spec in plan.specs} != {"market", "news"}:
+            raise ValueError("phase12_strategic requires forex market/news analysts")
+
+        analyst_factories = {
+            "market": lambda: create_market_analyst(
+                self.quick_thinking_llm,
+                market_data_mode="forex_mt5",
+                mt5_tools=self.mt5_tools,
+            ),
+            "news": lambda: create_news_analyst(
+                self.quick_thinking_llm,
+                market_data_mode="forex_mt5",
+            ),
+        }
+        parallel_branches: list[ParallelAnalystBranch] = []
+        for spec in plan.specs:
+            clear_node = create_msg_delete()
+            parallel_branches.append(
+                ParallelAnalystBranch(
+                    key=spec.key,
+                    agent_node=spec.agent_node,
+                    clear_node=spec.clear_node,
+                    tool_node=spec.tool_node,
+                    report_key=spec.report_key,
+                    node=self._instrument(
+                        analyst_factories[spec.key](), spec.agent_node, self.quick_thinking_llm
+                    ),
+                    clear=clear_node,
+                    tool=self.tool_nodes[spec.key],
+                    route=getattr(self.conditional_logic, f"should_continue_{spec.key}"),
+                )
+            )
+
+        bull = self._instrument(
+            create_bull_researcher(self.quick_thinking_llm),
+            "Bull Researcher",
+            self.quick_thinking_llm,
+        )
+        bear = self._instrument(
+            create_bear_researcher(self.quick_thinking_llm),
+            "Bear Researcher",
+            self.quick_thinking_llm,
+        )
+        research_manager = self._instrument(
+            create_research_manager(self.deep_thinking_llm),
+            "Research Manager",
+            self.deep_thinking_llm,
+        )
+        trader = self._instrument(
+            create_trader(self.deep_thinking_llm, forex_mode=True),
+            "Trader",
+            self.deep_thinking_llm,
+        )
+        risk_nodes = (
+            (
+                "Aggressive Analyst",
+                self._instrument(
+                    create_aggressive_debator(self.quick_thinking_llm),
+                    "Aggressive Analyst",
+                    self.quick_thinking_llm,
+                ),
+            ),
+            (
+                "Conservative Analyst",
+                self._instrument(
+                    create_conservative_debator(self.quick_thinking_llm),
+                    "Conservative Analyst",
+                    self.quick_thinking_llm,
+                ),
+            ),
+            (
+                "Neutral Analyst",
+                self._instrument(
+                    create_neutral_debator(self.quick_thinking_llm),
+                    "Neutral Analyst",
+                    self.quick_thinking_llm,
+                ),
+            ),
+        )
+        portfolio_manager = self._instrument(
+            create_portfolio_manager(
+                self.deep_thinking_llm,
+                forex_profile=self.forex_profile,
+                forex_pm_max_tokens=self.forex_pm_max_tokens,
+            ),
+            "Portfolio Manager",
+            self.deep_thinking_llm,
+        )
+
+        workflow = StateGraph(AgentState)
+        workflow.add_node(
+            _FOREX_PARALLEL_ANALYST_NODE,
+            lambda state, config=None: run_parallel_analysts(
+                tuple(parallel_branches), state, config=config
+            ),
+        )
+        workflow.add_node(
+            _PHASE12_RESEARCH_NODE,
+            lambda state: run_parallel_nodes(
+                (("Bull Researcher", bull), ("Bear Researcher", bear)),
+                state,
+                nested_key="investment_debate_state",
+            ),
+        )
+        workflow.add_node("Research Manager", research_manager)
+        workflow.add_node("Trader", trader)
+        workflow.add_node(
+            _PHASE12_RISK_NODE,
+            lambda state: run_parallel_nodes(
+                risk_nodes,
+                state,
+                nested_key="risk_debate_state",
+            ),
+        )
+        workflow.add_node("Portfolio Manager", portfolio_manager)
+        workflow.add_edge(START, _FOREX_PARALLEL_ANALYST_NODE)
+        workflow.add_edge(_FOREX_PARALLEL_ANALYST_NODE, _PHASE12_RESEARCH_NODE)
+        workflow.add_edge(_PHASE12_RESEARCH_NODE, "Research Manager")
+        workflow.add_edge("Research Manager", "Trader")
+        workflow.add_edge("Trader", _PHASE12_RISK_NODE)
+        workflow.add_edge(_PHASE12_RISK_NODE, "Portfolio Manager")
+        workflow.add_edge("Portfolio Manager", END)
         return workflow

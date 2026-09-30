@@ -42,6 +42,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--db-path", default="data_cache/shadow_decisions.db")
     run.add_argument("--terminal-path", default=None)
     run.add_argument("--no-prewarm", action="store_true")
+    run.add_argument(
+        "--phase12-strategic",
+        action="store_true",
+        help="opt into the Phase 12 parallel strategic freshness graph",
+    )
+    run.add_argument(
+        "--phase12-deep-model",
+        default=None,
+        help="explicit deep model for Phase 12 strategic mode only",
+    )
     run.add_argument("--max-restarts", type=int, default=3)
     run.add_argument("--hft-shadow", action="store_true")
     run.add_argument("--hft-db-path", default=None)
@@ -94,7 +104,14 @@ def main(
         from cli.forex_watch import main as watch_main
 
     try:
-        supervisor = supervisor_factory(ForexShadowRuntimeConfig())
+        if args.phase12_deep_model and not args.phase12_strategic:
+            raise ValueError("--phase12-deep-model requires --phase12-strategic")
+        runtime_kwargs = {"phase12_strategic": args.phase12_strategic}
+        if args.phase12_deep_model:
+            runtime_kwargs["deep_model"] = args.phase12_deep_model
+        supervisor = supervisor_factory(
+            ForexShadowRuntimeConfig(**runtime_kwargs)
+        )
         return supervisor.run(
             db_path=args.db_path,
             terminal_path=args.terminal_path,

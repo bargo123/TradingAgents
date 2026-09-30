@@ -33,9 +33,6 @@ _DEBATE_LABEL_RE = re.compile(
     r"Conservative Analyst|Neutral Analyst)\s*:\s*",
     re.IGNORECASE | re.MULTILINE,
 )
-_TRADER_ACTION_RE = re.compile(
-    r"(?m)^FINAL TRANSACTION PROPOSAL:\s+\*\*(BUY|HOLD|SELL)\*\*[ \t]*$"
-)
 _RESEARCH_RATINGS = {"BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL"}
 _PM_RATINGS = {"Buy", "Overweight", "Hold", "Underweight", "Sell"}
 
@@ -151,8 +148,9 @@ def state_artifact_metrics(state: Mapping[str, Any] | None) -> dict[str, Any]:
     research_recommendation = state_map.get("research_manager_recommendation")
     if research_recommendation not in _RESEARCH_RATINGS:
         research_recommendation = None
-    trader_matches = _TRADER_ACTION_RE.findall(_text(state_map.get("trader_investment_plan")))
-    trader_action = trader_matches[0] if len(trader_matches) == 1 else None
+    trader_action = state_map.get("trader_action")
+    if trader_action not in {"BUY", "HOLD", "SELL"}:
+        trader_action = None
     pm_rating = raw_pm_mapping.get("rating")
     if pm_rating not in _PM_RATINGS:
         pm_rating = None

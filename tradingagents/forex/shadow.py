@@ -48,6 +48,15 @@ DecisionReferenceStatus = Literal["AVAILABLE", "UNAVAILABLE", "INVALID_TEMPORAL"
 ResearchManagerRecommendation = Literal[
     "BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL"
 ]
+TraderAction = Literal["BUY", "SELL", "HOLD"]
+PortfolioManagerRejectionReason = Literal[
+    "RISK_REJECTED",
+    "INSUFFICIENT_EDGE",
+    "STALE",
+    "TEMPORAL_INVALID",
+    "SCHEMA_FAILURE",
+    "OTHER_VALIDATED_REASON",
+]
 
 _RATING_TO_ACTION: dict[str, AllowedAction] = {
     PortfolioRating.BUY.value: "BUY",
@@ -350,6 +359,8 @@ class ShadowTradeDecision:
     decision_reference_delay_seconds: float | None = None
     decision_reference_error: str | None = None
     research_manager_recommendation: ResearchManagerRecommendation | None = None
+    trader_action: TraderAction | None = None
+    portfolio_manager_rejection_reason: PortfolioManagerRejectionReason | None = None
 
     def __post_init__(self) -> None:
         if self.executed is not False:
@@ -385,6 +396,17 @@ class ShadowTradeDecision:
             "SELL",
         ):
             raise ValueError("research_manager_recommendation must use the canonical uppercase value")
+        if self.trader_action is not None and self.trader_action not in ("BUY", "SELL", "HOLD"):
+            raise ValueError("trader_action must use the canonical uppercase value")
+        if self.portfolio_manager_rejection_reason is not None and self.portfolio_manager_rejection_reason not in (
+            "RISK_REJECTED",
+            "INSUFFICIENT_EDGE",
+            "STALE",
+            "TEMPORAL_INVALID",
+            "SCHEMA_FAILURE",
+            "OTHER_VALIDATED_REASON",
+        ):
+            raise ValueError("portfolio_manager_rejection_reason is not recognized")
         if not isinstance(self.analysis_profile, str) or not self.analysis_profile.strip():
             raise ValueError("analysis_profile must be a non-empty string")
         if self.analysis_profile != "INTRADAY":
@@ -714,6 +736,8 @@ class ShadowDecisionStore:
                 "decision_reference_delay_seconds": "REAL",
                 "decision_reference_error": "TEXT",
                 "research_manager_recommendation": "TEXT",
+                "trader_action": "TEXT",
+                "portfolio_manager_rejection_reason": "TEXT",
             }
             for column, declaration in migrations.items():
                 if column not in existing_columns:
@@ -750,6 +774,8 @@ class ShadowDecisionStore:
             "analysis_timeframe",
             "analysis_profile",
             "research_manager_recommendation",
+            "trader_action",
+            "portfolio_manager_rejection_reason",
             "valid_for_seconds",
             "valid_until",
             "trader_summary",
@@ -811,6 +837,8 @@ class ShadowDecisionStore:
                     decision.analysis_timeframe,
                     decision.analysis_profile,
                     decision.research_manager_recommendation,
+                    decision.trader_action,
+                    decision.portfolio_manager_rejection_reason,
                     decision.valid_for_seconds,
                     None
                     if decision.valid_until is None
@@ -1202,6 +1230,24 @@ class ShadowDecisionStore:
             research_manager_recommendation=(
                 row["research_manager_recommendation"]
                 if "research_manager_recommendation" in row_keys
+                else None
+            ),
+            trader_action=(
+                row["trader_action"]
+                if "trader_action" in row_keys and row["trader_action"] in {"BUY", "SELL", "HOLD"}
+                else None
+            ),
+            portfolio_manager_rejection_reason=(
+                row["portfolio_manager_rejection_reason"]
+                if "portfolio_manager_rejection_reason" in row_keys
+                and row["portfolio_manager_rejection_reason"] in {
+                    "RISK_REJECTED",
+                    "INSUFFICIENT_EDGE",
+                    "STALE",
+                    "TEMPORAL_INVALID",
+                    "SCHEMA_FAILURE",
+                    "OTHER_VALIDATED_REASON",
+                }
                 else None
             ),
         )

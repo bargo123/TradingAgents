@@ -118,23 +118,36 @@ def create_trader(llm, *, forex_mode: bool = False):
                 },
             ]
 
+        structured_result = None
         if ollama_forex:
-            trader_plan = render_trader_proposal(
-                invoke_structured_only(structured_llm, messages, "Trader")
-            )
+            structured_result = invoke_structured_only(structured_llm, messages, "Trader")
+            trader_plan = render_trader_proposal(structured_result)
         else:
+            captured_proposals: list[TraderProposal] = []
             trader_plan = invoke_structured_or_freetext(
                 structured_llm,
                 llm,
                 messages,
                 render_trader_proposal,
                 "Trader",
+                on_structured_result=captured_proposals.append if forex_mode else None,
             )
 
-        return {
+        result = {
             "messages": [AIMessage(content=trader_plan)],
             "trader_investment_plan": trader_plan,
             "sender": name,
         }
+        if ollama_forex:
+            # This is derived only from the validated TraderProposal; no
+            # prose/keyword parsing is used for the canonical handoff.
+            result["trader_action"] = (
+                structured_result.action.value.upper()
+                if isinstance(structured_result, TraderProposal)
+                else None
+            )
+        elif forex_mode and captured_proposals:
+            result["trader_action"] = captured_proposals[0].action.value.upper()
+        return result
 
     return functools.partial(trader_node, name="Trader")

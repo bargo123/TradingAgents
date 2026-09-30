@@ -21,7 +21,6 @@ from tradingagents.dataflows.mt5.models import ForexMarketSnapshot
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.forex.context import build_forex_market_context, snapshot_to_dict
 from tradingagents.forex.context_integrity import evaluate_context_integrity
-from tradingagents.forex.decision_path_audit import extract_trader_action
 from tradingagents.forex.evidence_audit import EvidenceAuditStore, EvidenceUsageAudit
 from tradingagents.forex.evidence_context import (
     EvidenceAuditStatus,
@@ -42,6 +41,7 @@ from tradingagents.forex.shadow import (
 )
 from tradingagents.forex.telemetry import (
     FOREX_DEPENDENCY_EDGES,
+    PHASE12_STRATEGIC_DEPENDENCY_EDGES,
     capture_state_trace,
     capture_timing_trace,
     critical_path_from_intervals,
@@ -407,6 +407,24 @@ def _failed_normalization(exc: Exception) -> ShadowNormalization:
     )
 
 
+def _pm_rejection_reason(
+    final_state: Mapping[str, Any],
+    *,
+    normalization_status: str,
+    normalized_action: str | None,
+) -> str | None:
+    """Classify a directional Trader -> HOLD/failed boundary from typed state only."""
+
+    trader_action = final_state.get("trader_action")
+    if trader_action not in {"BUY", "SELL"}:
+        return None
+    if normalization_status != "NORMALIZED":
+        return "SCHEMA_FAILURE"
+    if normalized_action == "HOLD":
+        return "RISK_REJECTED"
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class ForexShadowRunResult:
     """The persisted shadow decision and immutable run evidence."""
@@ -449,6 +467,7 @@ class ForexAnalysisResult:
     valid_until: datetime | None
     profile_name: str
     source_run_id: str | None
+    portfolio_manager_rejection_reason: str | None = None
 
     @property
     def raw_state(self) -> Mapping[str, Any]:
@@ -1066,17 +1085,23 @@ class ForexShadowRunner:
                 valid_until = snapshot.timestamp + timedelta(seconds=valid_for_seconds)
             analysis_telemetry.update(_callback_metrics(callback_list))
             analysis_telemetry["stage_timings"] = stage_timings_from_trace(state_trace)
+            phase12_strategic = _config_bool(
+                config_for_graph.get("forex_phase12_strategic"),
+                "forex_phase12_strategic",
+            )
             analysis_telemetry["critical_path"] = critical_path_from_intervals(
                 timing_trace,
-                FOREX_DEPENDENCY_EDGES,
+                PHASE12_STRATEGIC_DEPENDENCY_EDGES
+                if phase12_strategic
+                else FOREX_DEPENDENCY_EDGES,
             )
             analysis_telemetry["signal_path"] = {
                 "research_manager_recommendation": final_state.get(
                     "research_manager_recommendation"
                 ),
-                "trader_action": extract_trader_action(
-                    final_state.get("trader_investment_plan")
-                ),
+                "trader_action": final_state.get("trader_action")
+                if final_state.get("trader_action") in {"BUY", "HOLD", "SELL"}
+                else None,
                 "portfolio_manager_rating": (
                     raw_pm_result.get("rating")
                     if isinstance(raw_pm_result, Mapping)
@@ -1092,7 +1117,13 @@ class ForexShadowRunner:
                     ),
                     "evidence_context_hash": context_hash,
                     "evidence_as_of": None if evidence_context is None else evidence_context.as_of,
+                    "phase12_strategic": phase12_strategic,
                 }
+            )
+            rejection_reason = _pm_rejection_reason(
+                final_state,
+                normalization_status=normalized.normalization_status,
+                normalized_action=normalized.action,
             )
             return ForexAnalysisResult(
                 analysis_date=parsed_date,
@@ -1116,6 +1147,7 @@ class ForexShadowRunner:
                 valid_until=valid_until,
                 profile_name=profile.name,
                 source_run_id=source_run_id,
+                portfolio_manager_rejection_reason=rejection_reason,
             )
         finally:
             shutdown = getattr(mt5_provider, "shutdown", None) if mt5_provider is not None else None
@@ -1220,6 +1252,12 @@ class ForexShadowRunner:
                 if isinstance(result.final_state.get("research_manager_recommendation"), str)
                 else None
             ),
+            trader_action=(
+                result.final_state.get("trader_action")
+                if result.final_state.get("trader_action") in {"BUY", "SELL", "HOLD"}
+                else None
+            ),
+            portfolio_manager_rejection_reason=result.portfolio_manager_rejection_reason,
         )
         self.store.record(decision)
         metrics = dict(result.analysis_telemetry)
@@ -1242,6 +1280,8 @@ class ForexShadowRunner:
                 "context_integrity": result.context_integrity,
                 "state_boundaries": list(result.state_trace),
                 "audit_status": "NOT_REQUESTED",
+                "trader_action": decision.trader_action,
+                "portfolio_manager_rejection_reason": decision.portfolio_manager_rejection_reason,
             }
         )
         context = result.evidence_context

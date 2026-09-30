@@ -181,6 +181,11 @@ class TradingAgentsGraph:
             if market_data_mode == "forex_mt5"
             else forex_analysis_profile
         )
+        self.phase12_strategic = bool(
+            _coerce_bool(self.config.get("forex_phase12_strategic", False), "forex_phase12_strategic")
+            if market_data_mode == "forex_mt5"
+            else False
+        )
 
         # Update the interface's config
         set_config(self.config)
@@ -233,6 +238,7 @@ class TradingAgentsGraph:
             mt5_tools=self.mt5_tools,
             forex_profile=self.forex_analysis_profile,
             forex_pm_max_tokens=self.config.get("forex_pm_max_tokens"),
+            phase12_strategic=self.phase12_strategic,
         )
 
         self.propagator = Propagator(
@@ -546,6 +552,7 @@ class TradingAgentsGraph:
             f"asset={asset_type}",
             f"market_data_mode={getattr(self, 'market_data_mode', 'stock')}",
             f"forex_profile={getattr(self, 'forex_analysis_profile', 'INTRADAY')}",
+            f"phase12_strategic={getattr(self, 'phase12_strategic', False)}",
         ]
         if getattr(self, "market_data_mode", "stock") == "forex_mt5":
             evidence_enabled = _coerce_bool(

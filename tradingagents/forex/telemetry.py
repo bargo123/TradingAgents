@@ -49,6 +49,22 @@ FOREX_DEPENDENCY_EDGES: tuple[tuple[str, str], ...] = (
     ("Neutral Analyst", "Portfolio Manager"),
 )
 
+PHASE12_STRATEGIC_DEPENDENCY_EDGES: tuple[tuple[str, str], ...] = (
+    ("Market Analyst", "Bull Researcher"),
+    ("News Analyst", "Bull Researcher"),
+    ("Market Analyst", "Bear Researcher"),
+    ("News Analyst", "Bear Researcher"),
+    ("Bull Researcher", "Research Manager"),
+    ("Bear Researcher", "Research Manager"),
+    ("Research Manager", "Trader"),
+    ("Trader", "Aggressive Analyst"),
+    ("Trader", "Conservative Analyst"),
+    ("Trader", "Neutral Analyst"),
+    ("Aggressive Analyst", "Portfolio Manager"),
+    ("Conservative Analyst", "Portfolio Manager"),
+    ("Neutral Analyst", "Portfolio Manager"),
+)
+
 
 def model_identifier(llm: Any) -> str:
     """Return a stable, non-secret model label for telemetry."""
@@ -330,4 +346,5 @@ __all__ = [
     "record_timing_interval",
     "stage_timings_from_trace",
     "FOREX_DEPENDENCY_EDGES",
+    "PHASE12_STRATEGIC_DEPENDENCY_EDGES",
 ]

@@ -385,7 +385,12 @@ def _load_decisions(connection: sqlite3.Connection) -> list[_Decision]:
     return [
         _Decision(
             decision_id=str(row["decision_id"]),
-            trader_action=extract_trader_action(row["trader_summary"]),
+            trader_action=(
+                row["trader_action"]
+                if "trader_action" in set(row.keys())
+                and row["trader_action"] in {"BUY", "SELL", "HOLD"}
+                else extract_trader_action(row["trader_summary"])
+            ),
             final_action=_action_from_persisted(row["action"]),
             decision_timestamp=(
                 _parse_utc(row["decision_completed_timestamp"]) or _parse_utc(row["created_at"])

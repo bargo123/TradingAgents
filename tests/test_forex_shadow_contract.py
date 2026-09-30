@@ -145,6 +145,27 @@ def test_shadow_schema_adds_nullable_research_recommendation_column(tmp_path: Pa
         ).fetchone()[0] is None
 
 
+def test_shadow_schema_adds_nullable_canonical_signal_columns(tmp_path: Path) -> None:
+    store = ShadowDecisionStore(tmp_path / "signal-columns.db")
+    store.initialize()
+    with closing(sqlite3.connect(store.path)) as db, db:
+        columns = {row[1]: row[3] for row in db.execute("PRAGMA table_info(shadow_decisions)")}
+    assert columns["trader_action"] == 0
+    assert columns["portfolio_manager_rejection_reason"] == 0
+
+
+def test_shadow_decision_round_trips_canonical_signal_fields(tmp_path: Path) -> None:
+    store = ShadowDecisionStore(tmp_path / "signal-roundtrip.db")
+    decision = make_decision(
+        trader_action="BUY",
+        portfolio_manager_rejection_reason="RISK_REJECTED",
+    )
+    store.record(decision)
+    loaded = store.get(decision.decision_id)
+    assert loaded.trader_action == "BUY"
+    assert loaded.portfolio_manager_rejection_reason == "RISK_REJECTED"
+
+
 def test_shadow_contract_does_not_persist_transient_evidence_fields() -> None:
     raw = {
         "rating": "Hold",

@@ -33,6 +33,7 @@ _RUNTIME_OWNED_CONFIG_KEYS = frozenset(
         "forex_pm_max_tokens",
         "forex_quick_thinking",
         "forex_deep_thinking",
+        "forex_phase12_strategic",
         "prompt_config_version",
         "collector_contract_version",
         "application_version",
@@ -100,6 +101,7 @@ class ForexShadowRuntimeConfig:
     context_length: int = 16384
     quick_thinking: bool = False
     deep_thinking: bool = True
+    phase12_strategic: bool = False
     prompt_config_version: str = "forex-shadow.runtime.v1"
     collector_contract_version: str = "forex-watch.v1"
     application_version: str = "unknown"
@@ -169,8 +171,12 @@ class ForexShadowRuntimeConfig:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if not isinstance(self.quick_thinking, bool) or not isinstance(self.deep_thinking, bool):
-            raise ValueError("thinking controls must be bools")
+        if (
+            not isinstance(self.quick_thinking, bool)
+            or not isinstance(self.deep_thinking, bool)
+            or not isinstance(self.phase12_strategic, bool)
+        ):
+            raise ValueError("thinking controls and phase12_strategic must be bools")
         if not isinstance(self.extra, Mapping):
             raise ValueError("extra must be a mapping")
         normalized_extra = _normalize_extra(self.extra)
@@ -208,6 +214,7 @@ class ForexShadowRuntimeConfig:
                 "forex_pm_max_tokens": 2048,
                 "forex_quick_thinking": self.quick_thinking,
                 "forex_deep_thinking": self.deep_thinking,
+                "forex_phase12_strategic": self.phase12_strategic,
                 "prompt_config_version": self.prompt_config_version,
                 "collector_contract_version": self.collector_contract_version,
                 "application_version": self.application_version,
@@ -232,6 +239,7 @@ class ForexShadowRuntimeConfig:
             "context_length": self.context_length,
             "quick_thinking": self.quick_thinking,
             "deep_thinking": self.deep_thinking,
+            "phase12_strategic": self.phase12_strategic,
             "prompt_config_version": self.prompt_config_version,
             "collector_contract_version": self.collector_contract_version,
             "application_version": self.application_version,

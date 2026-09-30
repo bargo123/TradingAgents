@@ -258,6 +258,7 @@ def test_ollama_forex_trader_uses_json_schema_and_parses() -> None:
     result = create_trader(llm, forex_mode=True)(_forex_state())
 
     assert "**Action**: Hold" in result["trader_investment_plan"]
+    assert result["trader_action"] == "HOLD"
     assert len(calls) == 1
     _assert_json_schema_wire(calls[0], TraderProposal.__name__)
 

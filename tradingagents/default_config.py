@@ -47,6 +47,7 @@ _ENV_OVERRIDES = {
     "TRADINGAGENTS_FOREX_REFERENCE_POLL_INTERVAL_SECONDS": "forex_reference_poll_interval_seconds",
     "TRADINGAGENTS_FOREX_REFERENCE_POLL_MAX_ATTEMPTS": "forex_reference_poll_max_attempts",
     "TRADINGAGENTS_FOREX_DEEP_THINKING":          "forex_deep_thinking",
+    "TRADINGAGENTS_FOREX_PHASE12_STRATEGIC":      "forex_phase12_strategic",
     "TRADINGAGENTS_FOREX_EVIDENCE_ENABLED": "forex_evidence_enabled",
     "TRADINGAGENTS_FOREX_EVIDENCE_TIMEOUT_SECONDS": "forex_evidence_timeout_seconds",
     "TRADINGAGENTS_FOREX_EVIDENCE_KNOWLEDGE_ARTIFACT_ROOT": "forex_evidence_knowledge_artifact_root",
@@ -189,6 +190,9 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "forex_reference_poll_interval_seconds": 0.25,
     "forex_reference_poll_max_attempts": 21,
     "forex_deep_thinking": True,
+    # Explicit opt-in for the Phase 12 strategic freshness graph.  Direct
+    # forex-watch and legacy INTRADAY callers remain on the existing graph.
+    "forex_phase12_strategic": False,
     # Optional read-only Phase 9 evidence augmentation (forex only).
     "forex_evidence_enabled": False,
     "forex_evidence_timeout_seconds": 30.0,
