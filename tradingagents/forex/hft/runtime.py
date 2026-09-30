@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 
-from tradingagents.forex.watcher import SerializedMt5OperationGate
+from tradingagents.forex.watcher import Mt5OperationBusy, SerializedMt5OperationGate
 
 from .account import AccountSimulator, CompoundingMode
 from .engines import FastExecutionEngine
@@ -134,8 +134,17 @@ class HftShadowRuntime:
 
     def run_once(self) -> dict[str, object]:
         now = utc(self.clock(), "now")
-        with self.mt5_gate.acquire("hft_tick"):
-            tick = self.tick_source.get_tick(self.config.symbol)
+        try:
+            with self.mt5_gate.acquire("hft_tick"):
+                tick = self.tick_source.get_tick(self.config.symbol)
+        except Mt5OperationBusy:
+            self._dropped_ticks += 1
+            return {
+                "status": "DROPPED",
+                "action": FastAction.NO_ACTION.value,
+                "reason_code": "MT5_OPERATION_BUSY",
+                "executed": False,
+            }
         if not isinstance(tick, Tick):
             raise TypeError("tick source must return Tick")
         if self._last_tick_timestamp is not None:

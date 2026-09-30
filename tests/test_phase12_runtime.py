@@ -107,6 +107,32 @@ def test_runtime_drops_non_monotonic_ticks_without_stopping(tmp_path):
     assert result["dropped_ticks"] == 2
 
 
+def test_runtime_skips_tick_when_strategic_mt5_operation_is_busy(tmp_path):
+    now = datetime.now(UTC)
+    source = _Source([Tick("EURUSD", now, 1.1, 1.1001, sequence=1)])
+    gate = SerializedMt5OperationGate()
+    hold = gate.acquire("strategic_analysis")
+    hold.__enter__()
+    try:
+        path = tmp_path / "hft.sqlite3"
+        runtime = HftShadowRuntime(
+            source,
+            AtomicPlanStore(),
+            config=HftShadowConfig(symbol="EURUSD", artifact_path=path, max_ticks=1),
+            store=HftShadowStore(path),
+            mt5_gate=gate,
+        )
+
+        result = runtime.run(max_ticks=1)
+    finally:
+        hold.__exit__(None, None, None)
+
+    assert result["executed"] is False
+    assert result["ticks_processed"] == 0
+    assert result["dropped_ticks"] == 1
+    assert result["error_code"] is None
+
+
 def test_runtime_refuses_an_active_hft_owner_before_reading_ticks(tmp_path):
     path = tmp_path / "hft.sqlite3"
     store = HftShadowStore(path)
