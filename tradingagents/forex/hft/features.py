@@ -88,7 +88,7 @@ class TickFeatureEngine:
         mids = [item.mid for item in window_ticks]
         returns = [
             (right.mid - left.mid) / left.mid
-            for left, right in zip(window_ticks, window_ticks[1:], strict=True)
+            for left, right in zip(window_ticks, window_ticks[1:], strict=False)
             if left.mid > 0
         ]
         momentum = mids[-1] - mids[0] if len(mids) > 1 else 0.0
@@ -102,7 +102,7 @@ class TickFeatureEngine:
         average_spread = mean(spreads) if spreads else tick.spread
         median_interval = mean(
             (right.timestamp - left.timestamp).total_seconds()
-            for left, right in zip(window_ticks, window_ticks[1:], strict=True)
+            for left, right in zip(window_ticks, window_ticks[1:], strict=False)
         ) if len(window_ticks) > 1 else 0.0
         interval = (tick.timestamp - previous.timestamp).total_seconds() if previous else 0.0
         burst = (median_interval / interval) if interval > 0 and median_interval > 0 else 0.0

@@ -127,7 +127,7 @@ def load_ticks(path: str | Path) -> tuple[Tick, ...]:
 
 def walk_forward_splits(ticks: Iterable[Tick], *, train_fraction: float = 0.5, dev_fraction: float = 0.2, validation_fraction: float = 0.15) -> WalkForwardSplits:
     values = tuple(ticks)
-    if len(values) < 8 or any(right.timestamp <= left.timestamp for left, right in zip(values, values[1:], strict=True)):
+    if len(values) < 8 or any(right.timestamp <= left.timestamp for left, right in zip(values, values[1:], strict=False)):
         raise ReplayError("walk-forward input must contain at least 8 monotonic ticks")
     if not 0 < train_fraction < 1 or not 0 < dev_fraction < 1 or not 0 < validation_fraction < 1 or train_fraction + dev_fraction + validation_fraction >= 1:
         raise ValueError("walk-forward fractions must leave an unseen test partition")
@@ -155,7 +155,7 @@ class TickReplay:
         self.ticks = tuple(ticks)
         if not self.ticks:
             raise ReplayError("replay requires at least one tick")
-        if any(right.timestamp <= left.timestamp for left, right in zip(self.ticks, self.ticks[1:], strict=True)):
+        if any(right.timestamp <= left.timestamp for left, right in zip(self.ticks, self.ticks[1:], strict=False)):
             raise ReplayError("replay ticks must be strictly monotonic")
         if self.ticks[-1].timestamp > datetime.now(timezone.utc):
             raise ReplayError("replay cannot consume future ticks")
