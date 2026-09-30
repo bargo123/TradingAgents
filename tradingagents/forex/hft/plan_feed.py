@@ -40,6 +40,11 @@ def build_plan_from_shadow_decision(
         return None
     if decision.action not in {"BUY", "SELL", "HOLD"}:
         return None
+    # Directional plans require a broker quote captured at/after decision
+    # completion. UNAVAILABLE and INVALID_TEMPORAL are valid Phase 5 states,
+    # but they are never sufficient to activate LONG/SHORT.
+    if decision.action in {"BUY", "SELL"} and decision.decision_reference_status != "AVAILABLE":
+        return None
     if not isinstance(git_commit, str) or not git_commit.strip():
         return None
     completed = decision.decision_completed_timestamp or decision.created_at

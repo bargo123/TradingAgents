@@ -29,6 +29,7 @@ class HftShadowWorker:
         terminal_path: str | None = None,
         mt5_gate: SerializedMt5OperationGate | None = None,
         git_commit: str = "unknown",
+        decision_validator: Callable[[Any], bool] | None = None,
     ) -> None:
         if not callable(provider_factory):
             raise TypeError("provider_factory must be callable")
@@ -41,6 +42,9 @@ class HftShadowWorker:
         self.terminal_path = terminal_path
         self.mt5_gate = mt5_gate or SerializedMt5OperationGate()
         self.git_commit = str(git_commit).strip() or "unknown"
+        if decision_validator is not None and not callable(decision_validator):
+            raise TypeError("decision_validator must be callable")
+        self.decision_validator = decision_validator
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._result: dict[str, object] | None = None
@@ -60,10 +64,24 @@ class HftShadowWorker:
         return self._error_code
 
     def handle_decision(self, decision: Any) -> bool:
-        """Atomically replace the active plan when the decision is eligible."""
+        """Atomically replace or clear the active plan from a decision.
 
+        An ineligible or malformed update clears any prior directional plan so
+        the fast path fails closed to ``NONE`` rather than continuing to act on
+        stale strategic intent.
+        """
+
+        if self.decision_validator is not None:
+            try:
+                if not bool(self.decision_validator(decision)):
+                    self.plan_store.clear()
+                    return False
+            except Exception:
+                self.plan_store.clear()
+                return False
         plan = build_plan_from_shadow_decision(decision, git_commit=self.git_commit)
         if plan is None:
+            self.plan_store.clear()
             return False
         now = datetime.now(timezone.utc)
         try:

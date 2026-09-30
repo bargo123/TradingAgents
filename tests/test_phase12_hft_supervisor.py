@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,7 +40,13 @@ def _decision(action="BUY"):
         valid_for_seconds=300,
         valid_until=completed + timedelta(seconds=240),
         decision_context_status="COMPLETE",
-        decision_reference_status="UNAVAILABLE",
+        decision_completed_timestamp=completed,
+        decision_reference_timestamp=completed,
+        decision_reference_bid=1.1,
+        decision_reference_ask=1.1001,
+        decision_reference_spread=0.0001,
+        decision_reference_spread_points=10,
+        decision_reference_status="AVAILABLE",
     )
 
 
@@ -97,6 +104,45 @@ def test_worker_runs_one_tick_and_stops_without_execution(tmp_path: Path):
     assert worker.result["executed"] is False
     assert provider.calls == 1
     worker.stop()
+
+
+def test_worker_validator_rejects_source_decision_before_plan_creation(tmp_path: Path):
+    artifact = tmp_path / "hft.sqlite3"
+    plans = AtomicPlanStore()
+    worker = HftShadowWorker(
+        lambda **_: _Provider(),
+        plans,
+        config=HftShadowConfig(max_ticks=1, artifact_path=artifact),
+        store=HftShadowStore(artifact),
+        git_commit="abc123",
+        decision_validator=lambda _decision: False,
+    )
+
+    assert worker.handle_decision(_decision("BUY")) is False
+    assert plans.current(datetime.now(UTC), "EURUSD", require_provenance=True) is None
+
+
+def test_worker_clears_directional_plan_when_temporal_update_is_invalid(tmp_path: Path):
+    artifact = tmp_path / "hft.sqlite3"
+    plans = AtomicPlanStore()
+    worker = HftShadowWorker(
+        lambda **_: _Provider(),
+        plans,
+        config=HftShadowConfig(max_ticks=1, artifact_path=artifact),
+        store=HftShadowStore(artifact),
+        git_commit="abc123",
+    )
+    valid = _decision("BUY")
+    assert worker.handle_decision(valid) is True
+    invalid = replace(
+        valid,
+        decision_reference_status="INVALID_TEMPORAL",
+        decision_reference_timestamp=valid.decision_completed_timestamp - timedelta(seconds=1),
+        decision_reference_delay_seconds=None,
+    )
+
+    assert worker.handle_decision(invalid) is False
+    assert plans.current(datetime.now(UTC), "EURUSD", require_provenance=True) is None
 
 
 def test_supervisor_shared_provider_has_one_lifecycle_and_read_only_close():

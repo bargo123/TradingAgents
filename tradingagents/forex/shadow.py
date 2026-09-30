@@ -890,7 +890,13 @@ class ShadowDecisionStore:
         return tuple(self._row_to_decision(row) for row in rows)
 
     def latest_eligible(self, resolved_symbol: str | None = None) -> ShadowTradeDecision | None:
-        """Read the newest complete normalized decision without writing the DB."""
+        """Read the newest execution-eligible decision without writing the DB.
+
+        Directional decisions are joined to their watcher run so freshness and
+        reference validity cannot be lost when the HFT supervisor restarts.
+        HOLD remains eligible as an explicit ``Direction.NONE`` update, which
+        lets an invalid/non-directional analysis clear a previous plan.
+        """
 
         if not self.path.is_file():
             return None
@@ -906,18 +912,122 @@ class ShadowDecisionStore:
             }
             if "shadow_decisions" not in tables:
                 return None
-            query = (
-                "SELECT * FROM shadow_decisions "
-                "WHERE executed = 0 AND normalization_status = 'NORMALIZED' "
-                "AND decision_context_status = 'COMPLETE'"
-            )
+            if "forex_watch_runs" in tables:
+                query = (
+                    "SELECT d.* FROM shadow_decisions AS d "
+                    "LEFT JOIN forex_watch_runs AS r "
+                    "ON r.decision_id = d.decision_id "
+                    "AND r.source_run_id = d.source_run_id "
+                    "WHERE d.executed = 0 AND d.normalization_status = 'NORMALIZED' "
+                    "AND d.decision_context_status = 'COMPLETE' "
+                    "AND (d.action = 'HOLD' OR ("
+                    "d.action IN ('BUY','SELL') "
+                    "AND d.decision_reference_status = 'AVAILABLE' "
+                    "AND r.run_status IN ('SUCCEEDED','SUCCEEDED_SLOW') "
+                    "AND r.decision_context_status = 'COMPLETE' "
+                    "AND r.normalization_status = 'NORMALIZED' "
+                    "AND r.decision_reference_status = 'AVAILABLE' "
+                    "AND r.stale_by_completion = 0 "
+                    "AND r.freshness_budget_seconds > 0 "
+                    "AND d.analysis_latency_seconds IS NOT NULL "
+                    "AND d.analysis_latency_seconds <= r.freshness_budget_seconds"
+                    "))"
+                )
+            else:
+                # A directional decision cannot be proven fresh without the
+                # watcher evidence table. HOLD remains safe because it maps to
+                # Direction.NONE.
+                query = (
+                    "SELECT d.* FROM shadow_decisions AS d "
+                    "WHERE d.executed = 0 AND d.normalization_status = 'NORMALIZED' "
+                    "AND d.decision_context_status = 'COMPLETE' "
+                    "AND d.action = 'HOLD'"
+                )
             params: tuple[Any, ...] = ()
             if resolved_symbol is not None:
-                query += " AND UPPER(resolved_symbol) = ?"
+                query += " AND UPPER(d.resolved_symbol) = ?"
                 params = (str(resolved_symbol).strip().upper(),)
-            query += " ORDER BY created_at DESC, decision_id DESC LIMIT 1"
+            query += " ORDER BY d.created_at DESC, d.decision_id DESC LIMIT 1"
             row = conn.execute(query, params).fetchone()
         return None if row is None else self._row_to_decision(row)
+
+    def is_execution_eligible(self, decision: ShadowTradeDecision) -> bool:
+        """Return whether a decision may activate a directional HFT plan.
+
+        This is a read-only source-run check. It intentionally treats HOLD as
+        eligible because HOLD maps to ``Direction.NONE`` and is used to clear
+        an active plan; BUY/SELL require persisted watcher freshness and a
+        post-completion broker-reference gate.
+        """
+
+        if not isinstance(decision, ShadowTradeDecision):
+            return False
+        if (
+            decision.executed is not False
+            or decision.decision_context_status != "COMPLETE"
+            or decision.normalization_status != "NORMALIZED"
+            or decision.action not in {"BUY", "SELL", "HOLD"}
+        ):
+            return False
+        if decision.action == "HOLD":
+            return True
+        if decision.decision_reference_status != "AVAILABLE":
+            return False
+        if not self.path.is_file() or not decision.source_run_id:
+            return False
+        normalized = str(self.path.expanduser().resolve()).replace("\\", "/")
+        uri = f"file:{normalized}?mode=ro"
+        try:
+            with sqlite3.connect(uri, uri=True, timeout=0) as conn:
+                conn.row_factory = sqlite3.Row
+                tables = {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                if "forex_watch_runs" not in tables:
+                    return False
+                row = conn.execute(
+                    """
+                    SELECT run_status, source_run_id,
+                           decision_context_status, normalization_status,
+                           decision_reference_status, stale_by_completion,
+                           freshness_budget_seconds
+                      FROM forex_watch_runs
+                     WHERE decision_id = ? AND source_run_id = ?
+                     ORDER BY COALESCE(completed_at, started_at) DESC
+                     LIMIT 1
+                    """,
+                    (decision.decision_id, decision.source_run_id),
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            return False
+        if row is None:
+            return False
+        if row["run_status"] not in ("SUCCEEDED", "SUCCEEDED_SLOW"):
+            return False
+        if row["source_run_id"] != decision.source_run_id:
+            return False
+        if row["decision_context_status"] != "COMPLETE" or row["normalization_status"] != "NORMALIZED":
+            return False
+        if row["decision_reference_status"] != "AVAILABLE" or row["stale_by_completion"] != 0:
+            return False
+        budget = row["freshness_budget_seconds"]
+        latency = decision.analysis_latency_seconds
+        if budget is None or latency is None:
+            return False
+        try:
+            budget_value = float(budget)
+            latency_value = float(latency)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        return (
+            math.isfinite(budget_value)
+            and math.isfinite(latency_value)
+            and budget_value > 0
+            and latency_value <= budget_value
+        )
 
     def list_pending(self, resolved_symbol: str | None = None) -> list[ShadowTradeDecision]:
         self.initialize()

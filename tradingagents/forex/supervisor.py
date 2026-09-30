@@ -379,6 +379,7 @@ class ForexSupervisor:
             terminal_path=terminal_path,
             mt5_gate=gate,
             git_commit=git_commit,
+            decision_validator=ShadowDecisionStore(source_db_path).is_execution_eligible,
         )
         with suppress(Exception):
             latest = ShadowDecisionStore(source_db_path).latest_eligible(symbol)
