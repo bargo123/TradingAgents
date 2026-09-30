@@ -9,12 +9,35 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli.forex_supervisor import main
+from cli.forex_supervisor import build_parser, main
 from tradingagents.forex.ollama_runtime import OllamaHealth
 from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
 from tradingagents.forex.supervisor import ForexSupervisor
 
 UTC = timezone.utc
+
+
+def test_supervisor_parser_exposes_only_bounded_hft_shadow_options():
+    args = build_parser().parse_args(
+        [
+            "run",
+            "--hft-shadow",
+            "--hft-db-path",
+            "hft.sqlite3",
+            "--hft-symbol",
+            "EURUSD",
+            "--hft-max-ticks",
+            "10",
+            "--hft-poll-interval-seconds",
+            "0.5",
+        ]
+    )
+    assert args.hft_shadow is True
+    assert args.hft_max_ticks == 10
+    assert args.hft_poll_interval_seconds == 0.5
+    options = {option for action in build_parser()._actions for option in action.option_strings}
+    assert "--live" not in options
+    assert "--execute" not in options
 
 
 def test_supervisor_rejects_invalid_runtime_config() -> None:

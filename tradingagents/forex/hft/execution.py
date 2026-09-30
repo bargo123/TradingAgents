@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .models import FastAction, PositionState, Tick, utc
 
@@ -79,6 +80,54 @@ class ShadowPositionLedger:
     @property
     def position(self) -> ShadowPosition | None:
         return self._position
+
+    def restore(self, payload: Mapping[str, object]) -> ShadowPosition:
+        """Restore one persisted open shadow position after a restart."""
+
+        if not isinstance(payload, Mapping):
+            raise TypeError("position payload must be a mapping")
+        if payload.get("executed", False) is not False:
+            raise ValueError("restored positions must be shadow-only")
+        state = PositionState(payload.get("state"))
+        if state not in (PositionState.LONG, PositionState.SHORT):
+            raise ValueError("only open LONG/SHORT positions can be restored")
+
+        def timestamp(value: object, name: str) -> datetime:
+            if isinstance(value, datetime):
+                parsed = value
+            elif isinstance(value, str):
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            else:
+                raise ValueError(f"{name} must be a timestamp")
+            if parsed.tzinfo is None or parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+                raise ValueError(f"{name} must be timezone-aware UTC")
+            return parsed.astimezone(timezone.utc)
+
+        restored = ShadowPosition(
+            position_id=str(payload["position_id"]),
+            symbol=str(payload["symbol"]),
+            state=state,
+            direction=str(payload.get("direction") or state.value),
+            size=float(payload["size"]),
+            entry_price=float(payload["entry_price"]),
+            entry_timestamp=timestamp(payload["entry_timestamp"], "entry_timestamp"),
+            strategy_id=str(payload.get("strategy_id") or "restored"),
+            stop_price=None if payload.get("stop_price") is None else float(payload["stop_price"]),
+            target_price=None if payload.get("target_price") is None else float(payload["target_price"]),
+            exit_price=None if payload.get("exit_price") is None else float(payload["exit_price"]),
+            exit_timestamp=None if payload.get("exit_timestamp") is None else timestamp(payload["exit_timestamp"], "exit_timestamp"),
+            exit_reason=None if payload.get("exit_reason") is None else str(payload["exit_reason"]),
+            gross_pnl=float(payload.get("gross_pnl", 0.0)),
+            net_pnl=float(payload.get("net_pnl", 0.0)),
+            mfe=float(payload.get("mfe", 0.0)),
+            mae=float(payload.get("mae", 0.0)),
+            holding_seconds=float(payload.get("holding_seconds", 0.0)),
+            executed=False,
+        )
+        if self._position is not None and self._position.state in (PositionState.LONG, PositionState.SHORT):
+            raise ValueError("position ledger already has an open position")
+        self._position = restored
+        return restored
 
     def open(self, tick: Tick, action: FastAction, *, size: float, stop: float | None, target: float | None, strategy_id: str, entry_price: float | None = None) -> ShadowPosition:
         if self._position is not None and self._position.state is not PositionState.CLOSED:

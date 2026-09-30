@@ -29,12 +29,23 @@ class AtomicPlanStore:
                 raise PlanRejectedError("replacement plan created_at must not predate current plan")
             self._plan = plan
 
-    def current(self, now: datetime, symbol: str) -> StrategicExecutionPlan | None:
+    def current(
+        self,
+        now: datetime,
+        symbol: str,
+        *,
+        require_provenance: bool = False,
+    ) -> StrategicExecutionPlan | None:
         timestamp = utc(now, "now")
         requested = str(symbol).strip().upper()
         with self._lock:
             plan = self._plan
-            if plan is None or plan.symbol != requested or not plan.is_active(timestamp):
+            if (
+                plan is None
+                or plan.symbol != requested
+                or not plan.is_active(timestamp)
+                or (require_provenance and not plan.provenance_valid)
+            ):
                 return None
             return plan
 

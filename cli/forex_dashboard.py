@@ -300,16 +300,24 @@ def _recent_table(snapshot: DashboardSnapshot) -> Table:
 
 def _hft_panel(snapshot: HftDashboardSnapshot) -> Panel:
     lines = [
-        "HFT SHADOW (read-only)",
+        "PHASE 12C — SHADOW HFT",
         f"Status: {snapshot.status}",
-        f"Ticks/actions: {snapshot.ticks}/{snapshot.actions}",
-        f"Entries/exits: {snapshot.entries}/{snapshot.exits}",
+        f"Lease: {snapshot.hft_lease_status}",
+        f"Active plan: {snapshot.active_plan_id or '-'} / {snapshot.active_plan_direction or '-'}",
+        f"Plan strategy: {snapshot.active_plan_strategy_family or '-'}",
+        f"Plan expiry: {_fmt_timestamp(snapshot.active_plan_expires_at)}",
+        f"Ticks/actions: {snapshot.ticks}/{snapshot.actions} ({_fmt(snapshot.ticks_per_second)} ticks/s)",
+        f"Entries/exits/trades: {snapshot.entries}/{snapshot.exits}/{snapshot.trades}",
         f"Open shadow positions: {snapshot.open_positions}",
-        f"Processing p50/p95: {_fmt(snapshot.p50_processing_ms)} / {_fmt(snapshot.p95_processing_ms)} ms",
-        f"Equity/drawdown: {_fmt(snapshot.equity)} / {_fmt(snapshot.drawdown)}",
+        f"Processing p50/p95/p99/max: {_fmt(snapshot.p50_processing_ms)} / {_fmt(snapshot.p95_processing_ms)} / {_fmt(snapshot.p99_processing_ms)} / {_fmt(snapshot.max_processing_ms)} ms",
+        f"Balance/equity/drawdown: {_fmt(snapshot.balance)} / {_fmt(snapshot.equity)} / {_fmt(snapshot.drawdown)}",
+        f"Win rate/profit factor/expectancy: {_fmt(snapshot.win_rate)} / {_fmt(snapshot.profit_factor)} / {_fmt(snapshot.expectancy)}",
+        f"Compound return: {_fmt(None if snapshot.compound_return is None else snapshot.compound_return * 100, suffix='%')}",
+        f"10% daily benchmark: {_fmt(snapshot.benchmark_target * 100, suffix='%')} (difference {_fmt(None if snapshot.benchmark_difference is None else snapshot.benchmark_difference * 100, suffix='%')}, achieved={snapshot.benchmark_achieved})",
+        f"Tick quality dropped/stale/out-of-order: {snapshot.dropped_ticks}/{snapshot.stale_ticks}/{snapshot.out_of_order_ticks}",
         "EXECUTED: FALSE",
     ]
-    return Panel("\n".join(lines), title="PHASE 12", border_style="cyan")
+    return Panel("\n".join(lines), title="PHASE 12C", border_style="cyan")
 
 
 def render_dashboard(snapshot: DashboardSnapshot, *, warning: str | None = None, hft: HftDashboardSnapshot | None = None) -> RenderableType:

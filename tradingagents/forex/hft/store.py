@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +17,64 @@ from .models import FastAction, Tick
 HFT_SCHEMA_VERSION = 1
 
 
+def _utc(value: datetime, name: str = "timestamp") -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError(f"{name} must be timezone-aware UTC")
+    if value.utcoffset() != timezone.utc.utcoffset(value):
+        raise ValueError(f"{name} must be UTC")
+    return value.astimezone(timezone.utc)
+
+
 def _iso(value: datetime) -> str:
-    if value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
-        raise ValueError("timestamps must be timezone-aware UTC")
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _utc(value).isoformat().replace("+00:00", "Z")
+
+
+def _parse(value: str) -> datetime:
+    return _utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+
+
+class HftLeaseStatus(str, Enum):
+    ACQUIRED = "ACQUIRED"
+    HFT_ALREADY_RUNNING = "HFT_ALREADY_RUNNING"
+
+
+@dataclass(frozen=True, slots=True)
+class HftLeaseOwner:
+    owner_token: str
+    pid: int
+    host: str
+    process_started_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner_token, str) or not self.owner_token.strip():
+            raise ValueError("owner_token must be non-empty")
+        if isinstance(self.pid, bool) or not isinstance(self.pid, int) or self.pid <= 0:
+            raise ValueError("pid must be positive")
+        if not isinstance(self.host, str) or not self.host.strip():
+            raise ValueError("host must be non-empty")
+        object.__setattr__(self, "process_started_at", _utc(self.process_started_at, "process_started_at"))
+
+
+@dataclass(frozen=True, slots=True)
+class HftLeaseRecord:
+    owner_token: str
+    pid: int
+    host: str
+    process_started_at: datetime
+    lease_acquired_at: datetime
+    heartbeat_at: datetime
+    lease_expires_at: datetime
+
+    def __post_init__(self) -> None:
+        for name in ("process_started_at", "lease_acquired_at", "heartbeat_at", "lease_expires_at"):
+            object.__setattr__(self, name, _utc(getattr(self, name), name))
+
+
+@dataclass(frozen=True, slots=True)
+class HftLeaseResult:
+    status: HftLeaseStatus
+    owner_token: str | None = None
+    recovered_expired: bool = False
 
 
 def _json(value: Any) -> str:
@@ -26,10 +82,13 @@ def _json(value: Any) -> str:
 
 
 class HftShadowStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, lease_ttl_seconds: int = 30) -> None:
         self.path = Path(path)
         if self.path.name in {"", ".", ".."}:
             raise ValueError("HFT artifact path must be a file")
+        if isinstance(lease_ttl_seconds, bool) or not isinstance(lease_ttl_seconds, int) or lease_ttl_seconds <= 0:
+            raise ValueError("lease_ttl_seconds must be a positive integer")
+        self.lease_ttl_seconds = lease_ttl_seconds
 
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -46,6 +105,16 @@ class HftShadowStore:
                 CREATE TABLE IF NOT EXISTS hft_meta (
                     schema_version INTEGER NOT NULL CHECK (schema_version = 1),
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS hft_lease (
+                    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+                    owner_token TEXT NOT NULL,
+                    owner_pid INTEGER NOT NULL,
+                    owner_host TEXT NOT NULL,
+                    process_started_at TEXT NOT NULL,
+                    lease_acquired_at TEXT NOT NULL,
+                    heartbeat_at TEXT NOT NULL,
+                    lease_expires_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS hft_runs (
                     run_id TEXT PRIMARY KEY,
@@ -128,6 +197,68 @@ class HftShadowStore:
             elif row[0] != HFT_SCHEMA_VERSION:
                 raise ValueError("unsupported HFT schema version")
 
+    def _read_lease(self, db: sqlite3.Connection) -> HftLeaseRecord | None:
+        row = db.execute(
+            "SELECT owner_token, owner_pid, owner_host, process_started_at, lease_acquired_at, heartbeat_at, lease_expires_at FROM hft_lease WHERE singleton_id=1"
+        ).fetchone()
+        if row is None:
+            return None
+        return HftLeaseRecord(
+            owner_token=row[0],
+            pid=row[1],
+            host=row[2],
+            process_started_at=_parse(row[3]),
+            lease_acquired_at=_parse(row[4]),
+            heartbeat_at=_parse(row[5]),
+            lease_expires_at=_parse(row[6]),
+        )
+
+    def read_only_active_lease(self, now: datetime | None = None) -> HftLeaseRecord | None:
+        """Read an existing HFT lease without creating or mutating the artifact."""
+
+        del now
+        resolved = self.path.expanduser().resolve()
+        if not resolved.is_file():
+            return None
+        uri = f"file:{resolved.as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=0) as db:
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "hft_lease" not in tables:
+                return None
+            return self._read_lease(db)
+
+    def acquire_lease(self, owner: HftLeaseOwner, now: datetime) -> HftLeaseResult:
+        now = _utc(now, "now")
+        self.initialize()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current = self._read_lease(db)
+            if current is not None and current.lease_expires_at > now:
+                db.rollback()
+                return HftLeaseResult(HftLeaseStatus.HFT_ALREADY_RUNNING, current.owner_token)
+            expires = now + timedelta(seconds=self.lease_ttl_seconds)
+            db.execute(
+                "INSERT OR REPLACE INTO hft_lease(singleton_id,owner_token,owner_pid,owner_host,process_started_at,lease_acquired_at,heartbeat_at,lease_expires_at) VALUES(1,?,?,?,?,?,?,?)",
+                (owner.owner_token, owner.pid, owner.host, _iso(owner.process_started_at), _iso(now), _iso(now), _iso(expires)),
+            )
+            db.commit()
+            return HftLeaseResult(HftLeaseStatus.ACQUIRED, owner.owner_token, current is not None)
+
+    def heartbeat_lease(self, owner_token: str, now: datetime) -> None:
+        now = _utc(now, "now")
+        expires = now + timedelta(seconds=self.lease_ttl_seconds)
+        with self._connect() as db:
+            updated = db.execute(
+                "UPDATE hft_lease SET heartbeat_at=?, lease_expires_at=? WHERE singleton_id=1 AND owner_token=?",
+                (_iso(now), _iso(expires), owner_token),
+            ).rowcount
+            if updated != 1:
+                raise RuntimeError("HFT lease lost")
+
+    def release_lease(self, owner_token: str) -> None:
+        with self._connect() as db:
+            db.execute("DELETE FROM hft_lease WHERE singleton_id=1 AND owner_token=?", (owner_token,))
+
     def start_run(self, run_id: str, *, mode: str, source_fingerprint: str) -> None:
         if mode not in {"REPLAY", "SHADOW"} or not run_id or not source_fingerprint:
             raise ValueError("run metadata is invalid")
@@ -203,4 +334,11 @@ class HftShadowStore:
             }
 
 
-__all__ = ["HFT_SCHEMA_VERSION", "HftShadowStore"]
+__all__ = [
+    "HFT_SCHEMA_VERSION",
+    "HftLeaseOwner",
+    "HftLeaseRecord",
+    "HftLeaseResult",
+    "HftLeaseStatus",
+    "HftShadowStore",
+]

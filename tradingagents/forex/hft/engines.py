@@ -29,6 +29,8 @@ class FastExecutionEngine:
             return self._decision(FastAction.NO_ACTION, features, "POSITION_HELD", started)
         if position_state is not PositionState.FLAT:
             return self._decision(FastAction.NO_ACTION, features, "POSITION_TRANSITION_PENDING", started)
+        if plan.primary_direction is plan.primary_direction.NONE:
+            return self._decision(FastAction.NO_ACTION, features, "STRATEGIC_DIRECTION_NONE", started)
         constraints = plan.entry_constraints
         if plan.primary_direction not in (plan.primary_direction.LONG, plan.primary_direction.SHORT, plan.primary_direction.BOTH):
             return self._decision(FastAction.NO_ACTION, features, "DIRECTION_DISABLED", started)

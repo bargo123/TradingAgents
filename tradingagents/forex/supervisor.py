@@ -10,7 +10,7 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -22,6 +22,26 @@ from .watch_store import WatcherStore
 
 UTC = timezone.utc
 _HEALTH_SNAPSHOT_SCHEMA_VERSION = 1
+
+
+@dataclass(slots=True)
+class HftShadowSupervisorContext:
+    """Single-process handoff between the strategic watcher and Phase 12C."""
+
+    worker: Any
+    gate: Any
+    provider_factory: Callable[..., Any]
+    plan_store: Any
+    hft_db_path: Path
+
+    def start(self) -> None:
+        self.worker.start()
+
+    def stop(self) -> None:
+        self.worker.stop()
+
+    def handle_decision(self, decision: Any) -> bool:
+        return bool(self.worker.handle_decision(decision))
 
 
 def _health_snapshot_path(db_path: str | Path) -> Path:
@@ -240,7 +260,64 @@ class ForexSupervisor:
     def _runtime(self) -> DedicatedOllamaRuntime:
         return self.runtime_factory(self.runtime_config)
 
-    def status(self, db_path: str | Path) -> dict[str, Any]:
+    def _hft_context(
+        self,
+        *,
+        terminal_path: str | None,
+        symbol: str,
+        hft_db_path: str | Path,
+        max_ticks: int,
+        poll_interval_seconds: float,
+        gate: Any,
+    ) -> HftShadowSupervisorContext:
+        from tradingagents.dataflows.mt5.provider import MT5Provider
+        from tradingagents.forex.hft.plan_store import AtomicPlanStore
+        from tradingagents.forex.hft.runtime import HftShadowConfig
+        from tradingagents.forex.hft.store import HftShadowStore
+        from tradingagents.forex.hft.supervisor import HftShadowWorker
+        from tradingagents.forex.runtime_config import collect_runtime_provenance
+
+        resolved_hft_path = Path(hft_db_path).expanduser()
+
+        def provider_factory(terminal_path: str | None = None) -> Any:
+            return MT5Provider(terminal_path=terminal_path)
+
+        plan_store = AtomicPlanStore()
+        hft_store = HftShadowStore(resolved_hft_path)
+        config = HftShadowConfig(
+            symbol=symbol,
+            artifact_path=resolved_hft_path,
+            max_ticks=max_ticks,
+            poll_interval_seconds=poll_interval_seconds,
+        )
+        provenance = collect_runtime_provenance(self.runtime_config)
+        # The plan feed must carry the revision that owns the supervisor.  A
+        # missing git executable is fail-closed by retaining a bounded marker;
+        # it never affects MT5 or execution behavior.
+        git_commit = str(provenance.get("git_commit") or "unknown")
+        worker = HftShadowWorker(
+            provider_factory,
+            plan_store,
+            config=config,
+            store=hft_store,
+            terminal_path=terminal_path,
+            mt5_gate=gate,
+            git_commit=git_commit,
+        )
+        return HftShadowSupervisorContext(
+            worker=worker,
+            gate=gate,
+            provider_factory=provider_factory,
+            plan_store=plan_store,
+            hft_db_path=resolved_hft_path,
+        )
+
+    def status(
+        self,
+        db_path: str | Path,
+        *,
+        hft_db_path: str | Path | None = None,
+    ) -> dict[str, Any]:
         runtime = self._runtime()
         health = runtime.health()
         store = self.store_factory(Path(db_path))
@@ -274,6 +351,11 @@ class ForexSupervisor:
                     verification_source = "PERSISTED_VERIFICATION"
                     verification_observed_at = observed_at.isoformat()
         level, reason = _health_level(health, watcher)
+        hft_report = self.hft_status(
+            hft_db_path
+            if hft_db_path is not None
+            else Path(db_path).with_suffix(".hft.sqlite3")
+        )
         watcher_status = watcher.get("lifecycle_status")
         watcher_pid = watcher.get("owner_pid")
         endpoint = urlparse(health.endpoint)
@@ -321,6 +403,13 @@ class ForexSupervisor:
             "ollama_verification_observed_at": verification_observed_at,
             "database_path": str(Path(db_path)),
             "executed": False,
+            "strategic_brain_health": level,
+            "ollama_health": health.status,
+            "hft_engine_health": hft_report["status"],
+            "mt5_read_only_health": (
+                "ACTIVE" if hft_report["hft_lease_status"] == "ACTIVE" else "INACTIVE"
+            ),
+            "hft": hft_report,
         }
 
     def hft_status(self, db_path: str | Path) -> dict[str, Any]:
@@ -339,9 +428,29 @@ class ForexSupervisor:
             "open_positions": snapshot.open_positions,
             "p50_processing_ms": snapshot.p50_processing_ms,
             "p95_processing_ms": snapshot.p95_processing_ms,
+            "p99_processing_ms": snapshot.p99_processing_ms,
+            "max_processing_ms": snapshot.max_processing_ms,
+            "ticks_per_second": snapshot.ticks_per_second,
+            "trades": snapshot.trades,
             "balance": snapshot.balance,
             "equity": snapshot.equity,
             "drawdown": snapshot.drawdown,
+            "compound_return": snapshot.compound_return,
+            "win_rate": snapshot.win_rate,
+            "profit_factor": snapshot.profit_factor,
+            "expectancy": snapshot.expectancy,
+            "benchmark_target": snapshot.benchmark_target,
+            "benchmark_difference": snapshot.benchmark_difference,
+            "benchmark_achieved": snapshot.benchmark_achieved,
+            "active_plan_id": snapshot.active_plan_id,
+            "active_plan_direction": snapshot.active_plan_direction,
+            "active_plan_strategy_family": snapshot.active_plan_strategy_family,
+            "active_plan_created_at": snapshot.active_plan_created_at,
+            "active_plan_expires_at": snapshot.active_plan_expires_at,
+            "hft_lease_status": snapshot.hft_lease_status,
+            "dropped_ticks": snapshot.dropped_ticks,
+            "stale_ticks": snapshot.stale_ticks,
+            "out_of_order_ticks": snapshot.out_of_order_ticks,
             "executed": False,
         }
 
@@ -354,6 +463,11 @@ class ForexSupervisor:
         prewarm: bool = True,
         max_restarts: int = 3,
         restart_backoff_seconds: float = 5.0,
+        hft_shadow: bool = False,
+        hft_db_path: str | Path | None = None,
+        hft_symbol: str = "EURUSD",
+        hft_max_ticks: int = 0,
+        hft_poll_interval_seconds: float = 1.0,
     ) -> int:
         """Start the dedicated runtime then delegate to the existing watcher.
 
@@ -374,6 +488,18 @@ class ForexSupervisor:
             or restart_backoff < 0
         ):
             raise ValueError("restart_backoff_seconds must be a finite non-negative number")
+        if not isinstance(hft_shadow, bool):
+            raise ValueError("hft_shadow must be boolean")
+        if isinstance(hft_max_ticks, bool) or not isinstance(hft_max_ticks, int) or hft_max_ticks < 0:
+            raise ValueError("hft_max_ticks must be a non-negative integer")
+        try:
+            hft_poll_interval = float(hft_poll_interval_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("hft_poll_interval_seconds must be finite and non-negative") from exc
+        if not math.isfinite(hft_poll_interval) or hft_poll_interval < 0:
+            raise ValueError("hft_poll_interval_seconds must be finite and non-negative")
+        if not isinstance(hft_symbol, str) or not hft_symbol.strip():
+            raise ValueError("hft_symbol must be non-empty")
 
         store = self.store_factory(Path(db_path))
         now = datetime.now(UTC)
@@ -382,12 +508,40 @@ class ForexSupervisor:
             print("FOREX SUPERVISOR: WATCHER_ALREADY_RUNNING")
             return 1
 
+        resolved_hft_path = (
+            Path(hft_db_path).expanduser()
+            if hft_db_path is not None
+            else Path(db_path).with_suffix(".hft.sqlite3")
+        )
+        if hft_shadow:
+            from tradingagents.forex.hft.store import HftShadowStore
+
+            hft_lease = HftShadowStore(resolved_hft_path).read_only_active_lease(now)
+            if hft_lease is not None and hft_lease.lease_expires_at > now:
+                print("FOREX SUPERVISOR: HFT_ALREADY_RUNNING")
+                return 1
+
         runtime = self._runtime()
+        hft_context: HftShadowSupervisorContext | None = None
+        shared_gate: Any | None = None
         try:
             health = runtime.ensure_healthy()
             if not health.healthy:
                 print(f"FOREX SUPERVISOR: OLLAMA_{health.error_code or health.status}")
                 return 1
+
+            if hft_shadow:
+                from tradingagents.forex.watcher import SerializedMt5OperationGate
+
+                shared_gate = SerializedMt5OperationGate()
+                hft_context = self._hft_context(
+                    terminal_path=terminal_path,
+                    symbol=hft_symbol,
+                    hft_db_path=resolved_hft_path,
+                    max_ticks=hft_max_ticks,
+                    poll_interval_seconds=hft_poll_interval,
+                    gate=shared_gate,
+                )
             if prewarm:
                 runtime.prewarm()
                 health = runtime.health()
@@ -408,6 +562,20 @@ class ForexSupervisor:
             args = ["run", "--db-path", str(db_path)]
             if terminal_path:
                 args.extend(["--terminal-path", terminal_path])
+            if hft_shadow:
+                args.extend(
+                    [
+                        "--hft-shadow",
+                        "--hft-db-path",
+                        str(resolved_hft_path),
+                        "--hft-symbol",
+                        hft_symbol,
+                        "--hft-max-ticks",
+                        str(hft_max_ticks),
+                        "--hft-poll-interval-seconds",
+                        str(hft_poll_interval),
+                    ]
+                )
             print("FOREX SUPERVISOR: HEALTHY")
             print(f"PROVIDER: {self.runtime_config.provider}")
             print(f"BACKEND: {self.runtime_config.backend_url}")
@@ -417,7 +585,16 @@ class ForexSupervisor:
             print("NO ORDER WILL BE SENT")
             result = 0
             for attempt in range(max_restarts + 1):
-                result = int(watch_main(args, runtime_config=self.runtime_config))
+                if hft_context is None:
+                    result = int(watch_main(args, runtime_config=self.runtime_config))
+                else:
+                    result = int(
+                        watch_main(
+                            args,
+                            runtime_config=self.runtime_config,
+                            hft_context=hft_context,
+                        )
+                    )
                 if result == 0 or attempt >= max_restarts:
                     return result
                 # A non-zero foreground exit is a bounded crash recovery signal.
@@ -433,6 +610,9 @@ class ForexSupervisor:
                         return 1
             return result
         finally:
+            if hft_context is not None:
+                with suppress(Exception):
+                    hft_context.stop()
             shutdown = getattr(runtime, "shutdown", None)
             if callable(shutdown):
                 cleanup_failed_during_primary_error = sys.exc_info()[0] is not None
@@ -443,4 +623,4 @@ class ForexSupervisor:
                         raise
 
 
-__all__ = ["ForexSupervisor"]
+__all__ = ["ForexSupervisor", "HftShadowSupervisorContext"]

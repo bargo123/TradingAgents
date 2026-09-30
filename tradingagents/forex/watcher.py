@@ -687,6 +687,56 @@ class SerializedMt5OperationGate:
             self._lock.release()
 
 
+class ReadOnlyMt5ProviderProxy:
+    """Gate each allowed MT5 provider operation without exposing mutations."""
+
+    def __init__(self, provider: Any, gate: SerializedMt5OperationGate) -> None:
+        if provider is None or not isinstance(gate, SerializedMt5OperationGate):
+            raise TypeError("provider and gate are required")
+        self._provider = provider
+        self._gate = gate
+
+    def initialize(self) -> bool:
+        with self._gate.acquire("initialize"):
+            return bool(self._provider.initialize())
+
+    def shutdown(self) -> None:
+        with self._gate.acquire("shutdown"):
+            self._provider.shutdown()
+
+    def ensure_symbol(self, symbol: str) -> str:
+        with self._gate.acquire("ensure_symbol"):
+            return self._provider.ensure_symbol(symbol)
+
+    def get_market_snapshot(self, symbol: str, *, count: int = 100) -> Any:
+        with self._gate.acquire("market_snapshot"):
+            return self._provider.get_market_snapshot(symbol, count=count)
+
+    def get_tick(self, symbol: str) -> Any:
+        with self._gate.acquire("tick"):
+            return self._provider.get_tick(symbol)
+
+    def get_bars(self, symbol: str, timeframe: str, count: int) -> Any:
+        with self._gate.acquire("bars"):
+            return self._provider.get_bars(symbol, timeframe, count)
+
+    def get_ticks_range(self, symbol: str, start: Any, end: Any) -> Any:
+        with self._gate.acquire("ticks_range"):
+            return self._provider.get_ticks_range(symbol, start, end)
+
+    def get_account_info(self) -> Any:
+        with self._gate.acquire("account_info"):
+            return self._provider.get_account_info()
+
+    def get_positions(self, symbol: str | None = None) -> Any:
+        with self._gate.acquire("positions"):
+            return self._provider.get_positions(symbol)
+
+    def get_spread(self, symbol: str) -> Any:
+        with self._gate.acquire("spread"):
+            return self._provider.get_spread(symbol)
+
+
 # Public compatibility alias matching the design-level protocol name.  The
 # concrete implementation remains the serialized, non-blocking gate above.
 Mt5OperationGate = SerializedMt5OperationGate
@@ -1021,6 +1071,8 @@ class WatcherCoordinator:
         process_inspector: Any | None = None,
         events: list[dict[str, Any]] | EventSink | None = None,
         callbacks: Sequence[Any] = (),
+        on_decision: Callable[[Any], Any] | None = None,
+        mt5_operations_gated: bool = False,
     ) -> None:
         self.config = config
         self.store = store
@@ -1039,6 +1091,12 @@ class WatcherCoordinator:
         except (TypeError, ValueError) as exc:
             raise ValueError("callbacks must be a sequence") from exc
         self.events = events if isinstance(events, EventSink) else EventSink(events)
+        if on_decision is not None and not callable(on_decision):
+            raise TypeError("on_decision must be callable")
+        if not isinstance(mt5_operations_gated, bool):
+            raise TypeError("mt5_operations_gated must be boolean")
+        self.on_decision = on_decision
+        self.mt5_operations_gated = mt5_operations_gated
         self.owner_token: str | None = None
         self._owner = None
         self._analysis_future: Future[Any] | None = None
@@ -1216,7 +1274,7 @@ class WatcherCoordinator:
 
     def _run_claimed(self, run: Any):
         opportunity = self.store.get_opportunity(run.opportunity_key)
-        with self.gate.acquire("runner"):
+        def invoke():
             return self.runner.run(
                 symbol=run.requested_symbol,
                 analysis_date=opportunity.anchor_timestamp.date().isoformat(),
@@ -1227,6 +1285,11 @@ class WatcherCoordinator:
                 source_run_id=run.source_run_id,
                 callbacks=self.callbacks,
             )
+
+        if self.mt5_operations_gated:
+            return invoke()
+        with self.gate.acquire("runner"):
+            return invoke()
 
     def _evidence_from_result(self, run: Any, result: Any) -> Any:
         from tradingagents.forex.shadow import ShadowDecisionStore
@@ -1356,6 +1419,25 @@ class WatcherCoordinator:
             else:
                 self._reset_failure("runtime", now)
             self._next_eligible_at = next_eligible_at
+            if self.on_decision is not None:
+                try:
+                    from tradingagents.forex.shadow import ShadowDecisionStore
+
+                    handed_off = self.on_decision(
+                        ShadowDecisionStore(self.config.db_path).get(evidence.decision_id)
+                    )
+                    self.events.emit(
+                        "PLAN_UPDATED" if handed_off else "PLAN_UPDATE_REJECTED",
+                        {"decision_id": evidence.decision_id},
+                    )
+                except Exception as exc:
+                    self.events.emit(
+                        "PLAN_UPDATE_FAILED",
+                        {
+                            "decision_id": evidence.decision_id,
+                            "error_code": type(exc).__name__.upper(),
+                        },
+                    )
             self.events.emit(
                 "ANALYSIS_FINISHED",
                 {"run_id": run_id, "decision_id": evidence.decision_id, "status": status},
@@ -1389,8 +1471,11 @@ class WatcherCoordinator:
             due = last is None or (now - last).total_seconds() >= self.config.evaluation_interval_seconds
         if not due:
             return None
-        with self.gate.acquire("evaluator"):
+        if self.mt5_operations_gated:
             evidence = self.outcomes.evaluate_pending(now)
+        else:
+            with self.gate.acquire("evaluator"):
+                evidence = self.outcomes.evaluate_pending(now)
         error_detail = evidence.errors[0] if evidence.errors else None
         self.store.clear_evaluation_due(
             self.owner_token,
@@ -1521,8 +1606,11 @@ class WatcherCoordinator:
             skipped_keys.append(row.opportunity_key)
             skip_reasons.append("ANALYSIS_ALREADY_RUNNING")
         try:
-            with self.gate.acquire("probe"):
+            if self.mt5_operations_gated:
                 probe_result = self.probe.probe(candidate.requested_symbol)
+            else:
+                with self.gate.acquire("probe"):
+                    probe_result = self.probe.probe(candidate.requested_symbol)
         except Exception as exc:
             reason = "MT5_UNAVAILABLE"
             detail = str(exc)
@@ -1674,6 +1762,7 @@ __all__ = [
     "Mt5OperationBusy",
     "Mt5OperationGate",
     "SerializedMt5OperationGate",
+    "ReadOnlyMt5ProviderProxy",
     "SingleSlotAnalysisExecutor",
     "LeaseHeartbeat",
     "EvaluationRunEvidence",

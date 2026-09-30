@@ -17,6 +17,7 @@ from tradingagents.forex.watch_store import LeaseStatus, WatcherStore
 from tradingagents.forex.watcher import (
     CompletedBarSchedule,
     ReadOnlyMarketProbe,
+    ReadOnlyMt5ProviderProxy,
     SerializedMt5OperationGate,
     SingleSlotAnalysisExecutor,
     WatcherConfig,
@@ -60,6 +61,14 @@ def _add_schedule_options(parser: argparse.ArgumentParser, *, include_runtime: b
         parser.add_argument("--json-logs", action="store_true")
 
 
+def _add_hft_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--hft-shadow", action="store_true")
+    parser.add_argument("--hft-db-path", default=None)
+    parser.add_argument("--hft-symbol", default="EURUSD")
+    parser.add_argument("--hft-max-ticks", type=_nonnegative_int, default=0)
+    parser.add_argument("--hft-poll-interval-seconds", type=float, default=1.0)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="forex-watch",
@@ -68,6 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     run = subparsers.add_parser("run", help="run the foreground collector loop")
     _add_schedule_options(run)
+    _add_hft_options(run)
     once = subparsers.add_parser("once", help="run one current collector cycle")
     _add_schedule_options(once)
     status = subparsers.add_parser("status", help="show persisted watcher state")
@@ -116,6 +126,7 @@ def _make_coordinator(
     config: WatcherConfig,
     *,
     runtime_config: Any | None = None,
+    hft_context: Any | None = None,
 ) -> WatcherCoordinator:
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.forex.evaluation import (
@@ -143,15 +154,37 @@ def _make_coordinator(
     )
     decision_store = ShadowDecisionStore(config.db_path)
     evaluation_store = ShadowEvaluationStore(config.db_path)
+    base_provider_factory = (
+        getattr(hft_context, "provider_factory", None)
+        if hft_context is not None
+        else None
+    ) or _provider_factory
+    operation_gate = (
+        getattr(hft_context, "gate", None)
+        if hft_context is not None
+        else None
+    )
+
+    def gated_provider_factory(terminal_path: str | None = None):
+        provider = base_provider_factory(terminal_path=terminal_path)
+        if operation_gate is None:
+            return provider
+        return ReadOnlyMt5ProviderProxy(provider, operation_gate)
+
+    provider_factory = gated_provider_factory if operation_gate is not None else base_provider_factory
     evaluator = ShadowOutcomeEvaluator(
         decision_store=decision_store,
         evaluation_store=evaluation_store,
         config=EvaluationConfig(),
-        provider_factory=_provider_factory,
+        provider_factory=provider_factory,
     )
     stats_handler = StatsCallbackHandler()
-    runner = ForexShadowRunner(config=safe_config, store=decision_store)
-    probe = ReadOnlyMarketProbe(_provider_factory, terminal_path=config.terminal_path)
+    runner = ForexShadowRunner(
+        provider_factory=provider_factory,
+        config=safe_config,
+        store=decision_store,
+    )
+    probe = ReadOnlyMarketProbe(provider_factory, terminal_path=config.terminal_path)
     runtime_fingerprint = (
         None if runtime_config is None else runtime_config.fingerprint
     )
@@ -200,7 +233,9 @@ def _make_coordinator(
         runner=runner,
         evaluator=evaluator,
         executor=SingleSlotAnalysisExecutor(),
-        gate=SerializedMt5OperationGate(),
+        gate=operation_gate or SerializedMt5OperationGate(),
+        mt5_operations_gated=operation_gate is not None,
+        on_decision=(getattr(hft_context, "handle_decision", None) if hft_context is not None else None),
         callbacks=(stats_handler,),
     )
 
@@ -290,6 +325,7 @@ def main(
     coordinator_factory: Any | None = None,
     store_factory: Any | None = None,
     runtime_config: Any | None = None,
+    hft_context: Any | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "status":
@@ -327,11 +363,18 @@ def main(
             print("FOREX WATCH ERROR: WATCHER_ALREADY_RUNNING", file=sys.stderr)
             return 1
         factory = _make_coordinator if coordinator_factory is None else coordinator_factory
-        if runtime_config is None:
+        if runtime_config is None and hft_context is None:
             coordinator = factory(args, config)
-        else:
+        elif hft_context is None:
             coordinator = factory(
                 args, config, runtime_config=runtime_config
+            )
+        else:
+            coordinator = factory(
+                args,
+                config,
+                runtime_config=runtime_config,
+                hft_context=hft_context,
             )
         if args.command == "once":
             return _run_once(coordinator)
@@ -346,12 +389,16 @@ def main(
             with suppress(Exception):
                 coordinator.shutdown()
             return 1
+        if hft_context is not None:
+            hft_context.start()
         try:
             coordinator.run_forever()
         except KeyboardInterrupt:
             coordinator.request_shutdown()
         finally:
             coordinator.shutdown()
+            if hft_context is not None:
+                hft_context.stop()
         return 0
     except (TypeError, ValueError) as exc:
         print(f"FOREX WATCH ERROR: {exc}", file=sys.stderr)

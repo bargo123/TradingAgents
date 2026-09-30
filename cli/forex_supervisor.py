@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections.abc import Sequence
 
 from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
 from tradingagents.forex.supervisor import ForexSupervisor
+
+
+def _nonnegative_float(value: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be finite and non-negative")
+    return parsed
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be non-negative")
+    return parsed
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,8 +43,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--terminal-path", default=None)
     run.add_argument("--no-prewarm", action="store_true")
     run.add_argument("--max-restarts", type=int, default=3)
+    run.add_argument("--hft-shadow", action="store_true")
+    run.add_argument("--hft-db-path", default=None)
+    run.add_argument("--hft-symbol", default="EURUSD")
+    run.add_argument("--hft-max-ticks", type=_nonnegative_int, default=0)
+    run.add_argument(
+        "--hft-poll-interval-seconds", type=_nonnegative_float, default=1.0
+    )
     status = subparsers.add_parser("status", help="show scalar runtime and watcher health")
     status.add_argument("--db-path", default="data_cache/shadow_decisions.db")
+    status.add_argument("--hft-db-path", default=None)
     status.add_argument("--json", action="store_true")
     return parser
 
@@ -38,7 +67,10 @@ def main(
     if args.command == "status":
         try:
             supervisor = supervisor_factory(ForexShadowRuntimeConfig())
-            report = supervisor.status(args.db_path)
+            if args.hft_db_path is None:
+                report = supervisor.status(args.db_path)
+            else:
+                report = supervisor.status(args.db_path, hft_db_path=args.hft_db_path)
             if args.json:
                 print(json.dumps(report, sort_keys=True, default=str))
             else:
@@ -50,6 +82,8 @@ def main(
                 print(f"OLLAMA: {ollama['status']} {ollama['endpoint']}")
                 print(f"CONTEXT: {ollama.get('context_length') or 'unknown'}")
                 print(f"WATCHER: {report['watcher'].get('lifecycle_status', 'STOPPED')}")
+                print(f"HFT SHADOW: {report['hft_engine_health']}")
+                print(f"MT5 READ-ONLY: {report['mt5_read_only_health']}")
                 print("NO ORDER WILL BE SENT")
             return 0 if report["health_level"] != "OPERATOR_REVIEW_REQUIRED" else 1
         except Exception as exc:
@@ -67,6 +101,11 @@ def main(
             prewarm=not args.no_prewarm,
             max_restarts=args.max_restarts,
             watch_main=watch_main,
+            hft_shadow=args.hft_shadow,
+            hft_db_path=args.hft_db_path,
+            hft_symbol=args.hft_symbol,
+            hft_max_ticks=args.hft_max_ticks,
+            hft_poll_interval_seconds=args.hft_poll_interval_seconds,
         )
     except Exception as exc:
         print(f"FOREX SUPERVISOR ERROR: {exc}", file=sys.stderr)

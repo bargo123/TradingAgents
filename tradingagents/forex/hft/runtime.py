@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import socket
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -12,13 +15,14 @@ from typing import Protocol
 
 from tradingagents.forex.watcher import SerializedMt5OperationGate
 
+from .account import AccountSimulator, CompoundingMode
 from .engines import FastExecutionEngine
 from .execution import ShadowFillEngine, ShadowPositionLedger
 from .features import TickFeatureEngine
 from .models import FastAction, PositionState, Tick, utc
 from .plan_store import AtomicPlanStore
 from .risk import RiskConfig, RiskContext, RiskEngine
-from .store import HftShadowStore
+from .store import HftLeaseOwner, HftLeaseStatus, HftShadowStore
 
 
 class ReadOnlyTickSource(Protocol):
@@ -45,6 +49,13 @@ class HftShadowConfig:
     max_ticks: int = 0
     poll_interval_seconds: float = 1.0
     point: float = 0.00001
+    require_plan_provenance: bool = True
+    lease_ttl_seconds: int = 30
+    initial_balance: float = 100.0
+    risk_fraction: float = 0.005
+    compounding_mode: CompoundingMode = CompoundingMode.COMPOUNDING_RISK
+    slippage_points: float = 0.0
+    latency_ms: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
@@ -55,6 +66,19 @@ class HftShadowConfig:
             raise ValueError("max_ticks must be a non-negative integer")
         if self.poll_interval_seconds < 0 or self.point <= 0:
             raise ValueError("poll interval and point must be valid")
+        if not isinstance(self.require_plan_provenance, bool):
+            raise ValueError("require_plan_provenance must be boolean")
+        if isinstance(self.lease_ttl_seconds, bool) or not isinstance(self.lease_ttl_seconds, int) or self.lease_ttl_seconds <= 0:
+            raise ValueError("lease_ttl_seconds must be positive")
+        if self.initial_balance <= 0 or not 0 < self.risk_fraction <= 0.1:
+            raise ValueError("account configuration is invalid")
+        object.__setattr__(self, "compounding_mode", CompoundingMode(self.compounding_mode))
+        if self.slippage_points < 0 or self.latency_ms < 0:
+            raise ValueError("slippage and latency must be non-negative")
+
+
+class HftLeaseBusyError(RuntimeError):
+    """Raised when another HFT shadow owner holds the HFT lease."""
 
 
 class HftShadowRuntime:
@@ -79,12 +103,28 @@ class HftShadowRuntime:
         self.features = TickFeatureEngine()
         self.fast = FastExecutionEngine()
         self.risk = RiskEngine(RiskConfig())
-        self.fills = ShadowFillEngine()
+        self.fills = ShadowFillEngine(
+            slippage_points=config.slippage_points,
+            latency_ms=config.latency_ms,
+        )
         self.positions = ShadowPositionLedger()
+        self.account = AccountSimulator(
+            initial_balance=config.initial_balance,
+            risk_fraction=config.risk_fraction,
+            mode=config.compounding_mode,
+        )
+        self.store.initialize()
+        for payload in self.store.recover_open_positions():
+            if str(payload.get("symbol", "")).strip().upper() != self.config.symbol:
+                continue
+            self.positions.restore(payload)
+            break
         self.run_id = str(uuid.uuid4())
         self._action_count = 0
         self._entry_count = 0
         self._exit_count = 0
+        self._trade_count = 0
+        self._plan_ids_recorded: set[str] = set()
 
     def run_once(self) -> dict[str, object]:
         now = utc(self.clock(), "now")
@@ -92,17 +132,27 @@ class HftShadowRuntime:
             tick = self.tick_source.get_tick(self.config.symbol)
         if not isinstance(tick, Tick):
             raise TypeError("tick source must return Tick")
-        plan = self.plan_store.current(tick.timestamp, self.config.symbol)
+        plan = self.plan_store.current(
+            tick.timestamp,
+            self.config.symbol,
+            require_provenance=self.config.require_plan_provenance,
+        )
+        if plan is not None and plan.plan_id and plan.plan_id not in self._plan_ids_recorded:
+            self.store.record_plan(self.run_id, plan.to_payload())
+            self._plan_ids_recorded.add(plan.plan_id)
         snapshot = self.features.update(tick, plan_created_at=None if plan is None else plan.created_at)
         current = self.positions.position
         state = PositionState.FLAT if current is None else current.state
+        if current is not None and state in (PositionState.LONG, PositionState.SHORT):
+            current = self.positions.observe(tick)
         decision = self.fast.on_tick(plan, snapshot, position_state=state, entry_price=None if current is None else current.entry_price, entry_at=None if current is None else current.entry_timestamp)
         action_id = str(uuid.uuid4())
         self._action_count += 1
         self.store.record_tick(self.run_id, tick, features=snapshot)
         self.store.record_action(self.run_id, action_id, tick, decision.action, decision.reason, processing_ms=decision.processing_ms)
+        account_metrics = self.account.report()
         context = RiskContext(
-            equity=100.0,
+            equity=float(account_metrics["equity"] or self.config.initial_balance),
             open_exposure=0.0 if state is PositionState.FLAT else 1.0,
             daily_loss=0.0,
             drawdown=0.0,
@@ -125,39 +175,72 @@ class HftShadowRuntime:
             position = self.positions.close(tick, reason=decision.reason, exit_price=fill.price)
             self.store.record_position(self.run_id, asdict(position))
             self._exit_count += 1
+            self.account.record_trade(tick.timestamp, position.net_pnl)
+            self._trade_count += 1
+        self.store.record_account(self.run_id, tick.timestamp, self.account.report())
         return {
             "action": decision.action.value,
             "risk_accepted": risk.accepted,
             "reason_code": risk.reason_code,
             "processing_ms": decision.processing_ms,
+            "plan_id": None if plan is None else plan.plan_id,
             "executed": False,
         }
 
-    def run(self, *, max_ticks: int | None = None) -> dict[str, object]:
+    def run(
+        self,
+        *,
+        max_ticks: int | None = None,
+        stop_event: threading.Event | None = None,
+    ) -> dict[str, object]:
         limit = self.config.max_ticks if max_ticks is None else max_ticks
         if limit < 0:
             raise ValueError("max_ticks must be non-negative")
+        owner = HftLeaseOwner(
+            owner_token=str(uuid.uuid4()),
+            pid=os.getpid(),
+            host=socket.gethostname(),
+            process_started_at=datetime.now(timezone.utc),
+        )
+        lease = self.store.acquire_lease(owner, datetime.now(timezone.utc))
+        if lease.status is not HftLeaseStatus.ACQUIRED:
+            raise HftLeaseBusyError("HFT_ALREADY_RUNNING")
         self.store.start_run(self.run_id, mode="SHADOW", source_fingerprint="MT5_READ_ONLY")
         started = time.perf_counter()
         status = "STOPPED"
+        count = 0
         try:
-            count = 0
-            while limit == 0 or count < limit:
+            while (limit == 0 or count < limit) and not (
+                stop_event is not None and stop_event.is_set()
+            ):
                 self.run_once()
                 count += 1
+                self.store.heartbeat_lease(owner.owner_token, datetime.now(timezone.utc))
                 if limit == 0:
                     time.sleep(self.config.poll_interval_seconds)
             status = "COMPLETED"
         finally:
             self.store.close_run(self.run_id, status=status)
+            self.store.release_lease(owner.owner_token)
+        elapsed = max(0.0, time.perf_counter() - started)
         return {
             "run_id": self.run_id,
             "actions": self._action_count,
             "entries": self._entry_count,
             "exits": self._exit_count,
-            "runtime_seconds": max(0.0, time.perf_counter() - started),
+            "trades": self._trade_count,
+            "runtime_seconds": elapsed,
+            "ticks_processed": count,
+            "ticks_per_second": (count / elapsed) if elapsed else None,
+            "account_metrics": self.account.report(),
             "executed": False,
         }
 
 
-__all__ = ["HftShadowConfig", "HftShadowRuntime", "MT5ReadOnlyTickSource", "ReadOnlyTickSource"]
+__all__ = [
+    "HftLeaseBusyError",
+    "HftShadowConfig",
+    "HftShadowRuntime",
+    "MT5ReadOnlyTickSource",
+    "ReadOnlyTickSource",
+]

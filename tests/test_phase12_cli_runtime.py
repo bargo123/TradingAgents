@@ -18,3 +18,28 @@ def test_shadow_cli_refuses_active_watcher_before_provider_construction(tmp_path
     assert result == 1
     assert called["provider"] is False
     assert "WATCHER_ALREADY_RUNNING" in capsys.readouterr().err
+
+
+def test_shadow_cli_refuses_active_hft_owner_before_provider_construction(tmp_path, monkeypatch, capsys):
+    from tradingagents.forex.hft.store import HftLeaseOwner, HftShadowStore
+
+    hft_db = tmp_path / "hft.sqlite3"
+    hft_store = HftShadowStore(hft_db)
+    now = datetime.now(timezone.utc)
+    hft_store.acquire_lease(HftLeaseOwner("owner", 123, "host", now), now)
+    called = {"provider": False}
+    monkeypatch.setattr(
+        "cli.forex_hft_shadow._make_provider",
+        lambda *args, **kwargs: called.update(provider=True),
+    )
+    result = main(
+        [
+            "--watcher-db-path", str(tmp_path / "missing-watcher.sqlite3"),
+            "--db-path", str(hft_db),
+            "--max-ticks", "1",
+            "--plan-json", str(tmp_path / "plan.json"),
+        ]
+    )
+    assert result == 1
+    assert called["provider"] is False
+    assert "HFT_ALREADY_RUNNING" in capsys.readouterr().err

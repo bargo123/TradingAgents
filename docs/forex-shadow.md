@@ -489,3 +489,36 @@ No second 40-minute Qwen graph was run. The deterministic Phase 4.3 graph trace
 remains the propagation proof, while the real run remains an explicitly
 incomplete, non-training-quality decision. Phase 6.1 does not add execution or
 begin Phase 7.
+
+## Phase 12C supervisor-owned HFT shadow
+
+Phase 12C is opt-in and remains a separate read-only ledger. One supervisor
+owns the strategic M15 watcher and the fast tick shadow worker; the strategic
+watcher lease remains authoritative and a separate HFT lease prevents a second
+fast worker. MT5 provider operations are individually serialized through one
+read-only gate, so a long LLM analysis does not hold the gate between market
+reads. A normalized, complete, non-executed decision is the only source of a
+provenance-bound expiring `StrategicExecutionPlan`; HOLD maps to `NONE` and
+failed/incomplete decisions leave the prior plan unchanged.
+
+```powershell
+python -m cli.forex_supervisor run `
+  --db-path data_cache/live-market-clean-20260923.db `
+  --hft-shadow `
+  --hft-db-path data_cache/live-market-clean-20260923.hft.sqlite3
+```
+
+The command never exposes an execution flag and always prints `NO ORDER WILL
+BE SENT`. The official dashboard can read the separate ledger without opening
+MT5:
+
+```powershell
+python -m cli.forex_dashboard --once `
+  --db-path data_cache/live-market-clean-20260923.db `
+  --hft-db-path data_cache/live-market-clean-20260923.hft.sqlite3
+```
+
+The Phase 12C panel reports plan provenance/expiry, shadow actions and
+positions, p50/p95/p99/max fast-path latency, account/equity metrics, and the
+descriptive 10%-daily benchmark. `EXECUTED: FALSE` is invariant in the
+runtime and ledger; this section does not alter Phase 7/8/9/10/11A artifacts.

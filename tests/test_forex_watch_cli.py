@@ -9,6 +9,7 @@ from cli.forex_watch import build_parser, main
 from cli.stats_handler import StatsCallbackHandler
 from tradingagents.forex.runtime_config import ForexShadowRuntimeConfig
 from tradingagents.forex.watch_store import LeaseOwner, LeaseStatus, WatcherStore
+from tradingagents.forex.watcher import SerializedMt5OperationGate
 
 
 def _owner():
@@ -287,6 +288,50 @@ def test_make_coordinator_accepts_explicit_runtime_config_and_provenance(
     assert captured["store"].provenance["prompt_config_version"] == "forex-shadow.runtime.v1"
 
 
+def test_make_coordinator_wires_shared_hft_gate_and_plan_callback(tmp_path, monkeypatch):
+    args = build_parser().parse_args(
+        ["run", "--db-path", str(tmp_path / "watch.db"), "--hft-shadow"]
+    )
+    config = forex_watch._make_config(args)
+    captured = {}
+    gate = SerializedMt5OperationGate()
+
+    class _Executor:
+        def shutdown(self, wait=True):
+            del wait
+
+    class _Context:
+        def __init__(self):
+            self.gate = gate
+
+        def provider_factory(self, terminal_path=None):
+            del terminal_path
+            return SimpleNamespace(initialize=lambda: True, shutdown=lambda: None)
+
+        def handle_decision(self, decision):
+            del decision
+            return True
+
+    class _Coordinator:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(forex_watch, "SingleSlotAnalysisExecutor", _Executor)
+    monkeypatch.setattr(forex_watch, "WatcherCoordinator", _Coordinator)
+
+    context = _Context()
+    forex_watch._make_coordinator(
+        args,
+        config,
+        runtime_config=ForexShadowRuntimeConfig(),
+        hft_context=context,
+    )
+
+    assert captured["gate"] is gate
+    assert captured["mt5_operations_gated"] is True
+    assert captured["on_decision"].__self__ is context
+
+
 def test_once_refuses_active_watcher_before_coordinator_resource_construction(
     tmp_path, capsys, monkeypatch
 ):
@@ -351,6 +396,41 @@ def test_main_preserves_falsey_coordinator_factory(tmp_path, monkeypatch):
         coordinator_factory=factory,
     ) == 0
     assert factory.calls == 1
+
+
+def test_forex_watch_run_owns_hft_context_lifecycle(tmp_path, monkeypatch):
+    lifecycle = []
+
+    class FakeContext:
+        def start(self):
+            lifecycle.append("start")
+
+        def stop(self):
+            lifecycle.append("stop")
+
+    class FakeCoordinator:
+        def start(self):
+            return SimpleNamespace(status=LeaseStatus.ACQUIRED)
+
+        def run_forever(self):
+            lifecycle.append("watch")
+
+        def shutdown(self):
+            lifecycle.append("shutdown")
+
+    monkeypatch.setattr(
+        forex_watch,
+        "_make_coordinator",
+        lambda *args, **kwargs: FakeCoordinator(),
+    )
+    monkeypatch.setattr(forex_watch, "_watcher_lease_is_active", lambda *args: False)
+
+    assert forex_watch.main(
+        ["run", "--db-path", str(tmp_path / "watch.db")],
+        runtime_config=ForexShadowRuntimeConfig(),
+        hft_context=FakeContext(),
+    ) == 0
+    assert lifecycle == ["start", "watch", "shutdown", "stop"]
 
 
 def test_pyproject_registers_only_new_forex_watch_script():

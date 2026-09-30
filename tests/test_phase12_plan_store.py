@@ -52,3 +52,9 @@ def test_atomic_plan_store_rejects_expired_or_mismatched_replacement():
     with pytest.raises(PlanRejectedError, match="created"):
         store.replace(_plan(offset=-1), now=plan.created_at)
 
+
+def test_atomic_plan_store_can_require_live_provenance():
+    store = AtomicPlanStore()
+    plan = _plan()
+    store.replace(plan, now=plan.created_at)
+    assert store.current(plan.created_at, "EURUSD", require_provenance=True) is None

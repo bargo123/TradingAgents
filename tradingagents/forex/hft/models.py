@@ -133,6 +133,13 @@ class StrategicExecutionPlan:
     invalidation: tuple[str, ...] = ()
     session_constraints: tuple[str, ...] = ()
     plan_id: str | None = None
+    valid_from: datetime | None = None
+    source_decision_id: str | None = None
+    source_run_id: str | None = None
+    git_commit: str | None = None
+    analysis_profile: str = "INTRADAY"
+    plan_schema_version: str = "phase12.plan.v1"
+    test_only: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", _text(self.symbol, "symbol", upper=True))
@@ -146,6 +153,10 @@ class StrategicExecutionPlan:
         object.__setattr__(self, "created_at", created)
         object.__setattr__(self, "expires_at", expires)
         object.__setattr__(self, "allowed_until", allowed)
+        valid_from = created if self.valid_from is None else utc(self.valid_from, "valid_from")
+        if valid_from < created or valid_from > expires:
+            raise ValueError("valid_from must be between created_at and expires_at")
+        object.__setattr__(self, "valid_from", valid_from)
         object.__setattr__(self, "timeframe", _text(self.timeframe, "timeframe", upper=True))
         object.__setattr__(self, "regime", _text(self.regime, "regime", upper=True))
         if not isinstance(self.primary_direction, Direction):
@@ -171,10 +182,69 @@ class StrategicExecutionPlan:
             object.__setattr__(self, name, values)
         if self.plan_id is not None:
             object.__setattr__(self, "plan_id", _text(self.plan_id, "plan_id"))
+        if not isinstance(self.analysis_profile, str) or self.analysis_profile.strip().upper() != "INTRADAY":
+            raise ValueError("analysis_profile must be exactly INTRADAY")
+        object.__setattr__(self, "analysis_profile", "INTRADAY")
+        if not isinstance(self.plan_schema_version, str) or not self.plan_schema_version.strip():
+            raise ValueError("plan_schema_version must be non-empty")
+        if not isinstance(self.test_only, bool):
+            raise ValueError("test_only must be boolean")
+        for name in ("source_decision_id", "source_run_id", "git_commit"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _text(value, name))
 
     def is_active(self, at: datetime) -> bool:
         timestamp = utc(at, "at")
-        return self.created_at <= timestamp <= self.allowed_until and timestamp < self.expires_at
+        return self.valid_from <= timestamp <= self.allowed_until and timestamp < self.expires_at
+
+    @property
+    def provenance_valid(self) -> bool:
+        return bool(
+            self.test_only
+            or (
+                self.source_decision_id
+                and self.source_run_id
+                and self.git_commit
+                and self.plan_schema_version == "phase12.plan.v1"
+            )
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return JSON-safe plan metadata for the shadow ledger."""
+
+        payload = {
+            "plan_id": self.plan_id or "",
+            "symbol": self.symbol,
+            "created_at": self.created_at.isoformat().replace("+00:00", "Z"),
+            "valid_from": self.valid_from.isoformat().replace("+00:00", "Z"),
+            "expires_at": self.expires_at.isoformat().replace("+00:00", "Z"),
+            "allowed_until": self.allowed_until.isoformat().replace("+00:00", "Z"),
+            "timeframe": self.timeframe,
+            "regime": self.regime,
+            "primary_direction": self.primary_direction.value,
+            "confidence": self.confidence,
+            "strategy_family": self.strategy_family,
+            "entry_constraints": {
+                name: getattr(self.entry_constraints, name)
+                for name in self.entry_constraints.__dataclass_fields__
+            },
+            "risk_posture": self.risk_posture.value,
+            "stop_policy": {
+                name: getattr(self.stop_policy, name)
+                for name in self.stop_policy.__dataclass_fields__
+            },
+            "invalidation": list(self.invalidation),
+            "session_constraints": list(self.session_constraints),
+            "source_decision_id": self.source_decision_id,
+            "source_run_id": self.source_run_id,
+            "git_commit": self.git_commit,
+            "analysis_profile": self.analysis_profile,
+            "plan_schema_version": self.plan_schema_version,
+            "test_only": self.test_only,
+            "executed": False,
+        }
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

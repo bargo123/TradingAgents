@@ -56,6 +56,16 @@ def test_fast_engine_invalidates_expired_plan_and_exits_stop():
     assert engine.on_tick(plan, features.update(stop_tick), position_state=PositionState.LONG, entry_price=1.1, entry_at=plan.created_at).action is FastAction.EXIT
 
 
+def test_fast_engine_holds_when_strategic_plan_direction_is_none():
+    features = TickFeatureEngine(window=2)
+    engine = FastExecutionEngine()
+    plan = _plan(Direction.NONE)
+    tick = Tick("EURUSD", plan.created_at, 1.1, 1.1001)
+    decision = engine.on_tick(plan, features.update(tick), position_state=PositionState.FLAT)
+    assert decision.action is FastAction.NO_ACTION
+    assert decision.reason == "STRATEGIC_DIRECTION_NONE"
+
+
 def test_fast_engine_uses_tick_point_for_stop_distance():
     features = TickFeatureEngine(window=2)
     engine = FastExecutionEngine()

@@ -40,6 +40,12 @@ def _active_watcher(db_path: str) -> bool:
     return lease is not None and lease.lease_expires_at > datetime.now(timezone.utc)
 
 
+def _active_hft(db_path: str) -> bool:
+    store = HftShadowStore(Path(db_path))
+    lease = store.read_only_active_lease(datetime.now(timezone.utc))
+    return lease is not None and lease.lease_expires_at > datetime.now(timezone.utc)
+
+
 def _make_provider(terminal_path: str | None):
     from tradingagents.dataflows.mt5.provider import MT5Provider
 
@@ -54,7 +60,32 @@ def _load_plan(path: str | Path) -> StrategicExecutionPlan:
     entry = payload["entry_constraints"]
     stop = payload["stop_policy"]
     return StrategicExecutionPlan(
-        symbol=payload["symbol"], created_at=datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00")), expires_at=datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00")), allowed_until=datetime.fromisoformat(payload["allowed_until"].replace("Z", "+00:00")), timeframe=payload["timeframe"], regime=payload["regime"], primary_direction=Direction(payload["primary_direction"]), confidence=payload["confidence"], strategy_family=payload["strategy_family"], entry_constraints=EntryConstraints(**entry), risk_posture=RiskPosture(payload["risk_posture"]), stop_policy=StopPolicy(**stop), invalidation=tuple(payload.get("invalidation", ())), session_constraints=tuple(payload.get("session_constraints", ())), plan_id=payload.get("plan_id"),
+        symbol=payload["symbol"],
+        created_at=datetime.fromisoformat(payload["created_at"].replace("Z", "+00:00")),
+        expires_at=datetime.fromisoformat(payload["expires_at"].replace("Z", "+00:00")),
+        allowed_until=datetime.fromisoformat(payload["allowed_until"].replace("Z", "+00:00")),
+        timeframe=payload["timeframe"],
+        regime=payload["regime"],
+        primary_direction=Direction(payload["primary_direction"]),
+        confidence=payload["confidence"],
+        strategy_family=payload["strategy_family"],
+        entry_constraints=EntryConstraints(**entry),
+        risk_posture=RiskPosture(payload["risk_posture"]),
+        stop_policy=StopPolicy(**stop),
+        invalidation=tuple(payload.get("invalidation", ())),
+        session_constraints=tuple(payload.get("session_constraints", ())),
+        plan_id=payload.get("plan_id"),
+        valid_from=(
+            None
+            if payload.get("valid_from") is None
+            else datetime.fromisoformat(payload["valid_from"].replace("Z", "+00:00"))
+        ),
+        source_decision_id=payload.get("source_decision_id"),
+        source_run_id=payload.get("source_run_id"),
+        git_commit=payload.get("git_commit"),
+        analysis_profile=payload.get("analysis_profile", "INTRADAY"),
+        plan_schema_version=payload.get("plan_schema_version", "phase12.plan.v1"),
+        test_only=payload.get("test_only", False),
     )
 
 
@@ -65,6 +96,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if _active_watcher(args.watcher_db_path):
             print("FOREX HFT SHADOW: WATCHER_ALREADY_RUNNING", file=sys.stderr)
+            return 1
+        if _active_hft(args.db_path):
+            print("FOREX HFT SHADOW: HFT_ALREADY_RUNNING", file=sys.stderr)
             return 1
         plan = _load_plan(args.plan_json)
         provider = _make_provider(args.terminal_path)

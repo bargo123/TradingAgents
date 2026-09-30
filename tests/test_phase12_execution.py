@@ -41,3 +41,25 @@ def test_position_ledger_tracks_open_close_and_excursions():
     assert closed.holding_seconds == pytest.approx(2.0)
     with pytest.raises(ValueError, match="FLAT"):
         ledger.close(_tick(second=3), reason="duplicate")
+
+
+def test_position_ledger_restores_persisted_open_position_without_execution():
+    ledger = ShadowPositionLedger()
+    restored = ledger.restore(
+        {
+            "position_id": "p1",
+            "symbol": "EURUSD",
+            "state": "LONG",
+            "direction": "LONG",
+            "size": 1.0,
+            "entry_price": 1.1001,
+            "entry_timestamp": "2026-09-30T09:00:00+00:00",
+            "strategy_id": "strategic_shadow",
+            "stop_price": None,
+            "target_price": None,
+            "executed": False,
+        }
+    )
+    assert restored.position_id == "p1"
+    assert restored.state is PositionState.LONG
+    assert restored.executed is False

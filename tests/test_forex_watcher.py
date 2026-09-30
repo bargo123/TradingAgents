@@ -261,6 +261,14 @@ def test_operation_gate_rejects_nested_or_concurrent_operation():
         pass
 
 
+def test_operation_gate_releases_after_operation_failure():
+    gate = SerializedMt5OperationGate()
+    with pytest.raises(RuntimeError, match="boom"), gate.acquire("failing"):
+        raise RuntimeError("boom")
+    with gate.acquire("next"):
+        pass
+
+
 def test_market_probe_rejects_invalid_provider_factory():
     with pytest.raises(TypeError, match="provider_factory"):
         ReadOnlyMarketProbe(False)
@@ -714,6 +722,8 @@ class _Harness:
         process_alive=None,
         cooldown_seconds=60,
         callbacks=(),
+        on_decision=None,
+        mt5_operations_gated=False,
     ):
         from concurrent.futures import Future
 
@@ -765,6 +775,8 @@ class _Harness:
             events=self.events,
             process_inspector=self.process_inspector,
             callbacks=callbacks,
+            on_decision=on_decision,
+            mt5_operations_gated=mt5_operations_gated,
         )
 
     def start(self, now=None):
@@ -821,6 +833,24 @@ def test_normal_poll_claims_one_current_opportunity_and_persists_decision(tmp_pa
     assert harness.store.list_opportunities()[0].status == "DECISION_SAVED"
     assert harness.store.list_runs()[0].run_status in {"SUCCEEDED", "SUCCEEDED_SLOW"}
     assert harness.store.decision_for_run(harness.store.list_runs()[0].run_id).executed is False
+
+
+def test_completed_decision_is_handed_to_phase12_callback(tmp_path):
+    handed = []
+    harness = _Harness(
+        tmp_path,
+        runner_result=_complete_run_result(),
+        on_decision=handed.append,
+        mt5_operations_gated=True,
+    )
+    harness.start()
+    harness.poll(_utc("2026-09-09T12:15:31Z"))
+    harness.complete_runner()
+    harness.poll(_utc("2026-09-09T12:15:32Z"))
+
+    assert len(handed) == 1
+    assert handed[0].decision_id == "decision-run-1"
+    assert handed[0].executed is False
 
 
 def test_completion_persists_cooldown_for_restart_state(tmp_path):
