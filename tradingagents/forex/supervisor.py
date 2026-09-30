@@ -533,6 +533,16 @@ class ForexSupervisor:
             "stale_ticks": snapshot.stale_ticks,
             "out_of_order_ticks": snapshot.out_of_order_ticks,
             "last_error_code": snapshot.last_error_code,
+            "unique_ticks": snapshot.unique_ticks,
+            "tick_quality_status": snapshot.tick_quality_status,
+            "dataset_first_timestamp": snapshot.dataset_first_timestamp,
+            "dataset_last_timestamp": snapshot.dataset_last_timestamp,
+            "dataset_duration_seconds": snapshot.dataset_duration_seconds,
+            "dataset_days": snapshot.dataset_days,
+            "dataset_sessions": snapshot.dataset_sessions,
+            "dataset_invalid_ticks": snapshot.dataset_invalid_ticks,
+            "dataset_duplicate_ticks": snapshot.dataset_duplicate_ticks,
+            "dataset_large_gap_count": snapshot.dataset_large_gap_count,
             "executed": False,
         }
 

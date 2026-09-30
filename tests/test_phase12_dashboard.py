@@ -17,6 +17,8 @@ def test_hft_dashboard_reads_scalar_shadow_metrics_read_only(tmp_path):
     assert snapshot.executed is False
     assert snapshot.runs == 1
     assert snapshot.ticks == 0
+    assert snapshot.unique_ticks == 0
+    assert snapshot.tick_quality_status == "EMPTY"
 
 
 def test_hft_dashboard_missing_root_is_explicit(tmp_path):
@@ -89,6 +91,8 @@ def test_hft_dashboard_exposes_phase12c_latency_account_plan_and_lease_metrics(t
     assert snapshot.out_of_order_ticks == 1
     assert snapshot.last_error_code is None
     assert snapshot.executed is False
+    assert snapshot.unique_ticks == 0
+    assert snapshot.tick_quality_status == "EMPTY"
 
 
 def test_hft_dashboard_error_is_scoped_to_latest_run(tmp_path):
@@ -103,3 +107,23 @@ def test_hft_dashboard_error_is_scoped_to_latest_run(tmp_path):
     store.start_run("current", mode="SHADOW", source_fingerprint="abc")
 
     assert read_hft_dashboard(path).last_error_code is None
+
+
+def test_hft_dashboard_panel_exposes_dataset_coverage(tmp_path):
+    from rich.console import Console
+
+    from cli.forex_dashboard import _hft_panel
+
+    path = tmp_path / "hft.sqlite3"
+    store = HftShadowStore(path)
+    store.initialize()
+    store.start_run("run-1", mode="SHADOW", source_fingerprint="abc")
+    snapshot = read_hft_dashboard(path)
+    console = Console(record=True, width=180)
+    console.print(_hft_panel(snapshot))
+
+    rendered = console.export_text()
+    assert "Unique ticks" in rendered
+    assert "Tick dataset" in rendered
+    assert "Tick coverage" in rendered
+    assert " -> " in rendered

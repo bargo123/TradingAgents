@@ -11,6 +11,8 @@ UTC = timezone.utc
 def test_supervisor_hft_status_is_scalar_and_shadow_only(tmp_path):
     report = ForexSupervisor().hft_status(tmp_path / "hft.sqlite3")
     assert report["status"] == "NOT_INITIALIZED"
+    assert report["unique_ticks"] == 0
+    assert report["tick_quality_status"] == "NOT_INITIALIZED"
     assert report["executed"] is False
 
 

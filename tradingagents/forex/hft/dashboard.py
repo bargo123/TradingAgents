@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
+from .dataset import read_tick_dataset
+
 
 @dataclass(frozen=True, slots=True)
 class HftDashboardSnapshot:
@@ -48,6 +50,16 @@ class HftDashboardSnapshot:
     out_of_order_ticks: int = 0
     last_error_code: str | None = None
     executed: bool = False
+    unique_ticks: int = 0
+    tick_quality_status: str = "NOT_INITIALIZED"
+    dataset_first_timestamp: str | None = None
+    dataset_last_timestamp: str | None = None
+    dataset_duration_seconds: float | None = None
+    dataset_days: tuple[str, ...] = ()
+    dataset_sessions: tuple[str, ...] = ()
+    dataset_invalid_ticks: int = 0
+    dataset_duplicate_ticks: int = 0
+    dataset_large_gap_count: int = 0
 
 
 def _percentile(values: list[float], fraction: float) -> float | None:
@@ -96,6 +108,16 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
         "out_of_order_ticks": 0,
         "last_error_code": None,
         "executed": False,
+        "unique_ticks": 0,
+        "tick_quality_status": "NOT_INITIALIZED",
+        "dataset_first_timestamp": None,
+        "dataset_last_timestamp": None,
+        "dataset_duration_seconds": None,
+        "dataset_days": (),
+        "dataset_sessions": (),
+        "dataset_invalid_ticks": 0,
+        "dataset_duplicate_ticks": 0,
+        "dataset_large_gap_count": 0,
     }
     if not source.is_file():
         return HftDashboardSnapshot(**empty)
@@ -174,6 +196,7 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                     """
                 ).fetchone()
                 last_error_code = None if error_row is None else str(error_row[0])
+            tick_report = read_tick_dataset(source)
             actual = None if compound_return is None else float(compound_return)
             benchmark_difference = None if actual is None else actual - 0.10
             return HftDashboardSnapshot(
@@ -198,6 +221,16 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 out_of_order_ticks=out_of_order_ticks,
                 last_error_code=last_error_code,
                 executed=False,
+                unique_ticks=tick_report.unique_ticks,
+                tick_quality_status=tick_report.quality_status,
+                dataset_first_timestamp=tick_report.first_timestamp,
+                dataset_last_timestamp=tick_report.last_timestamp,
+                dataset_duration_seconds=tick_report.duration_seconds,
+                dataset_days=tick_report.days,
+                dataset_sessions=tick_report.sessions,
+                dataset_invalid_ticks=tick_report.invalid_ticks,
+                dataset_duplicate_ticks=tick_report.duplicate_ticks,
+                dataset_large_gap_count=tick_report.large_gap_count,
             )
     except sqlite3.Error:
         return HftDashboardSnapshot(**{**empty, "status": "UNAVAILABLE"})
