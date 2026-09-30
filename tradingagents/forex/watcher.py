@@ -701,6 +701,9 @@ class ReadOnlyMt5ProviderProxy:
             return bool(self._provider.initialize())
 
     def shutdown(self) -> None:
+        if getattr(self._provider, "consumer_shutdown_is_noop", False):
+            self._provider.shutdown()
+            return
         with self._gate.acquire("shutdown"):
             self._provider.shutdown()
 

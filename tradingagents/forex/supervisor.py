@@ -54,6 +54,12 @@ class HftShadowSupervisorContext:
 class _SharedReadOnlyMt5Provider:
     """Keep one MT5 module session behind all supervisor-owned consumers."""
 
+    # Consumer wrappers may call ``shutdown`` during their own cleanup, but
+    # this provider deliberately keeps the supervisor-owned session alive.
+    # The read-only proxy uses this explicit marker to avoid contending for
+    # the MT5 operation gate for that no-op cleanup call.
+    consumer_shutdown_is_noop = True
+
     def __init__(self, provider: Any) -> None:
         if provider is None:
             raise TypeError("provider is required")

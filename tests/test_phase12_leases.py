@@ -7,6 +7,7 @@ from tradingagents.forex.hft.store import (
     HftLeaseStatus,
     HftShadowStore,
 )
+from tradingagents.forex.supervisor import _SharedReadOnlyMt5Provider
 from tradingagents.forex.watcher import ReadOnlyMt5ProviderProxy, SerializedMt5OperationGate
 
 UTC = timezone.utc
@@ -96,3 +97,19 @@ def test_read_only_provider_proxy_serializes_historical_ticks():
     proxy = ReadOnlyMt5ProviderProxy(Provider(), SerializedMt5OperationGate())
     assert proxy.get_ticks_range("EURUSD", "start", "end") == ()
     assert calls == [("EURUSD", "start", "end")]
+
+
+def test_shared_consumer_shutdown_does_not_contend_with_hft_operation():
+    class Provider:
+        def initialize(self):
+            return True
+
+        def shutdown(self):
+            raise AssertionError("consumer shutdown must not close shared session")
+
+    shared = _SharedReadOnlyMt5Provider(Provider())
+    proxy = ReadOnlyMt5ProviderProxy(shared, SerializedMt5OperationGate())
+    gate = proxy._gate
+
+    with gate.acquire("hft_tick"):
+        proxy.shutdown()
