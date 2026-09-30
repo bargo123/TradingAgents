@@ -57,6 +57,7 @@ class HftShadowConfig:
     compounding_mode: CompoundingMode = CompoundingMode.COMPOUNDING_RISK
     slippage_points: float = 0.0
     latency_ms: float = 0.0
+    source_fingerprint: str = "MT5_READ_ONLY"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
@@ -76,6 +77,9 @@ class HftShadowConfig:
         object.__setattr__(self, "compounding_mode", CompoundingMode(self.compounding_mode))
         if self.slippage_points < 0 or self.latency_ms < 0:
             raise ValueError("slippage and latency must be non-negative")
+        if not isinstance(self.source_fingerprint, str) or not self.source_fingerprint.strip():
+            raise ValueError("source_fingerprint must be non-empty")
+        object.__setattr__(self, "source_fingerprint", self.source_fingerprint.strip()[:160])
 
 
 class HftLeaseBusyError(RuntimeError):
@@ -241,7 +245,7 @@ class HftShadowRuntime:
         lease = self.store.acquire_lease(owner, datetime.now(timezone.utc))
         if lease.status is not HftLeaseStatus.ACQUIRED:
             raise HftLeaseBusyError("HFT_ALREADY_RUNNING")
-        self.store.start_run(self.run_id, mode="SHADOW", source_fingerprint="MT5_READ_ONLY")
+        self.store.start_run(self.run_id, mode="SHADOW", source_fingerprint=self.config.source_fingerprint)
         started = time.perf_counter()
         status = "STOPPED"
         count = 0

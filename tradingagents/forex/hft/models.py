@@ -244,6 +244,14 @@ class StrategicExecutionPlan:
             "test_only": self.test_only,
             "executed": False,
         }
+        if self.test_only:
+            payload.update(
+                {
+                    "execution_mode": "TEST_ONLY",
+                    "synthetic_plan": True,
+                    "excluded_from_performance": True,
+                }
+            )
         return payload
 
 

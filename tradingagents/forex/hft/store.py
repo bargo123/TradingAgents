@@ -296,6 +296,16 @@ class HftShadowStore:
     def record_plan(self, run_id: str, plan: Mapping[str, Any]) -> None:
         if plan.get("executed", False) is not False:
             raise ValueError("plans must be shadow-only")
+        test_only = plan.get("test_only", False) is True
+        execution_mode = plan.get("execution_mode")
+        if test_only and (
+            execution_mode != "TEST_ONLY"
+            or plan.get("synthetic_plan") is not True
+            or plan.get("excluded_from_performance") is not True
+        ):
+            raise ValueError("TEST_ONLY plans must carry explicit isolation metadata")
+        if not test_only and execution_mode == "TEST_ONLY":
+            raise ValueError("production plans cannot use TEST_ONLY execution mode")
         with self._connect() as db:
             db.execute("INSERT OR REPLACE INTO hft_plans(plan_id,run_id,symbol,created_at,expires_at,payload_json) VALUES(?,?,?,?,?,?)", (plan["plan_id"], run_id, plan["symbol"], plan["created_at"], plan["expires_at"], _json(dict(plan))))
 
