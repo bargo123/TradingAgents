@@ -327,6 +327,7 @@ class ForexSupervisor:
         self,
         *,
         terminal_path: str | None,
+        source_db_path: str | Path,
         symbol: str,
         hft_db_path: str | Path,
         max_ticks: int,
@@ -339,6 +340,7 @@ class ForexSupervisor:
         from tradingagents.forex.hft.store import HftShadowStore
         from tradingagents.forex.hft.supervisor import HftShadowWorker
         from tradingagents.forex.runtime_config import collect_runtime_provenance
+        from tradingagents.forex.shadow import ShadowDecisionStore
 
         resolved_hft_path = Path(hft_db_path).expanduser()
 
@@ -372,6 +374,10 @@ class ForexSupervisor:
             mt5_gate=gate,
             git_commit=git_commit,
         )
+        with suppress(Exception):
+            latest = ShadowDecisionStore(source_db_path).latest_eligible(symbol)
+            if latest is not None:
+                worker.handle_decision(latest)
         return HftShadowSupervisorContext(
             worker=worker,
             gate=gate,
@@ -606,6 +612,7 @@ class ForexSupervisor:
                 shared_gate = SerializedMt5OperationGate()
                 hft_context = self._hft_context(
                     terminal_path=terminal_path,
+                    source_db_path=db_path,
                     symbol=hft_symbol,
                     hft_db_path=resolved_hft_path,
                     max_ticks=hft_max_ticks,

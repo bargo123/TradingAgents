@@ -524,6 +524,29 @@ def test_store_round_trip_is_idempotent_and_preserves_failed_action(
     assert json.loads(restored.raw_portfolio_manager_result_json)["error"] == "missing"
 
 
+def test_store_latest_eligible_is_read_only_and_fail_closed(tmp_path: Path) -> None:
+    path = tmp_path / "shadow.db"
+    store = ShadowDecisionStore(path)
+    store.record(make_decision(decision_id="old", decision_context_status="COMPLETE"))
+    store.record(
+        make_decision(
+            decision_id="failed",
+            action=None,
+            normalization_status="FAILED",
+            normalization_error="invalid",
+        )
+    )
+    newest = make_decision(
+        decision_id="new",
+        created_at=datetime(2026, 9, 9, tzinfo=timezone.utc),
+        decision_context_status="COMPLETE",
+    )
+    store.record(newest)
+
+    assert store.latest_eligible("EURUSDm").decision_id == "new"
+    assert ShadowDecisionStore(tmp_path / "missing.db").latest_eligible("EURUSD") is None
+
+
 def test_store_rejects_malformed_persisted_executed_flag(
     tmp_path: Path,
 ) -> None:

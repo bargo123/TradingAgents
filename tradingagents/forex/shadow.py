@@ -889,6 +889,36 @@ class ShadowDecisionStore:
             ).fetchall()
         return tuple(self._row_to_decision(row) for row in rows)
 
+    def latest_eligible(self, resolved_symbol: str | None = None) -> ShadowTradeDecision | None:
+        """Read the newest complete normalized decision without writing the DB."""
+
+        if not self.path.is_file():
+            return None
+        normalized = str(self.path.expanduser().resolve()).replace("\\", "/")
+        uri = f"file:{normalized}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=0) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "shadow_decisions" not in tables:
+                return None
+            query = (
+                "SELECT * FROM shadow_decisions "
+                "WHERE executed = 0 AND normalization_status = 'NORMALIZED' "
+                "AND decision_context_status = 'COMPLETE'"
+            )
+            params: tuple[Any, ...] = ()
+            if resolved_symbol is not None:
+                query += " AND UPPER(resolved_symbol) = ?"
+                params = (str(resolved_symbol).strip().upper(),)
+            query += " ORDER BY created_at DESC, decision_id DESC LIMIT 1"
+            row = conn.execute(query, params).fetchone()
+        return None if row is None else self._row_to_decision(row)
+
     def list_pending(self, resolved_symbol: str | None = None) -> list[ShadowTradeDecision]:
         self.initialize()
         query = "SELECT * FROM shadow_decisions WHERE future_evaluation_status = 'PENDING' AND executed = 0"
