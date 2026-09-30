@@ -152,7 +152,16 @@ def build_strategy_plan(tick: Tick, *, strategy: StrategyFamily = StrategyFamily
 
 
 class TickReplay:
-    def __init__(self, ticks: Iterable[Tick], *, plan: StrategicExecutionPlan, run_id: str | None = None) -> None:
+    def __init__(
+        self,
+        ticks: Iterable[Tick],
+        *,
+        plan: StrategicExecutionPlan,
+        run_id: str | None = None,
+        slippage_points: float = 0.0,
+        latency_ms: float = 0.0,
+        risk_fraction: float = 0.005,
+    ) -> None:
         self.ticks = tuple(ticks)
         if not self.ticks:
             raise ReplayError("replay requires at least one tick")
@@ -162,16 +171,35 @@ class TickReplay:
             raise ReplayError("replay cannot consume future ticks")
         if self.ticks[0].symbol != plan.symbol:
             raise ReplayError("replay symbol does not match plan")
+        if (
+            not math.isfinite(float(slippage_points))
+            or float(slippage_points) < 0
+            or not math.isfinite(float(latency_ms))
+            or float(latency_ms) < 0
+            or not math.isfinite(float(risk_fraction))
+            or not 0 < float(risk_fraction) <= 0.1
+        ):
+            raise ReplayError("replay cost/risk inputs are invalid")
         self.plan = plan
         self.run_id = run_id or str(uuid.uuid4())
+        self.slippage_points = float(slippage_points)
+        self.latency_ms = float(latency_ms)
+        self.risk_fraction = float(risk_fraction)
 
     def run(self) -> ReplayReport:
         features = TickFeatureEngine()
         fast = FastExecutionEngine()
         risk = RiskEngine()
-        fills = ShadowFillEngine()
+        fills = ShadowFillEngine(
+            slippage_points=self.slippage_points,
+            latency_ms=self.latency_ms,
+        )
         positions = ShadowPositionLedger()
-        account = AccountSimulator(initial_balance=100.0, risk_fraction=0.005, mode=CompoundingMode.COMPOUNDING_RISK)
+        account = AccountSimulator(
+            initial_balance=100.0,
+            risk_fraction=self.risk_fraction,
+            mode=CompoundingMode.COMPOUNDING_RISK,
+        )
         position_state = PositionState.FLAT
         entry_price = None
         entry_at = None
@@ -186,7 +214,16 @@ class TickReplay:
             decision = fast.on_tick(self.plan, snapshot, position_state=position_state, entry_price=entry_price, entry_at=entry_at)
             actions += 1
             if decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
-                context = RiskContext(100.0, 0.0, 0.0, 0.0, 0, tick.timestamp, tick.timestamp, snapshot.session)
+                context = RiskContext(
+                    float(account.report()["equity"] or 100.0),
+                    0.0,
+                    0.0,
+                    0.0,
+                    0,
+                    tick.timestamp,
+                    tick.timestamp,
+                    snapshot.session,
+                )
                 gate = risk.evaluate(decision.action, tick, context, allowed_sessions=self.plan.session_constraints)
                 if gate.accepted:
                     fill = fills.fill(decision.action, tick, size=1.0)

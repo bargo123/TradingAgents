@@ -39,6 +39,19 @@ def test_replay_uses_same_causal_engine_and_reports_latency():
     assert report.to_dict()["executed"] is False
 
 
+def test_replay_accepts_bounded_cost_and_risk_sensitivity_inputs():
+    ticks = _ticks()
+    report = TickReplay(
+        ticks,
+        plan=_plan(ticks[0].timestamp),
+        slippage_points=1.0,
+        latency_ms=2.0,
+        risk_fraction=0.0025,
+    ).run()
+    assert report.executed is False
+    assert report.account_metrics["trades"] == report.trades
+
+
 def test_replay_rejects_non_monotonic_and_future_ticks():
     ticks = list(_ticks())
     ticks[3] = ticks[1]
@@ -54,4 +67,3 @@ def test_load_ticks_reads_csv_without_future_leakage(tmp_path: Path):
     path.write_text("timestamp,symbol,bid,ask,point,sequence\n2026-01-01T12:00:00Z,EURUSD,1.1,1.1001,0.00001,0\n", encoding="utf-8")
     loaded = load_ticks(path)
     assert loaded[0].symbol == "EURUSD"
-
