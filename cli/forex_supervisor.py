@@ -70,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--db-path", default="data_cache/shadow_decisions.db")
     status.add_argument("--hft-db-path", default=None)
     status.add_argument("--demo-db-path", default=None)
+    status.add_argument("--phase12-strategic", action="store_true")
+    status.add_argument("--phase12-deep-model", default=None)
     status.add_argument("--json", action="store_true")
     return parser
 
@@ -83,7 +85,12 @@ def main(
     args = build_parser().parse_args(argv)
     if args.command == "status":
         try:
-            supervisor = supervisor_factory(ForexShadowRuntimeConfig())
+            runtime_kwargs = {"phase12_strategic": args.phase12_strategic}
+            if args.phase12_deep_model:
+                if not args.phase12_strategic:
+                    raise ValueError("--phase12-deep-model requires --phase12-strategic")
+                runtime_kwargs["deep_model"] = args.phase12_deep_model
+            supervisor = supervisor_factory(ForexShadowRuntimeConfig(**runtime_kwargs))
             if args.hft_db_path is None:
                 report = supervisor.status(args.db_path, demo_db_path=args.demo_db_path)
             else:

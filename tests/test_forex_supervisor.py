@@ -49,6 +49,14 @@ def test_supervisor_parser_requires_explicit_demo_flag_name():
     assert "--real" not in options
 
 
+def test_supervisor_status_accepts_phase12_model_override():
+    args = build_parser().parse_args(
+        ["status", "--phase12-strategic", "--phase12-deep-model", "qwen3.5:2b"]
+    )
+    assert args.phase12_strategic is True
+    assert args.phase12_deep_model == "qwen3.5:2b"
+
+
 def test_supervisor_rejects_invalid_runtime_config() -> None:
     with pytest.raises(TypeError, match="runtime_config"):
         ForexSupervisor(runtime_config=False)
