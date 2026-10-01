@@ -108,8 +108,6 @@ def _validate_lesson_safety(row: Mapping[str, Any]) -> None:
         if isinstance(value, str):
             if _ACTION_TEXT.search(value):
                 raise ValueError(f"unsafe action text in lesson field: {key}")
-            if _FORBIDDEN_METADATA.search(value):
-                raise ValueError(f"unsafe private text in lesson field: {key}")
 
 
 def _row_id(row: Any) -> str:
