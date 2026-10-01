@@ -49,7 +49,7 @@ class HftShadowConfig:
     symbol: str = "EURUSD"
     artifact_path: Path = Path("data_cache/hft-shadow.sqlite3")
     max_ticks: int = 0
-    poll_interval_seconds: float = 1.0
+    poll_interval_seconds: float = 0.05
     point: float = 0.00001
     require_plan_provenance: bool = True
     lease_ttl_seconds: int = 30

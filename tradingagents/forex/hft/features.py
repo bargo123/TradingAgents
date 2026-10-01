@@ -46,6 +46,7 @@ class TickFeatures:
     plan_age_seconds: float = 0.0
     m1_return: float | None = None
     m5_return: float | None = None
+    range_position: float = 0.5
 
 
 class TickFeatureEngine:
@@ -133,6 +134,11 @@ class TickFeatureEngine:
             tick_count=len(self._ticks),
             session=_session(tick.timestamp),
             plan_age_seconds=plan_age,
+            range_position=(
+                (tick.mid - min(mids)) / (max(mids) - min(mids))
+                if len(mids) > 1 and max(mids) > min(mids)
+                else 0.5
+            ),
         )
 
 

@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--hft-symbol", default="EURUSD")
     run.add_argument("--hft-max-ticks", type=_nonnegative_int, default=0)
     run.add_argument(
-        "--hft-poll-interval-seconds", type=_nonnegative_float, default=1.0
+        "--hft-poll-interval-seconds", type=_nonnegative_float, default=0.05
     )
     run.add_argument(
         "--demo-execute",

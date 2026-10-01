@@ -298,6 +298,7 @@ class FastDecision:
     reason: str
     score: float = 0.0
     processing_ms: float = 0.0
+    strategy_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.action, FastAction):
@@ -307,6 +308,8 @@ class FastDecision:
         object.__setattr__(self, "reason", _text(self.reason, "reason"))
         object.__setattr__(self, "score", _finite(self.score, "score"))
         object.__setattr__(self, "processing_ms", _finite(self.processing_ms, "processing_ms", minimum=0.0))
+        if self.strategy_id is not None:
+            object.__setattr__(self, "strategy_id", _text(self.strategy_id, "strategy_id"))
 
 
 @dataclass(frozen=True, slots=True)

@@ -13,6 +13,8 @@ from tradingagents.forex.watcher import SerializedMt5OperationGate
 
 from .plan_feed import build_plan_from_shadow_decision
 from .plan_store import AtomicPlanStore, PlanRejectedError
+from .regime_feed import build_regime_from_shadow_decision
+from .regime_store import AtomicRegimeStore, RegimeRejectedError
 from .runtime import (
     HftLeaseBusyError,
     HftShadowConfig,
@@ -41,6 +43,7 @@ class HftShadowWorker:
         provider_factory: Callable[..., Any],
         plan_store: AtomicPlanStore,
         *,
+        regime_store: AtomicRegimeStore | None = None,
         config: HftShadowConfig,
         store: HftShadowStore | None = None,
         terminal_path: str | None = None,
@@ -53,8 +56,11 @@ class HftShadowWorker:
             raise TypeError("provider_factory must be callable")
         if not isinstance(plan_store, AtomicPlanStore):
             raise TypeError("plan_store must be AtomicPlanStore")
+        if regime_store is not None and not isinstance(regime_store, AtomicRegimeStore):
+            raise TypeError("regime_store must be AtomicRegimeStore")
         self.provider_factory = provider_factory
         self.plan_store = plan_store
+        self.regime_store = regime_store
         self.config = config
         if config.execution_mode == "DEMO" and runtime_factory is None:
             raise ValueError("DEMO worker requires a dedicated runtime factory")
@@ -109,18 +115,39 @@ class HftShadowWorker:
             try:
                 if not bool(self.decision_validator(decision)):
                     self.plan_store.clear()
+                    if self.regime_store is not None:
+                        self.regime_store.clear()
                     return False
             except Exception:
+                self.plan_store.clear()
+                if self.regime_store is not None:
+                    self.regime_store.clear()
+                return False
+        regime = build_regime_from_shadow_decision(decision, git_commit=self.git_commit) if self.regime_store is not None else None
+        if self.regime_store is not None:
+            if regime is None:
+                self.regime_store.clear()
+                self.plan_store.clear()
+                return False
+            try:
+                self.regime_store.replace(regime, now=datetime.now(timezone.utc))
+            except RegimeRejectedError:
+                self.regime_store.clear()
                 self.plan_store.clear()
                 return False
         plan = build_plan_from_shadow_decision(decision, git_commit=self.git_commit)
         if plan is None:
             self.plan_store.clear()
+            if self.regime_store is not None:
+                self.regime_store.clear()
             return False
         now = datetime.now(timezone.utc)
         try:
             self.plan_store.replace(plan, now=now)
         except PlanRejectedError:
+            if self.regime_store is not None:
+                self.regime_store.clear()
+            self.plan_store.clear()
             return False
         return True
 

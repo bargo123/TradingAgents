@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from datetime import datetime, timezone
@@ -286,9 +287,11 @@ class VerifiedDemoExecutionGateway:
                         details={"ticket": position_ticket, "symbol": intent.symbol},
                     )
                     raise DemoExecutionForbidden("owned broker position is unavailable")
+            order_started = time.perf_counter()
             try:
                 result = self.broker_api.order_send(request)
             except Exception as exc:
+                request = {**request, "order_submission_latency_ms": (time.perf_counter() - order_started) * 1000.0}
                 return self._persist_result(
                     intent,
                     request,
@@ -296,6 +299,7 @@ class VerifiedDemoExecutionGateway:
                     broker_order_sent=True,
                 )
             if result is None:
+                request = {**request, "order_submission_latency_ms": (time.perf_counter() - order_started) * 1000.0}
                 parsed = self._persist_result(
                     intent,
                     request,
@@ -303,6 +307,7 @@ class VerifiedDemoExecutionGateway:
                     broker_order_sent=True,
                 )
                 return parsed
+            request = {**request, "order_submission_latency_ms": (time.perf_counter() - order_started) * 1000.0}
             parsed = self._persist_result(intent, request, result, broker_order_sent=True)
             if (
                 position_ticket is not None

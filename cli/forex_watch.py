@@ -66,7 +66,7 @@ def _add_hft_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hft-db-path", default=None)
     parser.add_argument("--hft-symbol", default="EURUSD")
     parser.add_argument("--hft-max-ticks", type=_nonnegative_int, default=0)
-    parser.add_argument("--hft-poll-interval-seconds", type=float, default=1.0)
+    parser.add_argument("--hft-poll-interval-seconds", type=float, default=0.05)
 
 
 def build_parser() -> argparse.ArgumentParser:

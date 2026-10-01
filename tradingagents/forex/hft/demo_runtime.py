@@ -6,8 +6,10 @@ import os
 import socket
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections import deque
+from collections.abc import Callable, Mapping
+from contextlib import suppress
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,13 +20,24 @@ from .demo_gateway import VerifiedDemoExecutionGateway
 from .demo_models import DemoAccountSnapshot, DemoOrderIntent
 from .demo_risk import DemoCircuitBreaker, normalize_volume, validate_stop_levels
 from .demo_store import DemoExecutionStore
-from .engines import FastExecutionEngine
+from .engines import FastExecutionEngine, HftExecutionEngine
 from .features import TickFeatureEngine
 from .models import FastAction, PositionState, RiskDecision, Tick, utc
+from .persistence import AsyncPersistenceQueue
 from .plan_store import AtomicPlanStore
+from .regime import StrategicRegimeState
+from .regime_store import AtomicRegimeStore
 from .risk import RiskConfig, RiskContext, RiskEngine
 from .runtime import HftLeaseBusyError
 from .store import HftLeaseOwner, HftLeaseStatus, HftShadowStore
+from .strategies import SignalArbiter
+
+
+def _percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    index = min(len(values) - 1, max(0, int(len(values) * fraction) - 1))
+    return values[index]
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +56,19 @@ class DemoRuntimeConfig:
     max_consecutive_losses: int = 3
     magic: int = 12012012
     comment: str = "TradingAgents-P12D-DEMO"
+    hft_first: bool = False
+    no_regime_policy: str = "PAUSE"
+    account_refresh_seconds: float = 1.0
+    cooldown_seconds: float = 0.5
+    max_order_submissions: int = 20
+    order_rate_window_seconds: float = 60.0
+    cost_safety_margin_points: float = 1.0
+    stop_distance_points: float = 20.0
+    take_profit_distance_points: float = 30.0
+    time_stop_seconds: int = 30
+    max_exit_spread_points: float = 40.0
+    max_exit_spread_expansion_points: float = 10.0
+    max_exit_volatility: float = 0.005
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
@@ -59,6 +85,35 @@ class DemoRuntimeConfig:
             raise ValueError("DEMO volume/deviation bounds are invalid")
         if self.initial_daily_loss_limit <= 0 or self.max_consecutive_losses <= 0:
             raise ValueError("DEMO circuit bounds are invalid")
+        if not isinstance(self.hft_first, bool):
+            raise ValueError("hft_first must be boolean")
+        policy = str(self.no_regime_policy).strip().upper()
+        if policy not in {"PAUSE"}:
+            raise ValueError("no_regime_policy must be PAUSE")
+        object.__setattr__(self, "no_regime_policy", policy)
+        for name in ("account_refresh_seconds", "cooldown_seconds", "order_rate_window_seconds", "cost_safety_margin_points"):
+            value = float(getattr(self, name))
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+            object.__setattr__(self, name, value)
+        if isinstance(self.max_order_submissions, bool) or not isinstance(self.max_order_submissions, int) or self.max_order_submissions <= 0:
+            raise ValueError("max_order_submissions must be positive")
+        for name in (
+            "stop_distance_points",
+            "take_profit_distance_points",
+            "max_exit_spread_points",
+            "max_exit_volatility",
+        ):
+            value = float(getattr(self, name))
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+            object.__setattr__(self, name, value)
+        value = float(self.max_exit_spread_expansion_points)
+        if value < 0:
+            raise ValueError("max_exit_spread_expansion_points must be non-negative")
+        object.__setattr__(self, "max_exit_spread_expansion_points", value)
+        if isinstance(self.time_stop_seconds, bool) or not isinstance(self.time_stop_seconds, int) or self.time_stop_seconds <= 0:
+            raise ValueError("time_stop_seconds must be positive")
 
 
 class DemoHftRuntime:
@@ -72,6 +127,8 @@ class DemoHftRuntime:
         gateway: VerifiedDemoExecutionGateway,
         store: DemoExecutionStore,
         config: DemoRuntimeConfig,
+        regime_store: AtomicRegimeStore | None = None,
+        shadow_store: HftShadowStore | None = None,
         clock: Callable[[], datetime] | None = None,
         mt5_gate: SerializedMt5OperationGate | None = None,
         lease_store: HftShadowStore | None = None,
@@ -83,11 +140,17 @@ class DemoHftRuntime:
             raise TypeError("gateway must be VerifiedDemoExecutionGateway")
         if not isinstance(store, DemoExecutionStore):
             raise TypeError("store must be DemoExecutionStore")
+        if regime_store is not None and not isinstance(regime_store, AtomicRegimeStore):
+            raise TypeError("regime_store must be AtomicRegimeStore")
+        if shadow_store is not None and not isinstance(shadow_store, HftShadowStore):
+            raise TypeError("shadow_store must be HftShadowStore")
         self.provider = provider
         self.plan_store = plan_store
         self.gateway = gateway
         self.store = store
         self.config = config
+        self.regime_store = regime_store
+        self.shadow_store = shadow_store
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.mt5_gate = mt5_gate or SerializedMt5OperationGate()
         if lease_store is not None and not isinstance(lease_store, HftShadowStore):
@@ -98,6 +161,15 @@ class DemoHftRuntime:
         self.lease_owner = lease_owner
         self.features = TickFeatureEngine()
         self.fast = FastExecutionEngine()
+        self.hft = HftExecutionEngine(
+            arbiter=SignalArbiter(cost_safety_margin_points=config.cost_safety_margin_points),
+            stop_distance_points=config.stop_distance_points,
+            take_profit_distance_points=config.take_profit_distance_points,
+            time_stop_seconds=config.time_stop_seconds,
+            max_exit_spread_points=config.max_exit_spread_points,
+            max_exit_spread_expansion_points=config.max_exit_spread_expansion_points,
+            max_exit_volatility=config.max_exit_volatility,
+        )
         self.risk = RiskEngine(
             RiskConfig(
                 max_risk_fraction=config.risk_ceiling,
@@ -114,12 +186,53 @@ class DemoHftRuntime:
         self._account_equity: float | None = None
         self._ticks = 0
         self._plan_ids_recorded: set[str] = set()
+        self._regime_ids_recorded: set[str] = set()
+        self._position_loaded = False
+        self._owned_position: dict[str, Any] | None = None
+        self._account_cache: Any | None = None
+        self._account_observed_at: datetime | None = None
+        self._submission_times: deque[datetime] = deque()
+        self._last_submission_at: datetime | None = None
+        self._order_rate_circuit_open = False
+        self._persistence: AsyncPersistenceQueue | None = None
+        self._decision_latencies: list[float] = []
+        self._order_latencies: list[float] = []
 
     def _ensure_run(self) -> None:
         if not self._started:
             self.store.initialize()
             self.store.start_run(self.gateway.run_id, git_commit="runtime")
+            if self.shadow_store is not None:
+                self.shadow_store.initialize()
+                self.shadow_store.start_run(
+                    self.gateway.run_id,
+                    mode="SHADOW",
+                    source_fingerprint="MT5_DEMO_HFT",
+                )
             self._started = True
+
+    def _persist(self, target: Any, method: str, *args: Any, **kwargs: Any) -> bool:
+        writer = self._persistence
+        if writer is None:
+            getattr(target, method)(*args, **kwargs)
+            return True
+        return writer.submit(target, method, *args, **kwargs)
+
+    def _record_shadow_tick(self, tick: Tick, snapshot: Any, decision: Any, action_id: str, risk: RiskDecision) -> None:
+        if self.shadow_store is None:
+            return
+        self._persist(self.shadow_store, "record_tick", self.gateway.run_id, tick, features=snapshot)
+        self._persist(
+            self.shadow_store,
+            "record_action",
+            self.gateway.run_id,
+            action_id,
+            tick,
+            decision.action,
+            decision.reason,
+            processing_ms=decision.processing_ms,
+        )
+        self._persist(self.shadow_store, "record_risk", action_id, asdict(risk))
 
     def _tick(self) -> Tick:
         with self.mt5_gate.acquire("demo_tick"):
@@ -131,10 +244,18 @@ class DemoHftRuntime:
             raw.timestamp,
             raw.bid,
             raw.ask,
-            self.config.point,
+            float(getattr(raw, "point", self.config.point) or self.config.point),
         )
 
-    def _account(self) -> Any:
+    def _account(self, *, force: bool = False) -> Any:
+        now = utc(self.clock(), "account_now")
+        if (
+            not force
+            and self._account_cache is not None
+            and self._account_observed_at is not None
+            and (now - self._account_observed_at).total_seconds() < self.config.account_refresh_seconds
+        ):
+            return self._account_cache
         with self.mt5_gate.acquire("demo_account"):
             account = self.provider.get_account_info()
             terminal = self.provider.get_terminal_info()
@@ -151,9 +272,11 @@ class DemoHftRuntime:
             margin=getattr(account, "margin", None),
             free_margin=getattr(account, "margin_free", getattr(account, "free_margin", None)),
             margin_level=getattr(account, "margin_level", None),
-            observed_at=utc(self.clock(), "account_observed_at"),
+            observed_at=now,
         )
-        self.store.record_account_snapshot(self.gateway.run_id, snapshot)
+        self._persist(self.store, "record_account_snapshot", self.gateway.run_id, snapshot)
+        self._account_cache = account
+        self._account_observed_at = now
         return account
 
     def _symbol_info(self) -> Any:
@@ -168,14 +291,17 @@ class DemoHftRuntime:
         return None
 
     def _open_position(self) -> dict[str, Any] | None:
-        positions = self.store.read_owned_positions(self.config.symbol)
-        open_positions = [item for item in positions if str(item.get("state", "")).upper() == "OPEN"]
-        if len(open_positions) > 1:
-            raise RuntimeError("DEMO_RECONCILIATION_REQUIRED: multiple owned positions")
-        return open_positions[0] if open_positions else None
+        if not self._position_loaded:
+            positions = self.store.read_owned_positions(self.config.symbol)
+            open_positions = [item for item in positions if str(item.get("state", "")).upper() == "OPEN"]
+            if len(open_positions) > 1:
+                raise RuntimeError("DEMO_RECONCILIATION_REQUIRED: multiple owned positions")
+            self._owned_position = open_positions[0] if open_positions else None
+            self._position_loaded = True
+        return self._owned_position
 
     def _record_risk(self, signal_id: str, risk: RiskDecision) -> None:
-        self.store.record_risk_decision(
+        self._persist(self.store, "record_risk_decision",
             action_id=str(uuid.uuid4()),
             signal_id=signal_id,
             accepted=risk.accepted,
@@ -185,11 +311,24 @@ class DemoHftRuntime:
             payload={"execution_mode": "DEMO"},
         )
 
-    def _entry_intent(self, plan: Any, tick: Tick, account: Any, info: Any) -> DemoOrderIntent:
-        direction = "LONG" if plan.primary_direction.value == "LONG" else "SHORT"
+    def _entry_intent(
+        self,
+        source: Any,
+        tick: Tick,
+        account: Any,
+        info: Any,
+        *,
+        strategy_id: str | None = None,
+        direction: str | None = None,
+    ) -> DemoOrderIntent:
+        source_direction = getattr(getattr(source, "primary_direction", None), "value", None)
+        direction = direction or ("LONG" if source_direction == "LONG" else "SHORT")
         entry = tick.ask if direction == "LONG" else tick.bid
-        stop_distance = plan.stop_policy.stop_distance_points * tick.point
-        target_distance = plan.stop_policy.take_profit_distance_points * tick.point
+        stop_policy = getattr(source, "stop_policy", None)
+        stop_distance_points = float(getattr(stop_policy, "stop_distance_points", self.config.stop_distance_points))
+        target_distance_points = float(getattr(stop_policy, "take_profit_distance_points", self.config.take_profit_distance_points))
+        stop_distance = stop_distance_points * tick.point
+        target_distance = target_distance_points * tick.point
         stop = entry - stop_distance if direction == "LONG" else entry + stop_distance
         target = entry + target_distance if direction == "LONG" else entry - target_distance
         stops_level = getattr(info, "trade_stops_level", 0) or 0
@@ -202,7 +341,8 @@ class DemoHftRuntime:
             minimum_distance_points=float(stops_level),
         )
         equity = float(getattr(account, "equity", 0.0) or 0.0)
-        requested = equity * self.config.risk_fraction / max(stop_distance * 100000.0, 1.0)
+        risk_multiplier = float(getattr(source, "risk_multiplier", 1.0) or 1.0)
+        requested = equity * self.config.risk_fraction * risk_multiplier / max(stop_distance * 100000.0, 1.0)
         volume = normalize_volume(
             max(requested, float(getattr(info, "volume_min", 0.01) or 0.01)),
             minimum=float(getattr(info, "volume_min", 0.01) or 0.01),
@@ -210,12 +350,18 @@ class DemoHftRuntime:
             step=float(getattr(info, "volume_step", 0.01) or 0.01),
             cap=self.config.volume_cap,
         )
+        plan_id = str(getattr(source, "plan_id", None) or getattr(source, "state_id", "")).strip()
+        source_decision_id = str(getattr(source, "source_decision_id", None) or plan_id).strip()
+        source_run_id = str(getattr(source, "source_run_id", None) or plan_id).strip()
+        git_commit = str(getattr(source, "git_commit", "runtime") or "runtime").strip()
+        if not plan_id or not source_decision_id or not source_run_id:
+            raise RuntimeError("DEMO strategy provenance unavailable")
         return DemoOrderIntent(
             intent_id=str(uuid.uuid4()),
-            plan_id=str(plan.plan_id),
-            source_decision_id=str(plan.source_decision_id),
-            source_run_id=str(plan.source_run_id),
-            strategy_id=str(plan.strategy_family),
+            plan_id=plan_id,
+            source_decision_id=source_decision_id,
+            source_run_id=source_run_id,
+            strategy_id=str(strategy_id or getattr(source, "strategy_family", "strategic_shadow")),
             symbol=tick.symbol,
             direction=direction,
             volume=volume,
@@ -224,9 +370,81 @@ class DemoHftRuntime:
             take_profit=target,
             deviation_points=self.config.deviation_points,
             created_at=tick.timestamp,
-            git_commit=str(plan.git_commit),
+            git_commit=git_commit,
             account_trade_mode=getattr(account, "trade_mode", None),
         )
+
+    def _exit_intent(self, source: Any, current: dict[str, Any], tick: Tick, account: Any, *, reason: str) -> DemoOrderIntent:
+        original = str(current.get("direction", "")).upper()
+        direction = "SHORT" if original == "LONG" else "LONG"
+        requested = tick.bid if original == "LONG" else tick.ask
+        distance = self.config.stop_distance_points * tick.point
+        stop = requested + distance if direction == "SHORT" else requested - distance
+        target = requested - distance if direction == "SHORT" else requested + distance
+        return DemoOrderIntent(
+            intent_id=str(uuid.uuid4()),
+            plan_id=str(getattr(source, "plan_id", None) or getattr(source, "state_id", "exit-state")),
+            source_decision_id=str(getattr(source, "source_decision_id", None) or "runtime-exit"),
+            source_run_id=str(getattr(source, "source_run_id", None) or "runtime-exit"),
+            strategy_id=f"exit:{reason}",
+            symbol=tick.symbol,
+            direction=direction,
+            volume=float(current["volume"]),
+            requested_price=requested,
+            stop_loss=stop,
+            take_profit=target,
+            deviation_points=self.config.deviation_points,
+            created_at=tick.timestamp,
+            git_commit=str(getattr(source, "git_commit", "runtime") or "runtime"),
+            account_trade_mode=getattr(account, "trade_mode", None),
+        )
+
+    def _order_allowed(self, timestamp: datetime) -> bool:
+        if self._order_rate_circuit_open:
+            return False
+        cutoff = timestamp.timestamp() - self.config.order_rate_window_seconds
+        while self._submission_times and self._submission_times[0].timestamp() < cutoff:
+            self._submission_times.popleft()
+        if len(self._submission_times) >= self.config.max_order_submissions:
+            self._order_rate_circuit_open = True
+            self.store.set_circuit_state(status="HFT_ORDER_RATE_CIRCUIT_OPEN", reason="bounded broker submission rate exceeded")
+            return False
+        return not (
+            self._last_submission_at is not None
+            and (timestamp - self._last_submission_at).total_seconds() < self.config.cooldown_seconds
+        )
+
+    def _record_submission(self, timestamp: datetime) -> None:
+        self._submission_times.append(timestamp)
+        self._last_submission_at = timestamp
+
+    def _entry_position_clear(self) -> bool:
+        getter = getattr(self.provider, "get_positions", None)
+        if not callable(getter):
+            self.store.record_reconciliation(
+                status="BROKER_STATE_UNKNOWN",
+                reason="provider does not expose position reads before entry",
+                details={"symbol": self.config.symbol},
+            )
+            return False
+        try:
+            with self.mt5_gate.acquire("demo_entry_position_guard"):
+                positions = tuple(getter(self.config.symbol) or ())
+        except Exception:
+            self.store.record_reconciliation(
+                status="BROKER_STATE_UNKNOWN",
+                reason="position read failed before entry",
+                details={"symbol": self.config.symbol},
+            )
+            return False
+        if positions:
+            self.store.record_reconciliation(
+                status="RECONCILIATION_REQUIRED",
+                reason="broker position exists before new entry",
+                details={"symbol": self.config.symbol, "count": len(positions)},
+            )
+            return False
+        return True
 
     def run_once(self) -> dict[str, Any]:
         self._ensure_run()
@@ -238,33 +456,60 @@ class DemoHftRuntime:
             return {"status": "DROPPED", "action": "NO_ACTION", "execution_mode": "DEMO", "broker_order_sent": False}
         self._last_tick = tick.timestamp
         self._ticks += 1
-        plan = self.plan_store.current(
-            tick.timestamp,
-            self.config.symbol,
-            require_provenance=self.config.require_plan_provenance,
-        )
+        plan = None
+        regime: StrategicRegimeState | None = None
+        if self.config.hft_first and self.regime_store is not None:
+            regime = self.regime_store.current(tick.timestamp, self.config.symbol)
+        else:
+            plan = self.plan_store.current(
+                tick.timestamp,
+                self.config.symbol,
+                require_provenance=self.config.require_plan_provenance,
+            )
         if plan is not None and plan.plan_id not in self._plan_ids_recorded:
-            self.store.record_plan(self.gateway.run_id, plan)
+            self._persist(self.store, "record_plan", self.gateway.run_id, plan)
             self._plan_ids_recorded.add(plan.plan_id)
+        if regime is not None and regime.state_id not in self._regime_ids_recorded:
+            self._persist(self.store, "record_signal",
+                run_id=self.gateway.run_id,
+                signal_id=str(uuid.uuid4()),
+                tick_timestamp=tick.timestamp,
+                symbol=tick.symbol,
+                action="REGIME_UPDATE",
+                reason=regime.regime.value,
+                plan_id=regime.state_id,
+                payload={"execution_mode": "DEMO", "regime": regime.to_payload()},
+            )
+            self._regime_ids_recorded.add(regime.state_id)
         snapshot = self.features.update(tick, plan_created_at=None if plan is None else plan.created_at)
         current = self._open_position()
         state = PositionState.FLAT if current is None else PositionState.LONG if current["direction"] == "LONG" else PositionState.SHORT
-        decision = self.fast.on_tick(
-            plan,
-            snapshot,
-            position_state=state,
-            entry_price=None if current is None else float(current["price_open"]),
-            entry_at=None,
-        )
+        if self.config.hft_first and self.regime_store is not None:
+            decision = self.hft.on_tick(
+                regime,
+                snapshot,
+                position_state=state,
+                entry_price=None if current is None else float(current["price_open"]),
+                entry_at=None if current is None else self._position_entry_at(current),
+            )
+        else:
+            decision = self.fast.on_tick(
+                plan,
+                snapshot,
+                position_state=state,
+                entry_price=None if current is None else float(current["price_open"]),
+                entry_at=None,
+            )
+        self._decision_latencies.append(float(decision.processing_ms))
         signal_id = str(uuid.uuid4())
-        self.store.record_signal(
+        self._persist(self.store, "record_signal",
             run_id=self.gateway.run_id,
             signal_id=signal_id,
             tick_timestamp=tick.timestamp,
             symbol=tick.symbol,
             action=decision.action.value,
             reason=decision.reason,
-            plan_id=None if plan is None else plan.plan_id,
+            plan_id=(regime.state_id if regime is not None else None if plan is None else plan.plan_id),
             payload={"execution_mode": "DEMO", "real_money": False},
         )
         account = self._account()
@@ -285,26 +530,102 @@ class DemoHftRuntime:
             decision.action,
             tick,
             risk_context,
-            plan_expired=plan is None,
+            plan_expired=(
+                (plan is None and not self.config.hft_first)
+                or (self.config.hft_first and regime is None and decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT))
+            ),
             allowed_sessions=None if plan is None else plan.session_constraints,
         )
         if decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT) and not self.circuit.entry_allowed(equity):
             risk = RiskDecision(False, self.circuit.status, "DEMO entry circuit is closed", 0.0)
+        if decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT) and not self._order_allowed(tick.timestamp):
+            risk = RiskDecision(False, "HFT_ORDER_RATE_CIRCUIT_OPEN" if self._order_rate_circuit_open else "HFT_COOLDOWN", "HFT technical order-rate or cooldown gate", 0.0)
         self._record_risk(signal_id, risk)
+        self._record_shadow_tick(tick, snapshot, decision, signal_id, risk)
+        if decision.action is FastAction.EXIT and current is not None and risk.accepted:
+            source = regime if regime is not None else plan
+            order_started = time.perf_counter()
+            exit_intent = self._exit_intent(source, current, tick, account, reason=decision.reason)
+            result = self.gateway.submit(
+                exit_intent,
+                position_ticket=int(current["ticket"]),
+                exit_reason=decision.reason,
+            )
+            self._order_latencies.append((time.perf_counter() - order_started) * 1000.0)
+            self._record_submission(tick.timestamp)
+            if result.classification in {"FILLED", "PARTIAL"}:
+                self._owned_position = None
+                if self.shadow_store is not None:
+                    self._persist(
+                        self.shadow_store,
+                        "record_fill",
+                        self.gateway.run_id,
+                        {
+                            "fill_id": f"demo-shadow-{exit_intent.intent_id}",
+                            "action_id": signal_id,
+                            "symbol": tick.symbol,
+                            "timestamp": tick.timestamp.isoformat(),
+                            "action": decision.action.value,
+                            "price": exit_intent.requested_price,
+                            "size": result.fill_volume or exit_intent.volume,
+                            "slippage_points": 0.0,
+                            "latency_ms": self._order_latencies[-1],
+                            "executed": False,
+                        },
+                    )
+                    closed_position = dict(current)
+                    closed_position["position_id"] = str(current["ticket"])
+                    closed_position["state"] = "CLOSED"
+                    closed_position["executed"] = False
+                    self._persist(self.shadow_store, "record_position", self.gateway.run_id, closed_position)
+            return {
+                "status": "PROCESSED",
+                "action": decision.action.value,
+                "reason_code": decision.reason,
+                "risk_accepted": risk.accepted,
+                "execution_mode": "DEMO",
+                "broker_order_sent": result.broker_order_sent,
+                "classification": result.classification,
+                "strategy_id": decision.strategy_id,
+            }
         if not risk.accepted or decision.action not in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
             return {
                 "status": "PROCESSED",
                 "action": decision.action.value,
+                "reason_code": decision.reason,
                 "risk_accepted": risk.accepted,
                 "execution_mode": "DEMO",
                 "broker_order_sent": False,
                 "classification": None,
+                "strategy_id": decision.strategy_id,
+            }
+        if not self._entry_position_clear():
+            return {
+                "status": "PROCESSED",
+                "action": decision.action.value,
+                "reason_code": "RECONCILIATION_REQUIRED",
+                "risk_accepted": False,
+                "execution_mode": "DEMO",
+                "broker_order_sent": False,
+                "classification": None,
+                "strategy_id": decision.strategy_id,
             }
         info = self._symbol_info()
         if info is None:
             raise RuntimeError("DEMO symbol metadata unavailable")
-        intent = self._entry_intent(plan, tick, account, info)
+        source = regime if regime is not None else plan
+        intent = self._entry_intent(
+            source,
+            tick,
+            account,
+            info,
+            strategy_id=decision.strategy_id,
+            direction="LONG" if decision.action is FastAction.ENTER_LONG else "SHORT",
+        )
+        self._record_submission(tick.timestamp)
+        order_started = time.perf_counter()
         result = self.gateway.submit(intent)
+        self._order_latencies.append((time.perf_counter() - order_started) * 1000.0)
         if result.classification in {"FILLED", "PARTIAL"} and result.order_ticket is not None:
             self.store.record_position(
                 {
@@ -317,8 +638,44 @@ class DemoHftRuntime:
                     "stop_loss": intent.stop_loss,
                     "take_profit": intent.take_profit,
                     "state": "OPEN",
+                    "opened_at": tick.timestamp.isoformat(),
                 }
             )
+            self._owned_position = {
+                "ticket": result.order_ticket,
+                "intent_id": intent.intent_id,
+                "symbol": tick.symbol,
+                "direction": intent.direction,
+                "volume": result.fill_volume or intent.volume,
+                "price_open": result.fill_price or intent.requested_price,
+                "stop_loss": intent.stop_loss,
+                "take_profit": intent.take_profit,
+                "state": "OPEN",
+                "opened_at": tick.timestamp.isoformat(),
+            }
+            if self.shadow_store is not None:
+                shadow_position = dict(self._owned_position)
+                shadow_position["position_id"] = str(result.order_ticket)
+                shadow_position["state"] = "LONG" if intent.direction == "LONG" else "SHORT"
+                shadow_position["executed"] = False
+                self._persist(
+                    self.shadow_store,
+                    "record_fill",
+                    self.gateway.run_id,
+                    {
+                        "fill_id": f"demo-shadow-{intent.intent_id}",
+                        "action_id": signal_id,
+                        "symbol": tick.symbol,
+                        "timestamp": tick.timestamp.isoformat(),
+                        "action": decision.action.value,
+                        "price": intent.requested_price,
+                        "size": result.fill_volume or intent.volume,
+                        "slippage_points": 0.0,
+                        "latency_ms": self._order_latencies[-1],
+                        "executed": False,
+                    },
+                )
+                self._persist(self.shadow_store, "record_position", self.gateway.run_id, shadow_position)
         return {
             "status": "PROCESSED",
             "action": decision.action.value,
@@ -328,7 +685,20 @@ class DemoHftRuntime:
             "classification": result.classification,
             "order_ticket": result.order_ticket,
             "deal_ticket": result.deal_ticket,
+            "strategy_id": decision.strategy_id,
         }
+
+    @staticmethod
+    def _position_entry_at(position: Mapping[str, Any]) -> datetime | None:
+        value = position.get("created_at") or position.get("opened_at")
+        if isinstance(value, datetime):
+            return utc(value, "position_entry_at")
+        if isinstance(value, str):
+            try:
+                return utc(datetime.fromisoformat(value.replace("Z", "+00:00")), "position_entry_at")
+            except ValueError:
+                return None
+        return None
 
     def run(self, *, max_ticks: int | None = None, stop_event: Any | None = None) -> dict[str, Any]:
         limit = self.config.max_ticks if max_ticks is None else max_ticks
@@ -336,6 +706,8 @@ class DemoHftRuntime:
         started = time.perf_counter()
         status = "STOPPED"
         observations = 0
+        persistence_dropped = 0
+        persistence_error: str | None = None
         lease_token: str | None = None
         if self.lease_store is not None:
             owner = self.lease_owner
@@ -351,6 +723,8 @@ class DemoHftRuntime:
             if lease.status is not HftLeaseStatus.ACQUIRED:
                 raise HftLeaseBusyError("HFT_ALREADY_RUNNING")
             lease_token = lease.owner_token
+        self._persistence = AsyncPersistenceQueue(capacity=512)
+        self._persistence.start()
         try:
             while (limit == 0 or observations < limit) and not (stop_event is not None and stop_event.is_set()):
                 self.run_once()
@@ -361,15 +735,43 @@ class DemoHftRuntime:
                     time.sleep(self.config.poll_interval_seconds)
             status = "COMPLETED"
         finally:
+            if self._persistence is not None:
+                with suppress(Exception):
+                    self._persistence.flush()
+                persistence_dropped = self._persistence.dropped
+                persistence_error = self._persistence.error
+                with suppress(Exception):
+                    self._persistence.stop()
+                self._persistence = None
             self.store.close_run(self.gateway.run_id, status=status)
+            if self.shadow_store is not None:
+                with suppress(Exception):
+                    self.shadow_store.close_run(self.gateway.run_id, status=status)
             if lease_token is not None:
                 self.lease_store.release_lease(lease_token)
+        ordered = sorted(self._decision_latencies)
+        def percentile(fraction: float) -> float | None:
+            if not ordered:
+                return None
+            index = min(len(ordered) - 1, max(0, int(len(ordered) * fraction) - 1))
+            return ordered[index]
+        order_latencies = sorted(self._order_latencies)
         return {
             "run_id": self.gateway.run_id,
             "execution_mode": "DEMO",
             "observed_ticks": observations,
             "runtime_seconds": max(0.0, time.perf_counter() - started),
             "broker_order_sent": self.store.snapshot()["orders"],
+            "local_decision_p50_ms": percentile(0.50),
+            "local_decision_p95_ms": percentile(0.95),
+            "local_decision_p99_ms": percentile(0.99),
+            "local_decision_max_ms": max(ordered) if ordered else None,
+            "order_submission_p50_ms": _percentile(order_latencies, 0.50),
+            "order_submission_p95_ms": _percentile(order_latencies, 0.95),
+            "order_submission_max_ms": max(order_latencies) if order_latencies else None,
+            "persistence_dropped": persistence_dropped,
+            "persistence_error": persistence_error,
+            "executed": False,
             "real_money": False,
         }
 

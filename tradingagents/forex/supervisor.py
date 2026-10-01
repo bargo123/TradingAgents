@@ -35,6 +35,7 @@ class HftShadowSupervisorContext:
     provider_factory: Callable[..., Any]
     plan_store: Any
     hft_db_path: Path
+    regime_store: Any | None = None
     provider_session: Any | None = None
 
     def start(self) -> None:
@@ -388,6 +389,7 @@ class ForexSupervisor:
     ) -> HftShadowSupervisorContext:
         from tradingagents.dataflows.mt5.provider import MT5Provider
         from tradingagents.forex.hft.plan_store import AtomicPlanStore
+        from tradingagents.forex.hft.regime_store import AtomicRegimeStore
         from tradingagents.forex.hft.runtime import HftShadowConfig
         from tradingagents.forex.hft.store import HftShadowStore
         from tradingagents.forex.hft.supervisor import HftShadowWorker
@@ -405,6 +407,7 @@ class ForexSupervisor:
             return shared_provider
 
         plan_store = AtomicPlanStore()
+        regime_store = AtomicRegimeStore()
         hft_store = HftShadowStore(resolved_hft_path)
         config = HftShadowConfig(
             execution_mode="DEMO" if demo_execute else "SHADOW",
@@ -461,7 +464,10 @@ class ForexSupervisor:
                         artifact_path=resolved_demo_path,
                         max_ticks=max_ticks,
                         poll_interval_seconds=poll_interval_seconds,
+                        hft_first=True,
                     ),
+                    regime_store=regime_store,
+                    shadow_store=hft_store,
                     mt5_gate=gate,
                     lease_store=hft_store,
                 )
@@ -469,6 +475,7 @@ class ForexSupervisor:
         worker = HftShadowWorker(
             provider_factory,
             plan_store,
+            regime_store=regime_store,
             config=config,
             store=hft_store,
             terminal_path=terminal_path,
@@ -486,6 +493,7 @@ class ForexSupervisor:
             gate=gate,
             provider_factory=provider_factory,
             plan_store=plan_store,
+            regime_store=regime_store,
             hft_db_path=resolved_hft_path,
             provider_session=shared_provider,
         )
