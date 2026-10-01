@@ -276,7 +276,13 @@ def _print_status(summary: dict[str, Any], as_json: bool) -> None:
     print(f"DATABASE: {summary.get('database_path')}")
 
 
-def _print_banner() -> None:
+def _print_banner(hft_context: Any | None = None) -> None:
+    worker = getattr(hft_context, "worker", None)
+    config = getattr(worker, "config", None)
+    if getattr(config, "execution_mode", "SHADOW") == "DEMO":
+        print("MT5 FOREX — DEMO MODE")
+        print("DEMO ACCOUNT ONLY — NO REAL-MONEY ORDERS")
+        return
     print("MT5 FOREX — SHADOW COLLECTOR")
     print("NO ORDER WILL BE SENT")
 
@@ -354,7 +360,7 @@ def main(
             forwarded.extend(["--terminal-path", args.terminal_path])
         return evaluate_main(forwarded)
 
-    _print_banner()
+    _print_banner(hft_context)
     try:
         config = _make_config(args)
         if _watcher_lease_is_active(

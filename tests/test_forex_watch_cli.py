@@ -78,6 +78,36 @@ def test_once_prints_shadow_collector_banner(capsys, monkeypatch, tmp_path):
     assert "NO ORDER WILL BE SENT" in output
 
 
+def test_demo_handoff_prints_demo_banner_without_shadow_only_claim(
+    capsys, monkeypatch, tmp_path
+):
+    class FakeCoordinator:
+        def __init__(self, **kwargs):
+            pass
+
+        def start(self, now=None):
+            return SimpleNamespace(status=LeaseStatus.ACQUIRED)
+
+        def run_once(self, now=None):
+            return SimpleNamespace(lifecycle_status="IDLE", active_run_id=None, error_code=None)
+
+        def shutdown(self):
+            pass
+
+    class Context:
+        worker = SimpleNamespace(config=SimpleNamespace(execution_mode="DEMO"))
+
+    monkeypatch.setattr("cli.forex_watch.WatcherCoordinator", FakeCoordinator)
+    assert main(
+        ["once", "--db-path", str(tmp_path / "watch.db")],
+        hft_context=Context(),
+    ) == 0
+    output = capsys.readouterr().out
+    assert "MT5 FOREX — DEMO MODE" in output
+    assert "DEMO ACCOUNT ONLY" in output
+    assert "NO ORDER WILL BE SENT" not in output
+
+
 def test_once_propagates_active_analysis_failure(capsys, monkeypatch, tmp_path):
     class FakeCoordinator:
         def __init__(self, **kwargs):
