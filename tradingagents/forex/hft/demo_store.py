@@ -495,10 +495,27 @@ class DemoExecutionStore:
         with self._connect() as db:
             db.execute(
                 """
-                INSERT OR REPLACE INTO demo_positions(
+                INSERT INTO demo_positions(
                     ticket,intent_id,symbol,direction,volume,price_open,stop_loss,
                     take_profit,state,owned,payload_json,updated_at,execution_mode,real_money
                 ) VALUES(?,?,?,?,?,?,?,?,?,1,?,?,'DEMO',0)
+                ON CONFLICT(ticket) DO UPDATE SET
+                    intent_id=excluded.intent_id,
+                    symbol=excluded.symbol,
+                    direction=excluded.direction,
+                    volume=excluded.volume,
+                    price_open=excluded.price_open,
+                    stop_loss=excluded.stop_loss,
+                    take_profit=excluded.take_profit,
+                    state=excluded.state,
+                    owned=excluded.owned,
+                    payload_json=excluded.payload_json,
+                    updated_at=excluded.updated_at,
+                    execution_mode=excluded.execution_mode,
+                    real_money=excluded.real_money
+                WHERE NOT (
+                    demo_positions.state='CLOSED' AND excluded.state='OPEN'
+                )
                 """,
                 (
                     int(position["ticket"]),

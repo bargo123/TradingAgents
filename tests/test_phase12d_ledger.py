@@ -98,3 +98,28 @@ def test_demo_store_rejects_non_demo_execution_mode(tmp_path: Path):
 
     with pytest.raises(ValueError, match="DEMO"):
         store.record_order_intent("run-1", intent)
+
+
+def test_demo_store_does_not_reopen_closed_position_from_delayed_telemetry(tmp_path: Path):
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    store.initialize()
+    store.start_run("run-1", git_commit="abc123")
+    intent = _intent()
+    store.record_order_intent("run-1", intent)
+    position = {
+        "ticket": 11,
+        "intent_id": intent.intent_id,
+        "symbol": "EURUSD",
+        "direction": "LONG",
+        "volume": 0.01,
+        "price_open": 1.1001,
+        "stop_loss": 1.099,
+        "take_profit": 1.102,
+        "state": "OPEN",
+    }
+
+    store.record_position(position)
+    store.record_position({**position, "state": "CLOSED"})
+    store.record_position({**position, "state": "OPEN", "current_pnl_points": 3.0})
+
+    assert store.read_owned_positions("EURUSD")[0]["state"] == "CLOSED"

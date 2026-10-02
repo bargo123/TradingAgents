@@ -161,6 +161,35 @@ def test_dynamic_exit_closes_on_causal_mfe_giveback_after_trailing_arms():
     assert decision.trailing_level is not None
 
 
+def test_dynamic_exit_takes_profit_when_expected_move_is_reached():
+    features = _features((1.10000, 1.10002, 1.10004, 1.10006, 1.10008))
+    state = _state(features.timestamp - timedelta(seconds=1))
+    engine = HftExecutionEngine()
+    entry_price = features.ask
+    target_bid = entry_price + 13 * features.point
+    target = _position_features(
+        features,
+        bid=target_bid,
+        ask=target_bid + features.spread,
+        momentum=4 * features.point,
+        persistence=0.8,
+    )
+
+    decision = engine.on_tick(
+        state,
+        target,
+        position_state=PositionState.LONG,
+        entry_price=entry_price,
+        entry_at=features.timestamp,
+        expected_move_points=8.0,
+        strategy_id="range_rejection",
+    )
+
+    assert decision.action is FastAction.EXIT
+    assert decision.reason == "TAKE_PROFIT"
+    assert decision.current_pnl_points > 12.5
+
+
 def test_expected_move_scales_no_progress_and_range_is_tighter_than_momentum():
     features = _features((1.10000, 1.10002, 1.10004, 1.10006, 1.10008))
     state = _state(features.timestamp - timedelta(seconds=1))

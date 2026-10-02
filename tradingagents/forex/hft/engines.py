@@ -200,9 +200,10 @@ class HftExecutionEngine:
     """Deterministic strategy/arbitration engine used by the DEMO hot path.
 
     HFT positions are managed from causal tick state.  The legacy stop/target
-    constructor arguments remain accepted for compatibility, but they are not
-    normal strategy exits; only ``emergency_stop_distance_points`` can produce
-    the explicit catastrophic broker-stop reason.
+    constructor arguments remain accepted for compatibility; normal profit
+    taking uses the strategy's expected move, while only
+    ``emergency_stop_distance_points`` can produce the explicit catastrophic
+    broker-stop reason.
     """
 
     def __init__(
@@ -213,6 +214,7 @@ class HftExecutionEngine:
         arbiter: SignalArbiter | None = None,
         stop_distance_points: float = 20.0,
         take_profit_distance_points: float = 30.0,
+        profit_target_fraction: float = 1.5,
         time_stop_seconds: int = 30,
         emergency_stop_distance_points: float = 100.0,
         hard_max_duration_seconds: float | None = None,
@@ -225,6 +227,7 @@ class HftExecutionEngine:
         if (
             stop_distance_points <= 0
             or take_profit_distance_points <= 0
+            or profit_target_fraction <= 0
             or time_stop_seconds <= 0
             or emergency_stop_distance_points <= 0
             or max_exit_spread_points <= 0
@@ -242,6 +245,7 @@ class HftExecutionEngine:
         self.arbiter = arbiter or SignalArbiter()
         self.stop_distance_points = float(stop_distance_points)
         self.take_profit_distance_points = float(take_profit_distance_points)
+        self.profit_target_fraction = float(profit_target_fraction)
         self.time_stop_seconds = int(time_stop_seconds)
         self.emergency_stop_distance_points = float(emergency_stop_distance_points)
         self.hard_max_duration_seconds = hard_max
@@ -427,6 +431,9 @@ class HftExecutionEngine:
             return "VOLATILITY_BLOWOUT"
         profile = self._profile(tracked.strategy_id, self.range_exit_profile, self.momentum_exit_profile)
         expected = tracked.expected_move_points
+        if tracked.current_pnl_points >= max(1.0, expected * self.profit_target_fraction):
+            tracked.profit_protection_state = "EXIT_PENDING"
+            return "TAKE_PROFIT"
         arm_threshold = max(1.0, expected * profile.protection_arm_fraction)
         micro_threshold = max(1.0, expected * profile.micro_reversal_mfe_fraction)
         reversal = (
