@@ -102,6 +102,27 @@ def test_hold_shadow_decision_becomes_neutral_filter_not_directional_trigger():
     assert state.momentum_enabled is False
 
 
+def test_regime_feed_accepts_persisted_optional_confidence_as_neutral_risk():
+    """Persisted Phase 5 decisions may leave confidence unset."""
+    now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    decision = SimpleNamespace(
+        decision_id="decision-persisted",
+        source_run_id="run-persisted",
+        resolved_symbol="EURUSD",
+        action="HOLD",
+        confidence=None,
+        decision_completed_timestamp=now,
+        valid_until=now + timedelta(minutes=5),
+    )
+
+    state = build_regime_from_shadow_decision(decision, git_commit="abc123")
+
+    assert state is not None
+    assert state.confidence == 0.0
+    assert state.risk_multiplier == 0.25
+    assert state.direction_policy is DirectionPolicy.BOTH
+
+
 def test_regime_feed_rejects_invalid_confidence_and_accepts_action_enum():
     now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
     decision = SimpleNamespace(
@@ -436,3 +457,25 @@ def test_worker_publishes_regime_state_without_converting_hold_to_entry(tmp_path
     assert current is not None
     assert current.direction_policy is DirectionPolicy.BOTH
     assert current.regime is Regime.NEUTRAL
+
+
+def test_worker_publishes_persisted_decision_with_missing_confidence(tmp_path: Path):
+    from tests.test_phase12_hft_supervisor import _decision, _Provider
+    from tradingagents.forex.hft.runtime import HftShadowConfig
+    from tradingagents.forex.hft.store import HftShadowStore
+    from tradingagents.forex.hft.supervisor import HftShadowWorker
+
+    regimes = AtomicRegimeStore()
+    worker = HftShadowWorker(
+        lambda **_: _Provider(),
+        AtomicPlanStore(),
+        regime_store=regimes,
+        config=HftShadowConfig(max_ticks=1, artifact_path=tmp_path / "hft.sqlite3"),
+        store=HftShadowStore(tmp_path / "hft.sqlite3"),
+        git_commit="abc123",
+    )
+
+    assert worker.handle_decision(replace(_decision("HOLD"), confidence=None)) is True
+    current = regimes.current(datetime.now(UTC), "EURUSD")
+    assert current is not None
+    assert current.confidence == 0.0

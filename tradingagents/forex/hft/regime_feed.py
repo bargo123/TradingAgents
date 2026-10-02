@@ -50,7 +50,12 @@ def build_regime_from_shadow_decision(
             return None
     if expires <= created:
         return None
+    # Phase 5 persists confidence as optional metadata.  A missing value is
+    # not a malformed decision (the plan feed already treats it as neutral
+    # confidence); keep the regime risk multiplier at its bounded floor.
     confidence_value = getattr(decision, "confidence", 0.0)
+    if confidence_value is None:
+        confidence_value = 0.0
     try:
         confidence = float(confidence_value)
     except (TypeError, ValueError, OverflowError):
