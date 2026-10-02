@@ -60,6 +60,18 @@ def _require_start_position(value: Any) -> int:
     return value
 
 
+def _require_history_range(start: datetime, end: datetime) -> tuple[datetime, datetime]:
+    if not isinstance(start, datetime) or start.tzinfo is None:
+        raise Mt5DataError("history start must be timezone-aware")
+    if not isinstance(end, datetime) or end.tzinfo is None:
+        raise Mt5DataError("history end must be timezone-aware")
+    start_utc = start.astimezone(timezone.utc)
+    end_utc = end.astimezone(timezone.utc)
+    if end_utc < start_utc:
+        raise Mt5DataError("history end must be greater than or equal to start")
+    return start_utc, end_utc
+
+
 def _field(raw: Any, name: str, default: Any = None) -> Any:
     if raw is None:
         return default
@@ -526,7 +538,7 @@ class MT5Provider:
             raise self._failed_collection("orders_get")
         try:
             parsed = tuple(
-                Mt5Order(ticket=_field(raw, "ticket"), symbol=_field(raw, "symbol"), type=_field(raw, "type"), volume=_first_field(raw, "volume_current", "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp({"time": _first_field(raw, "time_setup", "time")}, broker_clock=clock))
+                Mt5Order(ticket=_field(raw, "ticket"), symbol=_field(raw, "symbol"), type=_field(raw, "type"), volume=_first_field(raw, "volume_current", "volume"), price_open=_field(raw, "price_open"), price_current=_field(raw, "price_current"), sl=_field(raw, "sl"), tp=_field(raw, "tp"), time=_utc_timestamp({"time": _first_field(raw, "time_setup", "time")}, broker_clock=clock), magic=_field(raw, "magic"), comment=_field(raw, "comment"))
                 for raw in raw_orders
             )
         except (TypeError, ValueError, OSError) as exc:
@@ -602,6 +614,34 @@ class MT5Provider:
             return self._get_history_rows("history_deals_get", position=ticket)
         except TypeError:
             return self._get_history_rows("history_deals_get", ticket=ticket)
+
+    def get_history_orders_range(self, start: datetime, end: datetime) -> tuple[dict[str, Any], ...]:
+        """Read all order-history rows in a bounded UTC time window."""
+
+        start_utc, end_utc = _require_history_range(start, end)
+        self._require_connected()
+        clock = self._broker_clock
+        if clock is None:
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
+        return self._get_history_rows(
+            "history_orders_get",
+            date_from=clock.to_broker_datetime(start_utc),
+            date_to=clock.to_broker_datetime(end_utc),
+        )
+
+    def get_history_deals_range(self, start: datetime, end: datetime) -> tuple[dict[str, Any], ...]:
+        """Read all deal-history rows in a bounded UTC time window."""
+
+        start_utc, end_utc = _require_history_range(start, end)
+        self._require_connected()
+        clock = self._broker_clock
+        if clock is None:
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
+        return self._get_history_rows(
+            "history_deals_get",
+            date_from=clock.to_broker_datetime(start_utc),
+            date_to=clock.to_broker_datetime(end_utc),
+        )
 
     def get_spread(self, symbol: str) -> Mt5Spread:
         resolved = self.ensure_symbol(symbol)

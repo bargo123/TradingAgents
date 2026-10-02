@@ -235,6 +235,8 @@ class Mt5Order:
     sl: float | None = None
     tp: float | None = None
     time: datetime | None = None
+    magic: int | None = None
+    comment: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ticket", _nonnegative_integral(self.ticket, "order ticket"))
@@ -247,6 +249,10 @@ class Mt5Order:
                 object.__setattr__(self, name, value)
         if self.time is not None:
             object.__setattr__(self, "time", _utc_timestamp(self.time, "order time"))
+        if self.magic is not None:
+            object.__setattr__(self, "magic", _nonnegative_integral(self.magic, "order magic"))
+        if self.comment is not None:
+            object.__setattr__(self, "comment", _nonempty_text(self.comment, "order comment"))
 
 @dataclass(frozen=True, slots=True)
 class Mt5Spread:

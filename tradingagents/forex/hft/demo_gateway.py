@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -28,6 +29,24 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _position_ticket(row: Mapping[str, Any]) -> int:
+    """Return the broker position identity while preserving local audit IDs."""
+
+    value = row.get("position_ticket")
+    if value is None:
+        payload = row.get("payload_json")
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except (TypeError, ValueError):
+                decoded = {}
+            if isinstance(decoded, Mapping):
+                value = decoded.get("position_ticket")
+    if value is None:
+        value = row.get("ticket")
+    return int(value)
 
 
 class VerifiedDemoExecutionGateway:
@@ -263,7 +282,7 @@ class VerifiedDemoExecutionGateway:
         if position_ticket is not None:
             owned = self.store.read_owned_positions(intent.symbol)
             owned_position = next(
-                (item for item in owned if int(item.get("ticket", -1)) == int(position_ticket) and item.get("state") == "OPEN"),
+                (item for item in owned if _position_ticket(item) == int(position_ticket) and item.get("state") == "OPEN"),
                 None,
             )
             if owned_position is None:
@@ -329,7 +348,7 @@ class VerifiedDemoExecutionGateway:
                 and owned_position is not None
             ):
                 self.store.record_exit(
-                    ticket=position_ticket,
+                    ticket=int(owned_position["ticket"]),
                     reason=exit_reason,
                     realized_pnl=None,
                     payload={

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import time
@@ -10,7 +11,7 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -495,20 +496,79 @@ class DemoHftRuntime:
             )
             return {"status": "RECONCILIATION_REQUIRED", "reason": "LEDGER_TICKET_AMBIGUOUS"}
         ledger = dict(owned[0])
+
+        def parse_timestamp(value: Any) -> datetime | None:
+            if isinstance(value, datetime):
+                return value.astimezone(timezone.utc) if value.tzinfo is not None else None
+            if isinstance(value, str):
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+                return parsed.astimezone(timezone.utc) if parsed.tzinfo is not None else None
+            return None
+
+        def numeric_ids(record: Any) -> set[int]:
+            identifiers: set[int] = set()
+            for key in ("ticket", "order", "deal", "position_id"):
+                value = _broker_field(record, key)
+                if isinstance(value, bool):
+                    continue
+                try:
+                    number = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if number > 0:
+                    identifiers.add(number)
+            return identifiers
+
+        intent = self.store.read_order_intent(str(ledger.get("intent_id", ""))) or {}
+        result_rows = self.store.read_order_results(str(ledger.get("intent_id", "")))
+        broker_ids = {ticket}
+        for row in result_rows:
+            for key in ("order_ticket", "deal_ticket"):
+                value = row.get(key)
+                if isinstance(value, int) and value > 0:
+                    broker_ids.add(value)
+        anchor = next(
+            (
+                candidate
+                for candidate in (
+                    parse_timestamp(intent.get("created_at")),
+                    parse_timestamp(ledger.get("updated_at")),
+                    parse_timestamp(ledger.get("opened_at")),
+                )
+                if candidate is not None
+            ),
+            None,
+        )
+        if anchor is None:
+            anchor = datetime.now(timezone.utc)
+        window = timedelta(seconds=900)
+        history_start, history_end = anchor - window, anchor + window
+
         try:
             with self.mt5_gate.acquire("demo_reconcile"):
                 account = VerifiedDemoExecutionGateway.read_account(self.provider)
                 VerifiedDemoExecutionGateway.require_demo_account(account, self.gateway.demo_trade_mode)
                 get_positions = getattr(self.provider, "get_positions", None)
                 get_orders = getattr(self.provider, "get_orders", None)
+                get_history_orders_range = getattr(self.provider, "get_history_orders_range", None)
+                get_history_deals_range = getattr(self.provider, "get_history_deals_range", None)
                 get_history_orders = getattr(self.provider, "get_history_orders", None)
                 get_history_deals = getattr(self.provider, "get_history_deals", None)
-                if not all(callable(item) for item in (get_positions, get_orders, get_history_orders, get_history_deals)):
+                if not all(callable(item) for item in (get_positions, get_orders)):
                     raise RuntimeError("authoritative broker reconciliation APIs are unavailable")
                 positions = tuple(get_positions(self.config.symbol) or ())
                 orders = tuple(get_orders(self.config.symbol) or ())
-                history_orders = tuple(get_history_orders(ticket) or ())
-                history_deals = tuple(get_history_deals(ticket) or ())
+                if callable(get_history_orders_range) and callable(get_history_deals_range):
+                    history_orders = tuple(get_history_orders_range(history_start, history_end) or ())
+                    history_deals = tuple(get_history_deals_range(history_start, history_end) or ())
+                elif callable(get_history_orders) and callable(get_history_deals):
+                    history_orders = tuple(get_history_orders(ticket) or ())
+                    history_deals = tuple(get_history_deals(ticket) or ())
+                else:
+                    raise RuntimeError("authoritative broker history APIs are unavailable")
         except Exception as exc:
             self.store.record_reconciliation(
                 status="RECONCILIATION_REQUIRED",
@@ -517,38 +577,36 @@ class DemoHftRuntime:
             )
             return {"status": "RECONCILIATION_REQUIRED", "reason": "BROKER_READ_FAILED", "error_type": type(exc).__name__}
 
-        def owned_record(record: Any) -> bool:
-            if int(_broker_field(record, "ticket", -1) or -1) != ticket:
-                return False
-            if str(_broker_field(record, "symbol", "")).upper() != str(ledger.get("symbol", "")).upper():
-                return False
-            magic = _broker_field(record, "magic")
-            comment = _broker_field(record, "comment")
-            return magic == self.config.magic and str(comment or "").strip() == self.config.comment
+        symbol = str(ledger.get("symbol", self.config.symbol)).upper()
+        direction = str(ledger.get("direction", "")).upper()
 
-        exact_positions = [item for item in positions if int(_broker_field(item, "ticket", -1) or -1) == ticket]
-        if exact_positions:
-            matches = [item for item in exact_positions if owned_record(item)]
-            if len(matches) != 1:
-                self.store.record_reconciliation(
-                    status="RECONCILIATION_REQUIRED",
-                    reason="broker ticket ownership metadata is ambiguous",
-                    details={"ticket": ticket, "symbol": self.config.symbol, "count": len(exact_positions)},
-                )
-                return {"status": "RECONCILIATION_REQUIRED", "reason": "BROKER_OWNERSHIP_AMBIGUOUS"}
-            broker = matches[0]
-            broker_type = _broker_field(broker, "type")
-            expected_direction = "LONG" if broker_type == 0 else "SHORT" if broker_type == 1 else None
-            if expected_direction is None or expected_direction != str(ledger.get("direction", "")).upper():
-                self.store.record_reconciliation(
-                    status="RECONCILIATION_REQUIRED",
-                    reason="broker position direction is inconsistent",
-                    details={"ticket": ticket, "symbol": self.config.symbol},
-                )
-                return {"status": "RECONCILIATION_REQUIRED", "reason": "BROKER_POSITION_MISMATCH"}
+        def symbol_matches(record: Any) -> bool:
+            return str(_broker_field(record, "symbol", "")).upper() == symbol
+
+        def metadata_matches(record: Any) -> bool:
+            return (
+                symbol_matches(record)
+                and _broker_field(record, "magic") == self.config.magic
+                and str(_broker_field(record, "comment", "") or "").strip() == self.config.comment
+            )
+
+        def position_direction(record: Any) -> str | None:
+            value = _broker_field(record, "type")
+            return "LONG" if value == 0 else "SHORT" if value == 1 else None
+
+        def volume_matches(record: Any) -> bool:
+            value = _broker_field(record, "volume")
+            try:
+                return abs(float(value) - float(ledger.get("volume", 0.0))) <= 1e-9
+            except (TypeError, ValueError):
+                return False
+
+        def adopt_position(broker: Any) -> dict[str, Any]:
+            broker_ticket = int(_broker_field(broker, "ticket"))
             updated = {
                 **ledger,
                 "state": "OPEN",
+                "position_ticket": broker_ticket,
                 "volume": float(_broker_field(broker, "volume", ledger["volume"])),
                 "price_open": float(_broker_field(broker, "price_open", ledger["price_open"])),
                 "stop_loss": _broker_field(broker, "sl", ledger.get("stop_loss")),
@@ -559,20 +617,78 @@ class DemoHftRuntime:
             self.store.record_reconciliation(
                 status="RECONCILED",
                 reason="broker position adopted",
-                details={"ticket": ticket, "symbol": self.config.symbol, "terminal_state": "OPEN"},
+                details={
+                    "ticket": ticket,
+                    "position_ticket": broker_ticket,
+                    "symbol": symbol,
+                    "terminal_state": "OPEN",
+                },
             )
             self._position_loaded = False
             self._owned_position = None
-            return {"status": "RECONCILED", "terminal_state": "OPEN", "ticket": ticket}
+            return {
+                "status": "RECONCILED",
+                "terminal_state": "OPEN",
+                "ticket": ticket,
+                "broker_position_ticket": broker_ticket,
+            }
 
-        exact_orders = [item for item in orders if int(_broker_field(item, "ticket", -1) or -1) == ticket]
-        if exact_orders:
+        exact_positions = [item for item in positions if numeric_ids(item) & broker_ids]
+        owned_positions = [item for item in positions if metadata_matches(item)]
+        if exact_positions:
+            matches = [item for item in exact_positions if metadata_matches(item)]
+            if len(matches) == 1:
+                broker = matches[0]
+            else:
+                self.store.record_reconciliation(
+                    status="RECONCILIATION_REQUIRED",
+                    reason="broker ticket ownership metadata is ambiguous",
+                    details={"ticket": ticket, "symbol": symbol, "count": len(exact_positions)},
+                )
+                return {"status": "RECONCILIATION_REQUIRED", "reason": "BROKER_OWNERSHIP_AMBIGUOUS"}
+            if position_direction(broker) != direction or not volume_matches(broker):
+                self.store.record_reconciliation(
+                    status="RECONCILIATION_REQUIRED",
+                    reason="broker position attributes are inconsistent",
+                    details={"ticket": ticket, "symbol": symbol},
+                )
+                return {"status": "RECONCILIATION_REQUIRED", "reason": "BROKER_POSITION_MISMATCH"}
+            return adopt_position(broker)
+        if len(owned_positions) == 1:
+            broker = owned_positions[0]
+            if position_direction(broker) != direction or not volume_matches(broker):
+                self.store.record_reconciliation(
+                    status="RECONCILIATION_REQUIRED",
+                    reason="broker position attributes are inconsistent",
+                    details={"ticket": ticket, "symbol": symbol},
+                )
+                return {"status": "RECONCILIATION_REQUIRED", "reason": "BROKER_POSITION_MISMATCH"}
+            return adopt_position(broker)
+        if len(owned_positions) > 1:
+            self.store.record_reconciliation(
+                status="RECONCILIATION_REQUIRED",
+                reason="multiple owned broker positions match stale ledger",
+                details={"ticket": ticket, "symbol": symbol, "count": len(owned_positions)},
+            )
+            return {"status": "RECONCILIATION_REQUIRED", "reason": "BROKER_OWNERSHIP_AMBIGUOUS"}
+
+        exact_orders = [item for item in orders if numeric_ids(item) & broker_ids]
+        owned_orders = [item for item in orders if metadata_matches(item)]
+        if exact_orders or owned_orders:
             self.store.record_reconciliation(
                 status="RECONCILIATION_REQUIRED",
                 reason="broker order remains without an owned position",
-                details={"ticket": ticket, "symbol": self.config.symbol},
+                details={"ticket": ticket, "symbol": symbol},
             )
             return {"status": "RECONCILIATION_REQUIRED", "reason": "PENDING_BROKER_ORDER"}
+
+        def history_matches(record: Any) -> bool:
+            if not symbol_matches(record):
+                return False
+            return bool(numeric_ids(record) & broker_ids) or metadata_matches(record)
+
+        history_orders = tuple(item for item in history_orders if history_matches(item))
+        history_deals = tuple(item for item in history_deals if history_matches(item))
 
         def text_state(record: Any) -> str:
             return " ".join(
@@ -602,6 +718,7 @@ class DemoHftRuntime:
                 for item in close_deals
                 if isinstance(_broker_field(item, "profit", 0.0), (int, float))
             )
+            exit_price = _broker_field(close_deals[-1], "price")
             self.store.record_exit(
                 ticket=ticket,
                 reason="BROKER_HISTORY_RECONCILIATION",
@@ -609,32 +726,65 @@ class DemoHftRuntime:
                 payload={
                     "deal_tickets": [int(_broker_field(item, "ticket", 0) or 0) for item in close_deals],
                     "history_order_count": len(history_orders),
+                    "exit_price": exit_price,
                 },
             )
-            self.store.record_position({**ledger, "state": "CLOSED", "realized_pnl": realized})
+            self.store.record_position(
+                {**ledger, "state": "CLOSED", "realized_pnl": realized, "exit_price": exit_price, "exit_reason": "BROKER_HISTORY_RECONCILIATION"}
+            )
             terminal_state = "CLOSED"
+            result = {"status": "RECONCILED", "terminal_state": terminal_state, "ticket": ticket, "realized_pnl": realized, "exit_price": exit_price}
         elif rejection_records:
-            self.store.record_position({**ledger, "state": "REJECTED"})
+            self.store.record_position({**ledger, "state": "REJECTED", "realized_pnl": None, "exit_price": None, "exit_reason": "BROKER_REJECTED"})
             terminal_state = "REJECTED"
+            result = {"status": "RECONCILED", "terminal_state": terminal_state, "ticket": ticket, "realized_pnl": None, "exit_price": None}
         elif filled_records or history_deals:
             self.store.record_reconciliation(
                 status="RECONCILIATION_REQUIRED",
                 reason="broker history indicates an unmapped fill",
-                details={"ticket": ticket, "symbol": self.config.symbol},
+                details={"ticket": ticket, "symbol": symbol},
             )
             return {"status": "RECONCILIATION_REQUIRED", "reason": "HISTORY_MAPPING_AMBIGUOUS"}
         else:
-            self.store.record_position({**ledger, "state": "RECONCILED_ABSENT"})
-            terminal_state = "RECONCILED_ABSENT"
+            self.store.record_position(
+                {
+                    **ledger,
+                    "state": "RECONCILED_ABSENT",
+                    "current_exposure": "NONE",
+                    "performance_inclusion": False,
+                    "realized_pnl": None,
+                    "exit_price": None,
+                    "exit_reason": "RECONCILIATION_BROKER_ABSENT",
+                }
+            )
+            terminal_state = "BROKER_ABSENT_CONFIRMED"
+            result = {
+                "status": "RECONCILED",
+                "terminal_state": terminal_state,
+                "ticket": ticket,
+                "current_exposure": "NONE",
+                "performance_inclusion": False,
+                "realized_pnl": None,
+                "exit_price": None,
+                "exit_reason": "RECONCILIATION_BROKER_ABSENT",
+            }
 
         self.store.record_reconciliation(
             status="RECONCILED",
             reason="broker history reconciled stale ledger position",
-            details={"ticket": ticket, "symbol": self.config.symbol, "terminal_state": terminal_state},
+            details={
+                "ticket": ticket,
+                "symbol": symbol,
+                "terminal_state": terminal_state,
+                "history_window_start": history_start.isoformat(),
+                "history_window_end": history_end.isoformat(),
+                "history_order_count": len(history_orders),
+                "history_deal_count": len(history_deals),
+            },
         )
         self._position_loaded = False
         self._owned_position = None
-        return {"status": "RECONCILED", "terminal_state": terminal_state, "ticket": ticket}
+        return result
 
     def run_once(self) -> dict[str, Any]:
         self._ensure_run()
@@ -752,7 +902,7 @@ class DemoHftRuntime:
             exit_intent = self._exit_intent(source, current, tick, account, reason=decision.reason)
             result = self.gateway.submit(
                 exit_intent,
-                position_ticket=int(current["ticket"]),
+                position_ticket=self._broker_position_ticket(current),
                 exit_reason=decision.reason,
             )
             self._order_latencies.append((time.perf_counter() - order_started) * 1000.0)
@@ -903,6 +1053,20 @@ class DemoHftRuntime:
             except ValueError:
                 return None
         return None
+
+    @staticmethod
+    def _broker_position_ticket(position: Mapping[str, Any]) -> int:
+        value = position.get("position_ticket")
+        if value is None:
+            payload = position.get("payload_json")
+            if isinstance(payload, str):
+                try:
+                    decoded = json.loads(payload)
+                except (TypeError, ValueError):
+                    decoded = {}
+                if isinstance(decoded, Mapping):
+                    value = decoded.get("position_ticket")
+        return int(position.get("ticket") if value is None else value)
 
     def run(self, *, max_ticks: int | None = None, stop_event: Any | None = None) -> dict[str, Any]:
         limit = self.config.max_ticks if max_ticks is None else max_ticks

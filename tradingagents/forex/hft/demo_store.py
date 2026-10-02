@@ -462,6 +462,30 @@ class DemoExecutionStore:
                 (int(bool(broker_order_sent)), str(intent_id)),
             )
 
+    def read_order_intent(self, intent_id: str) -> dict[str, Any] | None:
+        """Read one local intent for owner-side broker reconciliation."""
+
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM demo_order_intents WHERE intent_id=?",
+                (str(intent_id),),
+            ).fetchone()
+            return None if row is None else dict(row)
+
+    def read_order_results(self, intent_id: str) -> tuple[dict[str, Any], ...]:
+        """Read broker result identities associated with one local intent."""
+
+        self.initialize()
+        with self._connect() as db:
+            return tuple(
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM demo_order_results WHERE intent_id=?",
+                    (str(intent_id),),
+                ).fetchall()
+            )
+
     def record_position(self, position: Mapping[str, Any]) -> None:
         required = ("ticket", "intent_id", "symbol", "direction", "volume", "price_open", "state")
         if any(key not in position for key in required):

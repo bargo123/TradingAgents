@@ -207,3 +207,40 @@ def test_close_of_unowned_position_is_rejected(tmp_path: Path):
         gateway.submit(_intent(intent_id="exit-1", direction="SHORT"), position_ticket=999, exit_reason="STOP_LOSS")
 
     assert api.order_calls == []
+
+
+def test_close_uses_reconciled_position_ticket_when_order_ticket_differs(tmp_path: Path):
+    gateway, api = _gateway(tmp_path)
+    gateway.provider.get_positions = lambda symbol=None: (
+        SimpleNamespace(
+            ticket=99,
+            symbol=symbol or "EURUSD",
+            magic=12012012,
+            comment="TradingAgents-P12D-DEMO",
+        ),
+    )
+    gateway.store.record_order_intent("demo-run", _intent())
+    gateway.store.record_position(
+        {
+            "ticket": 11,
+            "position_ticket": 99,
+            "intent_id": "intent-1",
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "volume": 0.01,
+            "price_open": 1.1002,
+            "stop_loss": 1.0991,
+            "take_profit": 1.1021,
+            "state": "OPEN",
+        }
+    )
+
+    result = gateway.submit(
+        _intent(intent_id="exit-1", direction="SHORT"),
+        position_ticket=99,
+        exit_reason="TAKE_PROFIT",
+    )
+
+    assert result.classification == "FILLED"
+    assert api.order_calls[-1]["position"] == 99
+    assert gateway.store.read_owned_positions("EURUSD")[0]["state"] == "CLOSED"

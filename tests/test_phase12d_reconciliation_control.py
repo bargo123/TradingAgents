@@ -29,11 +29,31 @@ class _Api:
 
 
 class _Provider:
-    def __init__(self, *, positions=(), orders=(), history_orders=(), history_deals=(), trade_mode=0):
+    def __init__(
+        self,
+        *,
+        positions=(),
+        orders=(),
+        history_orders=(),
+        history_deals=(),
+        history_orders_range=None,
+        history_deals_range=None,
+        trade_mode=0,
+    ):
         self.positions = tuple(positions)
         self.orders = tuple(orders)
         self.history_orders = tuple(history_orders)
         self.history_deals = tuple(history_deals)
+        self.history_orders_range = (
+            tuple(history_orders)
+            if history_orders_range is None
+            else tuple(history_orders_range)
+        )
+        self.history_deals_range = (
+            tuple(history_deals)
+            if history_deals_range is None
+            else tuple(history_deals_range)
+        )
         self.trade_mode = trade_mode
         self.calls: list[str] = []
 
@@ -60,6 +80,14 @@ class _Provider:
     def get_history_deals(self, ticket):
         self.calls.append(f"history_deals:{ticket}")
         return self.history_deals
+
+    def get_history_orders_range(self, start, end):
+        self.calls.append(f"history_orders_range:{start.isoformat()}:{end.isoformat()}")
+        return self.history_orders_range
+
+    def get_history_deals_range(self, start, end):
+        self.calls.append(f"history_deals_range:{start.isoformat()}:{end.isoformat()}")
+        return self.history_deals_range
 
 
 def _seed_open_position(store: DemoExecutionStore, ticket: int = 152717255467) -> dict:
@@ -218,6 +246,92 @@ def test_reconcile_existing_position_uses_serialized_gate_and_adopts_it(tmp_path
     assert "positions" in provider.calls
     assert store.read_owned_positions("EURUSD")[0]["state"] == "OPEN"
     assert store.read_reconciliation_state()["status"] == "RECONCILED"
+
+
+def test_reconcile_adopts_owned_position_when_position_ticket_differs_from_order_ticket(tmp_path):
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    ledger = _seed_open_position(store)
+    provider = _Provider(
+        positions=(
+            SimpleNamespace(
+                ticket=9001,
+                symbol="EURUSD",
+                type=0,
+                volume=0.01,
+                price_open=1.12493,
+                magic=12012012,
+                comment="TradingAgents-P12D-DEMO",
+            ),
+        )
+    )
+
+    result = _runtime(tmp_path, provider, store).reconcile_position(ledger["ticket"])
+
+    assert result == {
+        "status": "RECONCILED",
+        "terminal_state": "OPEN",
+        "ticket": ledger["ticket"],
+        "broker_position_ticket": 9001,
+    }
+    assert store.read_owned_positions("EURUSD")[0]["state"] == "OPEN"
+    assert provider.calls.count("positions") == 1
+
+
+def test_reconcile_broker_flat_without_history_records_explicit_absence(tmp_path):
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    ledger = _seed_open_position(store)
+    provider = _Provider()
+
+    result = _runtime(tmp_path, provider, store).reconcile_position(ledger["ticket"])
+
+    assert result["status"] == "RECONCILED"
+    assert result["terminal_state"] == "BROKER_ABSENT_CONFIRMED"
+    assert result["current_exposure"] == "NONE"
+    assert result["performance_inclusion"] is False
+    assert result["realized_pnl"] is None
+    assert result["exit_price"] is None
+    assert result["exit_reason"] == "RECONCILIATION_BROKER_ABSENT"
+    assert store.read_owned_positions("EURUSD")[0]["state"] == "RECONCILED_ABSENT"
+
+
+def test_reconcile_matches_close_history_by_position_and_order_correlations(tmp_path):
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    ledger = _seed_open_position(store)
+    provider = _Provider(
+        history_orders_range=(
+            {
+                "ticket": 7001,
+                "order": 7001,
+                "position_id": 9001,
+                "symbol": "EURUSD",
+                "state": "FILLED",
+                "magic": 12012012,
+                "comment": "TradingAgents-P12D-DEMO",
+            },
+        ),
+        history_deals_range=(
+            {
+                "ticket": 8001,
+                "order": 7001,
+                "position_id": 9001,
+                "symbol": "EURUSD",
+                "entry": "OUT",
+                "volume": 0.01,
+                "price": 1.12450,
+                "profit": -4.3,
+                "magic": 12012012,
+                "comment": "TradingAgents-P12D-DEMO",
+            },
+        ),
+    )
+
+    result = _runtime(tmp_path, provider, store).reconcile_position(ledger["ticket"])
+
+    assert result["status"] == "RECONCILED"
+    assert result["terminal_state"] == "CLOSED"
+    assert store.read_owned_positions("EURUSD")[0]["state"] == "CLOSED"
+    assert any(call.startswith("history_orders_range:") for call in provider.calls)
+    assert any(call.startswith("history_deals_range:") for call in provider.calls)
 
 
 def test_reconcile_closed_history_persists_terminal_state(tmp_path):
