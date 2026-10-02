@@ -341,7 +341,7 @@ class SelfEnhancementStore:
             values = (
                 finding.kind.value,
                 finding.statement,
-                _json(finding.evidence_ids),
+                _json({"evidence_ids": finding.evidence_ids, "provenance": finding.provenance}),
                 finding.experiment_id,
                 int(finding.verified),
             )

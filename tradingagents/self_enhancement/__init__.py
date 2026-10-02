@@ -1,5 +1,6 @@
 """Phase 14 offline self-enhancement contracts and orchestration."""
 
+from .experience_bridge import import_phase8_observations
 from .models import (
     CandidateSpec,
     CandidateState,
@@ -27,4 +28,5 @@ __all__ = [
     "TriggerKind",
     "WeaknessFinding",
     "detect_weaknesses",
+    "import_phase8_observations",
 ]

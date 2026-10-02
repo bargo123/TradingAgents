@@ -362,6 +362,7 @@ class LearningFinding:
     evidence_ids: Sequence[str] = ()
     experiment_id: str | None = None
     verified: bool = False
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "finding_id", _text(self.finding_id, "finding_id"))
@@ -374,6 +375,7 @@ class LearningFinding:
             object.__setattr__(self, "experiment_id", _text(self.experiment_id, "experiment_id"))
         if not isinstance(self.verified, bool):
             raise ValueError("verified must be boolean")
+        object.__setattr__(self, "provenance", _freeze_mapping(self.provenance, "provenance"))
         if kind is FindingKind.CAUSAL_CONCLUSION and (not self.verified or self.experiment_id is None):
             raise ValueError("causal conclusions require a verified experiment")
 
@@ -382,7 +384,7 @@ class LearningFinding:
 
 
 __all__ = [
-    "CandidateSpec", "CandidateState", "ExecutionMode", "ExperimentStatus",
+        "CandidateSpec", "CandidateState", "ExecutionMode", "ExperimentStatus",
     "FindingKind", "LearningFinding", "TriggerKind",
     "ExitPolicyConfig", "ExperienceTrade", "ParameterSpec", "StrategyVersion",
 ]
