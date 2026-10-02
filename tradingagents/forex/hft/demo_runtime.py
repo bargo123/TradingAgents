@@ -537,7 +537,16 @@ class DemoHftRuntime:
             plan_id=(regime.state_id if regime is not None else None if plan is None else plan.plan_id),
             payload={"execution_mode": "DEMO", "real_money": False},
         )
-        account = account or self._account()
+        try:
+            account = account or self._account()
+        except Mt5OperationBusy:
+            return {
+                "status": "DROPPED",
+                "action": "NO_ACTION",
+                "reason_code": "MT5_OPERATION_BUSY",
+                "execution_mode": "DEMO",
+                "broker_order_sent": False,
+            }
         equity = float(getattr(account, "equity", 0.0) or 0.0)
         if self.circuit.daily_start_equity is None:
             self.circuit.start_day(equity, tick.timestamp)

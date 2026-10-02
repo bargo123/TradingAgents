@@ -26,6 +26,7 @@ from tradingagents.forex.hft.strategies import (
     RangeRejectionStrategy,
     SignalArbiter,
 )
+from tradingagents.forex.watcher import Mt5OperationBusy
 
 UTC = timezone.utc
 
@@ -557,6 +558,38 @@ def test_demo_bootstrap_candidate_still_uses_existing_risk_and_gateway(tmp_path:
     assert any(result["action"] in {"ENTER_LONG", "ENTER_SHORT"} for result in results)
     assert len(api.calls) == 1
     assert store.snapshot()["orders"] == 1
+
+
+def test_demo_runtime_drops_tick_when_serialized_account_read_is_busy(tmp_path: Path):
+    provider = _DemoProvider((1.10000,))
+    api = _DemoApi()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    runtime = DemoHftRuntime(
+        provider,
+        AtomicPlanStore(),
+        gateway=VerifiedDemoExecutionGateway(provider, api, store, run_id="demo-run", demo_trade_mode=0, magic=12012012),
+        store=store,
+        regime_store=AtomicRegimeStore(),
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            no_regime_policy="BOOTSTRAP_NEUTRAL",
+        ),
+        clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+
+    def busy_account(**_kwargs):
+        raise Mt5OperationBusy("demo_account")
+
+    runtime._account = busy_account
+
+    result = runtime.run_once()
+
+    assert result["status"] == "DROPPED"
+    assert result["reason_code"] == "MT5_OPERATION_BUSY"
+    assert result["broker_order_sent"] is False
+    assert api.calls == []
 
 
 def test_demo_hft_runtime_never_bootstraps_for_non_demo_account(tmp_path: Path):
