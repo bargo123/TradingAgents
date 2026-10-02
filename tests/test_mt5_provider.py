@@ -171,6 +171,31 @@ class FakeMT5:
             ),
         )
 
+    def history_orders_get(self, **kwargs):
+        return (
+            SimpleNamespace(
+                ticket=303,
+                symbol="USDJPY",
+                state="FILLED",
+                magic=12012012,
+                comment="TradingAgents-P12D-DEMO",
+                time_done=1_700_000_000,
+            ),
+        )
+
+    def history_deals_get(self, **kwargs):
+        return (
+            SimpleNamespace(
+                ticket=404,
+                order=303,
+                position_id=303,
+                symbol="USDJPY",
+                entry=1,
+                profit=-1.25,
+                time=1_700_000_001,
+            ),
+        )
+
     def last_error(self):
         return self.error
 
@@ -197,6 +222,17 @@ def initialized_provider(fake_api, *, broker_clock=None):
     provider = MT5Provider(api=fake_api, broker_clock=broker_clock or _zero_clock())
     provider.initialize()
     return provider
+
+
+def test_history_reads_are_normalized_read_only(fake_api):
+    provider = initialized_provider(fake_api, broker_clock=_zero_clock("USDJPY"))
+    orders = provider.get_history_orders(303)
+    deals = provider.get_history_deals(303)
+    assert orders[0]["ticket"] == 303
+    assert orders[0]["state"] == "FILLED"
+    assert deals[0]["entry"] == 1
+    assert deals[0]["position_id"] == 303
+    assert fake_api.shutdown_called is False
 
 
 @pytest.mark.unit

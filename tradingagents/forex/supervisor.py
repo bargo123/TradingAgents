@@ -7,11 +7,12 @@ import math
 import os
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -37,11 +38,65 @@ class HftShadowSupervisorContext:
     hft_db_path: Path
     regime_store: Any | None = None
     provider_session: Any | None = None
+    control_store: Any | None = None
+    control_poll_interval_seconds: float = 0.25
+    _control_stop: threading.Event = field(init=False, repr=False)
+    _control_thread: threading.Thread | None = field(init=False, default=None, repr=False)
+    _control_owner: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self._control_stop = threading.Event()
+        self._control_thread: threading.Thread | None = None
+        self._control_owner = f"{os.getpid()}:{uuid.uuid4()}"
+
+    def _control_loop(self) -> None:
+        store = self.control_store
+        if store is None:
+            return
+        while not self._control_stop.is_set():
+            request = None
+            ready = getattr(self.worker, "reconciliation_ready", None)
+            if callable(ready):
+                with suppress(Exception):
+                    if not bool(ready()):
+                        self._control_stop.wait(max(0.01, float(self.control_poll_interval_seconds)))
+                        continue
+            with suppress(Exception):
+                request = store.claim_control_request(claimed_by=self._control_owner)
+            if request is not None:
+                request_id = str(request["request_id"])
+                try:
+                    result = self.worker.reconcile_demo_position(int(request["ticket"]))
+                    status = "COMPLETED" if str(result.get("status", "")).upper() == "RECONCILED" else "FAILED"
+                except Exception as exc:
+                    result = {"status": "RECONCILIATION_REQUIRED", "error_type": type(exc).__name__}
+                    status = "FAILED"
+                with suppress(Exception):
+                    store.complete_control_request(
+                        request_id,
+                        claimed_by=self._control_owner,
+                        status=status,
+                        result=result,
+                    )
+            self._control_stop.wait(max(0.01, float(self.control_poll_interval_seconds)))
 
     def start(self) -> None:
         self.worker.start()
+        if self.control_store is not None:
+            self._control_stop.clear()
+            self._control_thread = threading.Thread(
+                target=self._control_loop,
+                name="phase12-demo-control",
+                daemon=True,
+            )
+            self._control_thread.start()
 
     def stop(self) -> None:
+        self._control_stop.set()
+        thread = self._control_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+        self._control_thread = None
         self.worker.stop()
         session = self.provider_session
         close = getattr(session, "close", None)
@@ -132,6 +187,15 @@ class _SharedReadOnlyMt5Provider:
 
     def get_positions(self, symbol: str | None = None) -> Any:
         return self._provider.get_positions(symbol)
+
+    def get_orders(self, symbol: str | None = None) -> Any:
+        return self._provider.get_orders(symbol)
+
+    def get_history_orders(self, ticket: int) -> Any:
+        return self._provider.get_history_orders(ticket)
+
+    def get_history_deals(self, ticket: int) -> Any:
+        return self._provider.get_history_deals(ticket)
 
     def get_spread(self, symbol: str) -> Any:
         return self._provider.get_spread(symbol)
@@ -425,6 +489,7 @@ class ForexSupervisor:
         # it never affects MT5 or execution behavior.
         git_commit = str(provenance.get("git_commit") or "unknown")
         demo_runtime_factory = None
+        control_store = None
         if demo_execute:
             from tradingagents.forex.hft.demo_gateway import VerifiedDemoExecutionGateway
             from tradingagents.forex.hft.demo_runtime import DemoHftRuntime, DemoRuntimeConfig
@@ -436,6 +501,7 @@ class ForexSupervisor:
                 else resolved_hft_path.with_suffix(".demo.sqlite3")
             )
             demo_store = DemoExecutionStore(resolved_demo_path)
+            control_store = demo_store
             demo_run_id = str(uuid.uuid4())
 
             def demo_runtime_factory(provider: Any) -> Any:
@@ -500,6 +566,7 @@ class ForexSupervisor:
             regime_store=regime_store,
             hft_db_path=resolved_hft_path,
             provider_session=shared_provider,
+            control_store=control_store,
         )
 
     def status(
@@ -644,6 +711,7 @@ class ForexSupervisor:
         store = DemoExecutionStore(path)
         counts = store.read_only_snapshot()
         circuit = store.read_only_circuit_state()
+        reconciliation = store.read_only_reconciliation_state()
         if not counts:
             return {
                 "status": "OPERATOR_REVIEW_REQUIRED",
@@ -655,7 +723,7 @@ class ForexSupervisor:
                 "database_path": str(path),
             }
         status = "READY"
-        if counts.get("reconciliation", 0):
+        if reconciliation.get("status") in {"RECONCILIATION_REQUIRED", "BROKER_STATE_UNKNOWN"}:
             status = "RECONCILIATION_REQUIRED"
         elif str(circuit.get("status", "READY")) not in {"READY", "OPEN"}:
             status = "DEGRADED"
@@ -668,6 +736,7 @@ class ForexSupervisor:
             "database_path": str(path),
             **counts,
             "circuit_status": circuit.get("status"),
+            "reconciliation_status": reconciliation.get("status"),
         }
 
     def hft_status(self, db_path: str | Path) -> dict[str, Any]:

@@ -202,6 +202,18 @@ class DemoExecutionStore:
                     execution_mode TEXT NOT NULL CHECK(execution_mode='DEMO'),
                     real_money INTEGER NOT NULL CHECK(real_money=0)
                 );
+                CREATE TABLE IF NOT EXISTS demo_control_requests(
+                    request_id TEXT PRIMARY KEY,
+                    command TEXT NOT NULL CHECK(command='RECONCILE_DEMO_POSITION'),
+                    ticket INTEGER NOT NULL CHECK(ticket>0),
+                    symbol TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('PENDING','CLAIMED','COMPLETED','FAILED')),
+                    requested_at TEXT NOT NULL,
+                    claimed_at TEXT,
+                    claimed_by TEXT,
+                    completed_at TEXT,
+                    result_json TEXT
+                );
                 CREATE TABLE IF NOT EXISTS demo_circuit_state(
                     singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
                     status TEXT NOT NULL,
@@ -516,6 +528,120 @@ class DemoExecutionStore:
             )
         return event_id
 
+    def request_reconciliation(self, *, ticket: int, symbol: str) -> str:
+        """Enqueue an owner-side reconciliation request without touching MT5."""
+
+        if isinstance(ticket, bool) or not isinstance(ticket, int) or ticket <= 0:
+            raise ValueError("ticket must be a positive integer")
+        symbol = str(symbol).strip().upper()
+        if not symbol:
+            raise ValueError("symbol must be non-empty")
+        request_id = str(uuid.uuid4())
+        self.initialize()
+        with self._connect() as db:
+            db.execute(
+                """
+                INSERT INTO demo_control_requests(
+                    request_id,command,ticket,symbol,status,requested_at
+                ) VALUES(?,?,?,?,'PENDING',?)
+                """,
+                (request_id, "RECONCILE_DEMO_POSITION", ticket, symbol, _iso(datetime.now(timezone.utc))),
+            )
+        return request_id
+
+    def claim_control_request(self, *, claimed_by: str) -> dict[str, Any] | None:
+        """Atomically claim the oldest pending request for the owner process."""
+
+        claimed_by = str(claimed_by).strip()
+        if not claimed_by:
+            raise ValueError("claimed_by must be non-empty")
+        self.initialize()
+        now = _iso(datetime.now(timezone.utc))
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                """
+                SELECT * FROM demo_control_requests
+                 WHERE status='PENDING'
+                 ORDER BY requested_at, request_id
+                 LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                db.rollback()
+                return None
+            updated = db.execute(
+                """
+                UPDATE demo_control_requests
+                   SET status='CLAIMED',claimed_at=?,claimed_by=?
+                 WHERE request_id=? AND status='PENDING'
+                """,
+                (now, claimed_by, row["request_id"]),
+            ).rowcount
+            if updated != 1:
+                db.rollback()
+                return None
+            claimed = dict(row)
+            claimed.update(status="CLAIMED", claimed_at=now, claimed_by=claimed_by)
+            db.commit()
+            return claimed
+
+    def complete_control_request(
+        self,
+        request_id: str,
+        *,
+        claimed_by: str,
+        status: str,
+        result: Mapping[str, Any],
+    ) -> None:
+        claimed_by = str(claimed_by).strip()
+        if not claimed_by:
+            raise ValueError("claimed_by must be non-empty")
+        status = str(status).strip().upper()
+        if status not in {"COMPLETED", "FAILED"}:
+            raise ValueError("control request status is invalid")
+        with self._connect() as db:
+            db.execute(
+                """
+                UPDATE demo_control_requests
+                   SET status=?,completed_at=?,result_json=?
+                 WHERE request_id=? AND status='CLAIMED' AND claimed_by=?
+                """,
+                (status, _iso(datetime.now(timezone.utc)), _json(result), str(request_id), claimed_by),
+            )
+
+    def read_control_requests(self) -> tuple[dict[str, Any], ...]:
+        self.initialize()
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM demo_control_requests ORDER BY requested_at, request_id"
+            ).fetchall()
+            return tuple(dict(row) for row in rows)
+
+    def read_reconciliation_state(self) -> dict[str, Any]:
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT status,reason,details_json,observed_at
+                  FROM demo_reconciliation
+                 ORDER BY observed_at DESC,event_id DESC
+                 LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return {"status": None, "reason": None, "details": None, "observed_at": None}
+        try:
+            details = json.loads(row[2])
+        except (TypeError, ValueError):
+            details = None
+        return {
+            "status": str(row[0]),
+            "reason": str(row[1]),
+            "details": details,
+            "observed_at": row[3],
+        }
+
     def read_circuit_state(self) -> dict[str, Any]:
         self.initialize()
         with self._connect() as db:
@@ -603,6 +729,39 @@ class DemoExecutionStore:
             except sqlite3.Error:
                 return {}
             return {} if row is None else dict(row)
+
+    def read_only_reconciliation_state(self) -> dict[str, Any]:
+        """Read only the latest reconciliation event without creating tables."""
+
+        resolved = self.path.expanduser().resolve()
+        if not resolved.is_file():
+            return {}
+        uri = f"file:{resolved.as_posix()}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=0) as db:
+            db.row_factory = sqlite3.Row
+            try:
+                row = db.execute(
+                    """
+                    SELECT status,reason,details_json,observed_at
+                      FROM demo_reconciliation
+                     ORDER BY observed_at DESC,event_id DESC
+                     LIMIT 1
+                    """
+                ).fetchone()
+            except sqlite3.Error:
+                return {}
+        if row is None:
+            return {"status": None, "reason": None, "details": None, "observed_at": None}
+        try:
+            details = json.loads(row[2])
+        except (TypeError, ValueError):
+            details = None
+        return {
+            "status": str(row[0]),
+            "reason": str(row[1]),
+            "details": details,
+            "observed_at": row[3],
+        }
 
 
 __all__ = ["DEMO_SCHEMA_VERSION", "DemoExecutionStore"]

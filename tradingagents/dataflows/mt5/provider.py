@@ -533,6 +533,76 @@ class MT5Provider:
             raise Mt5DataError("Invalid MT5 order data") from exc
         return tuple(item for item in parsed if resolved is None or item.symbol == resolved)
 
+    def _get_history_rows(self, method_name: str, **kwargs: Any) -> tuple[dict[str, Any], ...]:
+        """Read broker history as bounded scalar records; never mutates MT5."""
+
+        self._require_connected()
+        method = getattr(self._api, method_name, None)
+        if not callable(method):
+            raise Mt5DataError(f"MT5 history API is unavailable: {method_name}")
+        rows = method(**kwargs)
+        if rows is None:
+            raise self._failed_collection(method_name)
+        clock = self._broker_clock
+        if clock is None:
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
+        keys = (
+            "ticket",
+            "order",
+            "deal",
+            "position_id",
+            "symbol",
+            "type",
+            "entry",
+            "state",
+            "reason",
+            "retcode",
+            "volume",
+            "volume_initial",
+            "volume_current",
+            "price",
+            "price_open",
+            "profit",
+            "swap",
+            "commission",
+            "magic",
+            "comment",
+        )
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            item = {key: _field(row, key) for key in keys}
+            raw_time = _first_field(row, "time_msc", "time", "time_setup", "time_done")
+            if raw_time not in (None, 0):
+                item["timestamp"] = _utc_timestamp(
+                    {"time_msc": raw_time} if _field(row, "time_msc") not in (None, 0) else {"time": raw_time},
+                    prefer_msc=_field(row, "time_msc") not in (None, 0),
+                    broker_clock=clock,
+                )
+            else:
+                item["timestamp"] = None
+            normalized.append(item)
+        return tuple(normalized)
+
+    def get_history_orders(self, ticket: int) -> tuple[dict[str, Any], ...]:
+        """Return normalized order-history rows for one ticket."""
+
+        if isinstance(ticket, bool) or not isinstance(ticket, int) or ticket <= 0:
+            raise Mt5DataError("history order ticket must be positive")
+        return self._get_history_rows("history_orders_get", ticket=ticket)
+
+    def get_history_deals(self, ticket: int) -> tuple[dict[str, Any], ...]:
+        """Return normalized deal-history rows associated with a position/order."""
+
+        if isinstance(ticket, bool) or not isinstance(ticket, int) or ticket <= 0:
+            raise Mt5DataError("history deal ticket must be positive")
+        method = getattr(self._api, "history_deals_get", None)
+        if not callable(method):
+            raise Mt5DataError("MT5 history API is unavailable: history_deals_get")
+        try:
+            return self._get_history_rows("history_deals_get", position=ticket)
+        except TypeError:
+            return self._get_history_rows("history_deals_get", ticket=ticket)
+
     def get_spread(self, symbol: str) -> Mt5Spread:
         resolved = self.ensure_symbol(symbol)
         info, tick = self._api.symbol_info(resolved), self._api.symbol_info_tick(resolved)

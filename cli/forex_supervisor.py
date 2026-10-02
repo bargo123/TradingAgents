@@ -73,6 +73,15 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("--phase12-strategic", action="store_true")
     status.add_argument("--phase12-deep-model", default=None)
     status.add_argument("--json", action="store_true")
+    control = subparsers.add_parser("control", help="enqueue an owner-side DEMO control request")
+    control_subparsers = control.add_subparsers(dest="control_command", required=True)
+    reconcile = control_subparsers.add_parser(
+        "reconcile-demo-position",
+        help="request reconciliation of one DEMO ledger ticket inside the active supervisor",
+    )
+    reconcile.add_argument("--demo-db-path", required=True)
+    reconcile.add_argument("--ticket", type=_nonnegative_int, required=True)
+    reconcile.add_argument("--symbol", default="EURUSD")
     return parser
 
 
@@ -83,6 +92,21 @@ def main(
     watch_main=None,
 ) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "control":
+        if args.control_command != "reconcile-demo-position":
+            raise ValueError("unsupported control command")
+        try:
+            from tradingagents.forex.hft.demo_store import DemoExecutionStore
+
+            request_id = DemoExecutionStore(args.demo_db_path).request_reconciliation(
+                ticket=args.ticket,
+                symbol=args.symbol,
+            )
+            print(f"RECONCILIATION_REQUESTED: {request_id}")
+            return 0
+        except Exception as exc:
+            print(f"FOREX SUPERVISOR ERROR: {exc}", file=sys.stderr)
+            return 1
     if args.command == "status":
         try:
             runtime_kwargs = {"phase12_strategic": args.phase12_strategic}

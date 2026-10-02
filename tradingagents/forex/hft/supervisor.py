@@ -79,6 +79,7 @@ class HftShadowWorker:
         self._result: dict[str, object] | None = None
         self._error_code: str | None = None
         self._active_provider: Any | None = None
+        self._runtime: Any | None = None
         self._recovery_count = 0
         self._consecutive_recovery_attempts = 0
         self._last_disconnect_at: datetime | None = None
@@ -102,6 +103,15 @@ class HftShadowWorker:
         """Return scalar worker health without exposing model or market data."""
 
         return self.store.read_runtime_state()
+
+    @property
+    def reconciliation_ready(self) -> bool:
+        """Whether the stopped owner worker has a runtime to reconcile."""
+
+        return (
+            not self.running
+            and callable(getattr(self._runtime, "reconcile_position", None))
+        )
 
     def handle_decision(self, decision: Any) -> bool:
         """Atomically replace or clear the active plan from a decision.
@@ -284,6 +294,7 @@ class HftShadowWorker:
                     runtime = self.runtime_factory(provider)
                     if runtime is None or not callable(getattr(runtime, "run", None)):
                         raise TypeError("runtime_factory must return a runnable runtime")
+                self._runtime = runtime
                 self._set_health("RUNNING", error_code=None)
                 try:
                     self._result = runtime.run(stop_event=self._stop)
@@ -326,7 +337,23 @@ class HftShadowWorker:
                 except Exception:
                     if self._error_code is None:
                         self._error_code = "MT5_SHUTDOWN_FAILED"
-                self._active_provider = None
+
+    def reconcile_demo_position(self, ticket: int) -> dict[str, Any]:
+        """Run one owner-side reconciliation, then resume HFT only on success."""
+
+        if self.running:
+            raise RuntimeError("HFT_RECONCILIATION_BUSY")
+        runtime = self._runtime
+        reconcile = getattr(runtime, "reconcile_position", None)
+        if not callable(reconcile):
+            raise RuntimeError("HFT_RECONCILIATION_RUNTIME_UNAVAILABLE")
+        result = dict(reconcile(ticket))
+        if str(result.get("status", "")).upper() != "RECONCILED":
+            self._set_health("OPERATOR_REVIEW_REQUIRED", error_code="RECONCILIATION_REQUIRED")
+            return result
+        self._set_health("RECOVERING", error_code=None)
+        self.start()
+        return {**result, "resumed": True}
 
     def start(self) -> None:
         if self.running:
@@ -339,6 +366,7 @@ class HftShadowWorker:
         self._last_disconnect_at = None
         self._last_recovery_attempt_at = None
         self._last_recovery_result = None
+        self._runtime = None
         self._thread = threading.Thread(target=self._run, name="phase12-hft-shadow", daemon=True)
         self._thread.start()
 
