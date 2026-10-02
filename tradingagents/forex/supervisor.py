@@ -127,6 +127,9 @@ class _SharedReadOnlyMt5Provider:
     def get_symbols(self) -> Any:
         return self._provider.get_symbols()
 
+    def get_symbol_filling_mode(self, symbol: str) -> int:
+        return self._provider.get_symbol_filling_mode(symbol)
+
     def get_positions(self, symbol: str | None = None) -> Any:
         return self._provider.get_positions(symbol)
 

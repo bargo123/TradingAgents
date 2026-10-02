@@ -131,6 +131,19 @@ class VerifiedDemoExecutionGateway:
         )
         if order_type is None:
             raise DemoExecutionForbidden("broker BUY/SELL order type is unavailable")
+        filling_mode = getattr(self.broker_api, "ORDER_FILLING_IOC", 0)
+        get_filling_mode = getattr(self.provider, "get_symbol_filling_mode", None)
+        if callable(get_filling_mode):
+            with self._operation("demo_symbol_filling_mode"):
+                advertised = get_filling_mode(intent.symbol)
+            if isinstance(advertised, bool) or not isinstance(advertised, int) or advertised < 0:
+                raise DemoExecutionForbidden("broker symbol filling mode is invalid")
+            if advertised & 2:
+                filling_mode = getattr(self.broker_api, "ORDER_FILLING_IOC", filling_mode)
+            elif advertised & 1:
+                filling_mode = getattr(self.broker_api, "ORDER_FILLING_FOK", filling_mode)
+            else:
+                filling_mode = getattr(self.broker_api, "ORDER_FILLING_RETURN", filling_mode)
         request: dict[str, Any] = {
             "action": getattr(self.broker_api, "TRADE_ACTION_DEAL", 1),
             "symbol": intent.symbol,
@@ -143,7 +156,7 @@ class VerifiedDemoExecutionGateway:
             "magic": self.magic,
             "comment": self.comment,
             "type_time": getattr(self.broker_api, "ORDER_TIME_GTC", 0),
-            "type_filling": getattr(self.broker_api, "ORDER_FILLING_IOC", 0),
+            "type_filling": filling_mode,
         }
         if position_ticket is not None:
             request["position"] = int(position_ticket)

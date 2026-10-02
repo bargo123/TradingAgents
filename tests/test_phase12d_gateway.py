@@ -67,6 +67,8 @@ class _Api:
     ORDER_TYPE_BUY = 0
     ORDER_TYPE_SELL = 1
     ORDER_FILLING_IOC = 1
+    ORDER_FILLING_FOK = 0
+    ORDER_FILLING_RETURN = 2
     ORDER_TIME_GTC = 0
     TRADE_RETCODE_DONE = 10009
 
@@ -113,6 +115,26 @@ def test_demo_account_can_submit_and_persists_result(tmp_path: Path):
     assert result.real_money is False
     assert len(api.order_calls) == 1
     assert api.order_calls[0]["comment"] == "TradingAgents-P12D-DEMO"
+
+
+def test_gateway_uses_broker_advertised_filling_mode(tmp_path: Path):
+    gateway, api = _gateway(tmp_path)
+    gateway.provider.get_symbol_filling_mode = lambda symbol: 1
+
+    result = gateway.submit(_intent())
+
+    assert result.classification == "FILLED"
+    assert api.order_calls[0]["type_filling"] == api.ORDER_FILLING_FOK
+
+
+def test_gateway_prefers_ioc_when_broker_advertises_it(tmp_path: Path):
+    gateway, api = _gateway(tmp_path)
+    gateway.provider.get_symbol_filling_mode = lambda symbol: 2
+
+    result = gateway.submit(_intent())
+
+    assert result.classification == "FILLED"
+    assert api.order_calls[0]["type_filling"] == api.ORDER_FILLING_IOC
 
 
 @pytest.mark.parametrize("trade_mode", [1, 2, None])

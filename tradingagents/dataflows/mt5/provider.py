@@ -384,6 +384,17 @@ class MT5Provider:
         except (TypeError, ValueError) as exc:
             raise Mt5DataError("Invalid MT5 symbol data") from exc
 
+    def get_symbol_filling_mode(self, symbol: str) -> int:
+        """Return the broker-advertised symbol filling flags read-only."""
+
+        self._require_connected()
+        resolved = self.ensure_symbol(symbol)
+        raw = self._api.symbol_info(resolved)
+        value = _field(raw, "filling_mode") if raw is not None else None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise Mt5DataError(f"Invalid filling mode for {resolved!r}")
+        return value
+
     def find_symbol(self, symbol: str) -> str:
         self._require_connected()
         requested = str(symbol).strip().upper()
