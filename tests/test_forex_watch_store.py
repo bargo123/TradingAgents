@@ -52,6 +52,16 @@ def test_nonexpired_lease_cannot_be_stolen_even_when_pid_is_dead(tmp_path):
     assert calls == []
 
 
+def test_ownerless_degraded_release_remains_reacquirable(tmp_path):
+    store = WatcherStore(tmp_path / "watch.db")
+    assert store.acquire_lease(owner(), NOW).status is LeaseStatus.ACQUIRED
+
+    store.release_lease("old", NOW + timedelta(seconds=1), status="DEGRADED")
+
+    assert store.read_only_active_lease(NOW + timedelta(seconds=1)) is None
+    assert store.acquire_lease(owner("new"), NOW + timedelta(seconds=2)).status is LeaseStatus.ACQUIRED
+
+
 def test_expired_exact_old_process_alive_requires_operator_review(tmp_path):
     store = WatcherStore(tmp_path / "watch.db", lease_ttl_seconds=10)
     store.acquire_lease(owner(), NOW)

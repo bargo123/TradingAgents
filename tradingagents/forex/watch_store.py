@@ -549,7 +549,11 @@ class WatcherStore:
             return None
         raw_values = tuple(row[index] for index in range(3, 10))
         if all(value is None for value in raw_values):
-            if row[0] != "STOPPED" or row[1] is not None or row[2] is not None:
+            # Recovery failures release ownership while preserving the
+            # operator-review lifecycle as DEGRADED.  Both terminal states
+            # are valid when no owner/timestamps remain; any active lifecycle
+            # without an owner is still malformed.
+            if row[0] not in {"STOPPED", "DEGRADED"} or row[1] is not None or row[2] is not None:
                 raise ValueError("malformed persisted watcher lease lifecycle/state")
             return None
         if not isinstance(row[3], str) or not row[3].strip():
