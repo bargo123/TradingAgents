@@ -465,6 +465,7 @@ class ForexSupervisor:
                         max_ticks=max_ticks,
                         poll_interval_seconds=poll_interval_seconds,
                         hft_first=True,
+                        no_regime_policy="BOOTSTRAP_NEUTRAL",
                     ),
                     regime_store=regime_store,
                     shadow_store=hft_store,

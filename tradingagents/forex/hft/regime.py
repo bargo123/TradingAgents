@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from numbers import Real
 
@@ -137,4 +137,47 @@ class StrategicRegimeState:
         }
 
 
-__all__ = ["DirectionPolicy", "Regime", "StrategicRegimeState"]
+def build_hft_bootstrap_neutral_regime(
+    symbol: str,
+    at: datetime,
+    *,
+    ttl_seconds: float = 5.0,
+    git_commit: str = "runtime",
+) -> StrategicRegimeState:
+    """Build a short-lived neutral envelope for the healthy DEMO HFT hot path.
+
+    This is a runtime safety fallback, not a trading signal.  It permits both
+    deterministic strategy families to evaluate while no eligible strategic
+    decision is available.  The caller must still gate publication on the
+    authoritative DEMO account, broker health, and risk circuits.
+    """
+
+    if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, Real) or not math.isfinite(float(ttl_seconds)) or float(ttl_seconds) <= 0:
+        raise ValueError("ttl_seconds must be a positive finite number")
+    created = utc(at, "at")
+    normalized_symbol = _text(symbol, "symbol").upper()
+    return StrategicRegimeState(
+        state_id=f"HFT_BOOTSTRAP_NEUTRAL:{normalized_symbol}",
+        symbol=normalized_symbol,
+        regime=Regime.NEUTRAL,
+        direction_policy=DirectionPolicy.BOTH,
+        risk_multiplier=0.25,
+        confidence=0.0,
+        created_at=created,
+        expires_at=created + timedelta(seconds=float(ttl_seconds)),
+        momentum_enabled=True,
+        range_enabled=True,
+        breakout_enabled=False,
+        mean_reversion_enabled=False,
+        source_run_id="HFT_BOOTSTRAP_NEUTRAL",
+        source_decision_id=None,
+        git_commit=_text(git_commit, "git_commit"),
+    )
+
+
+__all__ = [
+    "DirectionPolicy",
+    "Regime",
+    "StrategicRegimeState",
+    "build_hft_bootstrap_neutral_regime",
+]

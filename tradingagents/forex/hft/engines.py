@@ -7,7 +7,7 @@ from datetime import datetime
 
 from .features import TickFeatures
 from .models import FastAction, FastDecision, PositionState, StrategicExecutionPlan
-from .regime import StrategicRegimeState
+from .regime import Regime, StrategicRegimeState
 from .strategies import MomentumContinuationStrategy, RangeRejectionStrategy, SignalArbiter
 
 
@@ -140,6 +140,8 @@ class HftExecutionEngine:
             return self._decision(FastAction.NO_ACTION, features, "POSITION_TRANSITION_PENDING", started)
         if state is None or not state.is_active(features.timestamp):
             return self._decision(FastAction.NO_ACTION, features, "NO_VALID_STRATEGIC_STATE", started)
+        if state.regime is Regime.HIGH_UNCERTAINTY:
+            return self._decision(FastAction.NO_ACTION, features, "STRATEGIC_HIGH_UNCERTAINTY", started)
         if state.direction_policy.value == "PAUSE":
             return self._decision(FastAction.NO_ACTION, features, "STRATEGIC_PAUSE", started)
         signals = tuple(

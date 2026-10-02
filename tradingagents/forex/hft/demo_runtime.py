@@ -25,7 +25,7 @@ from .features import TickFeatureEngine
 from .models import FastAction, PositionState, RiskDecision, Tick, utc
 from .persistence import AsyncPersistenceQueue
 from .plan_store import AtomicPlanStore
-from .regime import StrategicRegimeState
+from .regime import StrategicRegimeState, build_hft_bootstrap_neutral_regime
 from .regime_store import AtomicRegimeStore
 from .risk import RiskConfig, RiskContext, RiskEngine
 from .runtime import HftLeaseBusyError
@@ -88,8 +88,8 @@ class DemoRuntimeConfig:
         if not isinstance(self.hft_first, bool):
             raise ValueError("hft_first must be boolean")
         policy = str(self.no_regime_policy).strip().upper()
-        if policy not in {"PAUSE"}:
-            raise ValueError("no_regime_policy must be PAUSE")
+        if policy not in {"PAUSE", "BOOTSTRAP_NEUTRAL"}:
+            raise ValueError("no_regime_policy must be PAUSE or BOOTSTRAP_NEUTRAL")
         object.__setattr__(self, "no_regime_policy", policy)
         for name in ("account_refresh_seconds", "cooldown_seconds", "order_rate_window_seconds", "cost_safety_margin_points"):
             value = float(getattr(self, name))
@@ -197,6 +197,26 @@ class DemoHftRuntime:
         self._persistence: AsyncPersistenceQueue | None = None
         self._decision_latencies: list[float] = []
         self._order_latencies: list[float] = []
+
+    def _bootstrap_regime(self, tick: Tick, account: Any | None) -> StrategicRegimeState | None:
+        """Return a neutral fallback only after local DEMO safety checks."""
+
+        if not self.config.hft_first or self.config.no_regime_policy != "BOOTSTRAP_NEUTRAL":
+            return None
+        if account is None or getattr(account, "trade_mode", None) != self.gateway.demo_trade_mode:
+            return None
+        if self.circuit.status != "READY":
+            return None
+        bootstrap = build_hft_bootstrap_neutral_regime(
+            self.config.symbol,
+            tick.timestamp,
+            git_commit="runtime",
+        )
+        if self.regime_store is None:
+            return bootstrap
+        with suppress(ValueError):
+            self.regime_store.replace(bootstrap, now=tick.timestamp)
+        return self.regime_store.current(tick.timestamp, self.config.symbol) or bootstrap
 
     def _ensure_run(self) -> None:
         if not self._started:
@@ -458,8 +478,13 @@ class DemoHftRuntime:
         self._ticks += 1
         plan = None
         regime: StrategicRegimeState | None = None
+        account = None
         if self.config.hft_first and self.regime_store is not None:
             regime = self.regime_store.current(tick.timestamp, self.config.symbol)
+            if regime is None and self.config.no_regime_policy == "BOOTSTRAP_NEUTRAL":
+                with suppress(Exception):
+                    account = self._account()
+                regime = self._bootstrap_regime(tick, account)
         else:
             plan = self.plan_store.current(
                 tick.timestamp,
@@ -512,7 +537,7 @@ class DemoHftRuntime:
             plan_id=(regime.state_id if regime is not None else None if plan is None else plan.plan_id),
             payload={"execution_mode": "DEMO", "real_money": False},
         )
-        account = self._account()
+        account = account or self._account()
         equity = float(getattr(account, "equity", 0.0) or 0.0)
         if self.circuit.daily_start_equity is None:
             self.circuit.start_day(equity, tick.timestamp)

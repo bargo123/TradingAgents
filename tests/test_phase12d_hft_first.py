@@ -16,6 +16,7 @@ from tradingagents.forex.hft.regime import (
     DirectionPolicy,
     Regime,
     StrategicRegimeState,
+    build_hft_bootstrap_neutral_regime,
 )
 from tradingagents.forex.hft.regime_feed import build_regime_from_shadow_decision
 from tradingagents.forex.hft.regime_store import AtomicRegimeStore
@@ -211,6 +212,60 @@ def test_hft_execution_engine_pauses_without_a_valid_regime():
     assert decision.reason == "NO_VALID_STRATEGIC_STATE"
 
 
+def test_bootstrap_neutral_regime_is_both_with_existing_risk_floor():
+    now = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+
+    state = build_hft_bootstrap_neutral_regime("EURUSD", now)
+
+    assert state.source_run_id == "HFT_BOOTSTRAP_NEUTRAL"
+    assert state.regime is Regime.NEUTRAL
+    assert state.direction_policy is DirectionPolicy.BOTH
+    assert state.risk_multiplier == 0.25
+    assert state.confidence == 0.0
+    assert state.momentum_enabled is True
+    assert state.range_enabled is True
+    assert state.breakout_enabled is False
+    assert state.mean_reversion_enabled is False
+
+
+def test_hft_engine_evaluates_both_strategies_under_bootstrap_regime():
+    class _SpyStrategy:
+        def __init__(self):
+            self.calls = 0
+
+        def evaluate(self, features):
+            self.calls += 1
+            return None
+
+    features = _features((1.10000, 1.10001, 1.10002, 1.10003))
+    momentum = _SpyStrategy()
+    range_rejection = _SpyStrategy()
+    engine = HftExecutionEngine(momentum=momentum, range_rejection=range_rejection)
+    state = build_hft_bootstrap_neutral_regime("EURUSD", features.timestamp)
+
+    decision = engine.on_tick(state, features, position_state=PositionState.FLAT)
+
+    assert decision.reason == "NO_VALID_SIGNAL"
+    assert momentum.calls == 1
+    assert range_rejection.calls == 1
+
+
+def test_high_uncertainty_state_overrides_neutral_bootstrap():
+    features = _features((1.10000, 1.10001, 1.10002, 1.10003))
+    state = _state(
+        features.timestamp - timedelta(seconds=1),
+        regime=Regime.HIGH_UNCERTAINTY,
+        direction_policy=DirectionPolicy.BOTH,
+        momentum_enabled=True,
+        range_enabled=True,
+    )
+
+    decision = HftExecutionEngine().on_tick(state, features, position_state=PositionState.FLAT)
+
+    assert decision.action is FastAction.NO_ACTION
+    assert decision.reason == "STRATEGIC_HIGH_UNCERTAINTY"
+
+
 def test_hft_execution_engine_exits_position_on_stop_without_regime():
     features = _features((1.10000, 1.09980, 1.09970, 1.09960, 1.09950))
     state = _state(features.timestamp - timedelta(seconds=1))
@@ -363,6 +418,222 @@ def test_demo_hft_runtime_no_regime_state_pauses_without_order(tmp_path: Path):
     assert result["action"] == "NO_ACTION"
     assert result["reason_code"] == "NO_VALID_STRATEGIC_STATE"
     assert api.calls == []
+
+
+def test_demo_hft_runtime_bootstraps_neutral_only_when_configured(tmp_path: Path):
+    provider = _DemoProvider((1.10000,))
+    api = _DemoApi()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    regimes = AtomicRegimeStore()
+    runtime = DemoHftRuntime(
+        provider,
+        AtomicPlanStore(),
+        gateway=VerifiedDemoExecutionGateway(provider, api, store, run_id="demo-run", demo_trade_mode=0, magic=12012012),
+        store=store,
+        regime_store=regimes,
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            no_regime_policy="BOOTSTRAP_NEUTRAL",
+        ),
+        clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+    observed = []
+    original = runtime.hft.on_tick
+
+    def capture(state, features, **kwargs):
+        observed.append(state)
+        return original(state, features, **kwargs)
+
+    runtime.hft.on_tick = capture
+
+    result = runtime.run_once()
+
+    assert result["reason_code"] != "NO_VALID_STRATEGIC_STATE"
+    assert observed and observed[0] is not None
+    assert observed[0].source_run_id == "HFT_BOOTSTRAP_NEUTRAL"
+    assert observed[0].direction_policy is DirectionPolicy.BOTH
+    assert api.calls == []
+
+
+@pytest.mark.parametrize(
+    ("regime", "direction_policy"),
+    (
+        (Regime.BULLISH, DirectionPolicy.LONG_ONLY),
+        (Regime.BEARISH, DirectionPolicy.SHORT_ONLY),
+    ),
+)
+def test_demo_hft_runtime_strategic_state_replaces_bootstrap(
+    tmp_path: Path,
+    regime: Regime,
+    direction_policy: DirectionPolicy,
+):
+    provider = _DemoProvider((1.10000, 1.10001))
+    api = _DemoApi()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    regimes = AtomicRegimeStore()
+    runtime = DemoHftRuntime(
+        provider,
+        AtomicPlanStore(),
+        gateway=VerifiedDemoExecutionGateway(provider, api, store, run_id="demo-run", demo_trade_mode=0, magic=12012012),
+        store=store,
+        regime_store=regimes,
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            no_regime_policy="BOOTSTRAP_NEUTRAL",
+        ),
+        clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+    observed = []
+    original = runtime.hft.on_tick
+
+    def capture(state, features, **kwargs):
+        observed.append(state)
+        return original(state, features, **kwargs)
+
+    runtime.hft.on_tick = capture
+    runtime.run_once()
+    strategic = _state(
+        datetime(2026, 10, 1, 12, 0, 1, tzinfo=UTC),
+        regime=regime,
+        direction_policy=direction_policy,
+        momentum_enabled=regime is Regime.BULLISH,
+        range_enabled=regime is Regime.BEARISH,
+        mean_reversion_enabled=regime is Regime.BEARISH,
+    )
+    regimes.replace(strategic, now=strategic.created_at)
+    runtime.run_once()
+
+    assert observed[0].source_run_id == "HFT_BOOTSTRAP_NEUTRAL"
+    assert observed[1].source_decision_id == "decision-1"
+    assert observed[1].regime is regime
+
+
+def test_demo_hft_runtime_pause_state_overrides_bootstrap(tmp_path: Path):
+    state = _state(
+        datetime(2026, 10, 1, 11, 59, 59, tzinfo=UTC),
+        direction_policy=DirectionPolicy.PAUSE,
+        momentum_enabled=True,
+        range_enabled=True,
+    )
+    runtime, api, _ = _hft_demo_runtime(tmp_path, (1.10000,), state)
+    runtime.config = DemoRuntimeConfig(
+        artifact_path=tmp_path / "demo.sqlite3",
+        symbol="EURUSD",
+        hft_first=True,
+        no_regime_policy="BOOTSTRAP_NEUTRAL",
+    )
+
+    result = runtime.run_once()
+
+    assert result["reason_code"] == "STRATEGIC_PAUSE"
+    assert api.calls == []
+
+
+def test_demo_bootstrap_candidate_still_uses_existing_risk_and_gateway(tmp_path: Path):
+    provider = _DemoProvider((1.10000, 1.10002, 1.10004, 1.10008, 1.10012))
+    api = _DemoApi()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    runtime = DemoHftRuntime(
+        provider,
+        AtomicPlanStore(),
+        gateway=VerifiedDemoExecutionGateway(provider, api, store, run_id="demo-run", demo_trade_mode=0, magic=12012012),
+        store=store,
+        regime_store=AtomicRegimeStore(),
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            no_regime_policy="BOOTSTRAP_NEUTRAL",
+        ),
+        clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+
+    results = [runtime.run_once() for _ in range(5)]
+
+    assert any(result["action"] in {"ENTER_LONG", "ENTER_SHORT"} for result in results)
+    assert len(api.calls) == 1
+    assert store.snapshot()["orders"] == 1
+
+
+def test_demo_hft_runtime_never_bootstraps_for_non_demo_account(tmp_path: Path):
+    provider = _DemoProvider((1.10000,))
+    provider.get_account_info = lambda: SimpleNamespace(
+        login=7,
+        server="Broker-Real",
+        currency="USD",
+        trade_mode=1,
+        balance=1000.0,
+        equity=1000.0,
+        margin=0.0,
+        margin_free=1000.0,
+    )
+    api = _DemoApi()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    runtime = DemoHftRuntime(
+        provider,
+        AtomicPlanStore(),
+        gateway=VerifiedDemoExecutionGateway(provider, api, store, run_id="demo-run", demo_trade_mode=0, magic=12012012),
+        store=store,
+        regime_store=AtomicRegimeStore(),
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            no_regime_policy="BOOTSTRAP_NEUTRAL",
+        ),
+        clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+    observed = []
+    original = runtime.hft.on_tick
+
+    def capture(state, features, **kwargs):
+        observed.append(state)
+        return original(state, features, **kwargs)
+
+    runtime.hft.on_tick = capture
+    result = runtime.run_once()
+
+    assert observed == [None]
+    assert result["reason_code"] == "NO_VALID_STRATEGIC_STATE"
+    assert api.calls == []
+
+
+def test_expired_directional_regime_is_not_reused_by_bootstrap(tmp_path: Path):
+    provider = _DemoProvider((1.10000,))
+    api = _DemoApi()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    regimes = AtomicRegimeStore()
+    runtime = DemoHftRuntime(
+        provider,
+        AtomicPlanStore(),
+        gateway=VerifiedDemoExecutionGateway(provider, api, store, run_id="demo-run", demo_trade_mode=0, magic=12012012),
+        store=store,
+        regime_store=regimes,
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            no_regime_policy="BOOTSTRAP_NEUTRAL",
+        ),
+        clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
+    )
+    observed = []
+    original = runtime.hft.on_tick
+
+    def capture(state, features, **kwargs):
+        observed.append(state)
+        return original(state, features, **kwargs)
+
+    runtime.hft.on_tick = capture
+    runtime.run_once()
+
+    assert observed[0].regime is Regime.NEUTRAL
+    assert observed[0].direction_policy is DirectionPolicy.BOTH
+    assert observed[0].source_run_id == "HFT_BOOTSTRAP_NEUTRAL"
 
 
 def test_demo_hft_runtime_routes_deterministic_exit_through_gateway(tmp_path: Path):
