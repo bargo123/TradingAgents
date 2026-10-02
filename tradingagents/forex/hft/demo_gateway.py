@@ -231,14 +231,19 @@ class VerifiedDemoExecutionGateway:
         classification = self._classify(retcode)
         order_ticket = _field(result, "order")
         deal_ticket = _field(result, "deal")
+        position_ticket = _field(result, "position", _field(result, "position_id"))
         fill_price = _field(result, "price")
         fill_volume = _field(result, "volume")
         order_ticket = order_ticket if isinstance(order_ticket, int) and order_ticket > 0 else None
         deal_ticket = deal_ticket if isinstance(deal_ticket, int) and deal_ticket > 0 else None
+        position_ticket = position_ticket if isinstance(position_ticket, int) and position_ticket > 0 else None
         fill_price = fill_price if isinstance(fill_price, (int, float)) and fill_price > 0 else None
         fill_volume = fill_volume if isinstance(fill_volume, (int, float)) and fill_volume > 0 else None
         comment = _field(result, "comment")
         timestamp = self._broker_timestamp(result)
+        request_with_identity = dict(request)
+        if position_ticket is not None:
+            request_with_identity["broker_position_ticket"] = position_ticket
         self.store.record_order_result(
             intent_id=intent.intent_id,
             classification=classification,
@@ -249,7 +254,7 @@ class VerifiedDemoExecutionGateway:
             fill_volume=fill_volume,
             broker_comment=None if comment is None else str(comment),
             broker_timestamp=timestamp,
-            request_payload=request,
+            request_payload=request_with_identity,
             broker_order_sent=broker_order_sent,
         )
         return DemoOrderResult(
@@ -262,7 +267,8 @@ class VerifiedDemoExecutionGateway:
             fill_volume=fill_volume,
             broker_comment=None if comment is None else str(comment),
             broker_timestamp=timestamp,
-            request_payload=request,
+            request_payload=request_with_identity,
+            position_ticket=position_ticket,
             broker_order_sent=broker_order_sent,
         )
 

@@ -117,6 +117,28 @@ def test_demo_account_can_submit_and_persists_result(tmp_path: Path):
     assert api.order_calls[0]["comment"] == "TradingAgents-P12D-DEMO"
 
 
+def test_gateway_preserves_broker_position_identity_when_order_differs(tmp_path: Path):
+    class PositionApi(_Api):
+        def order_send(self, request):
+            self.order_calls.append(request)
+            return SimpleNamespace(
+                retcode=10009,
+                order=11,
+                deal=12,
+                position=99,
+                price=1.1002,
+                volume=0.01,
+                comment="done",
+            )
+
+    gateway, _ = _gateway(tmp_path, api=PositionApi())
+    result = gateway.submit(_intent())
+
+    assert result.order_ticket == 11
+    assert result.position_ticket == 99
+    assert result.request_payload["broker_position_ticket"] == 99
+
+
 def test_gateway_uses_broker_advertised_filling_mode(tmp_path: Path):
     gateway, api = _gateway(tmp_path)
     gateway.provider.get_symbol_filling_mode = lambda symbol: 1

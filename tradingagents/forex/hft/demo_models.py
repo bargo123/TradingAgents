@@ -165,6 +165,7 @@ class DemoOrderResult:
     execution_mode: ExecutionMode = ExecutionMode.DEMO
     broker_order_sent: bool = False
     real_money: bool = False
+    position_ticket: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "intent_id", _text(self.intent_id, "intent_id"))
@@ -182,6 +183,12 @@ class DemoOrderResult:
                 isinstance(value, bool) or not isinstance(value, int) or value <= 0
             ):
                 raise ValueError(f"{name} must be positive when provided")
+        if self.position_ticket is not None and (
+            isinstance(self.position_ticket, bool)
+            or not isinstance(self.position_ticket, int)
+            or self.position_ticket <= 0
+        ):
+            raise ValueError("position_ticket must be positive when provided")
         for name in ("fill_price", "fill_volume"):
             value = getattr(self, name)
             if value is not None:

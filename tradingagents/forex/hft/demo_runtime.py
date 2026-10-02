@@ -21,7 +21,13 @@ from .demo_gateway import VerifiedDemoExecutionGateway
 from .demo_models import DemoAccountSnapshot, DemoOrderIntent
 from .demo_risk import DemoCircuitBreaker, normalize_volume, validate_stop_levels
 from .demo_store import DemoExecutionStore
-from .engines import FastExecutionEngine, HftExecutionEngine
+from .engines import (
+    MOMENTUM_EXIT_PROFILE,
+    RANGE_EXIT_PROFILE,
+    DynamicExitProfile,
+    FastExecutionEngine,
+    HftExecutionEngine,
+)
 from .features import TickFeatureEngine
 from .models import FastAction, PositionState, RiskDecision, Tick, utc
 from .persistence import AsyncPersistenceQueue
@@ -72,10 +78,15 @@ class DemoRuntimeConfig:
     cost_safety_margin_points: float = 1.0
     stop_distance_points: float = 20.0
     take_profit_distance_points: float = 30.0
+    emergency_stop_distance_points: float = 100.0
+    emergency_take_profit_distance_points: float = 500.0
     time_stop_seconds: int = 30
+    max_hft_duration_seconds: float = 60.0
     max_exit_spread_points: float = 40.0
     max_exit_spread_expansion_points: float = 10.0
     max_exit_volatility: float = 0.005
+    range_exit_profile: DynamicExitProfile = RANGE_EXIT_PROFILE
+    momentum_exit_profile: DynamicExitProfile = MOMENTUM_EXIT_PROFILE
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
@@ -108,6 +119,8 @@ class DemoRuntimeConfig:
         for name in (
             "stop_distance_points",
             "take_profit_distance_points",
+            "emergency_stop_distance_points",
+            "emergency_take_profit_distance_points",
             "max_exit_spread_points",
             "max_exit_volatility",
         ):
@@ -121,6 +134,12 @@ class DemoRuntimeConfig:
         object.__setattr__(self, "max_exit_spread_expansion_points", value)
         if isinstance(self.time_stop_seconds, bool) or not isinstance(self.time_stop_seconds, int) or self.time_stop_seconds <= 0:
             raise ValueError("time_stop_seconds must be positive")
+        value = float(self.max_hft_duration_seconds)
+        if value <= 0:
+            raise ValueError("max_hft_duration_seconds must be positive")
+        object.__setattr__(self, "max_hft_duration_seconds", value)
+        if not isinstance(self.range_exit_profile, DynamicExitProfile) or not isinstance(self.momentum_exit_profile, DynamicExitProfile):
+            raise TypeError("range_exit_profile and momentum_exit_profile must be DynamicExitProfile instances")
 
 
 class DemoHftRuntime:
@@ -173,9 +192,13 @@ class DemoHftRuntime:
             stop_distance_points=config.stop_distance_points,
             take_profit_distance_points=config.take_profit_distance_points,
             time_stop_seconds=config.time_stop_seconds,
+            emergency_stop_distance_points=config.emergency_stop_distance_points,
+            hard_max_duration_seconds=config.max_hft_duration_seconds,
             max_exit_spread_points=config.max_exit_spread_points,
             max_exit_spread_expansion_points=config.max_exit_spread_expansion_points,
             max_exit_volatility=config.max_exit_volatility,
+            range_exit_profile=config.range_exit_profile,
+            momentum_exit_profile=config.momentum_exit_profile,
         )
         self.risk = RiskEngine(
             RiskConfig(
@@ -347,13 +370,19 @@ class DemoHftRuntime:
         *,
         strategy_id: str | None = None,
         direction: str | None = None,
+        expected_move_points: float | None = None,
     ) -> DemoOrderIntent:
         source_direction = getattr(getattr(source, "primary_direction", None), "value", None)
         direction = direction or ("LONG" if source_direction == "LONG" else "SHORT")
         entry = tick.ask if direction == "LONG" else tick.bid
         stop_policy = getattr(source, "stop_policy", None)
-        stop_distance_points = float(getattr(stop_policy, "stop_distance_points", self.config.stop_distance_points))
-        target_distance_points = float(getattr(stop_policy, "take_profit_distance_points", self.config.take_profit_distance_points))
+        risk_stop_distance_points = float(getattr(stop_policy, "stop_distance_points", self.config.stop_distance_points))
+        if self.config.hft_first:
+            stop_distance_points = self.config.emergency_stop_distance_points
+            target_distance_points = self.config.emergency_take_profit_distance_points
+        else:
+            stop_distance_points = float(getattr(stop_policy, "stop_distance_points", self.config.stop_distance_points))
+            target_distance_points = float(getattr(stop_policy, "take_profit_distance_points", self.config.take_profit_distance_points))
         stop_distance = stop_distance_points * tick.point
         target_distance = target_distance_points * tick.point
         stop = entry - stop_distance if direction == "LONG" else entry + stop_distance
@@ -369,7 +398,7 @@ class DemoHftRuntime:
         )
         equity = float(getattr(account, "equity", 0.0) or 0.0)
         risk_multiplier = float(getattr(source, "risk_multiplier", 1.0) or 1.0)
-        requested = equity * self.config.risk_fraction * risk_multiplier / max(stop_distance * 100000.0, 1.0)
+        requested = equity * self.config.risk_fraction * risk_multiplier / max(risk_stop_distance_points * tick.point * 100000.0, 1.0)
         volume = normalize_volume(
             max(requested, float(getattr(info, "volume_min", 0.01) or 0.01)),
             minimum=float(getattr(info, "volume_min", 0.01) or 0.01),
@@ -405,9 +434,10 @@ class DemoHftRuntime:
         original = str(current.get("direction", "")).upper()
         direction = "SHORT" if original == "LONG" else "LONG"
         requested = tick.bid if original == "LONG" else tick.ask
-        distance = self.config.stop_distance_points * tick.point
+        distance = self.config.emergency_stop_distance_points * tick.point
+        target_distance = self.config.emergency_take_profit_distance_points * tick.point
         stop = requested + distance if direction == "SHORT" else requested - distance
-        target = requested - distance if direction == "SHORT" else requested + distance
+        target = requested - target_distance if direction == "SHORT" else requested + target_distance
         return DemoOrderIntent(
             intent_id=str(uuid.uuid4()),
             plan_id=str(getattr(source, "plan_id", None) or getattr(source, "state_id", "exit-state")),
@@ -830,12 +860,16 @@ class DemoHftRuntime:
         current = self._open_position()
         state = PositionState.FLAT if current is None else PositionState.LONG if current["direction"] == "LONG" else PositionState.SHORT
         if self.config.hft_first and self.regime_store is not None:
+            position_payload = self._position_payload(current) if current is not None else {}
             decision = self.hft.on_tick(
                 regime,
                 snapshot,
                 position_state=state,
                 entry_price=None if current is None else float(current["price_open"]),
                 entry_at=None if current is None else self._position_entry_at(current),
+                expected_move_points=None if current is None else position_payload.get("expected_move_points"),
+                strategy_id=None if current is None else position_payload.get("strategy_id"),
+                exit_state=position_payload if current is not None else None,
             )
         else:
             decision = self.fast.on_tick(
@@ -896,6 +930,8 @@ class DemoHftRuntime:
             risk = RiskDecision(False, "HFT_ORDER_RATE_CIRCUIT_OPEN" if self._order_rate_circuit_open else "HFT_COOLDOWN", "HFT technical order-rate or cooldown gate", 0.0)
         self._record_risk(signal_id, risk)
         self._record_shadow_tick(tick, snapshot, decision, signal_id, risk)
+        if current is not None and self.config.hft_first:
+            self._persist_exit_telemetry(current, decision, tick)
         if decision.action is FastAction.EXIT and current is not None and risk.accepted:
             source = regime if regime is not None else plan
             order_started = time.perf_counter()
@@ -975,15 +1011,19 @@ class DemoHftRuntime:
             info,
             strategy_id=decision.strategy_id,
             direction="LONG" if decision.action is FastAction.ENTER_LONG else "SHORT",
+            expected_move_points=decision.expected_move_points,
         )
         self._record_submission(tick.timestamp)
         order_started = time.perf_counter()
         result = self.gateway.submit(intent)
         self._order_latencies.append((time.perf_counter() - order_started) * 1000.0)
-        if result.classification in {"FILLED", "PARTIAL"} and result.order_ticket is not None:
+        if result.classification in {"FILLED", "PARTIAL"} and (result.position_ticket or result.order_ticket) is not None:
+            position_ticket = result.position_ticket or result.order_ticket
             self.store.record_position(
                 {
-                    "ticket": result.order_ticket,
+                    "ticket": position_ticket,
+                    "order_ticket": result.order_ticket,
+                    "position_ticket": position_ticket,
                     "intent_id": intent.intent_id,
                     "symbol": tick.symbol,
                     "direction": intent.direction,
@@ -991,12 +1031,19 @@ class DemoHftRuntime:
                     "price_open": result.fill_price or intent.requested_price,
                     "stop_loss": intent.stop_loss,
                     "take_profit": intent.take_profit,
+                    "strategy_id": intent.strategy_id,
+                    "expected_move_points": decision.expected_move_points,
+                    "exit_policy": "DYNAMIC_HFT",
+                    "emergency_broker_stop": True,
+                    "normal_take_profit": False,
                     "state": "OPEN",
                     "opened_at": tick.timestamp.isoformat(),
                 }
             )
             self._owned_position = {
-                "ticket": result.order_ticket,
+                "ticket": position_ticket,
+                "order_ticket": result.order_ticket,
+                "position_ticket": position_ticket,
                 "intent_id": intent.intent_id,
                 "symbol": tick.symbol,
                 "direction": intent.direction,
@@ -1004,12 +1051,17 @@ class DemoHftRuntime:
                 "price_open": result.fill_price or intent.requested_price,
                 "stop_loss": intent.stop_loss,
                 "take_profit": intent.take_profit,
+                "strategy_id": intent.strategy_id,
+                "expected_move_points": decision.expected_move_points,
+                "exit_policy": "DYNAMIC_HFT",
+                "emergency_broker_stop": True,
+                "normal_take_profit": False,
                 "state": "OPEN",
                 "opened_at": tick.timestamp.isoformat(),
             }
             if self.shadow_store is not None:
                 shadow_position = dict(self._owned_position)
-                shadow_position["position_id"] = str(result.order_ticket)
+                shadow_position["position_id"] = str(position_ticket)
                 shadow_position["state"] = "LONG" if intent.direction == "LONG" else "SHORT"
                 shadow_position["executed"] = False
                 self._persist(
@@ -1043,8 +1095,59 @@ class DemoHftRuntime:
         }
 
     @staticmethod
+    def _position_payload(position: Mapping[str, Any] | None) -> dict[str, Any]:
+        if position is None:
+            return {}
+        payload = position.get("payload_json")
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except (TypeError, ValueError):
+                decoded = {}
+            if isinstance(decoded, Mapping):
+                return dict(decoded)
+        return {
+            key: position[key]
+            for key in (
+                "strategy_id",
+                "expected_move_points",
+                "entry_price",
+                "entry_at",
+                "mfe_points",
+                "mae_points",
+                "current_pnl_points",
+                "last_mfe_at",
+                "profit_protection_state",
+                "trailing_level",
+                "micro_reversal",
+            )
+            if key in position
+        }
+
+    def _persist_exit_telemetry(self, current: Mapping[str, Any], decision: Any, tick: Tick) -> None:
+        """Persist bounded causal position metadata without model/private text."""
+
+        updated = dict(current)
+        updated.pop("payload_json", None)
+        updated.update(self.hft.exit_state_payload())
+        updated.update(
+            {
+                "current_pnl_points": decision.current_pnl_points,
+                "mfe_points": decision.mfe_points,
+                "mae_points": decision.mae_points,
+                "profit_protection_state": decision.profit_protection_state,
+                "trailing_level": decision.trailing_level,
+                "micro_reversal": decision.micro_reversal,
+                "last_telemetry_at": tick.timestamp.isoformat(),
+            }
+        )
+        self._owned_position = updated
+        self._persist(self.store, "record_position", updated)
+
+    @staticmethod
     def _position_entry_at(position: Mapping[str, Any]) -> datetime | None:
-        value = position.get("created_at") or position.get("opened_at")
+        payload = DemoHftRuntime._position_payload(position)
+        value = position.get("created_at") or position.get("opened_at") or payload.get("entry_at") or payload.get("opened_at")
         if isinstance(value, datetime):
             return utc(value, "position_entry_at")
         if isinstance(value, str):

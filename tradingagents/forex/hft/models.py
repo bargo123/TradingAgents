@@ -299,6 +299,15 @@ class FastDecision:
     score: float = 0.0
     processing_ms: float = 0.0
     strategy_id: str | None = None
+    expected_move_points: float = 0.0
+    current_pnl_points: float = 0.0
+    mfe_points: float = 0.0
+    mae_points: float = 0.0
+    profit_protection_state: str = "UNARMED"
+    trailing_level: float | None = None
+    micro_reversal: bool = False
+    time_since_entry_seconds: float = 0.0
+    time_since_last_mfe_seconds: float = 0.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.action, FastAction):
@@ -310,6 +319,20 @@ class FastDecision:
         object.__setattr__(self, "processing_ms", _finite(self.processing_ms, "processing_ms", minimum=0.0))
         if self.strategy_id is not None:
             object.__setattr__(self, "strategy_id", _text(self.strategy_id, "strategy_id"))
+        object.__setattr__(self, "expected_move_points", _finite(self.expected_move_points, "expected_move_points", minimum=0.0))
+        object.__setattr__(self, "current_pnl_points", _finite(self.current_pnl_points, "current_pnl_points"))
+        object.__setattr__(self, "mfe_points", _finite(self.mfe_points, "mfe_points", minimum=0.0))
+        object.__setattr__(self, "mae_points", _finite(self.mae_points, "mae_points", maximum=0.0))
+        state = _text(self.profit_protection_state, "profit_protection_state", upper=True)
+        if state not in {"UNARMED", "PROFIT_PROTECTION_ARMED", "TRAILING", "EXIT_PENDING"}:
+            raise ValueError("profit_protection_state is invalid")
+        object.__setattr__(self, "profit_protection_state", state)
+        if self.trailing_level is not None:
+            object.__setattr__(self, "trailing_level", _positive(self.trailing_level, "trailing_level"))
+        if not isinstance(self.micro_reversal, bool):
+            raise ValueError("micro_reversal must be boolean")
+        object.__setattr__(self, "time_since_entry_seconds", _finite(self.time_since_entry_seconds, "time_since_entry_seconds", minimum=0.0))
+        object.__setattr__(self, "time_since_last_mfe_seconds", _finite(self.time_since_last_mfe_seconds, "time_since_last_mfe_seconds", minimum=0.0))
 
 
 @dataclass(frozen=True, slots=True)

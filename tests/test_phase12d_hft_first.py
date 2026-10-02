@@ -267,11 +267,11 @@ def test_high_uncertainty_state_overrides_neutral_bootstrap():
     assert decision.reason == "STRATEGIC_HIGH_UNCERTAINTY"
 
 
-def test_hft_execution_engine_exits_position_on_stop_without_regime():
+def test_hft_execution_engine_exits_position_on_emergency_stop_without_regime():
     features = _features((1.10000, 1.09980, 1.09970, 1.09960, 1.09950))
     state = _state(features.timestamp - timedelta(seconds=1))
 
-    decision = HftExecutionEngine(stop_distance_points=10).on_tick(
+    decision = HftExecutionEngine(emergency_stop_distance_points=10).on_tick(
         state,
         features,
         position_state=PositionState.LONG,
@@ -280,7 +280,7 @@ def test_hft_execution_engine_exits_position_on_stop_without_regime():
     )
 
     assert decision.action is FastAction.EXIT
-    assert decision.reason == "STOP_LOSS"
+    assert decision.reason == "EMERGENCY_BROKER_STOP"
 
 
 def test_hft_execution_engine_exits_when_strategic_state_expires():
