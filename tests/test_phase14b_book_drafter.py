@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from tradingagents.knowledge.models import KnowledgeHit
 from tradingagents.self_enhancement.book_drafter import (
     OllamaStrategyDrafter,
     StrategyDraft,
     StrategyDraftBatch,
+    StrategyDraftClaim,
 )
 
-SOURCE_TEXT = "Enter long when mid return exceeds 1.2 points after confirmation."
+SOURCE_TEXT = "LONG when momentum > 1.2 points after confirmation"
 SECRET_PROMPT_MARKER = "private-prompt-marker-should-not-be-returned"
 PRIVATE_REASONING_MARKER = "private-reasoning-marker-should-not-be-returned"
 
@@ -31,14 +33,14 @@ def _hit() -> KnowledgeHit:
 
 
 def _draft_payload() -> dict:
-    quote = "mid return exceeds 1.2 points after confirmation"
-    offset = SOURCE_TEXT.index(quote)
+    quote = SOURCE_TEXT
+    offset = 0
     return {
         "specs": [
             {
                 "name": "Short-horizon continuation",
                 "family": "MOMENTUM_CONTINUATION",
-                "required_data": ["mid_return_1"],
+                "required_data": ["momentum"],
                 "implementation_confidence": 0.65,
                 "rule_claims": [
                     {
@@ -48,7 +50,7 @@ def _draft_payload() -> dict:
                         "value": 1.2,
                         "unit": "points",
                         "condition": "after confirmation",
-                        "horizon_seconds": 5,
+                        "horizon_seconds": None,
                         "origin": "SOURCE_SUPPORTED_CONCEPT",
                         "evidence_ref": "E1",
                         "start_offset": offset,
@@ -306,6 +308,14 @@ def test_draft_batch_uses_closed_strict_schema() -> None:
         for definition in schema["$defs"].values()
         if definition.get("type") == "object"
     )
+
+
+def test_horizon_field_is_rejected_on_non_horizon_claims() -> None:
+    payload = _draft_payload()["specs"][0]["rule_claims"][0]
+    payload["horizon_seconds"] = 5
+
+    with pytest.raises(ValidationError, match="horizon_seconds"):
+        StrategyDraftClaim.model_validate_json(json.dumps(payload))
 
 
 def test_drafter_rejects_truncated_output_even_if_transport_succeeded() -> None:

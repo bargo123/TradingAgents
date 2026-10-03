@@ -66,6 +66,11 @@ class StrategyDraftClaim(_StrictDraftModel):
 
     @model_validator(mode="after")
     def validate_evidence_binding(self) -> StrategyDraftClaim:
+        if self.horizon_seconds is not None and self.stage not in {
+            RuleStage.EXPECTED_MOVE,
+            RuleStage.HORIZON,
+        }:
+            raise ValueError("horizon_seconds is only valid for expected-move or horizon rules")
         evidence_fields = (self.evidence_ref, self.start_offset, self.end_offset, self.quote)
         if self.origin is RuleOrigin.SOURCE_SUPPORTED_CONCEPT:
             if any(value is None for value in evidence_fields):

@@ -74,7 +74,7 @@ def _validated_book_spec():
             1.2,
             "points",
             "after confirmation",
-            5 if stage is RuleStage.HORIZON else None,
+            5 if stage in {RuleStage.EXPECTED_MOVE, RuleStage.HORIZON} else None,
             RuleOrigin.SOURCE_SUPPORTED_CONCEPT,
             span,
         )

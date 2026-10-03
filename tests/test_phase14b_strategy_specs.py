@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 
 from tradingagents.self_enhancement.strategy_specs import (
+    EXECUTABLE_REQUIRED_STAGES,
     EvidenceSpan,
     RuleOperator,
     RuleOrigin,
@@ -39,7 +40,7 @@ def _claim(**overrides) -> StrategyRuleClaim:
         "value": 1.2,
         "unit": "points",
         "condition": "after confirmation",
-        "horizon_seconds": 5,
+        "horizon_seconds": None,
         "origin": RuleOrigin.SOURCE_SUPPORTED_CONCEPT,
         "evidence": _span(),
     }
@@ -173,3 +174,88 @@ def test_incomplete_source_claim_cannot_become_implementation_ready() -> None:
 
     assert spec.is_executable is False
     assert RuleStage.ENTRY in spec.unspecified_stages
+
+
+def _complete_core_spec(*, optional_claim: StrategyRuleClaim | None = None) -> StrategySpec:
+    claims = []
+    definitions = {
+        RuleStage.ENTRY: (RuleOperator.GREATER_THAN, "LONG", 2.0, "points", "after confirmation", None),
+        RuleStage.CONFIRMATION: (
+            RuleOperator.GREATER_OR_EQUAL,
+            "LONG",
+            0.6,
+            "fraction",
+            "after three ticks",
+            None,
+        ),
+        RuleStage.INVALIDATION: (RuleOperator.LESS_OR_EQUAL, "LONG", 0.0, "points", "after reversal", None),
+        RuleStage.EXPECTED_MOVE: (RuleOperator.GREATER_OR_EQUAL, "LONG", 5.0, "points", "after entry", 30),
+        RuleStage.EXIT: (RuleOperator.LESS_OR_EQUAL, "LONG", 0.0, "points", "after reversal", None),
+        RuleStage.PROFIT_PROTECTION: (
+            RuleOperator.LESS_OR_EQUAL,
+            "LONG",
+            0.0,
+            "points",
+            "after target retracement",
+            None,
+        ),
+        RuleStage.STOP_BEHAVIOR: (RuleOperator.LESS_OR_EQUAL, "LONG", -3.0, "points", "after adverse move", None),
+        RuleStage.HORIZON: (RuleOperator.LESS_OR_EQUAL, "BOTH", 30, "seconds", "after entry", 30),
+    }
+    for stage in EXECUTABLE_REQUIRED_STAGES:
+        operator, direction, value, unit, condition, horizon_seconds = definitions[stage]
+        quote = f"{stage.value}: {direction} {operator.value} {value} {unit} {condition}"
+        claims.append(
+            _claim(
+                stage=stage,
+                operator=operator,
+                direction=direction,
+                value=value,
+                unit=unit,
+                condition=condition,
+                horizon_seconds=horizon_seconds,
+                evidence=_span(start_offset=0, end_offset=len(quote), quote=quote),
+            )
+        )
+    if optional_claim is not None:
+        claims.append(optional_claim)
+    validations = tuple(
+        RuleValidationResult(claim.fingerprint, RuleValidationStatus.SUPPORTED, "EXACT_SOURCE_RULE")
+        for claim in claims
+    )
+    return _spec(
+        rule_claims=tuple(claims),
+        validation_results=validations,
+        required_data=("momentum", "direction_persistence"),
+        suitability=StrategySuitability.HFT_SUITABLE,
+    )
+
+
+def test_core_complete_spec_can_be_executable_with_optional_stages_unspecified() -> None:
+    spec = _complete_core_spec()
+
+    assert set(spec.unspecified_stages) == set(RuleStage) - EXECUTABLE_REQUIRED_STAGES
+    assert spec.is_executable is True
+
+
+def test_optional_unsupported_claim_still_blocks_execution() -> None:
+    optional = _claim(stage=RuleStage.SESSION_FILTER, value="ASIA")
+    core = _complete_core_spec()
+    claims = (*core.rule_claims, optional)
+    validations = tuple(
+        RuleValidationResult(
+            claim.fingerprint,
+            RuleValidationStatus.UNSUPPORTED if claim is optional else RuleValidationStatus.SUPPORTED,
+            "UNSUPPORTED_OPTIONAL_RULE" if claim is optional else "EXACT_SOURCE_RULE",
+        )
+        for claim in claims
+    )
+
+    spec = _spec(
+        rule_claims=claims,
+        validation_results=validations,
+        required_data=("momentum", "direction_persistence"),
+        suitability=StrategySuitability.HFT_SUITABLE,
+    )
+
+    assert spec.is_executable is False

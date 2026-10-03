@@ -15,10 +15,12 @@ from typing import Any
 from tradingagents.forex.hft.features import TickFeatures
 from tradingagents.knowledge.models import KnowledgeHit, KnowledgeQuery
 from tradingagents.self_enhancement.book_drafter import StrategyDraft, StrategyDraftClaim
+from tradingagents.self_enhancement.book_rule_grammar import (
+    FEATURE_UNITS,
+    parse_supported_rule_quote,
+)
 from tradingagents.self_enhancement.strategy_specs import (
     EvidenceSpan,
-    RuleDirection,
-    RuleOperator,
     RuleOrigin,
     RuleStage,
     RuleValidationResult,
@@ -71,20 +73,6 @@ class MappingReport:
     components: tuple[ComponentMapping, ...]
 
 
-_RULE_RE = re.compile(
-    r"^(?P<direction>LONG|SHORT) when "
-    r"(?P<feature>[a-z][a-z0-9_]*) "
-    r"(?P<operator>>=|>|<=|<) "
-    r"(?P<value>-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?) "
-    r"(?P<unit>points|pips|ticks|bps) "
-    r"(?P<condition>after [a-z][a-z0-9_-]*(?: [a-z][a-z0-9_-]*)*)\.?$"
-)
-_OPERATOR_MAP = {
-    ">": RuleOperator.GREATER_THAN,
-    ">=": RuleOperator.GREATER_OR_EQUAL,
-    "<": RuleOperator.LESS_THAN,
-    "<=": RuleOperator.LESS_OR_EQUAL,
-}
 _STRATEGY_COMPONENTS = ("entry", "filter", "expected_move", "exit", "risk", "horizon")
 _HFT_HORIZON_SECONDS = 60
 _SHORT_TERM_HORIZON_SECONDS = 3600
@@ -111,27 +99,6 @@ def _make_result(
     reason_code: str,
 ) -> RuleValidationResult:
     return RuleValidationResult(fingerprint, status, reason_code)
-
-
-def _parse_rule_quote(quote: str) -> Mapping[str, Any] | None:
-    match = _RULE_RE.fullmatch(quote)
-    if match is None:
-        return None
-    groups = match.groupdict()
-    try:
-        value = Decimal(groups["value"])
-    except InvalidOperation:
-        return None
-    if not value.is_finite():
-        return None
-    return {
-        "direction": RuleDirection(groups["direction"]),
-        "feature": groups["feature"],
-        "operator": _OPERATOR_MAP[groups["operator"]],
-        "value": value,
-        "unit": groups["unit"],
-        "condition": groups["condition"],
-    }
 
 
 def _validate_claim(
@@ -168,13 +135,14 @@ def _validate_claim(
     end = claim.end_offset
     if start is None or end is None or start < 0 or end > len(hit.text) or hit.text[start:end] != quote:
         return None, _make_result(draft_fingerprint, RuleValidationStatus.UNSUPPORTED, "SPAN_MISMATCH")
-    if claim.stage is not RuleStage.ENTRY:
-        return None, _make_result(draft_fingerprint, RuleValidationStatus.UNSUPPORTED, "GRAMMAR_UNSUPPORTED")
-    parsed = _parse_rule_quote(quote)
+    parsed = parse_supported_rule_quote(quote, claim.stage)
     if parsed is None:
         return None, _make_result(draft_fingerprint, RuleValidationStatus.UNSUPPORTED, "GRAMMAR_UNSUPPORTED")
-    if parsed["feature"] not in required_data:
+    feature = parsed["feature"]
+    if feature is not None and feature not in required_data:
         return None, _make_result(draft_fingerprint, RuleValidationStatus.UNSUPPORTED, "DATA_FEATURE_MISMATCH")
+    if feature is not None and FEATURE_UNITS.get(feature) != parsed["unit"]:
+        return None, _make_result(draft_fingerprint, RuleValidationStatus.UNSUPPORTED, "FEATURE_UNIT_MISMATCH")
     try:
         claim_value = Decimal(str(claim.value)) if claim.value is not None else None
     except InvalidOperation:
@@ -185,6 +153,8 @@ def _validate_claim(
         or claim_value != parsed["value"]
         or parsed["unit"] != claim.unit
         or parsed["condition"] != claim.condition
+        or parsed["stage"] is not claim.stage
+        or parsed["horizon_seconds"] != claim.horizon_seconds
     ):
         return None, _make_result(draft_fingerprint, RuleValidationStatus.UNSUPPORTED, "RULE_FIELD_MISMATCH")
     source_hash = hit.source_hash
@@ -240,7 +210,7 @@ def classify_suitability(
             missing_features=missing_features,
             unspecified_stages=spec.unspecified_stages,
         )
-    if spec.research_hypothesis_rules or spec.unspecified_stages:
+    if spec.research_hypothesis_rules or spec.missing_executable_stages:
         return SuitabilityResult(
             StrategySuitability.INSUFFICIENT_SPECIFICATION,
             unspecified_stages=spec.unspecified_stages,

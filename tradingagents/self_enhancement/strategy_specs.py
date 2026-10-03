@@ -81,6 +81,23 @@ class StrategySuitability(_ValueEnum):
     INSUFFICIENT_SPECIFICATION = "INSUFFICIENT_SPECIFICATION"
 
 
+# The minimum source-supported contract needed by the deterministic V1 HFT
+# primitive. Other filters (session, volatility, spread, risk) remain explicit
+# when absent; global runtime risk/cost gates remain authoritative.
+EXECUTABLE_REQUIRED_STAGES = frozenset(
+    {
+        RuleStage.ENTRY,
+        RuleStage.CONFIRMATION,
+        RuleStage.INVALIDATION,
+        RuleStage.EXPECTED_MOVE,
+        RuleStage.EXIT,
+        RuleStage.PROFIT_PROTECTION,
+        RuleStage.STOP_BEHAVIOR,
+        RuleStage.HORIZON,
+    }
+)
+
+
 _E = TypeVar("_E", bound=_ValueEnum)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REASON_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
@@ -230,6 +247,8 @@ class StrategyRuleClaim:
             _text(self.condition, "condition", maximum=1024)
         if self.horizon_seconds is not None:
             _positive_int(self.horizon_seconds, "horizon_seconds")
+            if self.stage not in {RuleStage.EXPECTED_MOVE, RuleStage.HORIZON}:
+                raise ValueError("horizon_seconds is only valid for expected-move or horizon rules")
         if self.evidence is not None and not isinstance(self.evidence, EvidenceSpan):
             raise TypeError("evidence must be EvidenceSpan or None")
         if self.origin is RuleOrigin.SOURCE_SUPPORTED_CONCEPT and self.evidence is None:
@@ -245,7 +264,8 @@ class StrategyRuleClaim:
             self.value is not None,
             self.unit is not None,
             self.condition is not None,
-            self.stage is not RuleStage.HORIZON or self.horizon_seconds is not None,
+            self.stage not in {RuleStage.EXPECTED_MOVE, RuleStage.HORIZON}
+            or self.horizon_seconds is not None,
         )
         return all(required)
 
@@ -404,10 +424,21 @@ class StrategySpec:
         return tuple(stage for stage in RuleStage if stage not in complete_source_stages)
 
     @property
+    def missing_executable_stages(self) -> tuple[RuleStage, ...]:
+        complete_source_stages = {
+            claim.stage for claim in self.source_supported_rules if claim.is_complete
+        }
+        return tuple(
+            stage
+            for stage in RuleStage
+            if stage in EXECUTABLE_REQUIRED_STAGES and stage not in complete_source_stages
+        )
+
+    @property
     def is_executable(self) -> bool:
         if self.suitability is not StrategySuitability.HFT_SUITABLE:
             return False
-        if self.research_hypothesis_rules or self.unspecified_stages:
+        if self.research_hypothesis_rules or self.missing_executable_stages:
             return False
         validations = {result.rule_fingerprint: result.status for result in self.validation_results}
         return all(

@@ -39,7 +39,7 @@ from tradingagents.self_enhancement.strategy_specs import (
 GENERATION = "gen_fixture_1"
 FINGERPRINT = "sha256:" + "b" * 64
 SOURCE_HASH = "a" * 64
-SOURCE_TEXT = "LONG when return_1 > 1.2 points after confirmation"
+SOURCE_TEXT = "LONG when momentum > 1.2 points after confirmation"
 QUOTE = SOURCE_TEXT
 
 
@@ -91,7 +91,7 @@ def _draft(hit: KnowledgeHit, claim: StrategyDraftClaim | None = None, **overrid
     values = {
         "name": "Short horizon continuation",
         "family": "MOMENTUM_CONTINUATION",
-        "required_data": ["return_1"],
+        "required_data": ["momentum"],
         "implementation_confidence": 0.65,
         "rule_claims": [claim or _claim(hit)],
     }
@@ -219,6 +219,115 @@ def test_exact_source_span_and_finite_rule_grammar_are_supported() -> None:
         QUOTE,
     )
     assert spec.validation_results[0].status is RuleValidationStatus.SUPPORTED
+
+
+def test_confirmation_stage_requires_an_explicit_matching_stage_grammar() -> None:
+    quote = "CONFIRMATION: LONG when direction_persistence >= 0.6 fraction after three ticks"
+    hit = _hit(text=quote)
+    claim = _claim(
+        hit,
+        stage=RuleStage.CONFIRMATION,
+        operator=RuleOperator.GREATER_OR_EQUAL,
+        value=0.6,
+        unit="fraction",
+        condition="after three ticks",
+        start_offset=0,
+        end_offset=len(quote),
+        quote=quote,
+    )
+    pipeline, _ = _pipeline(hit, _draft(hit, claim, required_data=["direction_persistence"]))
+
+    report = pipeline.extract(["confirmation"], max_specs=1)
+
+    assert len(report.specs) == 1
+    assert report.specs[0].rule_claims[0].stage is RuleStage.CONFIRMATION
+    assert report.specs[0].validation_results[0].status is RuleValidationStatus.SUPPORTED
+
+
+def test_feature_unit_mismatch_is_rejected_even_with_an_exact_quote() -> None:
+    quote = "LONG when return_1 > 1.2 points after confirmation"
+    hit = _hit(text=quote)
+    claim = _claim(hit, start_offset=0, end_offset=len(quote), quote=quote)
+    pipeline, _ = _pipeline(hit, _draft(hit, claim, required_data=["return_1"]))
+
+    report = pipeline.extract(["entry"], max_specs=1)
+
+    assert report.specs == ()
+    assert report.rejected_rules[0].reason_code == "FEATURE_UNIT_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    ("stage", "quote", "operator", "direction", "value", "unit", "condition", "horizon"),
+    [
+        (
+            RuleStage.EXPECTED_MOVE,
+            "EXPECTED_MOVE: LONG target 5 points within 30 seconds after entry",
+            RuleOperator.GREATER_OR_EQUAL,
+            RuleDirection.LONG,
+            5,
+            "points",
+            "after entry",
+            30,
+        ),
+        (
+            RuleStage.HORIZON,
+            "HORIZON: hold no longer than 30 seconds after entry",
+            RuleOperator.LESS_OR_EQUAL,
+            RuleDirection.BOTH,
+            30,
+            "seconds",
+            "after entry",
+            30,
+        ),
+    ],
+)
+def test_expected_move_and_horizon_grammar_binds_duration_and_value(
+    stage, quote, operator, direction, value, unit, condition, horizon
+) -> None:
+    hit = _hit(text=quote)
+    claim = _claim(
+        hit,
+        stage=stage,
+        operator=operator,
+        direction=direction,
+        value=value,
+        unit=unit,
+        condition=condition,
+        horizon_seconds=horizon,
+        start_offset=0,
+        end_offset=len(quote),
+        quote=quote,
+    )
+    pipeline, _ = _pipeline(hit, _draft(hit, claim))
+
+    report = pipeline.extract(["horizon"], max_specs=1)
+
+    assert len(report.specs) == 1
+    assert report.specs[0].validation_results[0].status is RuleValidationStatus.SUPPORTED
+
+
+def test_duration_claim_cannot_disagree_with_quoted_horizon() -> None:
+    quote = "HORIZON: hold no longer than 30 seconds after entry"
+    hit = _hit(text=quote)
+    claim = _claim(
+        hit,
+        stage=RuleStage.HORIZON,
+        operator=RuleOperator.LESS_OR_EQUAL,
+        direction=RuleDirection.BOTH,
+        value=60,
+        unit="seconds",
+        condition="after entry",
+        horizon_seconds=60,
+        start_offset=0,
+        end_offset=len(quote),
+        quote=quote,
+    )
+    pipeline, _ = _pipeline(hit, _draft(hit, claim))
+
+    report = pipeline.extract(["horizon"], max_specs=1)
+
+    assert report.specs == ()
+    assert report.rejected_rules[0].reason_code == "RULE_FIELD_MISMATCH"
 
 
 def test_shifted_source_span_is_rejected_even_when_quote_text_is_valid() -> None:
