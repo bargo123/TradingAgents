@@ -250,16 +250,18 @@ class KnowledgeQueryService:
         return values
 
     @staticmethod
-    def _hit(candidate: Any) -> KnowledgeHit:
+    def _hit(candidate: Any, *, generation: Any) -> KnowledgeHit:
         chunk = candidate.chunk
         if chunk is None:
             chunk = ChunkRecord.from_dict(candidate.metadata)
         extra = dict(getattr(chunk, "extra", {}) or {})
-        extra.setdefault(
-            "projection_generation",
-            candidate.metadata.get("projection_generation", getattr(chunk, "projection_generation", "")),
-        )
-        extra.setdefault("projection_population_hash", candidate.metadata.get("projection_population_hash", ""))
+        # The active generation and both projection metadata records were
+        # validated before retrieval. Index rows need not duplicate those
+        # generation-level values on every source chunk, so attach the
+        # authoritative identity here rather than emitting empty/stale row
+        # metadata as if it were the projection identity.
+        extra["projection_generation"] = generation.generation_id
+        extra["projection_population_hash"] = generation.population_hash
         extra.setdefault("fusion_version", "rrf-v1")
         extra.setdefault("reranker_version", "feature-v1")
         payload = chunk.to_dict()
@@ -326,7 +328,7 @@ class KnowledgeQueryService:
         ranked = self.reranker.rerank(request, fused)
         hits: list[KnowledgeHit] = []
         for candidate in ranked[: request.top_k]:
-            hit = self._hit(candidate)
+            hit = self._hit(candidate, generation=generation)
             validate_hit_provenance(hit)
             hits.append(hit)
         return tuple(hits)

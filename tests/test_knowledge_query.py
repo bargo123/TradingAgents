@@ -416,6 +416,17 @@ def test_identical_query_and_index_embedding_specs_allow_dense_search():
     assert service.search(KnowledgeQuery(text="OFI"))
 
 
+def test_hit_carries_validated_population_identity_when_candidate_omits_it():
+    service = query_harness(
+        dense=({"chunk_id": "chunk-a", "semantic_score": 0.9, "rank": 1, "chunk": make_chunk()},),
+    )
+
+    hit = service.search(KnowledgeQuery(text="OFI"))[0]
+
+    assert hit.extra["projection_generation"] == "gen-1"
+    assert hit.extra["projection_population_hash"] == "pop-1"
+
+
 @pytest.mark.parametrize(
     "field",
     [

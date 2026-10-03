@@ -402,17 +402,16 @@ class BookStrategyPipeline:
         if len(matches) != 1:
             return False
         chunk = matches[0]
-        chunk_extra = getattr(chunk, "extra", {})
+        # The Phase 7 catalog retains source chunks, while readiness and
+        # projection identity are generation-level facts validated by the
+        # query service and recorded on the returned hit/document. Do not
+        # require catalog source rows to duplicate vector/lexical projection
+        # flags that the frozen catalog intentionally does not persist.
         return bool(
             chunk.document_id == hit.document_id
             and chunk.source_hash == hit.source_hash
             and chunk.text == hit.text
             and chunk.active is True
-            and chunk.vector_ready is True
-            and chunk.lexical_ready is True
-            and chunk.projection_generation == self.pinned_generation
-            and isinstance(chunk_extra, Mapping)
-            and chunk_extra.get("projection_population_hash") == self.pinned_fingerprint
         )
 
     def _spec_from_draft(

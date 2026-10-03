@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from cli import phase14b
+from tradingagents.forex.hft.demo_store import DemoExecutionStore
 from tradingagents.knowledge.embeddings import LocalModelUnavailable
 
 
@@ -290,6 +291,39 @@ def test_demo_reconciliation_blocker_suppresses_replay_without_exposing_details(
     assert result["candidate_replay_ready"] is False
     assert result["reason_code"] == "DEMO_RECONCILIATION_REQUIRED"
     assert result["demo_reconciliation_status"] == "RECONCILIATION_REQUIRED"
+
+
+def test_persisted_reconciliation_resolution_supersedes_older_required_events(tmp_path):
+    database = tmp_path / "demo.sqlite3"
+    store = DemoExecutionStore(database)
+    store.initialize()
+    for _ in range(3):
+        store.record_reconciliation(
+            status="RECONCILIATION_REQUIRED",
+            reason="prior broker position observation was missing",
+            details={"ticket": 152717255467, "symbol": "EURUSD"},
+        )
+    store.record_reconciliation(
+        status="RECONCILED",
+        reason="authoritative broker history confirmed closed position",
+        details={"ticket": 152717255467, "symbol": "EURUSD", "terminal_state": "CLOSED"},
+    )
+
+    phase14b._validate_demo_source_readonly(database)
+
+
+def test_latest_unresolved_reconciliation_event_still_blocks_replay(tmp_path):
+    database = tmp_path / "demo.sqlite3"
+    store = DemoExecutionStore(database)
+    store.initialize()
+    store.record_reconciliation(
+        status="RECONCILIATION_REQUIRED",
+        reason="broker history was unavailable",
+        details={"ticket": 152717255467, "symbol": "EURUSD"},
+    )
+
+    with pytest.raises(ValueError, match="unresolved reconciliation"):
+        phase14b._validate_demo_source_readonly(database)
 
 
 def test_missing_local_embedding_artifact_fails_before_drafter_or_output(

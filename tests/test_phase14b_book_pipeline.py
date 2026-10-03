@@ -221,6 +221,22 @@ def test_exact_source_span_and_finite_rule_grammar_are_supported() -> None:
     assert spec.validation_results[0].status is RuleValidationStatus.SUPPORTED
 
 
+def test_frozen_catalog_source_chunk_does_not_need_projection_readiness_flags() -> None:
+    hit = _hit()
+    pipeline, drafter = _pipeline(hit, _draft(hit))
+    source_chunk = pipeline.query_service.catalog.chunks[hit.chunk_id]
+    source_chunk.vector_ready = False
+    source_chunk.lexical_ready = False
+    source_chunk.projection_generation = None
+    source_chunk.extra = {}
+
+    report = pipeline.extract(["short horizon entry rule"], max_specs=2)
+
+    assert report.error_code is None
+    assert report.retrieved_count == 1
+    assert len(drafter.calls) == 1
+
+
 def test_confirmation_stage_requires_an_explicit_matching_stage_grammar() -> None:
     quote = "CONFIRMATION: LONG when direction_persistence >= 0.6 fraction after three ticks"
     hit = _hit(text=quote)

@@ -7,7 +7,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -137,8 +137,70 @@ def _validate_demo_source_readonly(path: Path) -> None:
         if "demo_reconciliation" in tables:
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(demo_reconciliation)")}
             if "status" in columns:
-                statuses = {str(row[0] or "").upper() for row in connection.execute("SELECT status FROM demo_reconciliation")}
-                if statuses - {"RECONCILED", "CLEAN", "OK"}:
+                resolved_statuses = {"RECONCILED", "CLEAN", "OK"}
+                if not {"details_json", "observed_at"}.issubset(columns):
+                    statuses = {
+                        str(row[0] or "").upper()
+                        for row in connection.execute("SELECT status FROM demo_reconciliation")
+                    }
+                    if statuses - resolved_statuses:
+                        raise ValueError("DEMO source has unresolved reconciliation evidence")
+                    return
+
+                latest_by_identity: dict[tuple[str, int], tuple[datetime, str]] = {}
+                unscoped_unresolved = False
+                for event in connection.execute(
+                    "SELECT status,details_json,observed_at FROM demo_reconciliation"
+                ):
+                    status = str(event[0] or "").upper()
+                    try:
+                        details = json.loads(str(event[1] or "{}"))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        if status not in resolved_statuses:
+                            unscoped_unresolved = True
+                        continue
+                    if not isinstance(details, dict):
+                        if status not in resolved_statuses:
+                            unscoped_unresolved = True
+                        continue
+                    raw_ticket = details.get("ticket")
+                    raw_symbol = details.get("symbol")
+                    if (
+                        isinstance(raw_ticket, bool)
+                        or not isinstance(raw_ticket, int)
+                        or raw_ticket <= 0
+                        or not isinstance(raw_symbol, str)
+                        or not raw_symbol.strip()
+                    ):
+                        if status not in resolved_statuses:
+                            unscoped_unresolved = True
+                        continue
+                    raw_timestamp = event[2]
+                    try:
+                        timestamp = datetime.fromisoformat(
+                            str(raw_timestamp).replace("Z", "+00:00")
+                        )
+                    except (TypeError, ValueError):
+                        raise ValueError(
+                            "DEMO source has invalid reconciliation chronology"
+                        ) from None
+                    if timestamp.tzinfo is None:
+                        raise ValueError(
+                            "DEMO source has invalid reconciliation chronology"
+                        )
+                    timestamp = timestamp.astimezone(timezone.utc)
+                    identity = (raw_symbol.strip().upper(), raw_ticket)
+                    previous = latest_by_identity.get(identity)
+                    if previous is None or timestamp > previous[0]:
+                        latest_by_identity[identity] = (timestamp, status)
+                    elif timestamp == previous[0] and status != previous[1]:
+                        raise ValueError(
+                            "DEMO source has ambiguous reconciliation chronology"
+                        )
+                if unscoped_unresolved or any(
+                    status not in resolved_statuses
+                    for _timestamp, status in latest_by_identity.values()
+                ):
                     raise ValueError("DEMO source has unresolved reconciliation evidence")
     except sqlite3.Error as exc:
         raise ValueError("DEMO source could not be read") from exc
