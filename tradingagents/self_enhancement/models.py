@@ -24,6 +24,14 @@ class ExecutionMode(str, Enum):
     TEST_ONLY = "TEST_ONLY"
 
 
+class ExperienceEvidenceTier(str, Enum):
+    """Purpose-specific maturity of an imported execution observation."""
+
+    VERIFIED_EXECUTION = "VERIFIED_EXECUTION"
+    VERIFIED_STRATEGY_CONTEXT = "VERIFIED_STRATEGY_CONTEXT"
+    FULLY_VERIFIED = "FULLY_VERIFIED"
+
+
 class CandidateState(str, Enum):
     EXTRACTED = "EXTRACTED"
     EXPERIMENTAL = "EXPERIMENTAL"
@@ -274,6 +282,7 @@ class ExperienceTrade:
     source_fingerprint: str | None = None
     mfe_capture_ratio: float | None = None
     signal_strength: float | None = None
+    evidence_tier: ExperienceEvidenceTier | str = ExperienceEvidenceTier.VERIFIED_EXECUTION
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -303,6 +312,7 @@ class ExperienceTrade:
             raise ValueError("real_money must be false")
         if self.synthetic is not False:
             raise ValueError("synthetic observations are excluded")
+        object.__setattr__(self, "evidence_tier", ExperienceEvidenceTier(self.evidence_tier))
         mode = ExecutionMode(self.execution_mode)
         if mode not in {ExecutionMode.DEMO, ExecutionMode.REPLAY}:
             raise ValueError("execution_mode must be DEMO or REPLAY")
@@ -385,6 +395,6 @@ class LearningFinding:
 
 __all__ = [
         "CandidateSpec", "CandidateState", "ExecutionMode", "ExperimentStatus",
-    "FindingKind", "LearningFinding", "TriggerKind",
+        "FindingKind", "LearningFinding", "TriggerKind", "ExperienceEvidenceTier",
     "ExitPolicyConfig", "ExperienceTrade", "ParameterSpec", "StrategyVersion",
 ]

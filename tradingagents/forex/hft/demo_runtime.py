@@ -10,7 +10,7 @@ import uuid
 from collections import deque
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -87,6 +87,8 @@ class DemoRuntimeConfig:
     max_exit_volatility: float = 0.005
     range_exit_profile: DynamicExitProfile = RANGE_EXIT_PROFILE
     momentum_exit_profile: DynamicExitProfile = MOMENTUM_EXIT_PROFILE
+    strategy_version: str = "phase12d-hft.v1"
+    config_version: str = "demo-runtime.v1"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
@@ -109,6 +111,11 @@ class DemoRuntimeConfig:
         if policy not in {"PAUSE", "BOOTSTRAP_NEUTRAL"}:
             raise ValueError("no_regime_policy must be PAUSE or BOOTSTRAP_NEUTRAL")
         object.__setattr__(self, "no_regime_policy", policy)
+        for name in ("strategy_version", "config_version"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must be non-empty")
+            object.__setattr__(self, name, value)
         for name in ("account_refresh_seconds", "cooldown_seconds", "order_rate_window_seconds", "cost_safety_margin_points"):
             value = float(getattr(self, name))
             if value < 0:
@@ -936,6 +943,18 @@ class DemoHftRuntime:
             source = regime if regime is not None else plan
             order_started = time.perf_counter()
             exit_intent = self._exit_intent(source, current, tick, account, reason=decision.reason)
+            exit_intent = replace(
+                exit_intent,
+                provenance={
+                    "strategy_version": self.config.strategy_version,
+                    "config_version": self.config.config_version,
+                    "signal_id": signal_id,
+                    "feature_snapshot": asdict(snapshot),
+                    "risk": asdict(risk),
+                    "source_position_id": str(current.get("ticket")),
+                    "exit_reason": decision.reason,
+                },
+            )
             result = self.gateway.submit(
                 exit_intent,
                 position_ticket=self._broker_position_ticket(current),
@@ -1013,6 +1032,17 @@ class DemoHftRuntime:
             direction="LONG" if decision.action is FastAction.ENTER_LONG else "SHORT",
             expected_move_points=decision.expected_move_points,
         )
+        intent = replace(
+            intent,
+            provenance={
+                "strategy_version": self.config.strategy_version,
+                "config_version": self.config.config_version,
+                "signal_id": signal_id,
+                "feature_snapshot": asdict(snapshot),
+                "risk": asdict(risk),
+                "regime_state_id": None if regime is None else regime.state_id,
+            },
+        )
         self._record_submission(tick.timestamp)
         order_started = time.perf_counter()
         result = self.gateway.submit(intent)
@@ -1038,6 +1068,7 @@ class DemoHftRuntime:
                     "normal_take_profit": False,
                     "state": "OPEN",
                     "opened_at": tick.timestamp.isoformat(),
+                    "provenance": dict(intent.provenance),
                 }
             )
             self._owned_position = {
@@ -1058,6 +1089,7 @@ class DemoHftRuntime:
                 "normal_take_profit": False,
                 "state": "OPEN",
                 "opened_at": tick.timestamp.isoformat(),
+                "provenance": dict(intent.provenance),
             }
             if self.shadow_store is not None:
                 shadow_position = dict(self._owned_position)

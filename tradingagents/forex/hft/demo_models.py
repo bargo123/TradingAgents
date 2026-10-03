@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from numbers import Real
@@ -110,6 +110,7 @@ class DemoOrderIntent:
     execution_mode: ExecutionMode = ExecutionMode.DEMO
     account_trade_mode: int | None = None
     real_money: bool = False
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for name in (
@@ -148,6 +149,9 @@ class DemoOrderIntent:
             raise ValueError("account_trade_mode must be a non-negative integer")
         if self.real_money is not False:
             raise ValueError("DEMO execution must have real_money=False")
+        if not isinstance(self.provenance, Mapping):
+            raise ValueError("provenance must be a mapping")
+        object.__setattr__(self, "provenance", dict(self.provenance))
 
 
 @dataclass(frozen=True, slots=True)

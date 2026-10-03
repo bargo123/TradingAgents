@@ -1,3 +1,4 @@
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -116,6 +117,24 @@ def test_demo_runtime_natural_long_uses_demo_gateway(tmp_path: Path):
     assert result["classification"] == "FILLED"
     assert len(api.calls) == 1
     assert store.snapshot()["orders"] == 1
+
+
+def test_demo_runtime_links_signal_features_risk_and_strategy_version_to_intent(tmp_path: Path):
+    now = datetime.now(UTC)
+    runtime, _, store = _runtime(tmp_path, _plan(now))
+
+    result = runtime.run_once()
+
+    assert result["classification"] == "FILLED"
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as db:
+        intent_id = db.execute("SELECT intent_id FROM demo_order_intents LIMIT 1").fetchone()[0]
+    stored = store.read_order_intent(intent_id)
+    assert stored is not None
+    payload = __import__("json").loads(stored["request_payload"])
+    assert payload["provenance"]["strategy_version"] == "phase12d-hft.v1"
+    assert payload["provenance"]["config_version"] == "demo-runtime.v1"
+    assert "feature_snapshot" in payload["provenance"]
+    assert payload["provenance"]["risk"]["accepted"] is True
 
 
 def test_demo_runtime_uses_hft_lease_and_releases_it(tmp_path: Path):

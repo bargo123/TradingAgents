@@ -244,6 +244,17 @@ class VerifiedDemoExecutionGateway:
         request_with_identity = dict(request)
         if position_ticket is not None:
             request_with_identity["broker_position_ticket"] = position_ticket
+        if fill_price is not None:
+            request_with_identity["broker_fill_price"] = fill_price
+        if fill_volume is not None:
+            request_with_identity["broker_fill_volume"] = fill_volume
+        if deal_ticket is not None:
+            request_with_identity["broker_deal_ticket"] = deal_ticket
+        if timestamp is not None:
+            request_with_identity["broker_timestamp"] = timestamp
+        broker_profit = _field(result, "profit")
+        if isinstance(broker_profit, (int, float)) and not isinstance(broker_profit, bool):
+            request_with_identity["broker_realized_pnl"] = float(broker_profit)
         self.store.record_order_result(
             intent_id=intent.intent_id,
             classification=classification,
@@ -361,6 +372,12 @@ class VerifiedDemoExecutionGateway:
                         "intent_id": intent.intent_id,
                         "classification": parsed.classification,
                         "deal_ticket": parsed.deal_ticket,
+                        "position_ticket": int(owned_position["ticket"]),
+                        "fill_price": parsed.fill_price,
+                        "fill_volume": parsed.fill_volume,
+                        "broker_timestamp": parsed.broker_timestamp,
+                        "realized_pnl": parsed.request_payload.get("broker_realized_pnl"),
+                        "provenance": dict(intent.provenance),
                     },
                 )
                 self.store.record_position({**owned_position, "state": "CLOSED"})

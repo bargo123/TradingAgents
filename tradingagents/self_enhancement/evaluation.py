@@ -13,8 +13,9 @@ from typing import Any
 
 from tradingagents.forex.hft.models import Tick
 
+from .causal import CausalSegment
 from .models import CandidateSpec
-from .replay import ReplayEvaluator, ReplayMetrics, chronological_splits
+from .replay import ReplayError, ReplayEvaluator, ReplayMetrics, chronological_splits
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,4 +246,80 @@ def cost_sensitivity(
     return CostSensitivityReport(values, reports)
 
 
-__all__ = ["CostSensitivityReport", "MetricReport", "WalkForwardReport", "cost_sensitivity", "summarize_trades", "walk_forward"]
+def walk_forward_segments(
+    evaluator: ReplayEvaluator,
+    segments: Iterable[CausalSegment],
+    candidate: CandidateSpec,
+    *,
+    guard_gap_seconds: float = 1.0,
+    windows: int = 1,
+) -> WalkForwardReport:
+    """Evaluate independent causal segments without carrying state across gaps."""
+
+    reports: list[WalkForwardReport] = []
+    for segment in segments:
+        ticks = tuple(item.tick for item in segment.ticks)
+        if len(ticks) < 16:
+            continue
+        try:
+            reports.append(
+                walk_forward(
+                    evaluator,
+                    ticks,
+                    candidate,
+                    guard_gap_seconds=guard_gap_seconds,
+                    windows=windows,
+                )
+            )
+        except (ReplayError, ValueError):
+            continue
+    if not reports:
+        raise ReplayError("no causal segment is large enough for walk-forward evaluation")
+    stages = ("DEVELOPMENT", "VALIDATION", "UNSEEN_HOLDOUT")
+    stage_reports = {
+        stage: _aggregate_replay_metrics(tuple(report.stage_reports[stage] for report in reports))
+        for stage in stages
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps([report.dataset_fingerprint for report in reports], separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return WalkForwardReport(
+        stage_reports=stage_reports,
+        guard_gap_seconds=float(guard_gap_seconds),
+        dataset_fingerprint=fingerprint,
+        window_reports=tuple(window for report in reports for window in report.window_reports),
+    )
+
+
+def cost_sensitivity_segments(
+    evaluator: ReplayEvaluator,
+    segments: Iterable[CausalSegment],
+    candidate: CandidateSpec,
+    scenarios: Iterable[float],
+) -> CostSensitivityReport:
+    """Run cost scenarios independently per causal segment."""
+
+    values = tuple(float(item) for item in scenarios)
+    if not values or any(not math.isfinite(item) or item < 0 for item in values):
+        raise ValueError("cost scenarios must be finite and non-negative")
+    reports: dict[float, list[ReplayMetrics]] = {scenario: [] for scenario in values}
+    for segment in segments:
+        ticks = tuple(item.tick for item in segment.ticks)
+        if len(ticks) < 2:
+            continue
+        for scenario in values:
+            reports[scenario].append(
+                ReplayEvaluator(slippage_points=scenario, latency_ms=evaluator.latency_ms).evaluate(ticks, candidate)
+            )
+    if any(not items for items in reports.values()):
+        raise ReplayError("no causal segments are available for cost sensitivity")
+    return CostSensitivityReport(
+        values,
+        {scenario: _aggregate_replay_metrics(tuple(items)) for scenario, items in reports.items()},
+    )
+
+
+__all__ = [
+    "CostSensitivityReport", "MetricReport", "WalkForwardReport", "cost_sensitivity",
+    "cost_sensitivity_segments", "summarize_trades", "walk_forward", "walk_forward_segments",
+]

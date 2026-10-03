@@ -1,3 +1,5 @@
+import json
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -117,6 +119,18 @@ def test_demo_account_can_submit_and_persists_result(tmp_path: Path):
     assert api.order_calls[0]["comment"] == "TradingAgents-P12D-DEMO"
 
 
+def test_order_intent_persists_additive_experience_provenance(tmp_path: Path):
+    gateway, _ = _gateway(tmp_path)
+    intent = _intent(provenance={"strategy_version": "hft-v1", "feature_tick_key": "tick-1"})
+
+    gateway.submit(intent)
+
+    stored = gateway.store.read_order_intent(intent.intent_id)
+    assert stored is not None
+    payload = __import__("json").loads(stored["request_payload"])
+    assert payload["provenance"]["strategy_version"] == "hft-v1"
+
+
 def test_gateway_preserves_broker_position_identity_when_order_differs(tmp_path: Path):
     class PositionApi(_Api):
         def order_send(self, request):
@@ -220,6 +234,11 @@ def test_close_requires_owned_broker_position_and_uses_opposite_order(tmp_path: 
     assert result.classification == "FILLED"
     assert api.order_calls[-1]["position"] == entry.order_ticket
     assert api.order_calls[-1]["type"] == api.ORDER_TYPE_SELL
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as db:
+        payload = json.loads(db.execute("SELECT payload_json FROM demo_exits ORDER BY observed_at DESC LIMIT 1").fetchone()[0])
+    assert payload["position_ticket"] == entry.order_ticket
+    assert payload["fill_price"] == result.fill_price
+    assert "provenance" in payload
 
 
 def test_close_of_unowned_position_is_rejected(tmp_path: Path):

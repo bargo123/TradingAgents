@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .candidates import CandidateGenerator
-from .evaluation import cost_sensitivity, walk_forward
+from .causal import CausalDatasetError, load_causal_tick_dataset
+from .evaluation import cost_sensitivity_segments, walk_forward_segments
 from .importer import ImportReport, import_verified_demo
 from .models import CandidateState, ExitPolicyConfig, StrategyVersion
 from .promotion import CandidatePromotionGate, ReplayGateReports
-from .replay import ReplayError, ReplayEvaluator, load_hft_ticks
+from .replay import ReplayError, ReplayEvaluator
 from .store import SelfEnhancementStore
 
 
@@ -59,14 +58,11 @@ class SelfEnhancementOrchestrator:
         imported: ImportReport = import_verified_demo(hft_path, demo_path, self.store)
         data_quality_error: str | None = None
         try:
-            ticks = load_hft_ticks(str(hft_path), symbol=symbol)
-            dataset_fingerprint = hashlib.sha256(
-                json.dumps(
-                    [(tick.timestamp.isoformat(), tick.bid, tick.ask) for tick in ticks],
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest()
-        except ReplayError as exc:
+            causal_dataset = load_causal_tick_dataset(str(hft_path), symbol=symbol)
+            ticks = causal_dataset.ticks
+            dataset_fingerprint = causal_dataset.source_fingerprint
+        except (ReplayError, CausalDatasetError) as exc:
+            causal_dataset = None
             ticks = ()
             data_quality_error = f"{type(exc).__name__}:{exc}"
             dataset_fingerprint = str(imported.quality.get("source_fingerprint", "UNKNOWN"))
@@ -79,6 +75,7 @@ class SelfEnhancementOrchestrator:
             metadata={
                 "source_commit": source_commit,
                 "source_quality": imported.quality,
+                "causal_quality": None if causal_dataset is None else causal_dataset.to_dict(),
                 "minimum_verified_trades": minimum_verified_trades,
                 "minimum_ticks": minimum_ticks,
                 "accepted_experience": imported.accepted,
@@ -101,8 +98,8 @@ class SelfEnhancementOrchestrator:
             reason = "source contains unresolved DEMO reconciliation uncertainty"
             self.store.update_experiment_status(experiment_id, "NO_EXPERIMENT", metadata={"reason": reason})
             return ExperimentReport(experiment_id, "NO_EXPERIMENT", imported.accepted, imported.quarantined, 0, (), source_unchanged=imported.source_unchanged)
-        if imported.quality.get("quality_status") != "VALID":
-            reason = "source quality warnings block autonomous promotion"
+        if causal_dataset is None or causal_dataset.valid_rows == 0 or causal_dataset.invalid_rows:
+            reason = "causal dataset is incomplete or has invalid rows"
             self.store.update_experiment_status(experiment_id, "NO_EXPERIMENT", metadata={"reason": reason})
             return ExperimentReport(experiment_id, "NO_EXPERIMENT", imported.accepted, imported.quarantined, 0, (), source_unchanged=imported.source_unchanged)
         if imported.accepted < minimum_verified_trades:
@@ -125,7 +122,7 @@ class SelfEnhancementOrchestrator:
         for candidate in candidates:
             self.store.record_candidate(experiment_id, candidate)
         evaluator = ReplayEvaluator()
-        baseline_report = walk_forward(evaluator, ticks, candidates[0])
+        baseline_report = walk_forward_segments(evaluator, causal_dataset.segments, candidates[0])
         baseline_metrics = baseline_report.stage_reports["VALIDATION"].to_dict()
         gate = CandidatePromotionGate(minimum_trades=minimum_verified_trades)
         decisions: list[dict[str, Any]] = []
@@ -136,8 +133,8 @@ class SelfEnhancementOrchestrator:
                 CandidateState.REPLAYED,
                 "causal replay completed",
             )
-            walk = baseline_report if is_baseline else walk_forward(evaluator, ticks, candidate)
-            cost = cost_sensitivity(evaluator, ticks, candidate, (0.0, 1.0))
+            walk = baseline_report if is_baseline else walk_forward_segments(evaluator, causal_dataset.segments, candidate)
+            cost = cost_sensitivity_segments(evaluator, causal_dataset.segments, candidate, (0.0, 1.0))
             for stage, metrics in walk.stage_reports.items():
                 self.store.record_evaluation(experiment_id, candidate.candidate_id, stage, metrics.to_dict(), passed=True)
             for scenario, metrics in cost.metrics_by_scenario.items():
