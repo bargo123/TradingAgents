@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping, Sequence
 
 from .models import CandidateSpec, CandidateState, ExitPolicyConfig, StrategyVersion
+from .strategy_specs import StrategySpec
 
 
 class BookStrategyFactory:
@@ -38,6 +39,39 @@ class BookStrategyFactory:
                 source_evidence=evidence,
                 state=CandidateState.EXTRACTED,
             ),
+        )
+
+    def from_validated_spec(
+        self,
+        spec: StrategySpec,
+        *,
+        parent: StrategyVersion,
+    ) -> CandidateSpec:
+        """Route a fully validated specification to a shadow-only candidate."""
+
+        if not isinstance(spec, StrategySpec) or not spec.is_executable:
+            raise ValueError("only a complete validated HFT StrategySpec can become a candidate")
+        evidence = tuple(
+            {
+                "stage": claim.stage.value,
+                **claim.evidence.to_dict(),
+            }
+            for claim in spec.source_supported_rules
+            if claim.evidence is not None
+        )
+        identity = hashlib.sha256((parent.config_hash + spec.content_hash).encode("utf-8")).hexdigest()
+        candidate_id = "book-spec-" + identity[:24]
+        return CandidateSpec(
+            candidate_id=candidate_id,
+            parent=parent,
+            strategy_id=candidate_id,
+            exit_policy=ExitPolicyConfig(),
+            hypothesis=(
+                f"Validated book-derived StrategySpec {spec.spec_id}; "
+                "requires deterministic implementation and causal replay."
+            ),
+            source_evidence=evidence,
+            state=CandidateState.EXTRACTED,
         )
 
 

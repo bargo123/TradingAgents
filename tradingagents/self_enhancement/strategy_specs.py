@@ -115,6 +115,15 @@ def _sha256(value: Any, field_name: str) -> str:
     return value
 
 
+def _knowledge_fingerprint(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError("knowledge_fingerprint must be a SHA-256 identity")
+    digest = value.removeprefix("sha256:")
+    if not _SHA256_RE.fullmatch(digest):
+        raise ValueError("knowledge_fingerprint must be a SHA-256 identity")
+    return value
+
+
 def _positive_int(value: Any, field_name: str, *, allow_zero: bool = False) -> int:
     if type(value) is not int:
         raise TypeError(f"{field_name} must be an integer")
@@ -315,7 +324,7 @@ class StrategySpec:
             _text(getattr(self, name), name, maximum=maximum)
         if self.model_provider != "ollama-local":
             raise ValueError("model_provider must be ollama-local")
-        _sha256(self.knowledge_fingerprint, "knowledge_fingerprint")
+        _knowledge_fingerprint(self.knowledge_fingerprint)
         if not isinstance(self.created_at, datetime) or self.created_at.tzinfo is None:
             raise ValueError("created_at must be timezone-aware")
         try:

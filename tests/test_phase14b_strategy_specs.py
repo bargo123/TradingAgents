@@ -102,6 +102,14 @@ def test_strategy_spec_serialization_and_content_hash_are_deterministic() -> Non
     assert left.to_dict()["content_hash"] == left.content_hash
 
 
+def test_knowledge_fingerprint_accepts_phase7_sha256_identity_format() -> None:
+    fingerprint = "sha256:" + "b" * 64
+
+    spec = _spec(knowledge_fingerprint=fingerprint)
+
+    assert spec.knowledge_fingerprint == fingerprint
+
+
 def test_strategy_spec_rejects_unknown_fields_and_invalid_nested_types() -> None:
     serialized = _spec().to_dict()
     serialized.pop("content_hash")
