@@ -215,3 +215,21 @@ def test_failed_reopen_validation_remains_no_trade() -> None:
     assert opening.state is MarketState.MARKET_OPENING_VALIDATION
     assert rejected.state is MarketState.MARKET_DATA_ERROR
     assert rejected.reason is MarketReason.BROKER_CLOCK_ERROR
+
+
+def test_validated_broker_tick_preserves_calendar_mismatch_diagnostic() -> None:
+    controller = MarketLifecycleController()
+    controller.observe(
+        CalendarStatus.CLOSED,
+        terminal_healthy=True,
+        account_healthy=True,
+        tick_fresh=True,
+    )
+
+    opened = controller.complete_opening_validation(
+        True, reason=MarketReason.CALENDAR_BROKER_MISMATCH
+    )
+
+    assert opened.state is MarketState.MARKET_OPEN
+    assert opened.permits_strategy_evaluation is True
+    assert opened.reason is MarketReason.CALENDAR_BROKER_MISMATCH

@@ -13,6 +13,7 @@ from tradingagents.dataflows.mt5.errors import (
     Mt5SymbolAmbiguousError,
     Mt5SymbolNotFoundError,
 )
+from tradingagents.dataflows.mt5.models import Mt5TickProbe
 from tradingagents.dataflows.mt5.provider import MT5Provider
 
 
@@ -34,6 +35,7 @@ class FakeMT5:
         self.tick_time_msc = 1_700_000_000_123
         self.rate_timeframes = []
         self.tick_ranges = []
+        self.symbol_select_calls = []
         self.tick_range_result = ()
         self.symbol_records = [
             self.symbol("EURUSD.a"),
@@ -91,6 +93,7 @@ class FakeMT5:
         return tuple(self.symbol_records)
 
     def symbol_select(self, name, enable=True):
+        self.symbol_select_calls.append((name, enable))
         return any(record.name == name for record in self.symbol_records)
 
     def symbol_info(self, name):
@@ -806,6 +809,46 @@ def test_provider_does_not_filter_malformed_symbol_records(fake_api, method):
 
     with pytest.raises(Mt5DataError, match="Invalid MT5"):
         getattr(provider, method)("USDJPY")
+
+
+def test_probe_tick_reads_identity_without_calibrating_or_selecting_symbol(fake_api):
+    provider = MT5Provider(api=fake_api)
+    provider.initialize()
+
+    probe = provider.probe_tick("USDJPY")
+
+    assert isinstance(probe, Mt5TickProbe)
+    assert probe.symbol == "USDJPY"
+    assert probe.available is True
+    assert probe.identity == ("time_msc", fake_api.tick_time_msc)
+    assert provider.broker_clock is None
+    assert fake_api.symbol_select_calls == []
+
+
+def test_probe_tick_reports_missing_quote_without_fabricating_identity(fake_api):
+    provider = MT5Provider(api=fake_api)
+    provider.initialize()
+    fake_api.symbol_info_tick = lambda _symbol: None
+
+    probe = provider.probe_tick("USDJPY")
+
+    assert probe.available is False
+    assert probe.identity is None
+    assert probe.time is None
+    assert probe.time_msc is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"available": True, "time": None, "time_msc": None},
+        {"available": False, "time": 1, "time_msc": None},
+        {"available": True, "time": True, "time_msc": None},
+    ],
+)
+def test_tick_probe_rejects_inconsistent_identity(fields):
+    with pytest.raises(ValueError):
+        Mt5TickProbe(symbol="EURUSD", **fields)
 
 
 @pytest.mark.unit

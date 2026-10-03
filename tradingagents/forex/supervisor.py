@@ -161,6 +161,23 @@ class _SharedReadOnlyMt5Provider:
     def ensure_symbol(self, symbol: str) -> Any:
         return self._provider.ensure_symbol(symbol)
 
+    @property
+    def clock_config(self) -> Any:
+        return self._provider.clock_config
+
+    @property
+    def broker_clock(self) -> Any:
+        return self._provider.broker_clock
+
+    def is_connected(self) -> bool:
+        return self._provider.is_connected()
+
+    def probe_tick(self, symbol: str) -> Any:
+        return self._provider.probe_tick(symbol)
+
+    def calibrate_broker_clock(self, symbol: str) -> Any:
+        return self._provider.calibrate_broker_clock(symbol)
+
     def get_market_snapshot(self, symbol: str, *, count: int = 100) -> Any:
         return self._provider.get_market_snapshot(symbol, count=count)
 
@@ -453,6 +470,7 @@ class ForexSupervisor:
         gate: Any,
         demo_execute: bool = False,
         demo_db_path: str | Path | None = None,
+        market_session_calendar: str | Path | None = None,
     ) -> HftShadowSupervisorContext:
         from tradingagents.dataflows.mt5.provider import MT5Provider
         from tradingagents.forex.hft.plan_store import AtomicPlanStore
@@ -535,6 +553,11 @@ class ForexSupervisor:
                         poll_interval_seconds=poll_interval_seconds,
                         hft_first=True,
                         no_regime_policy="BOOTSTRAP_NEUTRAL",
+                        market_calendar_path=(
+                            None
+                            if market_session_calendar is None
+                            else Path(market_session_calendar).expanduser()
+                        ),
                     ),
                     regime_store=regime_store,
                     shadow_store=hft_store,
@@ -813,6 +836,7 @@ class ForexSupervisor:
         hft_poll_interval_seconds: float = 1.0,
         demo_execute: bool = False,
         demo_db_path: str | Path | None = None,
+        market_session_calendar: str | Path | None = None,
     ) -> int:
         """Start the dedicated runtime then delegate to the existing watcher.
 
@@ -839,6 +863,12 @@ class ForexSupervisor:
             raise ValueError("demo_execute must be boolean")
         if demo_execute and not hft_shadow:
             raise ValueError("--demo-execute requires --hft-shadow")
+        if demo_execute:
+            if market_session_calendar is None:
+                raise ValueError("--demo-execute requires an explicit broker market session calendar")
+            from tradingagents.forex.hft.market_calendar import BrokerSessionCalendar
+
+            BrokerSessionCalendar.from_json(market_session_calendar)
         if isinstance(hft_max_ticks, bool) or not isinstance(hft_max_ticks, int) or hft_max_ticks < 0:
             raise ValueError("hft_max_ticks must be a non-negative integer")
         try:
@@ -893,6 +923,7 @@ class ForexSupervisor:
                     gate=shared_gate,
                     demo_execute=demo_execute,
                     demo_db_path=demo_db_path,
+                    market_session_calendar=market_session_calendar,
                 )
             if prewarm:
                 runtime.prewarm()

@@ -39,6 +39,7 @@ from .models import (
     Mt5SymbolInfo,
     Mt5TerminalInfo,
     Mt5Tick,
+    Mt5TickProbe,
 )
 from .timeframes import resolve_timeframe
 
@@ -176,6 +177,12 @@ class MT5Provider:
         """Return the immutable calibration provenance, if available."""
 
         return self._broker_clock
+
+    @property
+    def clock_config(self) -> BrokerClockConfig:
+        """Expose immutable broker-clock bounds for downstream freshness checks."""
+
+        return self._clock_config
 
     def _load_api(self) -> Any:
         if self._api is None:
@@ -448,6 +455,36 @@ class MT5Provider:
     def get_tick(self, symbol: str) -> Mt5Tick:
         resolved = self.ensure_symbol(symbol)
         return self._get_tick_resolved(resolved)
+
+    def probe_tick(self, symbol: str) -> Mt5TickProbe:
+        """Observe raw tick identity without selecting a symbol or calibrating time.
+
+        The probe contains no prices and is never a trading tick. It is intended
+        only to detect that a new broker quote arrived while the owner is in a
+        calendar-confirmed idle state.
+        """
+
+        self._require_connected()
+        resolved = self.find_symbol(symbol)
+        try:
+            raw = self._api.symbol_info_tick(resolved)
+        except Exception as exc:
+            raise Mt5DataError(f"MT5 tick availability probe failed for {resolved!r}") from exc
+        if raw is None:
+            return Mt5TickProbe(resolved, available=False)
+        try:
+            seconds = _field(raw, "time")
+            milliseconds = _field(raw, "time_msc")
+            seconds = None if seconds in (None, 0) else seconds
+            milliseconds = None if milliseconds in (None, 0) else milliseconds
+            return Mt5TickProbe(
+                resolved,
+                available=seconds is not None or milliseconds is not None,
+                time=seconds,
+                time_msc=milliseconds,
+            )
+        except (TypeError, ValueError) as exc:
+            raise Mt5DataError(f"Invalid tick availability data for {resolved!r}") from exc
 
     def _get_tick_resolved(self, resolved: str) -> Mt5Tick:
         raw = self._api.symbol_info_tick(resolved)

@@ -49,6 +49,48 @@ def test_supervisor_parser_requires_explicit_demo_flag_name():
     assert "--real" not in options
 
 
+def test_market_calendar_option_is_run_only_and_forwarded_to_supervisor():
+    args = build_parser().parse_args(["run", "--market-session-calendar", "broker-calendar.json"])
+    assert args.market_session_calendar == "broker-calendar.json"
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["status", "--market-session-calendar", "broker-calendar.json"])
+
+    captured = {}
+
+    class Supervisor:
+        def __init__(self, _config):
+            pass
+
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            return 0
+
+    assert main(
+        ["run", "--market-session-calendar", "broker-calendar.json"],
+        supervisor_factory=Supervisor,
+        watch_main=lambda *_args, **_kwargs: 0,
+    ) == 0
+    assert captured["market_session_calendar"] == "broker-calendar.json"
+
+
+def test_demo_supervisor_fails_closed_before_runtime_without_market_calendar(tmp_path):
+    constructed = []
+    supervisor = ForexSupervisor(
+        ForexShadowRuntimeConfig(),
+        runtime_factory=lambda _config: constructed.append(True),
+    )
+
+    with pytest.raises(ValueError, match="market session calendar"):
+        supervisor.run(
+            db_path=tmp_path / "watch.db",
+            watch_main=lambda *_args, **_kwargs: 0,
+            hft_shadow=True,
+            demo_execute=True,
+        )
+
+    assert constructed == []
+
+
 def test_supervisor_status_accepts_phase12_model_override():
     args = build_parser().parse_args(
         ["status", "--phase12-strategic", "--phase12-deep-model", "qwen3.5:2b"]

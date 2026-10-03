@@ -29,6 +29,7 @@ from .models import (
     Mt5SymbolInfo,
     Mt5TerminalInfo,
     Mt5Tick,
+    Mt5TickProbe,
 )
 from .provider import MT5Provider, Mt5Provider
 from .timeframes import (

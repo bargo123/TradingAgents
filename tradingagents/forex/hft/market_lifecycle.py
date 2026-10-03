@@ -54,7 +54,15 @@ class MarketLifecycleController:
         tick_fresh: bool,
         error_reason: MarketReason | str | None = None,
     ) -> MarketObservation:
-        if error_reason is not None:
+        if error_reason in {
+            MarketReason.CALENDAR_UNAVAILABLE,
+            MarketReason.CALENDAR_UNAVAILABLE.value,
+            MarketReason.STALE_DATA,
+            MarketReason.STALE_DATA.value,
+        }:
+            state = MarketState.MARKET_UNKNOWN
+            reason = _reason(error_reason)
+        elif error_reason is not None:
             reason = _reason(error_reason)
             state = MarketState.MARKET_DATA_ERROR
         elif not terminal_healthy:
@@ -84,7 +92,10 @@ class MarketLifecycleController:
         if self._observation.state is not MarketState.MARKET_OPENING_VALIDATION:
             raise RuntimeError("opening validation is not pending")
         if success:
-            self._observation = MarketObservation(MarketState.MARKET_OPEN)
+            self._observation = MarketObservation(
+                MarketState.MARKET_OPEN,
+                None if reason is None else _reason(reason),
+            )
         else:
             self._observation = MarketObservation(
                 MarketState.MARKET_DATA_ERROR,

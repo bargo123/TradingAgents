@@ -66,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicitly enable verified MT5 DEMO execution; requires --hft-shadow",
     )
     run.add_argument("--demo-db-path", default=None)
+    run.add_argument(
+        "--market-session-calendar",
+        default=None,
+        help="explicit broker/symbol session calendar required for DEMO HFT operation",
+    )
     status = subparsers.add_parser("status", help="show scalar runtime and watcher health")
     status.add_argument("--db-path", default="data_cache/shadow_decisions.db")
     status.add_argument("--hft-db-path", default=None)
@@ -168,6 +173,7 @@ def main(
             hft_poll_interval_seconds=args.hft_poll_interval_seconds,
             demo_execute=args.demo_execute,
             demo_db_path=args.demo_db_path,
+            market_session_calendar=args.market_session_calendar,
         )
     except Exception as exc:
         print(f"FOREX SUPERVISOR ERROR: {exc}", file=sys.stderr)

@@ -163,6 +163,39 @@ class Mt5Tick:
             if self.volume_real < 0:
                 raise ValueError("volume_real must be non-negative")
 
+
+@dataclass(frozen=True, slots=True)
+class Mt5TickProbe:
+    """Raw tick-availability identity; deliberately contains no quote prices."""
+
+    symbol: str
+    available: bool
+    time: int | None = None
+    time_msc: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "symbol", _nonempty_text(self.symbol, "probe symbol"))
+        if not isinstance(self.available, bool):
+            raise ValueError("available must be boolean")
+        for name in ("time", "time_msc"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _nonnegative_integral(value, name))
+        has_identity = any(value not in (None, 0) for value in (self.time_msc, self.time))
+        if self.available != has_identity:
+            raise ValueError("available must match the presence of a non-zero raw timestamp")
+
+    @property
+    def identity(self) -> tuple[str, int] | None:
+        if not self.available:
+            return None
+        if self.time_msc not in (None, 0):
+            return ("time_msc", int(self.time_msc))
+        if self.time not in (None, 0):
+            return ("time", int(self.time))
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class Mt5Bar:
     timestamp: datetime

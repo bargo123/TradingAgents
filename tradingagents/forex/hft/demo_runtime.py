@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import time
@@ -15,6 +16,18 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from tradingagents.dataflows.mt5.errors import (
+    Mt5AccountDisconnectedError,
+    Mt5BrokerClockError,
+    Mt5DataError,
+)
+from tradingagents.forex.hft.market_calendar import BrokerSessionCalendar, CalendarStatus
+from tradingagents.forex.hft.market_lifecycle import (
+    MarketLifecycleController,
+    MarketObservation,
+    MarketReason,
+    MarketState,
+)
 from tradingagents.forex.watcher import Mt5OperationBusy, SerializedMt5OperationGate
 
 from .demo_gateway import VerifiedDemoExecutionGateway
@@ -85,6 +98,8 @@ class DemoRuntimeConfig:
     max_exit_spread_points: float = 40.0
     max_exit_spread_expansion_points: float = 10.0
     max_exit_volatility: float = 0.005
+    market_calendar_path: Path | None = None
+    market_closed_poll_interval_seconds: float = 1.0
     range_exit_profile: DynamicExitProfile = RANGE_EXIT_PROFILE
     momentum_exit_profile: DynamicExitProfile = MOMENTUM_EXIT_PROFILE
     strategy_version: str = "phase12d-hft.v1"
@@ -93,6 +108,8 @@ class DemoRuntimeConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "symbol", str(self.symbol).strip().upper())
         object.__setattr__(self, "artifact_path", Path(self.artifact_path))
+        if self.market_calendar_path is not None:
+            object.__setattr__(self, "market_calendar_path", Path(self.market_calendar_path))
         if not self.symbol:
             raise ValueError("symbol must be non-empty")
         if isinstance(self.max_ticks, bool) or not isinstance(self.max_ticks, int) or self.max_ticks < 0:
@@ -139,6 +156,13 @@ class DemoRuntimeConfig:
         if value < 0:
             raise ValueError("max_exit_spread_expansion_points must be non-negative")
         object.__setattr__(self, "max_exit_spread_expansion_points", value)
+        try:
+            market_poll = float(self.market_closed_poll_interval_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("market_closed_poll_interval_seconds must be finite and between 0 and 60") from exc
+        if not math.isfinite(market_poll) or not 0 < market_poll <= 60:
+            raise ValueError("market_closed_poll_interval_seconds must be finite and between 0 and 60")
+        object.__setattr__(self, "market_closed_poll_interval_seconds", market_poll)
         if isinstance(self.time_stop_seconds, bool) or not isinstance(self.time_stop_seconds, int) or self.time_stop_seconds <= 0:
             raise ValueError("time_stop_seconds must be positive")
         value = float(self.max_hft_duration_seconds)
@@ -234,6 +258,249 @@ class DemoHftRuntime:
         self._persistence: AsyncPersistenceQueue | None = None
         self._decision_latencies: list[float] = []
         self._order_latencies: list[float] = []
+        self._market_controller = (
+            MarketLifecycleController() if config.market_calendar_path is not None else None
+        )
+        self._market_calendar: BrokerSessionCalendar | None = None
+        self._market_calendar_error: str | None = None
+        self._market_last_tick_identity: tuple[str, int] | None = None
+        if config.market_calendar_path is not None:
+            try:
+                self._market_calendar = BrokerSessionCalendar.from_json(config.market_calendar_path)
+            except (OSError, TypeError, ValueError) as exc:
+                self._market_calendar_error = type(exc).__name__
+
+    @property
+    def market_status(self) -> MarketState | None:
+        return None if self._market_controller is None else self._market_controller.observation.state
+
+    @property
+    def market_reason(self) -> MarketReason | None:
+        return None if self._market_controller is None else self._market_controller.observation.reason
+
+    def _market_idle_result(self, observation: MarketObservation) -> dict[str, Any]:
+        state = observation.state
+        return {
+            "status": state.value,
+            "action": "NO_ACTION",
+            "reason_code": None if observation.reason is None else observation.reason.value,
+            "execution_mode": "DEMO",
+            "broker_order_sent": False,
+            "market_status": state.value,
+            "market_reason": None if observation.reason is None else observation.reason.value,
+        }
+
+    def _market_preflight(self) -> Tick | dict[str, Any] | None:
+        """Return a validated resumed tick, or a no-trade lifecycle result."""
+
+        controller = self._market_controller
+        if controller is None:
+            return None
+        if self._market_calendar is None:
+            return self._market_idle_result(
+                controller.observe(
+                    CalendarStatus.UNKNOWN,
+                    terminal_healthy=False,
+                    account_healthy=False,
+                    tick_fresh=False,
+                    error_reason=MarketReason.CALENDAR_UNAVAILABLE,
+                )
+            )
+        try:
+            with self.mt5_gate.acquire("market_connection_health"):
+                connected = self.provider.is_connected()
+            if not connected:
+                controller.observe(
+                    CalendarStatus.UNKNOWN,
+                    terminal_healthy=False,
+                    account_healthy=False,
+                    tick_fresh=False,
+                    error_reason=MarketReason.BROKER_DISCONNECTED,
+                )
+                raise Mt5AccountDisconnectedError("MT5 disconnected during market probe")
+            account = self._account(force=True)
+            account_healthy = getattr(account, "trade_mode", None) == self.gateway.demo_trade_mode
+            with self.mt5_gate.acquire("market_tick_probe"):
+                probe = self.provider.probe_tick(self.config.symbol)
+            server = getattr(account, "server", None)
+            calendar_status = self._market_calendar.status_at(
+                utc(self.clock(), "market_calendar_now"),
+                broker_server=server,
+                symbol=probe.symbol,
+            )
+            identity = getattr(probe, "identity", None)
+            first_identity = self._market_last_tick_identity is None
+            fresh_identity = bool(
+                getattr(probe, "available", False)
+                and identity is not None
+                and not first_identity
+                and identity != self._market_last_tick_identity
+            )
+            if identity is not None:
+                self._market_last_tick_identity = identity
+            if first_identity and getattr(probe, "available", False):
+                return self._market_idle_result(
+                    controller.observe(
+                        calendar_status,
+                        terminal_healthy=True,
+                        account_healthy=account_healthy,
+                        tick_fresh=False,
+                        error_reason=MarketReason.STALE_DATA,
+                    )
+                )
+            observation = controller.observe(
+                calendar_status,
+                terminal_healthy=True,
+                account_healthy=account_healthy,
+                tick_fresh=fresh_identity,
+                error_reason=None if account_healthy else MarketReason.DATA_FAILURE,
+            )
+            if observation.state is not MarketState.MARKET_OPENING_VALIDATION:
+                return self._market_idle_result(observation)
+            try:
+                tick = self._validate_market_reopen()
+            except Mt5OperationBusy:
+                return {
+                    "status": "DROPPED",
+                    "action": "NO_ACTION",
+                    "reason_code": "MT5_OPERATION_BUSY",
+                    "execution_mode": "DEMO",
+                    "broker_order_sent": False,
+                    "market_status": MarketState.MARKET_OPENING_VALIDATION.value,
+                    "market_reason": None if observation.reason is None else observation.reason.value,
+                }
+            except Mt5BrokerClockError:
+                return self._market_idle_result(
+                    controller.complete_opening_validation(
+                        False, reason=MarketReason.BROKER_CLOCK_ERROR
+                    )
+                )
+            except Mt5AccountDisconnectedError:
+                controller.complete_opening_validation(
+                    False, reason=MarketReason.BROKER_DISCONNECTED
+                )
+                raise
+            except Exception:
+                return self._market_idle_result(
+                    controller.complete_opening_validation(False, reason=MarketReason.DATA_FAILURE)
+                )
+            controller.complete_opening_validation(True, reason=observation.reason)
+            return tick
+        except Mt5OperationBusy:
+            return {
+                "status": "DROPPED",
+                "action": "NO_ACTION",
+                "reason_code": "MT5_OPERATION_BUSY",
+                "execution_mode": "DEMO",
+                "broker_order_sent": False,
+            }
+        except Mt5BrokerClockError:
+            return self._market_idle_result(
+                controller.observe(
+                    CalendarStatus.UNKNOWN,
+                    terminal_healthy=True,
+                    account_healthy=True,
+                    tick_fresh=False,
+                    error_reason=MarketReason.BROKER_CLOCK_ERROR,
+                )
+            )
+        except Mt5AccountDisconnectedError:
+            raise
+        except Exception:
+            return self._market_idle_result(
+                controller.observe(
+                    CalendarStatus.UNKNOWN,
+                    terminal_healthy=True,
+                    account_healthy=False,
+                    tick_fresh=False,
+                    error_reason=MarketReason.DATA_FAILURE,
+                )
+            )
+
+    def _validate_market_reopen(self) -> Tick:
+        with self.mt5_gate.acquire("market_reopen_connection_health"):
+            connected = self.provider.is_connected()
+        if not connected:
+            raise Mt5AccountDisconnectedError("MT5 disconnected during reopen validation")
+        calibrate = getattr(self.provider, "calibrate_broker_clock", None)
+        if not callable(calibrate):
+            raise Mt5BrokerClockError("broker clock calibration is unavailable")
+        with self.mt5_gate.acquire("market_reopen_clock"):
+            calibrate(self.config.symbol)
+        tick = self._tick()
+        now = utc(self.clock(), "market_reopen_now")
+        age = (now - tick.timestamp).total_seconds()
+        clock_config = getattr(self.provider, "clock_config", None)
+        max_age = float(getattr(clock_config, "max_tick_age_seconds", 120.0))
+        max_future = float(getattr(clock_config, "max_future_skew_seconds", 2.0))
+        if age > max_age or age < -max_future:
+            raise Mt5DataError("resumed broker tick is outside freshness limits")
+        account_snapshot = self.gateway.verify_demo_account()
+        if account_snapshot.server is None or account_snapshot.trade_mode != self.gateway.demo_trade_mode:
+            raise Mt5DataError("authoritative DEMO account identity is unavailable")
+        self._account(force=True)
+        self._validate_market_reconciliation()
+        if self.circuit.status != "READY" or self._order_rate_circuit_open:
+            raise Mt5DataError("DEMO risk or order-rate circuit is not ready")
+        persisted_circuit = self.store.read_circuit_state()
+        if persisted_circuit.get("status") not in (None, "READY"):
+            raise Mt5DataError("persisted DEMO risk circuit is not ready")
+        return tick
+
+    def _validate_market_reconciliation(self) -> None:
+        reconciliation = self.store.read_reconciliation_state()
+        if reconciliation.get("status") not in (None, "RECONCILED"):
+            raise Mt5DataError("DEMO reconciliation is not clean")
+        position_reader = getattr(self.provider, "get_positions", None)
+        order_reader = getattr(self.provider, "get_orders", None)
+        if not callable(position_reader) or not callable(order_reader):
+            raise Mt5DataError("broker position/order reconciliation is unavailable")
+        with self.mt5_gate.acquire("market_reopen_reconciliation"):
+            broker_positions = tuple(position_reader(self.config.symbol) or ())
+            broker_orders = tuple(order_reader(self.config.symbol) or ())
+        if broker_orders:
+            raise Mt5DataError("broker has pending orders requiring reconciliation")
+        owned = tuple(
+            row
+            for row in self.store.read_owned_positions(self.config.symbol)
+            if str(row.get("state", "")).upper() == "OPEN"
+        )
+        if not broker_positions and not owned:
+            return
+        if len(broker_positions) != 1 or len(owned) != 1:
+            raise Mt5DataError("broker and local open-position state is ambiguous")
+        broker, local = broker_positions[0], owned[0]
+        def fields(record: Any, name: str, default: Any = None) -> Any:
+            return (
+                record.get(name, default)
+                if isinstance(record, Mapping)
+                else getattr(record, name, default)
+            )
+        if (
+            int(fields(broker, "ticket", -1)) != int(local.get("ticket", -2))
+            or str(fields(broker, "symbol", "")).upper() != str(local.get("symbol", "")).upper()
+            or fields(broker, "magic") != self.gateway.magic
+            or str(fields(broker, "comment", "")).strip() != self.gateway.comment
+            or not math.isclose(float(fields(broker, "volume", -1)), float(local.get("volume", -2)), rel_tol=0, abs_tol=1e-8)
+        ):
+            raise Mt5DataError("broker and local open-position identity differs")
+        position_type = fields(broker, "type")
+        buy_type = getattr(self.gateway.broker_api, "POSITION_TYPE_BUY", 0)
+        sell_type = getattr(self.gateway.broker_api, "POSITION_TYPE_SELL", 1)
+        expected_type = buy_type if str(local.get("direction", "")).upper() == "LONG" else sell_type
+        if position_type != expected_type:
+            raise Mt5DataError("broker and local open-position direction differs")
+
+    def _poll_delay_seconds(self, observation: Mapping[str, Any]) -> float:
+        status = str(observation.get("status", ""))
+        reason = observation.get("market_reason")
+        if status == MarketState.MARKET_CLOSED.value:
+            return self.config.market_closed_poll_interval_seconds
+        if status == MarketState.MARKET_UNKNOWN.value and reason != MarketReason.STALE_DATA.value:
+            return self.config.market_closed_poll_interval_seconds
+        if status == MarketState.MARKET_DATA_ERROR.value:
+            return self.config.market_closed_poll_interval_seconds
+        return max(0.01, self.config.poll_interval_seconds)
 
     def _bootstrap_regime(self, tick: Tick, account: Any | None) -> StrategicRegimeState | None:
         """Return a neutral fallback only after local DEMO safety checks."""
@@ -825,8 +1092,11 @@ class DemoHftRuntime:
 
     def run_once(self) -> dict[str, Any]:
         self._ensure_run()
+        market_result = self._market_preflight()
+        if isinstance(market_result, dict):
+            return market_result
         try:
-            tick = self._tick()
+            tick = market_result if market_result is not None else self._tick()
         except Mt5OperationBusy:
             return {"status": "DROPPED", "action": "NO_ACTION", "execution_mode": "DEMO", "broker_order_sent": False}
         if self._last_tick is not None and tick.timestamp <= self._last_tick:
@@ -1230,12 +1500,12 @@ class DemoHftRuntime:
         self._persistence.start()
         try:
             while (limit == 0 or observations < limit) and not (stop_event is not None and stop_event.is_set()):
-                self.run_once()
+                observation = self.run_once()
                 observations += 1
                 if lease_token is not None:
                     self.lease_store.heartbeat_lease(lease_token, datetime.now(timezone.utc))
                 if limit == 0:
-                    time.sleep(self.config.poll_interval_seconds)
+                    time.sleep(self._poll_delay_seconds(observation))
             status = "COMPLETED"
         finally:
             if self._persistence is not None:
@@ -1262,6 +1532,8 @@ class DemoHftRuntime:
         return {
             "run_id": self.gateway.run_id,
             "execution_mode": "DEMO",
+            "market_status": None if self.market_status is None else self.market_status.value,
+            "market_reason": None if self.market_reason is None else self.market_reason.value,
             "observed_ticks": observations,
             "runtime_seconds": max(0.0, time.perf_counter() - started),
             "broker_order_sent": self.store.snapshot()["orders"],
