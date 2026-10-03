@@ -72,6 +72,7 @@ class BookStrategyFactory:
             ),
             source_evidence=evidence,
             state=CandidateState.EXTRACTED,
+            strategy_spec=spec.to_dict(),
         )
 
 

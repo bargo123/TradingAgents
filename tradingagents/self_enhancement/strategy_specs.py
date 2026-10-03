@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -469,6 +470,101 @@ class StrategySpec:
 
     def canonical_json(self) -> str:
         return _canonical_json(self._content())
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> StrategySpec:
+        """Reconstruct and integrity-check a persisted StrategySpec payload."""
+
+        if not isinstance(value, Mapping):
+            raise ValueError("StrategySpec payload must be a mapping")
+        expected = {
+            "spec_id", "name", "family", "required_data", "rule_claims", "generation_id",
+            "knowledge_fingerprint", "model_provider", "model_id", "prompt_version", "schema_version",
+            "created_at", "implementation_confidence", "suitability", "validation_results", "content_hash",
+        }
+        keys = set(value)
+        unknown = keys - expected
+        missing = expected - keys
+        if unknown:
+            raise ValueError(f"StrategySpec payload has unknown fields: {sorted(unknown)}")
+        if missing:
+            raise ValueError(f"StrategySpec payload is missing fields: {sorted(missing)}")
+
+        def exact_mapping(item: Any, fields: set[str], label: str) -> Mapping[str, Any]:
+            if not isinstance(item, Mapping):
+                raise ValueError(f"{label} must be a mapping")
+            item_keys = set(item)
+            if item_keys != fields:
+                raise ValueError(f"{label} fields do not match schema")
+            return item
+
+        claims_value = value["rule_claims"]
+        if not isinstance(claims_value, (list, tuple)):
+            raise ValueError("StrategySpec rule_claims must be a sequence")
+        claims: list[StrategyRuleClaim] = []
+        for raw_claim in claims_value:
+            claim = exact_mapping(
+                raw_claim,
+                {"stage", "operator", "direction", "value", "unit", "condition", "horizon_seconds", "origin", "evidence"},
+                "StrategySpec rule claim",
+            )
+            raw_evidence = claim["evidence"]
+            evidence = None
+            if raw_evidence is not None:
+                span = exact_mapping(
+                    raw_evidence,
+                    {"generation_id", "document_id", "chunk_id", "source_hash", "start_offset", "end_offset", "quote"},
+                    "StrategySpec evidence span",
+                )
+                evidence = EvidenceSpan(**dict(span))
+            claims.append(
+                StrategyRuleClaim(
+                    stage=claim["stage"],
+                    operator=claim["operator"],
+                    direction=claim["direction"],
+                    value=claim["value"],
+                    unit=claim["unit"],
+                    condition=claim["condition"],
+                    horizon_seconds=claim["horizon_seconds"],
+                    origin=claim["origin"],
+                    evidence=evidence,
+                )
+            )
+
+        validations_value = value["validation_results"]
+        if not isinstance(validations_value, (list, tuple)):
+            raise ValueError("StrategySpec validation_results must be a sequence")
+        validations = []
+        for raw_result in validations_value:
+            result = exact_mapping(raw_result, {"rule_fingerprint", "status", "reason_code"}, "StrategySpec validation result")
+            validations.append(RuleValidationResult(**dict(result)))
+
+        created_at = value["created_at"]
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError("StrategySpec created_at is invalid") from exc
+        spec = cls(
+            spec_id=value["spec_id"],
+            name=value["name"],
+            family=value["family"],
+            required_data=value["required_data"],
+            rule_claims=tuple(claims),
+            generation_id=value["generation_id"],
+            knowledge_fingerprint=value["knowledge_fingerprint"],
+            model_provider=value["model_provider"],
+            model_id=value["model_id"],
+            prompt_version=value["prompt_version"],
+            schema_version=value["schema_version"],
+            created_at=created_at,
+            implementation_confidence=value["implementation_confidence"],
+            suitability=value["suitability"],
+            validation_results=tuple(validations),
+        )
+        if value["content_hash"] != spec.content_hash:
+            raise ValueError("StrategySpec content_hash does not match payload")
+        return spec
 
     def to_dict(self) -> dict[str, Any]:
         result = _canonical(self._content())

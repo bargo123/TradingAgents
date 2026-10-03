@@ -22,8 +22,11 @@ from tradingagents.forex.hft.features import TickFeatureEngine
 from tradingagents.forex.hft.models import FastAction, PositionState, Tick
 from tradingagents.forex.hft.regime import build_hft_bootstrap_neutral_regime
 from tradingagents.forex.hft.risk import RiskContext, RiskEngine
+from tradingagents.forex.hft.strategies import SignalArbiter
 
+from .book_strategies import BookStrategyRegistry
 from .models import CandidateSpec, ExitPolicyConfig
+from .strategy_specs import StrategySpec
 
 UTC = timezone.utc
 
@@ -182,6 +185,17 @@ class ReplayEvaluator:
         if not isinstance(candidate, CandidateSpec):
             raise TypeError("candidate must be a CandidateSpec")
         values = _validate_ticks(ticks)
+        book_strategy = None
+        if candidate.strategy_spec is not None:
+            if not candidate.strategy_id.startswith("book-spec-"):
+                raise ReplayError("candidate StrategySpec is not bound to a book candidate")
+            try:
+                validated_spec = StrategySpec.from_dict(candidate.strategy_spec)
+                book_strategy = BookStrategyRegistry().create(validated_spec)
+            except (TypeError, ValueError) as exc:
+                raise ReplayError("candidate StrategySpec failed strict validation") from exc
+        elif candidate.strategy_id.startswith("book-spec-"):
+            raise ReplayError("book candidate requires its validated StrategySpec")
         config = candidate.exit_policy
         range_profile = _profile(RANGE_EXIT_PROFILE, config)
         momentum_profile = _profile(MOMENTUM_EXIT_PROFILE, config)
@@ -203,11 +217,13 @@ class ReplayEvaluator:
             ttl_seconds=max(1.0, (values[-1].timestamp - values[0].timestamp).total_seconds() + 5.0),
             git_commit=candidate.parent.source_commit,
         )
+        permitted_family = candidate.strategy_id if book_strategy is None else book_strategy.strategy_id
         regime = replace(
             regime,
-            momentum_enabled=candidate.strategy_id == "momentum_continuation",
-            range_enabled=candidate.strategy_id == "range_rejection",
+            momentum_enabled=permitted_family == "momentum_continuation",
+            range_enabled=permitted_family == "range_rejection",
         )
+        arbiter = SignalArbiter()
         position_state = PositionState.FLAT
         entry_price = entry_at = None
         expected_move_points: float | None = None
@@ -226,19 +242,55 @@ class ReplayEvaluator:
             current = positions.position
             if current is not None and current.state in (PositionState.LONG, PositionState.SHORT):
                 positions.observe(tick)
-            decision = engine.on_tick(
-                regime,
-                snapshot,
-                position_state=position_state,
-                entry_price=entry_price,
-                entry_at=entry_at,
-                expected_move_points=expected_move_points,
-                strategy_id=None if current is None else current.strategy_id,
-            )
-            if decision.action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
+            if book_strategy is None:
+                decision = engine.on_tick(
+                    regime,
+                    snapshot,
+                    position_state=position_state,
+                    entry_price=entry_price,
+                    entry_at=entry_at,
+                    expected_move_points=expected_move_points,
+                    strategy_id=None if current is None else current.strategy_id,
+                )
+                action = decision.action
+                decision_reason = decision.reason
+                decision_strategy_id = decision.strategy_id
+                decision_expected_move = decision.expected_move_points
+            elif current is not None and current.state in (PositionState.LONG, PositionState.SHORT):
+                assert entry_price is not None and entry_at is not None and expected_move_points is not None
+                favorable_points = (
+                    (tick.bid - entry_price) / tick.point
+                    if current.state is PositionState.LONG
+                    else (entry_price - tick.ask) / tick.point
+                )
+                elapsed_seconds = (tick.timestamp - entry_at).total_seconds()
+                should_exit = book_strategy.should_exit(
+                    snapshot,
+                    elapsed_seconds=elapsed_seconds,
+                    target_reached=favorable_points >= expected_move_points,
+                    adverse_move=favorable_points < 0,
+                )
+                action = FastAction.EXIT if should_exit else FastAction.NO_ACTION
+                decision_reason = (
+                    "BOOK_MAX_HORIZON"
+                    if should_exit and elapsed_seconds >= book_strategy.max_horizon_seconds
+                    else "BOOK_SOURCE_RULE_EXIT"
+                )
+                decision_strategy_id = book_strategy.strategy_id
+                decision_expected_move = expected_move_points
+            else:
+                signal = book_strategy.evaluate(snapshot)
+                selected, _ = arbiter.select(
+                    () if signal is None else (signal,), regime, spread_points=tick.spread_points
+                )
+                action = FastAction.NO_ACTION if selected is None else selected.action
+                decision_reason = "NO_VALID_SIGNAL" if selected is None else selected.reason
+                decision_strategy_id = None if selected is None else selected.strategy_id
+                decision_expected_move = 0.0 if selected is None else selected.expected_move_points
+            if action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
                 account_metrics = account.report()
                 gate = risk.evaluate(
-                    decision.action,
+                    action,
                     tick,
                     RiskContext(
                         float(account_metrics["equity"] or 100.0),
@@ -252,16 +304,16 @@ class ReplayEvaluator:
                     ),
                 )
                 if gate.accepted:
-                    fill = fills.fill(decision.action, tick, size=1.0)
-                    opened = positions.open(tick, decision.action, size=1.0, stop=None, target=None, strategy_id=decision.strategy_id or candidate.strategy_id, entry_price=fill.price)
+                    fill = fills.fill(action, tick, size=1.0)
+                    opened = positions.open(tick, action, size=1.0, stop=None, target=None, strategy_id=decision_strategy_id or candidate.strategy_id, entry_price=fill.price)
                     position_state = opened.state
                     entry_price = opened.entry_price
                     entry_at = opened.entry_timestamp
-                    expected_move_points = decision.expected_move_points
+                    expected_move_points = decision_expected_move
                     spread_cost += tick.spread_points
-            elif decision.action is FastAction.EXIT and position_state in (PositionState.LONG, PositionState.SHORT):
-                fill = fills.fill(decision.action, tick, size=1.0, position_state=position_state)
-                closed = positions.close(tick, reason=decision.reason, exit_price=fill.price)
+            elif action is FastAction.EXIT and position_state in (PositionState.LONG, PositionState.SHORT):
+                fill = fills.fill(action, tick, size=1.0, position_state=position_state)
+                closed = positions.close(tick, reason=decision_reason, exit_price=fill.price)
                 account.record_trade(tick.timestamp, closed.net_pnl)
                 pnls.append(closed.net_pnl)
                 if closed.direction == "LONG":
@@ -271,7 +323,7 @@ class ReplayEvaluator:
                 durations.append(closed.holding_seconds)
                 mfe.append(closed.mfe / tick.point)
                 mae.append(closed.mae / tick.point)
-                exit_reasons[decision.reason] = exit_reasons.get(decision.reason, 0) + 1
+                exit_reasons[decision_reason] = exit_reasons.get(decision_reason, 0) + 1
                 if previous_positive and closed.net_pnl < 0:
                     profit_to_loss_flips += 1
                 previous_positive = closed.net_pnl > 0

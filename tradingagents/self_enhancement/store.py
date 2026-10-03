@@ -22,6 +22,14 @@ def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def _plain_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain_json(item) for item in value]
+    return value
+
+
 class SelfEnhancementStore:
     """Owns only the caller-provided Phase 14 artifact root."""
 
@@ -215,6 +223,8 @@ class SelfEnhancementStore:
             "execution_mode": candidate.execution_mode.value,
             "real_money": False,
         }
+        if candidate.strategy_spec is not None:
+            payload["strategy_spec"] = _plain_json(candidate.strategy_spec)
         with self._connect() as db:
             db.execute(
                 "INSERT INTO candidates(candidate_id,experiment_id,payload_json,state,created_at) VALUES(?,?,?,?,?)",

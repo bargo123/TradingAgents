@@ -343,6 +343,7 @@ class CandidateSpec:
     state: CandidateState = CandidateState.EXPERIMENTAL
     execution_mode: ExecutionMode = ExecutionMode.SHADOW
     real_money: bool = False
+    strategy_spec: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_id", _text(self.candidate_id, "candidate_id"))
@@ -354,6 +355,10 @@ class CandidateSpec:
         if any(not isinstance(item, Mapping) for item in evidence):
             raise ValueError("source_evidence must contain mappings")
         object.__setattr__(self, "source_evidence", evidence)
+        if self.strategy_spec is not None:
+            if not isinstance(self.strategy_spec, Mapping):
+                raise ValueError("strategy_spec must be a mapping or None")
+            object.__setattr__(self, "strategy_spec", _freeze_mapping(self.strategy_spec, "strategy_spec"))
         object.__setattr__(self, "state", CandidateState(self.state))
         if self.execution_mode is not ExecutionMode.SHADOW or self.real_money is not False:
             raise ValueError("Phase 14 candidates are shadow-only")
