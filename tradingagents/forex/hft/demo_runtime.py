@@ -186,6 +186,7 @@ class DemoHftRuntime:
         config: DemoRuntimeConfig,
         regime_store: AtomicRegimeStore | None = None,
         shadow_store: HftShadowStore | None = None,
+        challenger_observer: Any | None = None,
         clock: Callable[[], datetime] | None = None,
         mt5_gate: SerializedMt5OperationGate | None = None,
         lease_store: HftShadowStore | None = None,
@@ -201,6 +202,8 @@ class DemoHftRuntime:
             raise TypeError("regime_store must be AtomicRegimeStore")
         if shadow_store is not None and not isinstance(shadow_store, HftShadowStore):
             raise TypeError("shadow_store must be HftShadowStore")
+        if challenger_observer is not None and not callable(getattr(challenger_observer, "on_tick", None)):
+            raise TypeError("challenger_observer must provide on_tick(features, regime, risk_context)")
         self.provider = provider
         self.plan_store = plan_store
         self.gateway = gateway
@@ -208,6 +211,8 @@ class DemoHftRuntime:
         self.config = config
         self.regime_store = regime_store
         self.shadow_store = shadow_store
+        self.challenger_observer = challenger_observer
+        self._challenger_observation_failures = 0
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.mt5_gate = mt5_gate or SerializedMt5OperationGate()
         if lease_store is not None and not isinstance(lease_store, HftShadowStore):
@@ -277,6 +282,25 @@ class DemoHftRuntime:
     @property
     def market_reason(self) -> MarketReason | None:
         return None if self._market_controller is None else self._market_controller.observation.reason
+
+    @property
+    def challenger_observation_failures(self) -> int:
+        return self._challenger_observation_failures
+
+    def _observe_challengers(
+        self,
+        features: Any,
+        regime: StrategicRegimeState | None,
+        risk_context: RiskContext,
+    ) -> None:
+        if self.challenger_observer is None:
+            return
+        try:
+            self.challenger_observer.on_tick(features, regime, risk_context)
+        except Exception:
+            # Challenger persistence/evaluation is observational only; it must
+            # not interrupt the incumbent decision or its verified gateway.
+            self._challenger_observation_failures += 1
 
     def _market_idle_result(self, observation: MarketObservation) -> dict[str, Any]:
         state = observation.state
@@ -1257,6 +1281,7 @@ class DemoHftRuntime:
                     closed_position["state"] = "CLOSED"
                     closed_position["executed"] = False
                     self._persist(self.shadow_store, "record_position", self.gateway.run_id, closed_position)
+            self._observe_challengers(snapshot, regime, risk_context)
             return {
                 "status": "PROCESSED",
                 "action": decision.action.value,
@@ -1268,6 +1293,7 @@ class DemoHftRuntime:
                 "strategy_id": decision.strategy_id,
             }
         if not risk.accepted or decision.action not in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
+            self._observe_challengers(snapshot, regime, risk_context)
             return {
                 "status": "PROCESSED",
                 "action": decision.action.value,
@@ -1279,6 +1305,7 @@ class DemoHftRuntime:
                 "strategy_id": decision.strategy_id,
             }
         if not self._entry_position_clear():
+            self._observe_challengers(snapshot, regime, risk_context)
             return {
                 "status": "PROCESSED",
                 "action": decision.action.value,
@@ -1291,6 +1318,7 @@ class DemoHftRuntime:
             }
         info = self._symbol_info()
         if info is None:
+            self._observe_challengers(snapshot, regime, risk_context)
             raise RuntimeError("DEMO symbol metadata unavailable")
         source = regime if regime is not None else plan
         intent = self._entry_intent(
@@ -1384,6 +1412,7 @@ class DemoHftRuntime:
                     },
                 )
                 self._persist(self.shadow_store, "record_position", self.gateway.run_id, shadow_position)
+        self._observe_challengers(snapshot, regime, risk_context)
         return {
             "status": "PROCESSED",
             "action": decision.action.value,
@@ -1546,6 +1575,7 @@ class DemoHftRuntime:
             "order_submission_max_ms": max(order_latencies) if order_latencies else None,
             "persistence_dropped": persistence_dropped,
             "persistence_error": persistence_error,
+            "challenger_observation_failures": self.challenger_observation_failures,
             "executed": False,
             "real_money": False,
         }

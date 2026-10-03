@@ -370,7 +370,13 @@ class _DemoApi:
         return SimpleNamespace(retcode=10009, order=11, deal=12, price=request["price"], volume=request["volume"], comment="filled")
 
 
-def _hft_demo_runtime(tmp_path: Path, mids: tuple[float, ...], state: StrategicRegimeState):
+def _hft_demo_runtime(
+    tmp_path: Path,
+    mids: tuple[float, ...],
+    state: StrategicRegimeState,
+    *,
+    challenger_observer=None,
+):
     provider = _DemoProvider(mids)
     api = _DemoApi()
     store = DemoExecutionStore(tmp_path / "demo.sqlite3")
@@ -383,6 +389,7 @@ def _hft_demo_runtime(tmp_path: Path, mids: tuple[float, ...], state: StrategicR
         gateway=gateway,
         store=store,
         regime_store=regimes,
+        challenger_observer=challenger_observer,
         config=DemoRuntimeConfig(artifact_path=tmp_path / "demo.sqlite3", symbol="EURUSD", hft_first=True),
         clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
     )
@@ -398,6 +405,81 @@ def test_demo_hft_runtime_uses_regime_filter_and_real_demo_gateway(tmp_path: Pat
     assert any(result["action"] == "ENTER_LONG" for result in results)
     assert len(api.calls) == 1
     assert store.snapshot()["orders"] == 1
+
+
+def test_optional_challenger_observer_does_not_change_incumbent_order_behavior(tmp_path: Path):
+    class _Observer:
+        def __init__(self):
+            self.calls = []
+            self.order_counts_at_observation = []
+
+        def on_tick(self, features, regime, risk_context):
+            self.calls.append((features, regime, risk_context))
+            self.order_counts_at_observation.append(len(self.api.calls))
+            return ()
+
+    state = _state(
+        datetime(2026, 10, 1, 11, 59, 59, tzinfo=UTC),
+        regime=Regime.BULLISH,
+        direction_policy=DirectionPolicy.LONG_ONLY,
+        momentum_enabled=True,
+        range_enabled=False,
+        mean_reversion_enabled=False,
+    )
+    mids = (1.10000, 1.10002, 1.10004, 1.10008, 1.10012)
+    baseline, baseline_api, _ = _hft_demo_runtime(tmp_path / "baseline", mids, state)
+    observer = _Observer()
+    observed, observed_api, _ = _hft_demo_runtime(
+        tmp_path / "observed", mids, state, challenger_observer=observer
+    )
+    observer.api = observed_api
+
+    baseline_results = []
+    observed_results = []
+    for _ in mids:
+        baseline_results.append(baseline.run_once())
+        observed_results.append(observed.run_once())
+        if observed_api.calls:
+            break
+
+    assert observed_results == baseline_results
+    assert len(observed_api.calls) == len(baseline_api.calls) == 1
+    observed_order = observed_api.calls[0]
+    baseline_order = baseline_api.calls[0]
+    for field in ("action", "type", "symbol", "volume", "price", "sl", "tp", "magic"):
+        assert observed_order[field] == baseline_order[field]
+    assert len(observer.calls) == len(mids)
+    assert observer.order_counts_at_observation[-1] == 1
+    assert all(call[0].symbol == "EURUSD" for call in observer.calls)
+    assert all(call[1] is state for call in observer.calls)
+    assert all(call[2].tick_timestamp == call[0].timestamp for call in observer.calls)
+
+
+def test_challenger_observer_failure_is_isolated_from_incumbent(tmp_path: Path):
+    class _FailingObserver:
+        def on_tick(self, features, regime, risk_context):
+            raise RuntimeError("observer database unavailable")
+
+    state = _state(
+        datetime(2026, 10, 1, 11, 59, 59, tzinfo=UTC),
+        regime=Regime.BULLISH,
+        direction_policy=DirectionPolicy.LONG_ONLY,
+        momentum_enabled=True,
+        range_enabled=False,
+        mean_reversion_enabled=False,
+    )
+    mids = (1.10000, 1.10002, 1.10004, 1.10008, 1.10012)
+    baseline, baseline_api, _ = _hft_demo_runtime(tmp_path / "baseline", mids, state)
+    observed, observed_api, _ = _hft_demo_runtime(
+        tmp_path / "observed", mids, state, challenger_observer=_FailingObserver()
+    )
+
+    baseline_results = [baseline.run_once() for _ in mids]
+    observed_results = [observed.run_once() for _ in mids]
+
+    assert observed_results == baseline_results
+    assert len(observed_api.calls) == len(baseline_api.calls) == 1
+    assert observed.challenger_observation_failures == len(mids)
 
 
 def test_demo_hft_runtime_no_regime_state_pauses_without_order(tmp_path: Path):
