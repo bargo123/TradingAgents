@@ -79,6 +79,7 @@ dataset-factory = "tradingagents.datasets.cli:main"
 finetune = "tradingagents.finetuning.cli:main"
 knowledge-distill = "tradingagents.distillation.cli:main"
 self-enhancement = "tradingagents.self_enhancement.cli:main"
+phase14b = "cli.phase14b:main"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*"]
