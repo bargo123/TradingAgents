@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -366,17 +367,33 @@ def test_persisted_reconciliation_resolution_supersedes_older_required_events(tm
     database = tmp_path / "demo.sqlite3"
     store = DemoExecutionStore(database)
     store.initialize()
+    event_ids = []
     for _ in range(3):
-        store.record_reconciliation(
+        event_ids.append(store.record_reconciliation(
             status="RECONCILIATION_REQUIRED",
             reason="prior broker position observation was missing",
             details={"ticket": 152717255467, "symbol": "EURUSD"},
-        )
-    store.record_reconciliation(
+        ))
+    event_ids.append(store.record_reconciliation(
         status="RECONCILED",
         reason="authoritative broker history confirmed closed position",
         details={"ticket": 152717255467, "symbol": "EURUSD", "terminal_state": "CLOSED"},
-    )
+    ))
+    with sqlite3.connect(database) as connection:
+        for event_id, timestamp in zip(
+            event_ids,
+            (
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:01+00:00",
+                "2026-01-01T00:00:02+00:00",
+                "2026-01-01T00:00:03+00:00",
+            ),
+            strict=True,
+        ):
+            connection.execute(
+                "UPDATE demo_reconciliation SET observed_at=? WHERE event_id=?",
+                (timestamp, event_id),
+            )
 
     phase14b._validate_demo_source_readonly(database)
 
