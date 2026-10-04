@@ -14,7 +14,12 @@ from typing import Any
 
 from tradingagents.forex.hft.features import TickFeatures
 from tradingagents.knowledge.models import KnowledgeHit, KnowledgeQuery
-from tradingagents.self_enhancement.book_drafter import StrategyDraft, StrategyDraftClaim
+from tradingagents.self_enhancement.book_drafter import (
+    DRAFT_PROMPT_VERSION,
+    DRAFT_SCHEMA_VERSION,
+    StrategyDraft,
+    StrategyDraftClaim,
+)
 from tradingagents.self_enhancement.book_rule_grammar import (
     FEATURE_UNITS,
     parse_supported_rule_quote,
@@ -456,8 +461,8 @@ class BookStrategyPipeline:
             knowledge_fingerprint=self.pinned_fingerprint,
             model_provider="ollama-local",
             model_id=model_id,
-            prompt_version="phase14b-source-grounded-draft-v1",
-            schema_version="phase14b-strategy-draft-v1",
+            prompt_version=DRAFT_PROMPT_VERSION,
+            schema_version=DRAFT_SCHEMA_VERSION,
             created_at=datetime.now(UTC),
             implementation_confidence=draft.implementation_confidence,
             suitability=StrategySuitability.INSUFFICIENT_SPECIFICATION,

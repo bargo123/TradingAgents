@@ -11,6 +11,7 @@ import pytest
 from cli import phase14b
 from tradingagents.forex.hft.demo_store import DemoExecutionStore
 from tradingagents.knowledge.embeddings import LocalModelUnavailable
+from tradingagents.self_enhancement import book_drafter
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,26 @@ def test_draft_command_requires_an_explicit_model(tmp_path):
         phase14b.build_parser().parse_args(args)
 
 
+def test_cli_passes_explicit_model_version_to_local_drafter(monkeypatch, tmp_path):
+    captured = {}
+
+    class _DrafterFactory:
+        def __init__(self, endpoint, model, **kwargs):
+            captured.update(endpoint=endpoint, model=model, **kwargs)
+
+    monkeypatch.setattr(book_drafter, "OllamaStrategyDrafter", _DrafterFactory)
+    args = phase14b.build_parser().parse_args(
+        _run_args(tmp_path)
+        + ["--model-version", "sha256:qwen-local-revision"]
+    )
+    args._resolved_atomic_cache_path = str(tmp_path / "phase14b" / "atomic.sqlite3")
+
+    phase14b._create_drafter(args)
+
+    assert captured["model_version"] == "sha256:qwen-local-revision"
+    assert captured["cache_path"] == args._resolved_atomic_cache_path
+
+
 def test_embedding_model_default_handles_string_knowledge_path(tmp_path):
     args = SimpleNamespace(embedding_model_path=None, knowledge_root=str(tmp_path))
     assert phase14b._embedding_model_path(args) is None
@@ -262,6 +283,54 @@ def test_output_report_serializes_only_safe_model_telemetry(tmp_path, monkeypatc
     assert "reasoning" not in report
     assert report["llm_calls"] == 1
     assert report["mt5_calls"] == 0
+
+
+def test_draft_performance_reports_stage_latency_tokens_and_failures_only():
+    result = phase14b._draft_performance(
+        {
+            "cache_hits": 1,
+            "cache_write_failures": 0,
+            "call_telemetry": [
+                {
+                    "stage": "PRESENCE",
+                    "cache_hit": False,
+                    "elapsed_seconds": 1.5,
+                    "input_tokens": 40,
+                    "output_tokens": 8,
+                    "retry_depth": 0,
+                    "outcome": "SUCCESS",
+                },
+                {
+                    "stage": "ATOMIC_RULE_EXTRACTION",
+                    "cache_hit": False,
+                    "elapsed_seconds": 2.5,
+                    "input_tokens": 60,
+                    "output_tokens": 20,
+                    "retry_depth": 1,
+                    "outcome": "TRUNCATED",
+                },
+                {
+                    "stage": "CONCEPT_GROUPING",
+                    "cache_hit": True,
+                    "elapsed_seconds": 0,
+                    "input_tokens": None,
+                    "output_tokens": None,
+                    "retry_depth": 0,
+                    "outcome": "CACHE_HIT",
+                },
+            ],
+        }
+    )
+
+    assert result["model_calls"] == 2
+    assert result["cache_hits"] == 1
+    assert result["input_tokens_total"] == 100
+    assert result["output_tokens_total"] == 28
+    assert result["runtime_seconds_total"] == 4.0
+    assert result["truncations"] == 1
+    assert result["retry_calls"] == 1
+    assert result["stage_call_counts"] == {"ATOMIC_RULE_EXTRACTION": 1, "PRESENCE": 1}
+    assert "prompt" not in result and "completion" not in result and "reasoning" not in result
 
 
 def test_demo_reconciliation_blocker_suppresses_replay_without_exposing_details(

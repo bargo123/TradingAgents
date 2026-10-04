@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+import json as json_module
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
+from tradingagents.forex.hft.models import Tick
 from tradingagents.knowledge.models import KnowledgeHit
 from tradingagents.self_enhancement.book_drafter import (
     DRAFT_PROMPT_VERSION,
     DRAFT_SCHEMA_VERSION,
     DraftResult,
+    OllamaStrategyDrafter,
     StrategyDraft,
     StrategyDraftBatch,
     StrategyDraftClaim,
 )
+from tradingagents.self_enhancement.book_factory import BookStrategyFactory
 from tradingagents.self_enhancement.book_pipeline import (
     BookStrategyPipeline,
     MappingStatus,
@@ -23,6 +27,9 @@ from tradingagents.self_enhancement.book_pipeline import (
     deduplicate_specs,
     map_existing_strategy,
 )
+from tradingagents.self_enhancement.book_strategies import BookStrategyRegistry
+from tradingagents.self_enhancement.models import ExitPolicyConfig, StrategyVersion
+from tradingagents.self_enhancement.replay import ReplayEvaluator
 from tradingagents.self_enhancement.strategy_specs import (
     EvidenceSpan,
     RuleDirection,
@@ -219,6 +226,132 @@ def test_exact_source_span_and_finite_rule_grammar_are_supported() -> None:
         QUOTE,
     )
     assert spec.validation_results[0].status is RuleValidationStatus.SUPPORTED
+
+
+def test_local_atomic_extraction_routes_complete_hft_spec_through_registry_and_replay() -> None:
+    quotes = (
+        "LONG when momentum > 2 points after confirmation",
+        "CONFIRMATION: LONG when direction_persistence >= 0.6 fraction after three ticks",
+        "INVALIDATION: LONG when momentum <= 0 points after reversal",
+        "EXPECTED_MOVE: LONG target 5 points within 30 seconds after entry",
+        "EXIT: LONG when momentum <= 0 points after reversal",
+        "PROFIT_PROTECTION: LONG when momentum <= 0 points after target retracement",
+        "STOP_BEHAVIOR: LONG when momentum <= -3 points after adverse move",
+        "HORIZON: hold no longer than 30 seconds after entry",
+    )
+    hits = tuple(
+        _hit(
+            chunk_id=f"chunk-{index}",
+            text="\n".join(quotes[start : start + 3]),
+        )
+        for index, start in enumerate((0, 3, 6), start=1)
+    )
+
+    class _Response:
+        def __init__(self, value: dict) -> None:
+            self.value = value
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return self.value
+
+    class _Transport:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        def post(self, url: str, *, json: dict, timeout: float) -> _Response:
+            self.calls.append({"url": url, "body": json, "timeout": timeout})
+            request = json_module.loads(json["messages"][-1]["content"])
+            evidence = request["evidence"]
+            if request["stage"] == "PRESENCE":
+                content = {"decision": "ACTIONABLE"}
+            elif request["stage"] == "CONCEPT_GROUPING":
+                content = {
+                        "candidates": [{
+                            "family": "MOMENTUM_CONTINUATION",
+                            "evidence_indices": [item["index"] for item in evidence],
+                        }]
+                }
+            else:
+                stage_by_quote = {
+                    quotes[0]: "ENTRY",
+                    quotes[1]: "CONFIRMATION",
+                    quotes[2]: "INVALIDATION",
+                    quotes[3]: "EXPECTED_MOVE",
+                    quotes[4]: "EXIT",
+                    quotes[5]: "PROFIT_PROTECTION",
+                    quotes[6]: "STOP_BEHAVIOR",
+                    quotes[7]: "HORIZON",
+                }
+                content = {
+                    "rules": [
+                        {"stage": stage_by_quote[item["text"]], "evidence_index": item["index"]}
+                        for item in evidence
+                    ]
+                }
+            return _Response({
+                "message": {"content": json_module.dumps(content)},
+                "done": True,
+                "done_reason": "stop",
+                "prompt_eval_count": 100,
+                "eval_count": 40,
+            })
+
+    service = _QueryService(hits)
+    transport = _Transport()
+    drafter = OllamaStrategyDrafter(
+        "http://127.0.0.1:11434", "qwen3.5:2b", transport=transport
+    )
+    pipeline = BookStrategyPipeline(
+        service,
+        drafter,
+        pinned_generation=GENERATION,
+        pinned_fingerprint=FINGERPRINT,
+    )
+
+    report = pipeline.extract("short-horizon momentum rules", max_specs=1)
+
+    assert report.error_code is None
+    assert len(report.specs) == 1
+    spec = report.specs[0]
+    assert spec.suitability is StrategySuitability.HFT_SUITABLE
+    assert spec.is_executable
+    assert {claim.stage for claim in spec.source_supported_rules} == {
+        RuleStage.ENTRY,
+        RuleStage.CONFIRMATION,
+        RuleStage.INVALIDATION,
+        RuleStage.EXPECTED_MOVE,
+        RuleStage.EXIT,
+        RuleStage.PROFIT_PROTECTION,
+        RuleStage.STOP_BEHAVIOR,
+        RuleStage.HORIZON,
+    }
+    assert len(transport.calls) == 5
+
+    BookStrategyRegistry().create(spec)
+    candidate = BookStrategyFactory().from_validated_spec(
+        spec,
+        parent=StrategyVersion(
+            "range_rejection",
+            "incumbent-v1",
+            "config-v1",
+            ExitPolicyConfig().to_dict(),
+            "fixture-commit",
+        ),
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    mid = 1.1
+    ticks = []
+    for index in range(72):
+        mid += 0.00003 if index % 20 < 10 else -0.00003
+        ticks.append(Tick("EURUSD", start + timedelta(seconds=index), mid - 0.00001, mid + 0.00001, 0.00001, index))
+    replay = ReplayEvaluator().evaluate(tuple(ticks), candidate)
+
+    assert replay.ticks_processed == 72
+    assert replay.execution_mode == "REPLAY"
+    assert replay.real_money is False
 
 
 def test_frozen_catalog_source_chunk_does_not_need_projection_readiness_flags() -> None:

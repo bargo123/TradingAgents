@@ -21,6 +21,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+from statistics import median
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -171,9 +172,11 @@ def _create_drafter(args: argparse.Namespace) -> Any:
     return OllamaStrategyDrafter(
         args.ollama_endpoint,
         args.model,
+        model_version=getattr(args, "model_version", None),
         timeout_seconds=args.timeout_seconds,
         max_output_tokens=args.max_output_tokens,
         context_tokens=args.context_tokens,
+        cache_path=getattr(args, "_resolved_atomic_cache_path", None),
     )
 
 
@@ -183,6 +186,7 @@ class _RecordingDrafter:
     _FIELDS = (
         "provider",
         "model",
+        "model_version",
         "prompt_version",
         "schema_version",
         "timeout_seconds",
@@ -196,6 +200,22 @@ class _RecordingDrafter:
         "error_code",
         "error_type",
         "ok",
+        "llm_calls",
+        "cache_hits",
+        "call_telemetry",
+        "evidence_sentence_count",
+        "evidence_groups_processed",
+        "actionable_evidence_groups",
+        "actionable_concept_count",
+        "atomic_rule_count",
+        "unsupported_rule_count",
+        "provenance_failure_count",
+        "schema_failure_count",
+        "truncation_count",
+        "provider_failure_count",
+        "retry_count",
+        "insufficient_specification_count",
+        "cache_write_failures",
     )
 
     def __init__(self, drafter: Any) -> None:
@@ -211,7 +231,73 @@ class _RecordingDrafter:
     def telemetry(self) -> dict[str, Any] | None:
         if self.result is None:
             return None
-        return {name: getattr(self.result, name, None) for name in self._FIELDS}
+        values = {name: getattr(self.result, name, None) for name in self._FIELDS}
+        calls = values.get("call_telemetry")
+        if calls is not None:
+            values["call_telemetry"] = [
+                call.to_dict() if hasattr(call, "to_dict") else call for call in calls
+            ]
+        return values
+
+    @property
+    def llm_calls(self) -> int:
+        if self.result is not None:
+            value = getattr(self.result, "llm_calls", None)
+            if type(value) is int and value >= 0:
+                return value
+        return self.calls
+
+    @property
+    def cache_hits(self) -> int:
+        if self.result is not None:
+            value = getattr(self.result, "cache_hits", None)
+            if type(value) is int and value >= 0:
+                return value
+        return 0
+
+
+def _nearest_rank(values: Sequence[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, math.ceil(fraction * len(ordered)) - 1))
+    return round(ordered[index], 3)
+
+
+def _draft_performance(telemetry: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(telemetry, Mapping):
+        return {}
+    raw_calls = telemetry.get("call_telemetry")
+    calls = [
+        call for call in raw_calls
+        if isinstance(call, Mapping) and call.get("cache_hit") is not True
+    ] if isinstance(raw_calls, (tuple, list)) else []
+    runtimes = [float(call["elapsed_seconds"]) for call in calls if isinstance(call.get("elapsed_seconds"), (int, float))]
+    input_tokens = [int(call["input_tokens"]) for call in calls if type(call.get("input_tokens")) is int]
+    output_tokens = [int(call["output_tokens"]) for call in calls if type(call.get("output_tokens")) is int]
+    stage_counts = Counter(str(call.get("stage")) for call in calls)
+    return {
+        "model_calls": len(calls),
+        "cache_hits": int(telemetry.get("cache_hits", 0) or 0),
+        "input_tokens_total": sum(input_tokens),
+        "input_tokens_average": round(sum(input_tokens) / len(input_tokens), 2) if input_tokens else None,
+        "input_tokens_p50": round(median(input_tokens), 3) if input_tokens else None,
+        "input_tokens_p95": _nearest_rank(input_tokens, 0.95),
+        "output_tokens_total": sum(output_tokens),
+        "output_tokens_average": round(sum(output_tokens) / len(output_tokens), 2) if output_tokens else None,
+        "output_tokens_p50": round(median(output_tokens), 3) if output_tokens else None,
+        "output_tokens_p95": _nearest_rank(output_tokens, 0.95),
+        "runtime_seconds_total": round(sum(runtimes), 3),
+        "runtime_seconds_p50": round(median(runtimes), 3) if runtimes else None,
+        "runtime_seconds_p95": _nearest_rank(runtimes, 0.95),
+        "truncations": sum(call.get("outcome") == "TRUNCATED" for call in calls),
+        "schema_failures": sum(call.get("outcome") == "SCHEMA_INVALID" for call in calls),
+        "provenance_failures": sum(call.get("outcome") == "PROVENANCE_INVALID" for call in calls),
+        "provider_failures": sum(call.get("outcome") == "PROVIDER_ERROR" for call in calls),
+        "retry_calls": sum(int(call.get("retry_depth", 0) or 0) > 0 for call in calls),
+        "cache_write_failures": int(telemetry.get("cache_write_failures", 0) or 0),
+        "stage_call_counts": dict(sorted(stage_counts.items())),
+    }
 
 
 class _RecordingQueryService:
@@ -462,6 +548,15 @@ def _run_draft_and_evaluate(args: argparse.Namespace) -> dict[str, Any]:
 
     source_paths = _validate_source_paths(args)
     _validate_output_root(root, knowledge_root, source_paths)
+    requested_cache_path = getattr(args, "atomic_cache_path", None)
+    cache_path = _path(requested_cache_path) if requested_cache_path else root / "atomic-results.sqlite3"
+    if cache_path == knowledge_root or cache_path in knowledge_root.parents or knowledge_root in cache_path.parents:
+        raise ValueError("atomic cache path must be outside the frozen Phase 7 root")
+    if cache_path in source_paths.values():
+        raise ValueError("atomic cache path must not overlap a Phase 14/12 source database")
+    if cache_path.exists() and cache_path.is_dir():
+        raise ValueError("atomic cache path must identify a file")
+    args._resolved_atomic_cache_path = str(cache_path)
     source_before = _source_fingerprints(source_paths)
     replay_preflight = _preflight_replay_sources(source_paths)
     service = _build_query_service(args, catalog, generation)
@@ -551,6 +646,7 @@ def _run_draft_and_evaluate(args: argparse.Namespace) -> dict[str, Any]:
         error_code = "REPLAY_PREFLIGHT_BLOCKED"
 
     telemetry = recorder.telemetry()
+    draft_performance = _draft_performance(telemetry)
     report: dict[str, Any] = {
         "schema_version": "phase14b-run-report-v1",
         "run_id": "phase14b-" + uuid.uuid4().hex,
@@ -568,6 +664,15 @@ def _run_draft_and_evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "query_count": batch.query_count,
         "retrieved_count": batch.retrieved_count,
         "draft_count": batch.draft_count,
+        "evidence_sentence_count": int((telemetry or {}).get("evidence_sentence_count", 0) or 0),
+        "evidence_groups_processed": int((telemetry or {}).get("evidence_groups_processed", 0) or 0),
+        "actionable_evidence_groups": int((telemetry or {}).get("actionable_evidence_groups", 0) or 0),
+        "actionable_concepts_found": int((telemetry or {}).get("actionable_concept_count", 0) or 0),
+        "atomic_rules_extracted": int((telemetry or {}).get("atomic_rule_count", 0) or 0),
+        "unsupported_rules_rejected": int((telemetry or {}).get("unsupported_rule_count", 0) or 0),
+        "insufficient_specifications": int((telemetry or {}).get("insufficient_specification_count", 0) or 0),
+        "atomic_cache_path": str(cache_path),
+        "draft_performance": draft_performance,
         "replay_source_preflight": replay_preflight,
         "validated_spec_count": len(specs),
         "validated_specs": [spec.to_dict() for spec in specs],
@@ -582,7 +687,8 @@ def _run_draft_and_evaluate(args: argparse.Namespace) -> dict[str, Any]:
         "source_fingerprints_after": source_after,
         "source_unchanged": source_unchanged,
         "generation_unchanged": generation_unchanged,
-        "llm_calls": recorder.calls,
+        "llm_calls": recorder.llm_calls,
+        "cache_hits": recorder.cache_hits,
         "mt5_calls": 0,
         "prompts_persisted": False,
         "completions_persisted": False,
@@ -639,7 +745,16 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--hft-db", required=True, metavar="PATH")
     run.add_argument("--demo-db", required=True, metavar="PATH")
     run.add_argument("--phase14-artifact-root", required=True, metavar="NEW_PATH")
+    run.add_argument(
+        "--atomic-cache-path",
+        metavar="PATH",
+        help="optional resumable cache of validated atomic outputs; never stores prompts or completions",
+    )
     run.add_argument("--model", required=True, help="installed local Ollama model; no implicit default")
+    run.add_argument(
+        "--model-version",
+        help="optional immutable local model digest/revision used to invalidate atomic cache entries",
+    )
     run.add_argument("--ollama-endpoint", default="http://127.0.0.1:11434")
     run.add_argument("--timeout-seconds", type=float, default=300.0)
     run.add_argument("--max-output-tokens", type=_positive_int, default=1024)

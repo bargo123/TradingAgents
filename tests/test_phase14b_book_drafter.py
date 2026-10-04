@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+import json as json_module
 
 import pytest
 from pydantic import ValidationError
 
 from tradingagents.knowledge.models import KnowledgeHit
+from tradingagents.self_enhancement import book_drafter
 from tradingagents.self_enhancement.book_drafter import (
     OllamaStrategyDrafter,
     StrategyDraft,
     StrategyDraftBatch,
     StrategyDraftClaim,
+    _draft_numeric_value,
 )
 
 SOURCE_TEXT = "LONG when momentum > 1.2 points after confirmation"
@@ -86,9 +89,22 @@ class _FakeTransport:
             raise self.error
         if self.body is not None:
             return _Response(self.body)
+        user = json_module.loads(json["messages"][-1]["content"])
+        if user["stage"] == "PRESENCE":
+            content = {"decision": "ACTIONABLE"}
+        elif user["stage"] == "CONCEPT_GROUPING":
+            evidence_indexes = [item["index"] for item in user["evidence"]]
+            content = {
+                "candidates": [
+                    {"family": "MOMENTUM_CONTINUATION", "evidence_indices": evidence_indexes}
+                ]
+            }
+        else:
+            evidence_indexes = [item["index"] for item in user["evidence"]]
+            content = {"rules": [{"stage": "ENTRY", "evidence_index": evidence_indexes[0]}]}
         return _Response(
             {
-                "message": {"content": json_draft_content},
+                "message": {"content": json_module.dumps(content, separators=(",", ":"))},
                 "done": True,
                 "done_reason": "stop",
                 "prompt_eval_count": 137,
@@ -159,20 +175,19 @@ def test_drafter_sends_bounded_native_json_schema_request() -> None:
 
     result = drafter.draft([_hit()], max_specs=2)
 
-    request = transport.calls[0]
-    body = request["json"]
-    assert request["url"] == "http://localhost:11434/api/chat"
-    assert request["timeout"] == 45
-    assert body["model"] == "qwen3.5:2b"
-    assert body["stream"] is False
-    assert body["think"] is False
-    assert body["options"]["temperature"] == 0
-    assert body["options"]["num_predict"] == 768
-    assert body["options"]["num_ctx"] == 8192
-    assert body["format"]["type"] == "object"
-    assert body["format"]["additionalProperties"] is False
-    assert isinstance(body["format"]["properties"]["specs"]["items"], dict)
-    assert "tools" not in body
+    assert len(transport.calls) == 3
+    bodies = [request["json"] for request in transport.calls]
+    assert all(request["url"] == "http://localhost:11434/api/chat" for request in transport.calls)
+    assert all(request["timeout"] == 45 for request in transport.calls)
+    assert all(body["model"] == "qwen3.5:2b" for body in bodies)
+    assert all(body["stream"] is False for body in bodies)
+    assert all(body["think"] is False for body in bodies)
+    assert all(body["options"]["temperature"] == 0 for body in bodies)
+    assert [body["options"]["num_predict"] for body in bodies] == [64, 256, 256]
+    assert all(body["options"]["num_ctx"] == 8192 for body in bodies)
+    assert all(body["format"]["type"] == "object" for body in bodies)
+    assert all(body["format"]["additionalProperties"] is False for body in bodies)
+    assert "tools" not in bodies[0]
     assert result.ok is True
     assert len(result.specs) == 1
     assert isinstance(result.specs[0], StrategyDraft)
@@ -192,6 +207,40 @@ def test_drafter_sends_explicit_bounded_context_length() -> None:
     assert transport.calls[0]["json"]["options"]["num_ctx"] == 4096
 
 
+def test_default_http_transport_ignores_environment_proxy_settings(monkeypatch) -> None:
+    options = {}
+
+    class _ContextTransport(_FakeTransport):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+    transport = _ContextTransport()
+
+    def make_client(*, trust_env: bool):
+        options["trust_env"] = trust_env
+        return transport
+
+    monkeypatch.setattr(book_drafter.httpx, "Client", make_client)
+    result = OllamaStrategyDrafter("http://localhost:11434", "qwen3.5:2b").draft(
+        [_hit()], max_specs=1
+    )
+
+    assert result.ok is True
+    assert options == {"trust_env": False}
+    assert len(transport.calls) == 3
+
+
+def test_source_decimal_conversion_is_exact_or_fails_closed() -> None:
+    from decimal import Decimal
+
+    assert _draft_numeric_value(Decimal("0.6")) == 0.6
+    assert _draft_numeric_value(Decimal("5")) == 5
+    assert _draft_numeric_value(Decimal("0.123456789123456789")) is None
+
+
 def test_drafter_rejects_unbounded_or_invalid_context_length() -> None:
     for context_tokens in (True, 0, 255, 32769):
         with pytest.raises((TypeError, ValueError), match="context_tokens"):
@@ -204,11 +253,7 @@ def test_drafter_rejects_unbounded_or_invalid_context_length() -> None:
 
 
 def test_drafter_strictly_rejects_malformed_or_schema_invalid_json() -> None:
-    for content in (
-        "not-json",
-        json.dumps({"specs": [{"name": "missing required fields"}]}),
-        json.dumps({"specs": [], "hidden_reasoning": PRIVATE_REASONING_MARKER}),
-    ):
+    for content in ("not-json", json.dumps({"decision": "INVALID"}), "not-json"):
         transport = _FakeTransport(
             {
                 "message": {"content": content},
@@ -252,9 +297,10 @@ def test_drafter_result_contains_no_prompt_completion_or_reasoning() -> None:
     assert "prompt" not in result.to_dict()
     assert "completion" not in result.to_dict()
     assert "reasoning" not in result.to_dict()
-    assert result.input_tokens == 137
-    assert result.output_tokens == 81
+    assert result.input_tokens == 411
+    assert result.output_tokens == 243
     assert result.finish_reason == "stop"
+    assert result.llm_calls == 3
     assert result.timeout_seconds == 120
     assert result.context_tokens == 8192
     assert result.max_output_tokens == 2048
@@ -282,19 +328,34 @@ def test_schema_failure_retains_safe_usage_metadata_not_raw_completion() -> None
     assert PRIVATE_REASONING_MARKER not in json.dumps(result.to_dict())
 
 
-def test_drafter_rejects_output_exceeding_requested_spec_bound() -> None:
-    body = _draft_payload()
-    body["specs"].append(body["specs"][0])
-    transport = _FakeTransport(
-        {"message": {"content": json.dumps(body)}, "done": True, "done_reason": "stop"}
-    )
+def test_drafter_caps_final_specs_without_asking_model_for_a_batch_object() -> None:
+    class TwoConceptTransport(_FakeTransport):
+        def post(self, url: str, *, json: dict, timeout: float) -> _Response:
+            self.calls.append({"url": url, "json": json, "timeout": timeout})
+            user = json_module.loads(json["messages"][-1]["content"])
+            if user["stage"] == "PRESENCE":
+                content = {"decision": "ACTIONABLE"}
+            elif user["stage"] == "CONCEPT_GROUPING":
+                evidence_index = user["evidence"][0]["index"]
+                content = {
+                    "candidates": [
+                        {"family": "MOMENTUM_CONTINUATION", "evidence_indices": [evidence_index]},
+                        {"family": "RANGE_REJECTION", "evidence_indices": [evidence_index]},
+                    ]
+                }
+            else:
+                evidence_index = user["evidence"][0]["index"]
+                content = {"rules": [{"stage": "ENTRY", "evidence_index": evidence_index}]}
+            return _Response({"message": {"content": json_module.dumps(content)}, "done": True, "done_reason": "stop"})
 
+    transport = TwoConceptTransport()
     result = OllamaStrategyDrafter(
         "http://localhost:11434", "qwen3.5:2b", transport=transport
     ).draft([_hit()], max_specs=1)
 
-    assert result.ok is False
-    assert result.error_code == "SCHEMA_INVALID"
+    assert result.ok is True
+    assert len(result.specs) == 1
+    assert len(transport.calls) == 4
 
 
 def test_draft_batch_uses_closed_strict_schema() -> None:

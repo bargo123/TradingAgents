@@ -104,13 +104,14 @@
 - Test: `tests/test_phase14b_book_drafter.py`
 
 **Interfaces:**
-- `OllamaStrategyDrafter(endpoint, model, *, timeout_seconds, max_output_tokens, transport) -> draft(hits, max_specs) -> DraftResult`.
-- Only `http://127.0.0.1`/`http://localhost` Ollama native `/api/chat`; request uses temperature 0, `think: false`, strict JSON Schema, bounded `num_predict`, no streaming, and no retry loop.
-- Persist-safe result contains parsed schema, model/config metadata, token/runtime metadata, and digest only; no prompt/completion/reasoning field.
+- `OllamaStrategyDrafter(endpoint, model, *, timeout_seconds, max_output_tokens, context_tokens, cache_path, transport) -> draft(hits, max_specs) -> DraftResult`.
+- Only `http://127.0.0.1`/`http://localhost` Ollama native `/api/chat`. The adapter deterministically segments and IDs source sentences, then makes separate strict-schema calls for presence classification, concept grouping, and atomic `(stage, evidence_index)` extraction. The concept and atomic stages emit compact zero-based positions rather than long IDs; request schemas enumerate only positions in that exact ordered evidence batch, and deterministic code resolves every position back to its exact stable source ID. Scoped schema fingerprints are part of their cache keys. Request settings are temperature 0, `think: false`, no streaming, explicit context, and bounded stage output caps (64/256/256 tokens).
+- Model output contains no rule values or provenance text. Code resolves only exact supplied IDs, applies the existing exact-source grammar/unit validator, and assembles the unchanged strict draft/spec contracts. Unrepresentable numeric values and incomplete rule sets remain rejected/incomplete; no prose repair or semantic fill-in is allowed. At most one split retry level is permitted for a failed multi-item stage.
+- Successful validated atomic results may be cached under keys binding pinned generation/fingerprint, model/version, prompt/schema/segmentation versions, stage/task and evidence IDs. Cache/report data contains only validated structured fields and allowlisted scalar telemetry; never prompts, completions, or reasoning.
 
-- [ ] **Step 1: Write failing fake-transport tests** for loopback acceptance/non-loopback rejection, strict schema request flags, timeout/output bound, malformed JSON/schema failure, provider failure, and absence of prompt/completion/reasoning in result serialization.
+- [ ] **Step 1: Write failing fake-transport tests** for loopback acceptance/non-loopback rejection; stable sentence IDs; each strict stage schema and token cap; exact ID resolution; malformed/schema-invalid output; unknown IDs; split retry bounds; cache reuse keyed to the pinned identity; safe per-call telemetry; and absence of prompt/completion/reasoning in result serialization.
 - [ ] **Step 2: Verify RED** with `python -m pytest -q tests/test_phase14b_book_drafter.py`.
-- [ ] **Step 3: Implement the loopback-only adapter** with an injected HTTP transport and strict `StrategyDraftBatch` validation.
+- [ ] **Step 3: Implement the loopback-only staged adapter** with an injected HTTP transport and deterministic assembly into the existing draft contract; retain the exact provenance/rule grammar and fail-closed behavior.
 - [ ] **Step 4: Verify GREEN** and confirm no online provider is imported or used.
 - [ ] **Step 5: Commit** `feat: add local offline phase 14b strategy drafter`.
 
@@ -203,7 +204,8 @@
 **Interfaces:**
 - `phase14b status --artifact-root ...`
 - `phase14b draft-and-evaluate --knowledge-root C:\p7fast --expected-generation gen_607de64268a04a6ab09ffa1e160fc280 --hft-db ... --demo-db ... --phase14-artifact-root ... --model qwen3.5:2b`.
-- Extraction is explicit; status/runtime commands never instantiate the drafter. Root must be new or the command must use a fresh run ID without overwriting prior data.
+- Optional `--atomic-cache-path ...` resumes only successful validated stage outputs in a separate cache; default cache is inside the new Phase 14B run root. Cache paths cannot overlap Phase 7 or read-only Phase 14/12 databases.
+- Extraction is explicit; status/runtime commands never instantiate the drafter. The Phase 14B artifact root must be new; only the explicit atomic cache may be reused.
 
 - [ ] **Step 1: Write failing CLI tests** for no implicit model calls, pinned Phase 7 generation/fingerprint mismatch refusal, explicit loopback model use, read-only source DBs, fresh output root, and safe report serialization.
 - [ ] **Step 2: Verify RED** with `python -m pytest -q tests/test_phase14b_cli.py`.
