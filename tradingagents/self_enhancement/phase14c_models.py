@@ -16,6 +16,7 @@ from typing import Any
 
 from tradingagents.knowledge.models import ContentType, KnowledgeHit, SerializableModel
 from tradingagents.self_enhancement.book_atomic_extraction import EvidenceGroup
+from tradingagents.self_enhancement.models import CandidateState
 from tradingagents.self_enhancement.strategy_specs import (
     EvidenceSpan,
     RuleDirection,
@@ -966,3 +967,174 @@ class CurrentStrategyMapping(SerializableModel):
             raise ValueError("current strategy mapping must contain all six components in order")
         object.__setattr__(self, "strategy_id", strategy_id)
         object.__setattr__(self, "components", components)
+
+
+class Phase14CPreflightReason(str, Enum):
+    READY = "READY"
+    SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+    INVALID_PHASE14A = "INVALID_PHASE14A"
+    NO_VERIFIED_PHASE14A_EXPERIENCE = "NO_VERIFIED_PHASE14A_EXPERIENCE"
+    INVALID_DEMO_SOURCE = "INVALID_DEMO_SOURCE"
+    DEMO_RECONCILIATION_UNCERTAIN = "DEMO_RECONCILIATION_UNCERTAIN"
+    INVALID_CAUSAL_HFT_DATA = "INVALID_CAUSAL_HFT_DATA"
+    SOURCE_MUTATED_DURING_PREFLIGHT = "SOURCE_MUTATED_DURING_PREFLIGHT"
+
+
+class Phase14CCandidateStatus(str, Enum):
+    NOT_RUN = "NOT_RUN"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+class Phase14CCandidateReason(str, Enum):
+    SPEC_NOT_EXECUTABLE = "SPEC_NOT_EXECUTABLE"
+    UNIMPLEMENTED_SPEC = "UNIMPLEMENTED_SPEC"
+    DUPLICATE_SPEC = "DUPLICATE_SPEC"
+    MAX_CANDIDATE_RUNS_REACHED = "MAX_CANDIDATE_RUNS_REACHED"
+    REPLAY_COMPLETED = "REPLAY_COMPLETED"
+    REPLAY_FAILED = "REPLAY_FAILED"
+    SOURCE_MUTATED_DURING_EVALUATION = "SOURCE_MUTATED_DURING_EVALUATION"
+    STATE_EXCEEDS_SHADOW_CEILING = "STATE_EXCEEDS_SHADOW_CEILING"
+
+
+def _phase14c_path(value: Path | str, field_name: str) -> Path:
+    if not isinstance(value, (str, Path)) or not str(value).strip():
+        raise ValueError(f"{field_name} must be an explicit path")
+    return Path(value).expanduser().resolve()
+
+
+def _phase14c_fingerprints(value: Mapping[str, str]) -> Mapping[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError("source_fingerprints must be a mapping")
+    allowed = {"phase14a", "hft", "demo"}
+    if not set(value).issubset(allowed):
+        raise ValueError("source_fingerprints contains an unknown source")
+    normalized: dict[str, str] = {}
+    for raw_name, raw_digest in value.items():
+        name = str(raw_name)
+        digest = str(raw_digest)
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("source fingerprint must be a SHA-256 hex digest")
+        normalized[name] = digest
+    return MappingProxyType(dict(sorted(normalized.items())))
+
+
+@dataclass(frozen=True, slots=True)
+class Phase14CSourcePaths:
+    """Explicit local Phase 14A, causal HFT, and DEMO evidence sources."""
+
+    phase14a_path: Path
+    hft_path: Path
+    demo_path: Path
+
+    def __post_init__(self) -> None:
+        for name in ("phase14a_path", "hft_path", "demo_path"):
+            object.__setattr__(self, name, _phase14c_path(getattr(self, name), name))
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "phase14a_path": str(self.phase14a_path),
+            "hft_path": str(self.hft_path),
+            "demo_path": str(self.demo_path),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Phase14CReplayPreflight:
+    source_paths: Phase14CSourcePaths
+    source_fingerprints: Mapping[str, str]
+    verified_experience_count: int
+    quarantined_experience_count: int
+    causal_tick_count: int
+    causal_segment_count: int
+    commission_status: str
+    ready: bool
+    reason_code: Phase14CPreflightReason | str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_paths, Phase14CSourcePaths):
+            raise TypeError("source_paths must be Phase14CSourcePaths")
+        counts = (
+            self.verified_experience_count,
+            self.quarantined_experience_count,
+            self.causal_tick_count,
+            self.causal_segment_count,
+        )
+        if any(type(value) is not int or value < 0 for value in counts):
+            raise ValueError("preflight counts must be non-negative integers")
+        reason = Phase14CPreflightReason(self.reason_code)
+        if type(self.ready) is not bool:
+            raise TypeError("ready must be bool")
+        if self.ready != (reason is Phase14CPreflightReason.READY):
+            raise ValueError("preflight readiness must match its reason code")
+        if self.ready and (
+            self.verified_experience_count < 1
+            or self.causal_tick_count < 1
+            or self.causal_segment_count < 1
+        ):
+            raise ValueError("ready preflight requires verified experience and causal data")
+        if self.commission_status != "UNKNOWN":
+            raise ValueError("Phase 14C replay commission status must remain UNKNOWN")
+        fingerprints = _phase14c_fingerprints(self.source_fingerprints)
+        if self.ready and set(fingerprints) != {"phase14a", "hft", "demo"}:
+            raise ValueError("ready preflight requires all source fingerprints")
+        object.__setattr__(self, "source_fingerprints", fingerprints)
+        object.__setattr__(self, "reason_code", reason)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateEvaluationRecord:
+    spec_id: str
+    candidate_id: str | None
+    status: Phase14CCandidateStatus | str
+    reason_code: Phase14CCandidateReason | Phase14CPreflightReason | str
+    artifact_path: Path | None
+    gate_decision: str | None = None
+    gate_reasons: tuple[str, ...] = ()
+    source_fingerprints: Mapping[str, str] = field(default_factory=dict)
+    candidate_state: str | None = None
+
+    def __post_init__(self) -> None:
+        spec_id = str(self.spec_id).strip()
+        if not spec_id:
+            raise ValueError("spec_id must be non-empty")
+        if self.candidate_id is not None and not str(self.candidate_id).strip():
+            raise ValueError("candidate_id must be non-empty when present")
+        status = Phase14CCandidateStatus(self.status)
+        reason_value = (
+            self.reason_code.value
+            if isinstance(self.reason_code, Enum)
+            else str(self.reason_code)
+        )
+        allowed_reasons = {item.value for item in Phase14CCandidateReason} | {
+            item.value for item in Phase14CPreflightReason
+        }
+        if reason_value not in allowed_reasons:
+            raise ValueError("candidate reason_code is not a closed Phase 14C code")
+        if status is Phase14CCandidateStatus.COMPLETED and self.candidate_id is None:
+            raise ValueError("completed candidate record requires candidate_id")
+        if self.artifact_path is not None:
+            object.__setattr__(self, "artifact_path", _phase14c_path(self.artifact_path, "artifact_path"))
+        if self.gate_decision is not None:
+            gate_decision = str(self.gate_decision).strip()
+            if not gate_decision:
+                raise ValueError("gate_decision must be non-empty when present")
+            object.__setattr__(self, "gate_decision", gate_decision)
+        gate_reasons = tuple(str(item).strip() for item in self.gate_reasons)
+        if any(not item for item in gate_reasons):
+            raise ValueError("gate_reasons must contain non-empty values")
+        candidate_state = self.candidate_state
+        if candidate_state is not None:
+            candidate_state = str(candidate_state).strip()
+            if candidate_state not in {
+                CandidateState.INSUFFICIENT_EVIDENCE.value,
+                CandidateState.REJECTED.value,
+                CandidateState.SHADOW_CHALLENGER.value,
+            }:
+                raise ValueError("candidate_state exceeds the Phase 14C shadow ceiling")
+        object.__setattr__(self, "spec_id", spec_id)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "reason_code", reason_value)
+        object.__setattr__(self, "gate_reasons", gate_reasons)
+        object.__setattr__(self, "source_fingerprints", _phase14c_fingerprints(self.source_fingerprints))
+        object.__setattr__(self, "candidate_state", candidate_state)
