@@ -23,9 +23,11 @@ from tradingagents.self_enhancement.book_pipeline import (
     BookStrategyPipeline,
     MappingStatus,
     PinnedGenerationMismatch,
+    StrategyValidationResult,
     classify_suitability,
     deduplicate_specs,
     map_existing_strategy,
+    validate_strategy_draft,
 )
 from tradingagents.self_enhancement.book_strategies import BookStrategyRegistry
 from tradingagents.self_enhancement.models import ExitPolicyConfig, StrategyVersion
@@ -226,6 +228,33 @@ def test_exact_source_span_and_finite_rule_grammar_are_supported() -> None:
         QUOTE,
     )
     assert spec.validation_results[0].status is RuleValidationStatus.SUPPORTED
+
+
+def test_public_draft_validator_matches_phase14b_compatibility_wrapper() -> None:
+    hit = _hit()
+    draft = _draft(hit)
+    pipeline, _ = _pipeline(hit, draft)
+
+    validated = validate_strategy_draft(
+        draft,
+        hit_by_alias={"E1": hit},
+        generation_id=GENERATION,
+        generation_fingerprint=FINGERPRINT,
+        model_id="qwen3.5:2b",
+        available_features=("momentum",),
+    )
+    wrapped_spec, wrapped_rejected = pipeline._spec_from_draft(
+        draft,
+        hit_by_alias={"E1": hit},
+        model_id="qwen3.5:2b",
+    )
+
+    assert isinstance(validated, StrategyValidationResult)
+    assert validated.spec is not None and wrapped_spec is not None
+    assert validated.spec.rule_claims == wrapped_spec.rule_claims
+    assert validated.spec.validation_results == wrapped_spec.validation_results
+    assert validated.spec.suitability is wrapped_spec.suitability
+    assert validated.rejected_rules == wrapped_rejected == ()
 
 
 def test_local_atomic_extraction_routes_complete_hft_spec_through_registry_and_replay() -> None:

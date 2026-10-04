@@ -4,6 +4,10 @@ import json as jsonlib
 import sqlite3
 
 from tradingagents.knowledge.models import KnowledgeHit
+from tradingagents.self_enhancement.book_atomic_extraction import (
+    AtomicStrategyExtractor,
+    UnresolvedAtomicRule,
+)
 from tradingagents.self_enhancement.book_drafter import (
     AtomicRuleBatch,
     ConceptGrouping,
@@ -235,6 +239,41 @@ def test_unsupported_numeric_rule_is_not_repaired_or_emitted():
 
     assert result.specs == ()
     assert result.unsupported_rule_count == 1
+
+
+def test_atomic_extractor_retains_exact_unsupported_rule_for_phase14c_parameter_review():
+    source = "EXIT: LONG when momentum > points after reversal."
+
+    def respond(user, _call_number):
+        if user["stage"] == "PRESENCE":
+            return {"decision": "ACTIONABLE"}
+        if user["stage"] == "CONCEPT_GROUPING":
+            return {
+                "candidates": [
+                    {"family": "MOMENTUM_CONTINUATION", "evidence_indices": [0]}
+                ]
+            }
+        return {"rules": [{"stage": "EXIT", "evidence_index": 0}]}
+
+    report = AtomicStrategyExtractor(
+        "http://127.0.0.1:11434",
+        "qwen3.5:2b",
+        timeout_seconds=5,
+        max_output_tokens=256,
+        context_tokens=4096,
+        transport=_Transport(respond),
+    ).extract((_hit(source),))
+
+    assert report.unsupported_rule_count == 1
+    assert len(report.concepts) == 1
+    concept = report.concepts[0]
+    assert concept.rules == ()
+    assert len(concept.unresolved_rules) == 1
+    unresolved = concept.unresolved_rules[0]
+    assert isinstance(unresolved, UnresolvedAtomicRule)
+    assert unresolved.stage.value == "EXIT"
+    assert unresolved.evidence.text == source
+    assert unresolved.reason_code == "UNSUPPORTED_RULE_GRAMMAR"
 
 
 def test_truncated_evidence_group_is_split_once_and_does_not_destroy_other_units():

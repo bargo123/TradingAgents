@@ -7,12 +7,21 @@ import math
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
 
 from tradingagents.knowledge.models import ContentType, KnowledgeHit, SerializableModel
 from tradingagents.self_enhancement.book_atomic_extraction import EvidenceGroup
+from tradingagents.self_enhancement.strategy_specs import (
+    EvidenceSpan,
+    RuleDirection,
+    RuleOperator,
+    RuleStage,
+    StrategyRuleClaim,
+    StrategySpec,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,6 +322,11 @@ class DuplicateClusterIndex(SerializableModel):
         raise KeyError("chunk identity has no retained retrieval record")
 
     def independent_source_count(self, identities: Sequence[ChunkIdentity]) -> int:
+        return len(self.independent_document_ids(identities))
+
+    def independent_document_ids(self, identities: Sequence[ChunkIdentity]) -> tuple[str, ...]:
+        """Return stable representative document IDs after passage-cluster collapse."""
+
         values = tuple(identities)
         if any(not isinstance(identity, ChunkIdentity) for identity in values):
             raise TypeError("identities must contain ChunkIdentity values")
@@ -334,11 +348,12 @@ class DuplicateClusterIndex(SerializableModel):
                 continue
             root = find(ordered[0])
             for document_id in ordered[1:]:
+                root = find(root)
                 other = find(document_id)
                 if root != other:
                     parents[max(root, other)] = min(root, other)
                     root = min(root, other)
-        return len({find(document_id) for document_id in documents})
+        return tuple(sorted({find(document_id) for document_id in documents}))
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,3 +546,229 @@ class EvidenceSelectionReport(SerializableModel):
 
         for name, value in counts.items():
             object.__setattr__(self, name, value)
+
+
+class AssemblyMode(str, Enum):
+    SINGLE_SOURCE_COMPLETE = "SINGLE_SOURCE_COMPLETE"
+    MULTI_SOURCE_CONSISTENT = "MULTI_SOURCE_CONSISTENT"
+    COMPOSITE_RESEARCH_HYPOTHESIS = "COMPOSITE_RESEARCH_HYPOTHESIS"
+
+
+class AssemblyStatus(str, Enum):
+    COMPLETE = "COMPLETE"
+    PARTIAL = "PARTIAL"
+    CONFLICTED = "CONFLICTED"
+    REJECTED = "REJECTED"
+
+
+class ResearchParameterKind(str, Enum):
+    NUMERIC_THRESHOLD = "NUMERIC_THRESHOLD"
+
+
+@dataclass(frozen=True, slots=True)
+class SemanticAnchor(SerializableModel):
+    """Exact supported entry/confirmation/invalidation semantics used for joins."""
+
+    stage: RuleStage
+    direction: RuleDirection
+    operator: RuleOperator
+    feature: str | None
+    value: str
+    unit: str
+    condition: str
+    horizon_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        stage = RuleStage(self.stage)
+        if stage not in {RuleStage.ENTRY, RuleStage.CONFIRMATION, RuleStage.INVALIDATION}:
+            raise ValueError("semantic anchor stage must be entry, confirmation, or invalidation")
+        object.__setattr__(self, "stage", stage)
+        object.__setattr__(self, "direction", RuleDirection(self.direction))
+        object.__setattr__(self, "operator", RuleOperator(self.operator))
+        for name in ("value", "unit", "condition"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must be non-empty")
+            object.__setattr__(self, name, value)
+        if self.feature is not None:
+            feature = str(self.feature).strip()
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", feature):
+                raise ValueError("feature must be a normalized feature name")
+            object.__setattr__(self, "feature", feature)
+        if self.horizon_seconds is not None and (
+            type(self.horizon_seconds) is not int or self.horizon_seconds < 1
+        ):
+            raise ValueError("horizon_seconds must be a positive integer or None")
+
+
+@dataclass(frozen=True, slots=True)
+class SourceConflict(SerializableModel):
+    family: str
+    anchor: SemanticAnchor
+    stage: RuleStage
+    evidence_refs: tuple[EvidenceSpan, ...]
+    reason_code: str = "CONTRADICTORY_SAME_STAGE_RULES"
+
+    def __post_init__(self) -> None:
+        family = str(self.family).strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", family):
+            raise ValueError("family must be a closed uppercase code")
+        if not isinstance(self.anchor, SemanticAnchor):
+            raise TypeError("anchor must be SemanticAnchor")
+        object.__setattr__(self, "stage", RuleStage(self.stage))
+        refs = tuple(self.evidence_refs)
+        if len(refs) < 2 or any(not isinstance(item, EvidenceSpan) for item in refs):
+            raise ValueError("conflict must retain at least two exact EvidenceSpan references")
+        refs = tuple(sorted(set(refs), key=_evidence_sort_key))
+        object.__setattr__(self, "family", family)
+        object.__setattr__(self, "evidence_refs", refs)
+        if self.reason_code != "CONTRADICTORY_SAME_STAGE_RULES":
+            raise ValueError("reason_code is not a supported source conflict code")
+
+
+def _evidence_sort_key(value: EvidenceSpan) -> tuple[str, str, str, int, int, str]:
+    return (
+        value.document_id,
+        value.chunk_id,
+        value.source_hash,
+        value.start_offset,
+        value.end_offset,
+        value.quote,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ResearchParameterRequest(SerializableModel):
+    family: str
+    semantic_anchor: SemanticAnchor | None
+    stage: RuleStage
+    parameter_kind: ResearchParameterKind
+    unit: str
+    evidence_refs: tuple[EvidenceSpan, ...]
+    reason_code: str = "RESEARCH_PARAMETER_REQUIRED"
+
+    def __post_init__(self) -> None:
+        family = str(self.family).strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", family):
+            raise ValueError("family must be a closed uppercase code")
+        if self.semantic_anchor is not None and not isinstance(self.semantic_anchor, SemanticAnchor):
+            raise TypeError("semantic_anchor must be SemanticAnchor or None")
+        object.__setattr__(self, "stage", RuleStage(self.stage))
+        object.__setattr__(self, "parameter_kind", ResearchParameterKind(self.parameter_kind))
+        unit = str(self.unit).strip()
+        if not unit:
+            raise ValueError("unit must be non-empty")
+        refs = tuple(self.evidence_refs)
+        if not refs or any(not isinstance(item, EvidenceSpan) for item in refs):
+            raise ValueError("parameter request requires exact EvidenceSpan references")
+        object.__setattr__(self, "family", family)
+        object.__setattr__(self, "unit", unit)
+        object.__setattr__(self, "evidence_refs", tuple(sorted(set(refs), key=_evidence_sort_key)))
+        if self.reason_code != "RESEARCH_PARAMETER_REQUIRED":
+            raise ValueError("reason_code is not a supported research parameter request code")
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyRejection(SerializableModel):
+    family: str
+    evidence_id: str
+    document_id: str
+    chunk_id: str
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        for name in ("family", "evidence_id", "document_id", "chunk_id"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must be non-empty")
+            object.__setattr__(self, name, value)
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", self.reason_code):
+            raise ValueError("reason_code must be a closed uppercase code")
+
+
+@dataclass(frozen=True, slots=True)
+class AssembledConcept(SerializableModel):
+    family: str
+    semantic_anchor: SemanticAnchor | None
+    independent_document_ids: tuple[str, ...]
+    rule_claims: tuple[StrategyRuleClaim, ...]
+    assembly_mode: AssemblyMode | None
+    status: AssemblyStatus
+    executable_eligible: bool
+    spec: StrategySpec | None
+    missing_stages: tuple[RuleStage, ...] = ()
+
+    def __post_init__(self) -> None:
+        family = str(self.family).strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", family):
+            raise ValueError("family must be a closed uppercase code")
+        if self.semantic_anchor is not None and not isinstance(self.semantic_anchor, SemanticAnchor):
+            raise TypeError("semantic_anchor must be SemanticAnchor or None")
+        documents = tuple(sorted({str(value).strip() for value in self.independent_document_ids}))
+        if any(not value for value in documents):
+            raise ValueError("independent_document_ids must be non-empty strings")
+        claims = tuple(self.rule_claims)
+        if any(not isinstance(item, StrategyRuleClaim) for item in claims):
+            raise TypeError("rule_claims must contain StrategyRuleClaim values")
+        mode = AssemblyMode(self.assembly_mode) if self.assembly_mode is not None else None
+        status = AssemblyStatus(self.status)
+        if self.spec is not None and not isinstance(self.spec, StrategySpec):
+            raise TypeError("spec must be StrategySpec or None")
+        missing = tuple(sorted({RuleStage(item) for item in self.missing_stages}, key=lambda item: item.value))
+        if type(self.executable_eligible) is not bool:
+            raise TypeError("executable_eligible must be a boolean")
+        if self.executable_eligible and (
+            status is not AssemblyStatus.COMPLETE
+            or mode is AssemblyMode.COMPOSITE_RESEARCH_HYPOTHESIS
+            or self.spec is None
+            or not self.spec.is_executable
+        ):
+            raise ValueError("only complete, non-composite executable specs may be eligible")
+        if status is AssemblyStatus.COMPLETE and (mode is None or self.spec is None or missing):
+            raise ValueError("complete assembly requires a mode, spec, and no missing stages")
+        if status is AssemblyStatus.CONFLICTED and (self.spec is not None or self.executable_eligible):
+            raise ValueError("conflicted assembly cannot expose an executable spec")
+        if status is AssemblyStatus.REJECTED and self.executable_eligible:
+            raise ValueError("rejected assembly cannot be executable")
+        object.__setattr__(self, "family", family)
+        object.__setattr__(self, "independent_document_ids", documents)
+        object.__setattr__(self, "rule_claims", claims)
+        object.__setattr__(self, "assembly_mode", mode)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "missing_stages", missing)
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyReport(SerializableModel):
+    records: tuple[AssembledConcept, ...]
+    conflicts: tuple[SourceConflict, ...] = ()
+    parameter_requests: tuple[ResearchParameterRequest, ...] = ()
+    rejections: tuple[AssemblyRejection, ...] = ()
+    complete_count: int = field(init=False, default=0)
+    partial_count: int = field(init=False, default=0)
+    rejected_count: int = field(init=False, default=0)
+
+    def __post_init__(self) -> None:
+        records = tuple(self.records)
+        conflicts = tuple(self.conflicts)
+        requests = tuple(self.parameter_requests)
+        rejections = tuple(self.rejections)
+        if any(not isinstance(item, AssembledConcept) for item in records):
+            raise TypeError("records must contain AssembledConcept values")
+        if any(not isinstance(item, SourceConflict) for item in conflicts):
+            raise TypeError("conflicts must contain SourceConflict values")
+        if any(not isinstance(item, ResearchParameterRequest) for item in requests):
+            raise TypeError("parameter_requests must contain ResearchParameterRequest values")
+        if any(not isinstance(item, AssemblyRejection) for item in rejections):
+            raise TypeError("rejections must contain AssemblyRejection values")
+        object.__setattr__(self, "records", records)
+        object.__setattr__(self, "conflicts", conflicts)
+        object.__setattr__(self, "parameter_requests", requests)
+        object.__setattr__(self, "rejections", rejections)
+        object.__setattr__(self, "complete_count", sum(item.status is AssemblyStatus.COMPLETE for item in records))
+        object.__setattr__(self, "partial_count", sum(item.status is AssemblyStatus.PARTIAL for item in records))
+        object.__setattr__(
+            self,
+            "rejected_count",
+            sum(item.status in {AssemblyStatus.CONFLICTED, AssemblyStatus.REJECTED} for item in records),
+        )

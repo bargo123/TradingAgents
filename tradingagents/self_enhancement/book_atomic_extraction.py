@@ -268,9 +268,39 @@ class ResolvedAtomicRule:
 
 
 @dataclass(frozen=True, slots=True)
+class UnresolvedAtomicRule:
+    """Model-selected exact evidence that did not satisfy the strict rule grammar."""
+
+    stage: RuleStage
+    evidence: EvidenceSentence
+    reason_code: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.stage, RuleStage):
+            raise TypeError("stage must be RuleStage")
+        if not isinstance(self.evidence, EvidenceSentence):
+            raise TypeError("evidence must be EvidenceSentence")
+        if self.reason_code not in {"UNSUPPORTED_RULE_GRAMMAR", "FEATURE_UNIT_MISMATCH"}:
+            raise ValueError("reason_code is not a supported unresolved-rule code")
+
+
+@dataclass(frozen=True, slots=True)
 class StrategyConcept:
     family: ConceptFamily
     rules: tuple[ResolvedAtomicRule, ...]
+    unresolved_rules: tuple[UnresolvedAtomicRule, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.family, ConceptFamily):
+            raise TypeError("family must be ConceptFamily")
+        rules = tuple(self.rules)
+        unresolved = tuple(self.unresolved_rules)
+        if any(not isinstance(item, ResolvedAtomicRule) for item in rules):
+            raise TypeError("rules must contain ResolvedAtomicRule values")
+        if any(not isinstance(item, UnresolvedAtomicRule) for item in unresolved):
+            raise TypeError("unresolved_rules must contain UnresolvedAtomicRule values")
+        object.__setattr__(self, "rules", rules)
+        object.__setattr__(self, "unresolved_rules", unresolved)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1030,6 +1060,7 @@ class AtomicStrategyExtractor:
         atomic_count = 0
         for family, evidence in concept_groups:
             rules: list[ResolvedAtomicRule] = []
+            unresolved_rules: list[UnresolvedAtomicRule] = []
             for start in range(0, len(evidence), _ATOMIC_GROUP_SIZE):
                 group = evidence[start : start + _ATOMIC_GROUP_SIZE]
                 for unit, batch in self._run_stage(
@@ -1056,11 +1087,20 @@ class AtomicStrategyExtractor:
                             or (feature is not None and FEATURE_UNITS.get(feature) != parsed.get("unit"))
                         ):
                             unsupported_count += 1
+                            unresolved_rules.append(
+                                UnresolvedAtomicRule(
+                                    key[0],
+                                    source,
+                                    "UNSUPPORTED_RULE_GRAMMAR"
+                                    if parsed is None
+                                    else "FEATURE_UNIT_MISMATCH",
+                                )
+                            )
                             continue
                         rules.append(ResolvedAtomicRule(key[0], source, parsed))
                         atomic_count += 1
-            if rules:
-                concepts.append(StrategyConcept(family, tuple(rules)))
+            if rules or unresolved_rules:
+                concepts.append(StrategyConcept(family, tuple(rules), tuple(unresolved_rules)))
 
         return AtomicExtractionReport(
             concepts=tuple(concepts),
@@ -1142,6 +1182,7 @@ __all__ = [
     "PresenceClassificationReport",
     "PresenceGroupResult",
     "PresenceStatus",
+    "UnresolvedAtomicRule",
     "prepare_evidence_sentences",
     "resolve_evidence_id",
 ]

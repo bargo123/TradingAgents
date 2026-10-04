@@ -65,6 +65,22 @@ class StrategyBatchReport:
 
 
 @dataclass(frozen=True, slots=True)
+class StrategyValidationResult:
+    """Strict Phase 14B draft validation output without model-authored prose."""
+
+    spec: StrategySpec | None
+    rejected_rules: tuple[RuleValidationResult, ...]
+
+    def __post_init__(self) -> None:
+        if self.spec is not None and not isinstance(self.spec, StrategySpec):
+            raise TypeError("spec must be StrategySpec or None")
+        rejected = tuple(self.rejected_rules)
+        if any(not isinstance(item, RuleValidationResult) for item in rejected):
+            raise TypeError("rejected_rules must contain RuleValidationResult values")
+        object.__setattr__(self, "rejected_rules", rejected)
+
+
+@dataclass(frozen=True, slots=True)
 class ComponentMapping:
     component: str
     status: MappingStatus
@@ -255,6 +271,80 @@ def classify_suitability(
     return SuitabilityResult(suitability)
 
 
+def validate_strategy_draft(
+    draft: StrategyDraft,
+    *,
+    hit_by_alias: Mapping[str, KnowledgeHit],
+    generation_id: str,
+    generation_fingerprint: str,
+    model_id: str,
+    available_features: Iterable[str],
+) -> StrategyValidationResult:
+    """Validate a Phase 14B draft using the unchanged strict source contract."""
+
+    if not isinstance(draft, StrategyDraft):
+        raise TypeError("draft must be StrategyDraft")
+    if not isinstance(hit_by_alias, Mapping):
+        raise TypeError("hit_by_alias must be a mapping")
+    for name, value in (
+        ("generation_id", generation_id),
+        ("generation_fingerprint", generation_fingerprint),
+        ("model_id", model_id),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be non-empty")
+    features = tuple(available_features)
+
+    claims: list[StrategyRuleClaim] = []
+    validations: list[RuleValidationResult] = []
+    rejected: list[RuleValidationResult] = []
+    for draft_claim in draft.rule_claims:
+        claim, result = _validate_claim(
+            draft_claim,
+            hit_by_alias,
+            generation=generation_id,
+            required_data=draft.required_data,
+        )
+        if result.status is RuleValidationStatus.SUPPORTED:
+            assert claim is not None
+            claims.append(claim)
+            validations.append(result)
+        elif draft_claim.origin is RuleOrigin.RESEARCH_HYPOTHESIS_PARAMETER and claim is not None:
+            claims.append(claim)
+            validations.append(result)
+        else:
+            rejected.append(result)
+    if not claims:
+        return StrategyValidationResult(None, tuple(rejected))
+
+    payload = draft.model_dump(mode="json")
+    draft_digest = _sha256_digest(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    )
+    spec = StrategySpec(
+        spec_id=f"book-spec-{draft_digest[:24]}",
+        name=draft.name,
+        family=draft.family,
+        required_data=tuple(draft.required_data),
+        rule_claims=tuple(claims),
+        generation_id=generation_id,
+        knowledge_fingerprint=generation_fingerprint,
+        model_provider="ollama-local",
+        model_id=model_id,
+        prompt_version=DRAFT_PROMPT_VERSION,
+        schema_version=DRAFT_SCHEMA_VERSION,
+        created_at=datetime.now(UTC),
+        implementation_confidence=draft.implementation_confidence,
+        suitability=StrategySuitability.INSUFFICIENT_SPECIFICATION,
+        validation_results=tuple(validations),
+    )
+    suitability = classify_suitability(spec, features)
+    return StrategyValidationResult(
+        replace(spec, suitability=suitability.suitability),
+        tuple(rejected),
+    )
+
+
 def _claim_semantics(claim: StrategyRuleClaim) -> str:
     payload = {
         "stage": claim.stage.value,
@@ -426,50 +516,15 @@ class BookStrategyPipeline:
         hit_by_alias: Mapping[str, KnowledgeHit],
         model_id: str,
     ) -> tuple[StrategySpec | None, tuple[RuleValidationResult, ...]]:
-        claims: list[StrategyRuleClaim] = []
-        validations: list[RuleValidationResult] = []
-        rejected: list[RuleValidationResult] = []
-        for draft_claim in draft.rule_claims:
-            claim, result = _validate_claim(
-                draft_claim,
-                hit_by_alias,
-                generation=self.pinned_generation,
-                required_data=draft.required_data,
-            )
-            if result.status is RuleValidationStatus.SUPPORTED:
-                assert claim is not None
-                claims.append(claim)
-                validations.append(result)
-            elif draft_claim.origin is RuleOrigin.RESEARCH_HYPOTHESIS_PARAMETER and claim is not None:
-                claims.append(claim)
-                validations.append(result)
-            else:
-                rejected.append(result)
-        if not claims:
-            return None, tuple(rejected)
-        payload = draft.model_dump(mode="json")
-        draft_digest = _sha256_digest(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-        )
-        spec = StrategySpec(
-            spec_id=f"book-spec-{draft_digest[:24]}",
-            name=draft.name,
-            family=draft.family,
-            required_data=tuple(draft.required_data),
-            rule_claims=tuple(claims),
+        result = validate_strategy_draft(
+            draft,
+            hit_by_alias=hit_by_alias,
             generation_id=self.pinned_generation,
-            knowledge_fingerprint=self.pinned_fingerprint,
-            model_provider="ollama-local",
+            generation_fingerprint=self.pinned_fingerprint,
             model_id=model_id,
-            prompt_version=DRAFT_PROMPT_VERSION,
-            schema_version=DRAFT_SCHEMA_VERSION,
-            created_at=datetime.now(UTC),
-            implementation_confidence=draft.implementation_confidence,
-            suitability=StrategySuitability.INSUFFICIENT_SPECIFICATION,
-            validation_results=tuple(validations),
+            available_features=self.available_features,
         )
-        suitability = classify_suitability(spec, self.available_features)
-        return replace(spec, suitability=suitability.suitability), tuple(rejected)
+        return result.spec, result.rejected_rules
 
     def extract(self, queries: Sequence[str] | str, *, max_specs: int = 10) -> StrategyBatchReport:
         if type(max_specs) is not int or not 1 <= max_specs <= 10:
@@ -540,8 +595,10 @@ __all__ = [
     "MappingStatus",
     "PinnedGenerationMismatch",
     "StrategyBatchReport",
+    "StrategyValidationResult",
     "SuitabilityResult",
     "classify_suitability",
     "deduplicate_specs",
     "map_existing_strategy",
+    "validate_strategy_draft",
 ]
