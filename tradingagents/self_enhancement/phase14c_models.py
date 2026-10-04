@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -11,6 +12,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 from tradingagents.knowledge.models import ContentType, KnowledgeHit, SerializableModel
 from tradingagents.self_enhancement.book_atomic_extraction import EvidenceGroup
@@ -772,3 +774,195 @@ class AssemblyReport(SerializableModel):
             "rejected_count",
             sum(item.status in {AssemblyStatus.CONFLICTED, AssemblyStatus.REJECTED} for item in records),
         )
+
+
+CURRENT_STRATEGY_COMPONENTS = (
+    "entry",
+    "confirmation",
+    "expected_move",
+    "exit",
+    "risk",
+    "holding_horizon",
+)
+CURRENT_STRATEGY_IDS = ("momentum_continuation", "range_rejection")
+
+
+class CurrentStrategyMappingStatus(str, Enum):
+    MATCHED = "MATCHED"
+    PARTIALLY_MATCHED = "PARTIALLY_MATCHED"
+    NO_DIRECT_MATCH = "NO_DIRECT_MATCH"
+
+
+def _freeze_contract_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        normalized = {str(key): _freeze_contract_value(item) for key, item in value.items()}
+        if len(normalized) != len(value):
+            raise ValueError("contract value contains duplicate normalized keys")
+        return MappingProxyType(dict(sorted(normalized.items())))
+    if isinstance(value, (tuple, list)):
+        return tuple(_freeze_contract_value(item) for item in value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("contract values must be finite")
+        return value
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    raise TypeError("contract values must be JSON-safe primitives, mappings, or sequences")
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentStrategyRuleSignature(SerializableModel):
+    stage: RuleStage
+    direction: RuleDirection
+    operator: RuleOperator
+    feature: str | None
+    value: str
+    unit: str
+    condition: str
+    horizon_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "stage", RuleStage(self.stage))
+        object.__setattr__(self, "direction", RuleDirection(self.direction))
+        object.__setattr__(self, "operator", RuleOperator(self.operator))
+        for name in ("value", "unit", "condition"):
+            normalized = str(getattr(self, name)).strip()
+            if not normalized:
+                raise ValueError(f"{name} must be non-empty")
+            object.__setattr__(self, name, normalized)
+        if self.feature is not None:
+            feature = str(self.feature).strip()
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", feature):
+                raise ValueError("feature must be a normalized feature name")
+            object.__setattr__(self, "feature", feature)
+        if self.horizon_seconds is not None and (
+            type(self.horizon_seconds) is not int or self.horizon_seconds < 1
+        ):
+            raise ValueError("horizon_seconds must be a positive integer or None")
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentStrategyComponentContract(SerializableModel):
+    component: str
+    canonical_values: Mapping[str, Any]
+    matchable_rules: tuple[CurrentStrategyRuleSignature, ...] = ()
+
+    def __post_init__(self) -> None:
+        component = str(self.component).strip()
+        if component not in CURRENT_STRATEGY_COMPONENTS:
+            raise ValueError("component is not part of the current-strategy mapping contract")
+        if not isinstance(self.canonical_values, Mapping):
+            raise TypeError("canonical_values must be a mapping")
+        values = _freeze_contract_value(self.canonical_values)
+        rules = tuple(self.matchable_rules)
+        if any(not isinstance(item, CurrentStrategyRuleSignature) for item in rules):
+            raise TypeError("matchable_rules must contain CurrentStrategyRuleSignature values")
+        if len(set(rules)) != len(rules):
+            raise ValueError("matchable_rules must not contain duplicates")
+        object.__setattr__(self, "component", component)
+        object.__setattr__(self, "canonical_values", values)
+        object.__setattr__(self, "matchable_rules", rules)
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentStrategyContract(SerializableModel):
+    strategy_id: str
+    components: tuple[CurrentStrategyComponentContract, ...]
+
+    def __post_init__(self) -> None:
+        strategy_id = str(self.strategy_id).strip()
+        if strategy_id not in CURRENT_STRATEGY_IDS:
+            raise ValueError("strategy_id is not a reviewed current strategy")
+        components = tuple(self.components)
+        if any(not isinstance(item, CurrentStrategyComponentContract) for item in components):
+            raise TypeError("components must contain CurrentStrategyComponentContract values")
+        if tuple(item.component for item in components) != CURRENT_STRATEGY_COMPONENTS:
+            raise ValueError("current strategy contract must contain all six components in order")
+        object.__setattr__(self, "strategy_id", strategy_id)
+        object.__setattr__(self, "components", components)
+
+    def component(self, name: str) -> CurrentStrategyComponentContract:
+        for item in self.components:
+            if item.component == name:
+                return item
+        raise KeyError(f"unknown strategy component: {name}")
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentStrategyContractSnapshot(SerializableModel):
+    schema_version: str
+    contract_version: str
+    strategies: tuple[CurrentStrategyContract, ...]
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        for name in ("schema_version", "contract_version"):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must be non-empty")
+            object.__setattr__(self, name, value)
+        strategies = tuple(sorted(self.strategies, key=lambda item: item.strategy_id))
+        if any(not isinstance(item, CurrentStrategyContract) for item in strategies):
+            raise TypeError("strategies must contain CurrentStrategyContract values")
+        if tuple(item.strategy_id for item in strategies) != CURRENT_STRATEGY_IDS:
+            raise ValueError("snapshot must contain each reviewed strategy exactly once")
+        payload = {
+            "schema_version": self.schema_version,
+            "contract_version": self.contract_version,
+            "strategies": [item.to_dict() for item in strategies],
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        object.__setattr__(self, "strategies", strategies)
+        object.__setattr__(self, "fingerprint", fingerprint)
+
+    def strategy(self, strategy_id: str) -> CurrentStrategyContract:
+        for item in self.strategies:
+            if item.strategy_id == strategy_id:
+                return item
+        raise KeyError(f"unknown current strategy: {strategy_id}")
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentStrategyComponentMapping(SerializableModel):
+    component: str
+    status: CurrentStrategyMappingStatus
+    matched_source_rule_fingerprints: tuple[str, ...] = ()
+    reason_code: str = "NO_EXACT_COMPONENT_MATCH"
+
+    def __post_init__(self) -> None:
+        component = str(self.component).strip()
+        if component not in CURRENT_STRATEGY_COMPONENTS:
+            raise ValueError("component is not part of the current-strategy mapping contract")
+        status = CurrentStrategyMappingStatus(self.status)
+        fingerprints = tuple(sorted(set(self.matched_source_rule_fingerprints)))
+        if any(not re.fullmatch(r"[0-9a-f]{64}", item) for item in fingerprints):
+            raise ValueError("matched source rule fingerprints must be SHA-256 hex values")
+        if bool(fingerprints) != (status is not CurrentStrategyMappingStatus.NO_DIRECT_MATCH):
+            raise ValueError("only directly matched components may cite source rule fingerprints")
+        reason = str(self.reason_code).strip()
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", reason):
+            raise ValueError("reason_code must be a closed uppercase code")
+        object.__setattr__(self, "component", component)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "matched_source_rule_fingerprints", fingerprints)
+        object.__setattr__(self, "reason_code", reason)
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentStrategyMapping(SerializableModel):
+    strategy_id: str
+    components: tuple[CurrentStrategyComponentMapping, ...]
+
+    def __post_init__(self) -> None:
+        strategy_id = str(self.strategy_id).strip()
+        if strategy_id not in CURRENT_STRATEGY_IDS:
+            raise ValueError("strategy_id is not a reviewed current strategy")
+        components = tuple(self.components)
+        if any(not isinstance(item, CurrentStrategyComponentMapping) for item in components):
+            raise TypeError("components must contain CurrentStrategyComponentMapping values")
+        if tuple(item.component for item in components) != CURRENT_STRATEGY_COMPONENTS:
+            raise ValueError("current strategy mapping must contain all six components in order")
+        object.__setattr__(self, "strategy_id", strategy_id)
+        object.__setattr__(self, "components", components)
