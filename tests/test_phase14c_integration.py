@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,8 @@ from tradingagents.self_enhancement.phase14c_models import (
 )
 from tradingagents.self_enhancement.phase14c_runner import (
     Phase14CResumeError,
+    _ReadOnlyKnowledgeCatalog,
+    _ReadOnlyLexicalIndexReader,
     load_complete_discovery_artifacts,
     run_phase14c_discovery,
 )
@@ -40,6 +43,66 @@ from tradingagents.self_enhancement.strategy_specs import RuleStage
 GENERATION_ID = "gen_phase14c_integration_fixture"
 GENERATION_FINGERPRINT = "c" * 64
 POPULATION_HASH = "sha256:" + "b" * 64
+
+
+def test_phase14c_lexical_reader_quotes_hyphenated_query_terms(tmp_path: Path) -> None:
+    database = tmp_path / "bm25.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE VIRTUAL TABLE knowledge_fts USING fts5("
+            "chunk_id UNINDEXED, text, "
+            "tokenize = 'unicode61 remove_diacritics 2 tokenchars ''_-''')"
+        )
+        connection.execute(
+            "CREATE TABLE knowledge_chunk_provenance (chunk_id TEXT, provenance_json TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO knowledge_fts (chunk_id, text) VALUES (?, ?)",
+            ("chunk-1", "short-horizon foreign-exchange strategy entry exit"),
+        )
+        connection.execute(
+            "INSERT INTO knowledge_chunk_provenance VALUES (?, ?)",
+            ("chunk-1", json.dumps({"chunk_id": "chunk-1"})),
+        )
+
+    hits = _ReadOnlyLexicalIndexReader(database).search(
+        "short-horizon foreign-exchange strategy entry exit", limit=10
+    )
+
+    assert tuple(hit["chunk_id"] for hit in hits) == ("chunk-1",)
+
+
+def test_read_only_phase7_catalog_resolves_exact_chunks_in_semantic_order(
+    tmp_path: Path,
+) -> None:
+    database = tmp_path / "catalog.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE knowledge_chunks ("
+            "chunk_id TEXT, document_id TEXT, provenance_json TEXT)"
+        )
+        for chunk_id, ordinal in (("chunk-z", 1), ("chunk-a", 0)):
+            connection.execute(
+                "INSERT INTO knowledge_chunks VALUES (?, ?, ?)",
+                (
+                    chunk_id,
+                    "document-1",
+                    json.dumps(
+                        {
+                            "chunk_id": chunk_id,
+                            "document_id": "document-1",
+                            "source_hash": "a" * 64,
+                            "text": chunk_id,
+                            "chunk_ordinal": ordinal,
+                        }
+                    ),
+                ),
+            )
+
+    chunks = _ReadOnlyKnowledgeCatalog(database).chunks_for_document("document-1")
+
+    assert tuple(chunk.chunk_id for chunk in chunks) == ("chunk-a", "chunk-z")
+    assert tuple(chunk.text for chunk in chunks) == ("chunk-a", "chunk-z")
 
 COMPLETE_QUOTES = {
     RuleStage.ENTRY: "LONG when momentum > 2 points after confirmation",
@@ -95,6 +158,7 @@ class _FixtureCatalog:
         self._generation = SimpleNamespace(
             generation_id=GENERATION_ID,
             population_hash=POPULATION_HASH,
+            index_version="fixture-index-v1",
             status="VALIDATED",
             vector_ready=True,
             lexical_ready=True,

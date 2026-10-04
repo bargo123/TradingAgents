@@ -53,6 +53,7 @@ class _Catalog:
         self.generation = SimpleNamespace(
             generation_id=GENERATION_ID,
             population_hash=POPULATION_HASH,
+            index_version="index-v1",
             status="VALIDATED",
             vector_ready=True,
             lexical_ready=True,
@@ -211,6 +212,24 @@ def test_retrieval_fans_out_one_bounded_query_per_formulation_and_merges_sibling
         ("failed_breakout", "reversal", 1),
         ("failed_breakout", "return_inside", 1),
     ]
+
+
+def test_projection_index_version_is_checked_against_generation_not_chunk() -> None:
+    catalog = _Catalog()
+    chunk = catalog.chunks_for_document("doc-1")[0]
+    chunk.index_version = None
+    catalog.chunks_for_document = lambda _document_id: (chunk,)
+    service = _QueryService(((_hit(),),), catalog=catalog)
+
+    report = retrieve_discovery_evidence(
+        service,
+        (DiscoveryQuery("momentum", "base", "short horizon momentum"),),
+        pinned_generation_id=GENERATION_ID,
+        pinned_population_hash=POPULATION_HASH,
+    )
+
+    assert report.status == "COMPLETE"
+    assert report.unique_hit_count == 1
 
 
 @pytest.mark.parametrize(

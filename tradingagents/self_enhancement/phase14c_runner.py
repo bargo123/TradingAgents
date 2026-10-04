@@ -503,6 +503,18 @@ class _ReadOnlyKnowledgeCatalog:
             ).fetchone()
         return None if row is None else KnowledgeCatalog._row_document(row)
 
+    def chunks_for_document(self, document_id: str):
+        from tradingagents.knowledge.models import ChunkRecord
+
+        with self._read() as connection:
+            rows = connection.execute(
+                "SELECT provenance_json FROM knowledge_chunks WHERE document_id = ? ORDER BY chunk_id",
+                (document_id,),
+            ).fetchall()
+        chunks = [ChunkRecord.from_dict(json.loads(row["provenance_json"])) for row in rows]
+        chunks.sort(key=lambda chunk: (chunk.chunk_ordinal, chunk.chunk_id))
+        return tuple(chunks)
+
     def document_is_retrieval_ready(self, document_id: str) -> bool:
         with self._read() as connection:
             row = connection.execute(
@@ -561,13 +573,21 @@ class _ReadOnlyLexicalIndexReader:
             return ()
         from tradingagents.knowledge.lexical_index import _normalize_text
 
+        # Quote each whitespace-delimited term so FTS5's query parser treats
+        # configured token characters such as '-' as part of the term rather
+        # than as column/expression syntax. Adjacent quoted terms retain the
+        # existing implicit-AND behavior.
+        terms = _normalize_text(query).split()
+        match_expression = " ".join('"' + term.replace('"', '""') + '"' for term in terms)
+        if not match_expression:
+            return ()
         with self._read() as connection:
             rows = connection.execute(
                 "SELECT provenance.provenance_json, bm25(knowledge_fts) AS lexical_score "
                 "FROM knowledge_fts JOIN knowledge_chunk_provenance AS provenance "
                 "ON provenance.chunk_id = knowledge_fts.chunk_id "
                 "WHERE knowledge_fts MATCH ? ORDER BY lexical_score, provenance.chunk_id LIMIT ?",
-                (_normalize_text(query), int(limit)),
+                (match_expression, int(limit)),
             ).fetchall()
         result = []
         for row in rows:

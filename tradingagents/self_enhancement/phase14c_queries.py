@@ -149,6 +149,15 @@ def _validate_hit(hit: Any, catalog: Any, *, generation_id: str, population_hash
         or hit.extra.get("projection_population_hash") != population_hash
     ):
         raise ValueError("hit projection identity differs from the pinned generation")
+    active_generation = getattr(catalog, "active_generation", None)
+    generation = active_generation() if callable(active_generation) else None
+    if (
+        generation is None
+        or getattr(generation, "generation_id", None) != generation_id
+        or getattr(generation, "population_hash", None) != population_hash
+        or getattr(generation, "index_version", None) != hit.index_version
+    ):
+        raise ValueError("hit index version differs from the pinned generation")
 
     get_document = getattr(catalog, "get_document", None)
     chunks_for_document = getattr(catalog, "chunks_for_document", None)
@@ -199,7 +208,6 @@ def _validate_hit(hit: Any, catalog: Any, *, generation_id: str, population_hash
         "anchor",
         "parser_version",
         "chunker_version",
-        "index_version",
         "table_metadata",
         "equation_metadata",
     ):
