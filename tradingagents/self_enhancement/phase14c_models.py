@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit
 
 from tradingagents.knowledge.models import ContentType, KnowledgeHit, SerializableModel
 from tradingagents.self_enhancement.book_atomic_extraction import EvidenceGroup
@@ -1037,6 +1038,198 @@ class Phase14CSourcePaths:
             "hft_path": str(self.hft_path),
             "demo_path": str(self.demo_path),
         }
+
+
+def _identity_sources(value: Mapping[str, str], *, field_name: str) -> Mapping[str, str]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field_name} must be a mapping")
+    normalized = {str(key): str(item) for key, item in value.items()}
+    if set(normalized) != {"phase14a", "hft", "demo"}:
+        raise ValueError(f"{field_name} must identify Phase 14A, HFT, and DEMO explicitly")
+    if any(not item.strip() for item in normalized.values()):
+        raise ValueError(f"{field_name} values must be non-empty")
+    if field_name == "source_paths":
+        try:
+            normalized = {
+                key: str(Path(item).expanduser().resolve(strict=False))
+                for key, item in normalized.items()
+            }
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise ValueError("source_paths must be resolvable local paths") from exc
+        if any(not Path(item).is_absolute() for item in normalized.values()):
+            raise ValueError("source_paths must be absolute")
+        if len(set(normalized.values())) != len(normalized):
+            raise ValueError("source_paths must identify three distinct source files")
+    return MappingProxyType(dict(sorted(normalized.items())))
+
+
+@dataclass(frozen=True, slots=True)
+class Phase14CRunIdentity(SerializableModel):
+    """Complete safe semantic identity required to resume a discovery run."""
+
+    generation_id: str
+    generation_fingerprint: str
+    population_hash: str
+    embedding_spec_fingerprint: str
+    query_bank_version: str
+    query_bank_fingerprint: str
+    top_k_per_formulation: int
+    selection_version: str
+    selection_config_fingerprint: str
+    assembly_version: str
+    assembly_schema_version: str
+    artifact_schema_fingerprint: str
+    provider: str
+    ollama_endpoint: str
+    model_id: str
+    model_version: str
+    temperature: float
+    timeout_seconds: float
+    max_output_tokens: int
+    context_tokens: int
+    atomic_cache_path: Path
+    atomic_cache_schema_version: str
+    presence_prompt_version: str
+    presence_schema_version: str
+    extraction_prompt_version: str
+    segmentation_version: str
+    stage_budgets_fingerprint: str
+    resume_schema_version: str
+    source_paths: Mapping[str, str]
+    source_fingerprints: Mapping[str, str]
+    identity_schema_version: str = "phase14c-run-identity.v1"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "generation_id",
+            "query_bank_version",
+            "selection_config_fingerprint",
+            "selection_version",
+            "assembly_version",
+            "assembly_schema_version",
+            "artifact_schema_fingerprint",
+            "provider",
+            "ollama_endpoint",
+            "model_id",
+            "model_version",
+            "atomic_cache_schema_version",
+            "presence_prompt_version",
+            "presence_schema_version",
+            "extraction_prompt_version",
+            "segmentation_version",
+            "resume_schema_version",
+            "identity_schema_version",
+        ):
+            value = str(getattr(self, name)).strip()
+            if not value:
+                raise ValueError(f"{name} must be non-empty")
+            object.__setattr__(self, name, value)
+        if self.provider != "ollama-local":
+            raise ValueError("Phase 14C provider must be local Ollama")
+        if not self.model_id.startswith("qwen3.5:2b"):
+            raise ValueError("Phase 14C model must be qwen3.5:2b-compatible")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}", self.model_version):
+            raise ValueError("model_version must be a safe bounded local identifier")
+        for name in (
+            "generation_fingerprint",
+            "embedding_spec_fingerprint",
+            "query_bank_fingerprint",
+            "selection_config_fingerprint",
+            "artifact_schema_fingerprint",
+            "stage_budgets_fingerprint",
+        ):
+            digest = str(getattr(self, name)).strip()
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+            object.__setattr__(self, name, digest)
+        population = str(self.population_hash).strip()
+        if not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", population):
+            raise ValueError("population_hash must be a SHA-256 identity")
+        object.__setattr__(self, "population_hash", population)
+        if isinstance(self.temperature, bool) or float(self.temperature) != 0.0:
+            raise ValueError("Phase 14C local teacher temperature must be exactly zero")
+        timeout = float(self.timeout_seconds)
+        if not math.isfinite(timeout) or not 0 < timeout <= 600:
+            raise ValueError("timeout_seconds must be bounded between 0 and 600")
+        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 8192:
+            raise ValueError("max_output_tokens must be an integer from 1 through 8192")
+        if type(self.context_tokens) is not int or not 512 <= self.context_tokens <= 32768:
+            raise ValueError("context_tokens must be an integer from 512 through 32768")
+        object.__setattr__(self, "temperature", 0.0)
+        object.__setattr__(self, "timeout_seconds", timeout)
+        if type(self.top_k_per_formulation) is not int or not 1 <= self.top_k_per_formulation <= 50:
+            raise ValueError("top_k_per_formulation must be an integer from 1 through 50")
+        try:
+            endpoint = urlsplit(self.ollama_endpoint)
+            port = endpoint.port
+        except ValueError as exc:
+            raise ValueError("ollama_endpoint must be a native local Ollama endpoint") from exc
+        if (
+            endpoint.scheme != "http"
+            or endpoint.hostname not in {"localhost", "127.0.0.1"}
+            or endpoint.username is not None
+            or endpoint.password is not None
+            or endpoint.path not in {"", "/"}
+            or endpoint.query
+            or endpoint.fragment
+            or (port is not None and not 1 <= port <= 65535)
+        ):
+            raise ValueError("ollama_endpoint must be a native local Ollama endpoint")
+        object.__setattr__(self, "ollama_endpoint", f"http://{endpoint.netloc}")
+        cache = _phase14c_path(self.atomic_cache_path, "atomic_cache_path")
+        if not cache.is_absolute():
+            raise ValueError("atomic_cache_path must resolve to an absolute path")
+        object.__setattr__(self, "atomic_cache_path", cache)
+        source_paths = _identity_sources(self.source_paths, field_name="source_paths")
+        fingerprints = _identity_sources(
+            self.source_fingerprints,
+            field_name="source_fingerprints",
+        )
+        for name, digest in fingerprints.items():
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError(f"{name} source fingerprint must be a lowercase SHA-256 digest")
+        object.__setattr__(self, "source_paths", source_paths)
+        object.__setattr__(self, "source_fingerprints", fingerprints)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "identity_schema_version": self.identity_schema_version,
+            "generation_id": self.generation_id,
+            "generation_fingerprint": self.generation_fingerprint,
+            "population_hash": self.population_hash,
+            "embedding_spec_fingerprint": self.embedding_spec_fingerprint,
+            "query_bank_version": self.query_bank_version,
+            "query_bank_fingerprint": self.query_bank_fingerprint,
+            "top_k_per_formulation": self.top_k_per_formulation,
+            "selection_version": self.selection_version,
+            "selection_config_fingerprint": self.selection_config_fingerprint,
+            "assembly_version": self.assembly_version,
+            "assembly_schema_version": self.assembly_schema_version,
+            "artifact_schema_fingerprint": self.artifact_schema_fingerprint,
+            "provider": self.provider,
+            "ollama_endpoint": self.ollama_endpoint,
+            "model_id": self.model_id,
+            "model_version": self.model_version,
+            "temperature": self.temperature,
+            "timeout_seconds": self.timeout_seconds,
+            "max_output_tokens": self.max_output_tokens,
+            "context_tokens": self.context_tokens,
+            "atomic_cache_path": str(self.atomic_cache_path),
+            "atomic_cache_schema_version": self.atomic_cache_schema_version,
+            "presence_prompt_version": self.presence_prompt_version,
+            "presence_schema_version": self.presence_schema_version,
+            "extraction_prompt_version": self.extraction_prompt_version,
+            "segmentation_version": self.segmentation_version,
+            "stage_budgets_fingerprint": self.stage_budgets_fingerprint,
+            "resume_schema_version": self.resume_schema_version,
+            "source_paths": dict(self.source_paths),
+            "source_fingerprints": dict(self.source_fingerprints),
+        }
+
+    @property
+    def fingerprint(self) -> str:
+        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
