@@ -215,6 +215,14 @@ def evaluate_phase14c_candidates(*args: Any, **kwargs: Any) -> Any:
     return evaluate(*args, **kwargs)
 
 
+def run_phase14c_evaluation(**kwargs: Any) -> dict[str, Any]:
+    from tradingagents.self_enhancement.phase14c_runner import (
+        run_phase14c_evaluation as run,
+    )
+
+    return run(**kwargs)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="phase14c",
@@ -394,40 +402,18 @@ def _discover(args: argparse.Namespace) -> int:
 
 def _evaluate(args: argparse.Namespace) -> int:
     from tradingagents.self_enhancement.phase14c_models import Phase14CSourcePaths
-    from tradingagents.self_enhancement.phase14c_runner import load_complete_discovery_artifacts
 
     artifact_root = _path(args.artifact_root)
     source_paths = Phase14CSourcePaths(args.phase14a_db, args.hft_db, args.demo_db)
     missing = [path for path in source_paths.to_dict().values() if not Path(path).is_file()]
     if missing:
         raise FileNotFoundError("all explicit Phase 14 source databases must exist")
-    specs, discovery_report = load_complete_discovery_artifacts(artifact_root)
-    records = evaluate_phase14c_candidates(
-        specs,
-        artifact_root=artifact_root / "evaluations",
+    result = run_phase14c_evaluation(
+        artifact_root=artifact_root,
         source_paths=source_paths,
         source_commit=args.source_commit,
         max_candidate_runs=args.max_candidate_runs,
     )
-    result = {
-        "status": "EVALUATED",
-        "discovery_status": discovery_report["status"],
-        "validated_spec_count": len(specs),
-        "candidate_record_count": len(records),
-        "completed_candidate_count": sum(record.status.value == "COMPLETED" for record in records),
-        "not_run_candidate_count": sum(record.status.value == "NOT_RUN" for record in records),
-        "failed_candidate_count": sum(record.status.value == "FAILED" for record in records),
-        "records": [
-            {
-                "spec_id": record.spec_id,
-                "candidate_id": record.candidate_id,
-                "status": record.status.value,
-                "reason_code": record.reason_code.value,
-                "candidate_state": record.candidate_state,
-            }
-            for record in records
-        ],
-    }
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return _EXIT_OK
 

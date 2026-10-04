@@ -134,6 +134,10 @@ def test_plan_phase14c_runs_read_only_retrieval_with_local_embedder_and_no_teach
     spec_payload = {"model_id": "fixture", "resolved_model_version": "v1"}
     generation = SimpleNamespace(
         generation_id="gen-1",
+        population_hash="sha256:" + "b" * 64,
+        status="VALIDATED",
+        vector_ready=True,
+        lexical_ready=True,
         embedding_spec=SimpleNamespace(to_dict=lambda: spec_payload),
         vector_location=tmp_path / "vector",
         lexical_location=tmp_path / "lexical.sqlite3",
@@ -365,50 +369,31 @@ def test_discovery_rejects_artifact_root_overlapping_frozen_phase7(
         )
 
 
-def test_evaluate_uses_integrity_checked_artifacts_without_model_or_embedder(
+def test_evaluate_routes_through_integrity_aware_runner_without_model_or_embedder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     artifact = tmp_path / "run"
     artifact.mkdir()
-    (artifact / "run-manifest.json").write_text(
-        json.dumps({"schema_version": "phase14c-run.v1", "status": "COMPLETE"}),
-        encoding="utf-8",
-    )
-    specs_bytes = json.dumps(
-        {"schema_version": "phase14c-validated-specs.v1", "specs": []},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    (artifact / "validated-specs.json").write_bytes(specs_bytes)
-    import hashlib
-
-    identity = {"generation_id": "gen-1"}
-    identity_fingerprint = hashlib.sha256(
-        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    (artifact / "run-manifest.json").write_text(
-        json.dumps({"schema_version": "phase14c-run.v1", "status": "COMPLETE", "identity": identity, "identity_fingerprint": identity_fingerprint}),
-        encoding="utf-8",
-    )
-    (artifact / "phase14c-report.json").write_text(
-        json.dumps({
-            "status": "COMPLETE",
-            "artifact_integrity": "VALID",
-            "validated_specs_file": "validated-specs.json",
-            "validated_specs_sha256": hashlib.sha256(specs_bytes).hexdigest(),
-        }),
-        encoding="utf-8",
-    )
     sources = [tmp_path / f"{name}.sqlite3" for name in ("phase14a", "hft", "demo")]
     for source in sources:
         source.write_bytes(b"source")
+    from tradingagents.self_enhancement import phase14c_runner as runner
+
+    monkeypatch.setattr(
+        runner,
+        "load_complete_discovery_artifacts",
+        lambda _root: ((), {"status": "COMPLETE"}),
+    )
+    monkeypatch.setattr(phase14c, "evaluate_phase14c_candidates", lambda *args, **kwargs: ())
     invoked = []
 
-    def fake_evaluate(specs, **kwargs):
-        invoked.append((specs, kwargs))
-        return ()
+    expected = {"status": "NOT_RUN", "outcome": "NO_ELIGIBLE_CANDIDATES", "candidate_count": 0}
 
-    monkeypatch.setattr(phase14c, "evaluate_phase14c_candidates", fake_evaluate)
+    def fake_runner(**kwargs):
+        invoked.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(phase14c, "run_phase14c_evaluation", fake_runner, raising=False)
     _block_runtime_imports(monkeypatch, block_runner=False)
     code = phase14c.main(
         [
@@ -422,8 +407,9 @@ def test_evaluate_uses_integrity_checked_artifacts_without_model_or_embedder(
     )
 
     assert code == 0
-    assert invoked[0][0] == ()
-    assert invoked[0][1]["source_paths"].phase14a_path == sources[0].resolve()
+    assert invoked[0]["artifact_root"] == artifact.resolve()
+    assert invoked[0]["source_paths"].phase14a_path == sources[0].resolve()
+    assert json.loads(capsys.readouterr().out) == expected
 
 
 def test_status_missing_root_returns_missing_without_creating_it(tmp_path: Path, capsys) -> None:

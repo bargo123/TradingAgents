@@ -31,6 +31,23 @@ open Phase 7, Phase 14A, HFT, or DEMO databases and does not import or construct
 an embedder or teacher. A missing root is reported as `MISSING`; an existing
 root without a manifest is `EMPTY`; malformed metadata is `INVALID`.
 
+### Interpret discovery outcomes
+
+`discover` runs the pinned stages in order: Phase 7 inventory and read-only
+source preflight, local hybrid retrieval, deterministic evidence selection,
+presence classification, actionable-only extraction, strict source-backed
+assembly, suitability/registry checks, and strategy mapping. It records the
+coverage and deferral counts before returning. A deferred selection or
+classification/provider failure is `INCOMPLETE`; do not treat it as exhaustive
+corpus discovery. Complete runs with no complete specification or no
+HFT-suitable specification use explicit closed outcomes. Discovery does not
+evaluate candidates or change strategy behavior.
+
+Before evaluation, the report's artifact manifest is SHA-256 checked against
+every listed artifact. Reports contain provenance-bearing source evidence and
+scalar/code-only model telemetry, never prompts, completions, hidden reasoning,
+or credentials. A changed, missing, or path-escaping artifact fails closed.
+
 ### Plan without a teacher or run artifacts
 
 ```powershell
@@ -119,6 +136,12 @@ teacher or embedder. Candidate evaluation uses the existing causal replay and
 promotion contract, defaults to at most five candidates, and is capped at ten.
 Anything incomplete, conflicted, unsuitable, unimplemented, or beyond the
 candidate cap is not promoted; it is reported with a closed reason.
+The evaluation report is written under
+`<phase14c-artifact-root>/evaluations/phase14c-evaluation-report.json`.
+No eligible candidate is `NOT_RUN`; blocked preflight is `BLOCKED`; a completed
+batch with no candidate passing remains
+`CANDIDATES_EVALUATED_NONE_PASSED`. The maximum candidate state remains
+`SHADOW_CHALLENGER`.
 
 ## Artifacts and statuses
 
@@ -127,9 +150,9 @@ inventory/query/retrieval/selection summaries, validated classifications,
 source-grounded concepts/conflicts/specifications, strategy mappings,
 bounded resume records and, only when explicitly requested, candidate replay
 artifacts. Full source prompt/completion text and hidden reasoning are never
-stored. Resume JSONL accepts only bounded status/ID/count metadata; an
-unterminated malformed final line is recoverable, while corruption in any
-completed line fails closed.
+stored. Resume JSONL accepts only bounded status/ID/count metadata and
+validated scalar/code-only call telemetry; an unterminated malformed final
+line is recoverable, while corruption in any completed line fails closed.
 
 The run manifest is the authority for resumability. `IN_PROGRESS` and
 `INTERRUPTED` may resume under exact identity. `COMPLETE` and `FAILED` are not

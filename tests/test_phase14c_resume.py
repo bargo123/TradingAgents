@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import replace
 from pathlib import Path
 
@@ -45,7 +46,7 @@ def _identity(**changes) -> Phase14CRunIdentity:
         extraction_prompt_version="extract-prompt-v1",
         segmentation_version="segmentation-v1",
         stage_budgets_fingerprint="1" * 64,
-        resume_schema_version="phase14c-resume.v1",
+        resume_schema_version="phase14c-resume.v2",
         source_paths={
             "phase14a": "C:/sources/phase14a.sqlite3",
             "hft": "C:/sources/hft.sqlite3",
@@ -130,6 +131,49 @@ def test_completed_resume_keys_are_not_appended_twice(tmp_path: Path) -> None:
     assert load_resume_results(path) == ({"cache_key": "a" * 64, **result},)
 
 
+def test_resume_result_round_trips_only_bounded_scalar_telemetry(tmp_path: Path) -> None:
+    path = tmp_path / "resume-results.jsonl"
+    telemetry = {
+        "stage": "PRESENCE",
+        "evidence_count": 2,
+        "input_tokens": 32,
+        "output_tokens": 3,
+        "elapsed_seconds": 0.25,
+        "finish_reason": "stop",
+        "outcome": "VALIDATED",
+        "retry_depth": 0,
+        "cache_hit": False,
+        "error_type": None,
+    }
+    result = {"status": "ACTIONABLE", "result_id": "group-1", "telemetry": [telemetry]}
+
+    assert append_resume_result(path, "a" * 64, result) is True
+    assert load_resume_results(path) == ({"cache_key": "a" * 64, **result},)
+
+
+def test_resume_result_rejects_unbounded_telemetry_text(tmp_path: Path) -> None:
+    path = tmp_path / "resume-results.jsonl"
+    telemetry = {
+        "stage": "PRESENCE",
+        "evidence_count": 1,
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "elapsed_seconds": 0.1,
+        "finish_reason": "stop",
+        "outcome": "VALIDATED",
+        "retry_depth": 0,
+        "cache_hit": False,
+        "error_type": "completion body: private text",
+    }
+
+    with pytest.raises(Phase14CResumeError, match="telemetry"):
+        append_resume_result(
+            path,
+            "a" * 64,
+            {"status": "ACTIONABLE", "telemetry": [telemetry]},
+        )
+
+
 def test_interrupted_trailing_record_is_recovered_without_losing_completed_rows(tmp_path: Path) -> None:
     path = tmp_path / "resume-results.jsonl"
     completed = json.dumps(
@@ -172,3 +216,55 @@ def test_resume_result_refuses_prompt_completion_reasoning_and_secret_fields(
             "a" * 64,
             {"status": "VALIDATED", forbidden: "must never persist"},
         )
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_resume_reader_rejects_external_file_alias_before_repair(
+    tmp_path: Path, link_kind: str
+) -> None:
+    external = tmp_path / "outside.jsonl"
+    original = b'{"cache_key":"interrupted'
+    external.write_bytes(original)
+    root = tmp_path / "run"
+    root.mkdir()
+    resume_path = root / "resume-results.jsonl"
+    try:
+        if link_kind == "symlink":
+            resume_path.symlink_to(external)
+        else:
+            os.link(external, resume_path)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"filesystem does not support {link_kind}: {exc}")
+
+    with pytest.raises(Phase14CResumeError, match="resume log path"):
+        load_resume_results(resume_path, artifact_root=root)
+
+    assert external.read_bytes() == original
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "hardlink"])
+def test_resume_writer_rejects_external_file_alias_before_append(
+    tmp_path: Path, link_kind: str
+) -> None:
+    external = tmp_path / "outside.jsonl"
+    external.write_bytes(b"")
+    root = tmp_path / "run"
+    root.mkdir()
+    resume_path = root / "resume-results.jsonl"
+    try:
+        if link_kind == "symlink":
+            resume_path.symlink_to(external)
+        else:
+            os.link(external, resume_path)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"filesystem does not support {link_kind}: {exc}")
+
+    with pytest.raises(Phase14CResumeError, match="resume log path"):
+        append_resume_result(
+            resume_path,
+            "a" * 64,
+            {"status": "VALIDATED", "result_id": "spec-1"},
+            artifact_root=root,
+        )
+
+    assert external.read_bytes() == b""
