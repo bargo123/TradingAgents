@@ -99,6 +99,27 @@ def test_evidence_sentence_ids_and_offsets_are_stable_and_exact():
     assert rule.text == "LONG when momentum > 1.2 points after confirmation."
 
 
+def test_phase14b_sentence_cap_stays_60_and_phase14c_can_request_more():
+    hits = tuple(
+        _hit(
+            "LONG when momentum > 1.2 points after confirmation. "
+            "Exit when momentum < 0.4 points after confirmation. "
+            "Risk when spread is above 3 points.",
+            chunk_id=f"chunk-{index:03}",
+        )
+        for index in range(25)
+    )
+
+    legacy_default = prepare_evidence_sentences(hits)
+    expanded = prepare_evidence_sentences(hits, max_selected_sentences=75)
+
+    assert len(legacy_default) == 60
+    assert len(expanded) == 75
+    assert [item.evidence_id for item in legacy_default] == [
+        item.evidence_id for item in expanded[:60]
+    ]
+
+
 def test_stage_schemas_are_small_closed_and_do_not_accept_strategy_prose():
     assert PresenceDecision.model_validate_json('{"decision":"ACTIONABLE"}').decision == "ACTIONABLE"
     assert ConceptGrouping.model_validate_json(

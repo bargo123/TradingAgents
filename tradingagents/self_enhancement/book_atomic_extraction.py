@@ -39,6 +39,7 @@ _MAX_CONTEXT_TOKENS = 32768
 _MAX_SENTENCE_SPAN_CHARS = 600
 _MAX_SENTENCES_PER_CHUNK = 3
 _MAX_SELECTED_SENTENCES = 60
+_MAX_SELECTED_SENTENCES_HARD = 2250  # 750 Phase 14C groups × at most three sentences.
 _PRESENCE_GROUP_SIZE = 3
 _CONCEPT_GROUP_SIZE = 8
 _ATOMIC_GROUP_SIZE = 8
@@ -135,6 +136,34 @@ class EvidenceSentence:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceGroup:
+    """One bounded, family-tagged batch; family metadata is not sent to the model."""
+
+    family_id: str
+    group_id: str
+    sentences: tuple[EvidenceSentence, ...]
+
+    def __post_init__(self) -> None:
+        family_id = str(self.family_id).strip()
+        group_id = str(self.group_id).strip()
+        if len(family_id) > 64 or not re.fullmatch(r"[A-Za-z0-9]+(?:[_-][A-Za-z0-9]+)*", family_id):
+            raise ValueError("family_id must be a bounded stable code")
+        if not group_id or len(group_id) > 200:
+            raise ValueError("group_id must be a bounded non-empty identifier")
+        sentences = tuple(self.sentences)
+        if not 1 <= len(sentences) <= _PRESENCE_GROUP_SIZE:
+            raise ValueError("evidence group must contain one to three sentences")
+        if any(not isinstance(item, EvidenceSentence) for item in sentences):
+            raise TypeError("evidence group sentences must be EvidenceSentence values")
+        evidence_ids = tuple(item.evidence_id for item in sentences)
+        if any(not value for value in evidence_ids) or len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("evidence group sentence IDs must be non-empty and unique")
+        object.__setattr__(self, "family_id", family_id)
+        object.__setattr__(self, "group_id", group_id)
+        object.__setattr__(self, "sentences", sentences)
+
+
+@dataclass(frozen=True, slots=True)
 class ModelCallTelemetry:
     stage: str
     evidence_count: int
@@ -160,6 +189,75 @@ class ModelCallTelemetry:
             "cache_hit": self.cache_hit,
             "error_type": self.error_type,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PresenceGroupResult:
+    group: EvidenceGroup
+    status: PresenceStatus | None
+    failure_code: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.group, EvidenceGroup):
+            raise TypeError("group must be EvidenceGroup")
+        if self.status is not None:
+            object.__setattr__(self, "status", PresenceStatus(self.status))
+        if (self.status is None) == (self.failure_code is None):
+            raise ValueError("presence result requires exactly one status or failure code")
+        allowed_failures = {
+            "TRUNCATED",
+            "SCHEMA_INVALID",
+            "PROVIDER_ERROR",
+            "PROVENANCE_INVALID",
+            "CLASSIFICATION_FAILED",
+        }
+        if self.failure_code is not None and self.failure_code not in allowed_failures:
+            raise ValueError("presence failure code is not in the closed failure set")
+
+    @property
+    def generated_text(self) -> None:
+        """Presence results intentionally expose no generated prose."""
+
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class PresenceClassificationReport:
+    results: tuple[PresenceGroupResult, ...]
+    call_telemetry: tuple[ModelCallTelemetry, ...]
+
+    def __post_init__(self) -> None:
+        results = tuple(self.results)
+        telemetry = tuple(self.call_telemetry)
+        if any(not isinstance(item, PresenceGroupResult) for item in results):
+            raise TypeError("results must contain PresenceGroupResult values")
+        if any(not isinstance(item, ModelCallTelemetry) for item in telemetry):
+            raise TypeError("call_telemetry must contain ModelCallTelemetry values")
+        group_ids = tuple(item.group.group_id for item in results)
+        if len(group_ids) != len(set(group_ids)):
+            raise ValueError("presence report contains duplicate group IDs")
+        object.__setattr__(self, "results", results)
+        object.__setattr__(self, "call_telemetry", telemetry)
+
+    @property
+    def llm_calls(self) -> int:
+        return sum(not call.cache_hit for call in self.call_telemetry)
+
+    @property
+    def cache_hits(self) -> int:
+        return sum(call.cache_hit for call in self.call_telemetry)
+
+    @property
+    def schema_failure_count(self) -> int:
+        return sum(call.outcome == "SCHEMA_INVALID" for call in self.call_telemetry)
+
+    @property
+    def truncation_count(self) -> int:
+        return sum(call.outcome == "TRUNCATED" for call in self.call_telemetry)
+
+    @property
+    def provider_failure_count(self) -> int:
+        return sum(call.outcome == "PROVIDER_ERROR" for call in self.call_telemetry)
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,9 +398,15 @@ def _evidence_id(hit: Any, sentence_number: int, part_number: int, start: int, e
     return f"{hit.document_id}/{hit.chunk_id}/S{sentence_number:03d}P{part_number:02d}-{suffix}"
 
 
-def prepare_evidence_sentences(hits: Sequence[Any]) -> tuple[EvidenceSentence, ...]:
+def prepare_evidence_sentences(
+    hits: Sequence[Any], *, max_selected_sentences: int = _MAX_SELECTED_SENTENCES
+) -> tuple[EvidenceSentence, ...]:
     """Create stable source-addressed sentence spans, then rank a bounded set."""
 
+    if type(max_selected_sentences) is not int or not 1 <= max_selected_sentences <= _MAX_SELECTED_SENTENCES_HARD:
+        raise ValueError(
+            f"max_selected_sentences must be an integer from 1 to {_MAX_SELECTED_SENTENCES_HARD}"
+        )
     if isinstance(hits, (str, bytes)) or not isinstance(hits, (tuple, list)) or not hits:
         raise ValueError("hits must be a non-empty sequence")
     candidates: list[EvidenceSentence] = []
@@ -344,13 +448,32 @@ def prepare_evidence_sentences(hits: Sequence[Any]) -> tuple[EvidenceSentence, .
         relevant = [item for item in ranked if item.relevance_score > 0]
         selected.extend((relevant or ranked)[:_MAX_SENTENCES_PER_CHUNK])
     selected.sort(key=lambda item: (-item.relevance_score, item.retrieval_index, item.start_offset))
-    selected = selected[:_MAX_SELECTED_SENTENCES]
-    selected.sort(key=lambda item: (item.retrieval_index, item.start_offset))
-    # Duplicate retrievals of the same immutable chunk produce one evidence ID.
-    unique: dict[str, EvidenceSentence] = {}
-    for item in selected:
-        unique.setdefault(item.evidence_id, item)
-    return tuple(unique.values())
+
+    def unique_in_retrieval_order(items: Sequence[EvidenceSentence]) -> list[EvidenceSentence]:
+        ordered = sorted(items, key=lambda item: (item.retrieval_index, item.start_offset))
+        unique: dict[str, EvidenceSentence] = {}
+        for item in ordered:
+            unique.setdefault(item.evidence_id, item)
+        return list(unique.values())
+
+    if max_selected_sentences <= _MAX_SELECTED_SENTENCES:
+        # Keep the original Phase 14B ranking, cap, output order, and duplicate
+        # behavior exactly for the default and smaller requests.
+        chosen = unique_in_retrieval_order(selected[:max_selected_sentences])
+    else:
+        # Larger Phase 14C requests extend the immutable legacy default result;
+        # the first 60 IDs and their order therefore remain byte-for-byte stable.
+        baseline = unique_in_retrieval_order(selected[:_MAX_SELECTED_SENTENCES])
+        chosen = list(baseline)
+        seen_ids = {item.evidence_id for item in chosen}
+        for item in selected[_MAX_SELECTED_SENTENCES:]:
+            if item.evidence_id in seen_ids:
+                continue
+            chosen.append(item)
+            seen_ids.add(item.evidence_id)
+            if len(chosen) >= max_selected_sentences:
+                break
+    return tuple(chosen)
 
 
 def resolve_evidence_id(
@@ -738,25 +861,150 @@ class AtomicStrategyExtractor:
             str(section).strip().casefold() if isinstance(section, str) and section.strip() else str(item.hit.chunk_id),
         )
 
-    def extract(self, hits: Sequence[Any]) -> AtomicExtractionReport:
-        sentences = prepare_evidence_sentences(hits)
-        buckets: dict[tuple[str, str], list[EvidenceSentence]] = defaultdict(list)
+    @staticmethod
+    def _validated_groups(groups: Sequence[EvidenceGroup]) -> tuple[EvidenceGroup, ...]:
+        if isinstance(groups, (str, bytes)) or not isinstance(groups, Sequence):
+            raise TypeError("groups must be a sequence of EvidenceGroup values")
+        values = tuple(groups)
+        if any(not isinstance(group, EvidenceGroup) for group in values):
+            raise TypeError("groups must contain only EvidenceGroup values")
+        group_ids = tuple(group.group_id for group in values)
+        if len(group_ids) != len(set(group_ids)):
+            raise ValueError("group IDs must be unique in a presence request")
+        if sum(len(group.sentences) for group in values) > _MAX_SELECTED_SENTENCES_HARD:
+            raise ValueError("presence request exceeds the hard evidence sentence bound")
+        return values
+
+    @staticmethod
+    def _presence_failure_code(calls: Sequence[ModelCallTelemetry]) -> str:
+        outcomes = {
+            "TRUNCATED": "TRUNCATED",
+            "SCHEMA_INVALID": "SCHEMA_INVALID",
+            "PROVENANCE_INVALID": "PROVENANCE_INVALID",
+            "PROVIDER_ERROR": "PROVIDER_ERROR",
+        }
+        for call in reversed(calls):
+            code = outcomes.get(call.outcome)
+            if code is not None:
+                return code
+        return "CLASSIFICATION_FAILED"
+
+    def _classify_presence_groups(
+        self, groups: Sequence[EvidenceGroup]
+    ) -> tuple[PresenceClassificationReport, dict[str, tuple[EvidenceSentence, ...]], int]:
+        values = self._validated_groups(groups)
+        results: list[PresenceGroupResult] = []
+        actionable_by_group: dict[str, tuple[EvidenceSentence, ...]] = {}
+        actionable_execution_count = 0
+        telemetry_start = len(self.calls)
+
+        for group in values:
+            group_call_start = len(self.calls)
+            # Deliberately omit family/group metadata: this preserves the Phase 14B
+            # prompt and cache identity for the same ordered evidence sentences.
+            executions = self._run_stage("PRESENCE", "", group.sentences, PresenceDecision)
+            group_calls = self.calls[group_call_start:]
+            covered_ids: set[str] = set()
+            actionable_sentences: dict[str, EvidenceSentence] = {}
+            decisions: list[PresenceStatus] = []
+            for selected, decision in executions:
+                decisions.append(decision.decision)
+                covered_ids.update(item.evidence_id for item in selected)
+                if decision.decision is PresenceStatus.ACTIONABLE:
+                    actionable_execution_count += 1
+                    for sentence in selected:
+                        actionable_sentences.setdefault(sentence.evidence_id, sentence)
+
+            if actionable_sentences:
+                selected = tuple(
+                    sentence
+                    for sentence in group.sentences
+                    if sentence.evidence_id in actionable_sentences
+                )
+                actionable_by_group[group.group_id] = selected
+                results.append(PresenceGroupResult(group, PresenceStatus.ACTIONABLE))
+                continue
+
+            expected_ids = {sentence.evidence_id for sentence in group.sentences}
+            if covered_ids != expected_ids:
+                results.append(
+                    PresenceGroupResult(
+                        group,
+                        None,
+                        self._presence_failure_code(group_calls),
+                    )
+                )
+            elif PresenceStatus.AMBIGUOUS in decisions:
+                results.append(PresenceGroupResult(group, PresenceStatus.AMBIGUOUS))
+            else:
+                results.append(PresenceGroupResult(group, PresenceStatus.NONE))
+
+        report = PresenceClassificationReport(
+            results=tuple(results),
+            call_telemetry=tuple(self.calls[telemetry_start:]),
+        )
+        return report, actionable_by_group, actionable_execution_count
+
+    def classify_presence(
+        self, groups: Sequence[EvidenceGroup]
+    ) -> PresenceClassificationReport:
+        """Classify bounded groups without exposing model-generated prose."""
+
+        report, _actionable_by_group, _actionable_count = self._classify_presence_groups(groups)
+        return report
+
+    @staticmethod
+    def _validated_sentences(
+        sentences: Sequence[EvidenceSentence],
+    ) -> tuple[EvidenceSentence, ...]:
+        if isinstance(sentences, (str, bytes)) or not isinstance(sentences, Sequence):
+            raise TypeError("sentences must be a sequence of EvidenceSentence values")
+        values: list[EvidenceSentence] = []
+        seen: set[str] = set()
         for sentence in sentences:
-            buckets[self._bucket_key(sentence)].append(sentence)
+            if not isinstance(sentence, EvidenceSentence):
+                raise TypeError("sentences must contain only EvidenceSentence values")
+            if not sentence.evidence_id:
+                raise ValueError("evidence sentence IDs must be non-empty")
+            if sentence.evidence_id not in seen:
+                seen.add(sentence.evidence_id)
+                values.append(sentence)
+        if len(values) > _MAX_SELECTED_SENTENCES_HARD:
+            raise ValueError("actionable evidence exceeds the hard sentence bound")
+        return tuple(values)
 
+    def extract_actionable(
+        self, sentences: Sequence[EvidenceSentence]
+    ) -> AtomicExtractionReport:
+        """Extract supported rules without invoking the presence classifier."""
+
+        values = self._validated_sentences(sentences)
         actionable_by_bucket: dict[tuple[str, str], list[EvidenceSentence]] = defaultdict(list)
-        evidence_groups_processed = 0
-        actionable_group_count = 0
-        for bucket, records in buckets.items():
-            for start in range(0, len(records), _PRESENCE_GROUP_SIZE):
-                evidence_groups_processed += 1
-                group = tuple(records[start : start + _PRESENCE_GROUP_SIZE])
-                executions = self._run_stage("PRESENCE", "", group, PresenceDecision)
-                for selected, decision in executions:
-                    if decision.decision is PresenceStatus.ACTIONABLE:
-                        actionable_group_count += 1
-                        actionable_by_bucket[bucket].extend(selected)
+        for sentence in values:
+            actionable_by_bucket[self._bucket_key(sentence)].append(sentence)
+        return self._extract_from_actionable(
+            values,
+            actionable_by_bucket,
+            evidence_groups_processed=0,
+            actionable_group_count=0,
+            telemetry_start=len(self.calls),
+            provenance_start=self.provenance_failures,
+            cache_failure_start=self.cache_write_failures,
+            cumulative_telemetry=False,
+        )
 
+    def _extract_from_actionable(
+        self,
+        sentences: Sequence[EvidenceSentence],
+        actionable_by_bucket: Mapping[tuple[str, str], Sequence[EvidenceSentence]],
+        *,
+        evidence_groups_processed: int,
+        actionable_group_count: int,
+        telemetry_start: int,
+        provenance_start: int,
+        cache_failure_start: int,
+        cumulative_telemetry: bool,
+    ) -> AtomicExtractionReport:
         concept_groups: list[tuple[ConceptFamily, tuple[EvidenceSentence, ...]]] = []
         for _bucket, records in actionable_by_bucket.items():
             unique: dict[str, EvidenceSentence] = {}
@@ -816,15 +1064,64 @@ class AtomicStrategyExtractor:
 
         return AtomicExtractionReport(
             concepts=tuple(concepts),
-            call_telemetry=tuple(self.calls),
+            call_telemetry=tuple(self.calls if cumulative_telemetry else self.calls[telemetry_start:]),
             evidence_sentence_count=len(sentences),
             evidence_groups_processed=evidence_groups_processed,
             actionable_group_count=actionable_group_count,
             concept_count=len(concept_groups),
             atomic_rule_count=atomic_count,
             unsupported_rule_count=unsupported_count,
-            provenance_failure_count=self.provenance_failures,
-            cache_write_failures=self.cache_write_failures,
+            provenance_failure_count=(
+                self.provenance_failures
+                if cumulative_telemetry
+                else self.provenance_failures - provenance_start
+            ),
+            cache_write_failures=(
+                self.cache_write_failures
+                if cumulative_telemetry
+                else self.cache_write_failures - cache_failure_start
+            ),
+        )
+
+    def extract(self, hits: Sequence[Any]) -> AtomicExtractionReport:
+        """Backward-compatible presence + concept + atomic extraction path."""
+
+        sentences = prepare_evidence_sentences(hits)
+        buckets: dict[tuple[str, str], list[EvidenceSentence]] = defaultdict(list)
+        for sentence in sentences:
+            buckets[self._bucket_key(sentence)].append(sentence)
+
+        groups: list[EvidenceGroup] = []
+        group_buckets: dict[str, tuple[str, str]] = {}
+        for bucket_index, (bucket, records) in enumerate(buckets.items()):
+            for group_index, start in enumerate(range(0, len(records), _PRESENCE_GROUP_SIZE)):
+                group_id = f"legacy_{bucket_index:04d}_{group_index:04d}"
+                group = EvidenceGroup(
+                    "phase14b_legacy",
+                    group_id,
+                    tuple(records[start : start + _PRESENCE_GROUP_SIZE]),
+                )
+                groups.append(group)
+                group_buckets[group_id] = bucket
+
+        presence_report, actionable_by_group, actionable_group_count = (
+            self._classify_presence_groups(tuple(groups))
+        )
+        actionable_by_bucket: dict[tuple[str, str], list[EvidenceSentence]] = defaultdict(list)
+        for result in presence_report.results:
+            actionable_by_bucket[group_buckets[result.group.group_id]].extend(
+                actionable_by_group.get(result.group.group_id, ())
+            )
+
+        return self._extract_from_actionable(
+            sentences,
+            actionable_by_bucket,
+            evidence_groups_processed=len(groups),
+            actionable_group_count=actionable_group_count,
+            telemetry_start=0,
+            provenance_start=0,
+            cache_failure_start=0,
+            cumulative_telemetry=True,
         )
 
 
@@ -838,9 +1135,12 @@ __all__ = [
     "AtomicStrategyExtractor",
     "ConceptFamily",
     "ConceptGrouping",
+    "EvidenceGroup",
     "EvidenceSentence",
     "ModelCallTelemetry",
     "PresenceDecision",
+    "PresenceClassificationReport",
+    "PresenceGroupResult",
     "PresenceStatus",
     "prepare_evidence_sentences",
     "resolve_evidence_id",
