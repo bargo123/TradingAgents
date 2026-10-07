@@ -593,6 +593,12 @@ def _record_group(
     )
 
 
+def assemble_normalized_concepts(results, *, source_lookup):
+    """Explicit V2 dispatch; legacy atomic assembly stays unchanged."""
+    from .book_v2_pipeline import assemble_v2
+    return assemble_v2(results, source_lookup=source_lookup)
+
+
 def assemble_atomic_concepts(
     concepts: Sequence[StrategyConcept],
     *,

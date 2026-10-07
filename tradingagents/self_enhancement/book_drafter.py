@@ -309,6 +309,26 @@ class OllamaStrategyDrafter:
         )
         return extractor.extract(hits)
 
+    def draft_v2(self, hits: Sequence[Any], *, source_lookup):
+        """Explicit offline V2 path; never manufacture legacy source claims."""
+        from .book_v2_pipeline import assemble_v2
+        if isinstance(hits, (str, bytes)) or not isinstance(hits, (tuple, list)) or not 1 <= len(hits) <= _MAX_HITS:
+            raise ValueError("bounded retrieved hit sequence required")
+        sentences = prepare_evidence_sentences(hits)
+        def extract(transport):
+            worker = AtomicStrategyExtractor(
+                self.endpoint, self.model, timeout_seconds=self.timeout_seconds,
+                max_output_tokens=self.max_output_tokens, context_tokens=self.context_tokens,
+                model_version=self.model_version, cache_path=self.cache_path, transport=transport,
+            )
+            return worker.extract_actionable_v2(sentences, source_lookup=source_lookup)
+        if self._transport is None:
+            with httpx.Client(trust_env=False) as transport:
+                results = extract(transport)
+        else:
+            results = extract(self._transport)
+        return assemble_v2(results, source_lookup=source_lookup)
+
     def draft(self, hits: Sequence[Any], max_specs: int = 5) -> DraftResult:
         if type(max_specs) is not int or not 1 <= max_specs <= _MAX_SPECS:
             raise ValueError(f"max_specs must be between 1 and {_MAX_SPECS}")

@@ -324,6 +324,12 @@ def _validated_source_signatures(spec: StrategySpec) -> dict[CurrentStrategyRule
     return result
 
 
+def map_normalized_candidate(candidate, *, snapshot, source_lookup):
+    """Explicit offline V2 mapping; no legacy quote reparsing."""
+    from .book_v2_registry import map_v2
+    return map_v2(candidate, snapshot=snapshot, source_lookup=source_lookup)
+
+
 def map_current_strategies(
     specs: Sequence[StrategySpec],
     *,
