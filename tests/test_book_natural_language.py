@@ -20,6 +20,15 @@ def source_lookup(e):
     return " " * e.start_offset + e.quote
 
 
+# Explicit trusted test double for the artifact pin-validation dependency.
+source_lookup.pin = {"knowledge_root": "fixture", "generation_id": source_cases()[0]["evidence"]["generation_id"],
+    "generation_fingerprint": "a" * 64, "population_hash": "sha256:" + "b" * 64, "catalog_sha256": "c" * 64}
+def _verify_fixture_identity(identity):
+    if any(identity.get(key) != source_lookup.pin[key] for key in ("generation_id", "generation_fingerprint", "population_hash")):
+        raise ValueError("fixture source pin mismatch")
+source_lookup.verify_identity = _verify_fixture_identity
+
+
 def resolve(case):
     return resolver().normalize_rule(EvidenceBundle((EvidenceSpan(**case["evidence"]),)), stage=RuleStage(case["stage"]), family=case["family"], source_lookup=source_lookup)
 
@@ -87,3 +96,34 @@ def test_unaddressed_context_cannot_define_a_missing_direction():
     e = EvidenceSpan(**case["evidence"])
     r = resolver().normalize_rule(EvidenceBundle((e,)), stage=RuleStage.STOP_BEHAVIOR, family=case["family"], source_lookup=lambda _: "Buy long. " + " " * (e.start_offset - 10) + e.quote)
     assert "MISSING_DIRECTION" in r.reason_codes
+
+
+@pytest.mark.parametrize("prefix,suffix", [
+    ("Hypothetical example. ", "."),
+    ("This rule is incorrect. ", "."),
+    ("Do not ", "."),
+    ("", ", unless volatility rises."),
+    ("", "\nonly when volatility is low."),
+    ("", ". This rule is incorrect."),
+])
+def test_selected_subspan_cannot_hide_instruction_context(prefix, suffix):
+    quote = "Place an initial protective stop no more than 20 pips below the entry"
+    e = EvidenceSpan("gen", "doc", "chunk", "a" * 64, len(prefix), len(prefix) + len(quote), quote)
+    result = resolver().normalize_rule(EvidenceBundle((e,)), stage=RuleStage.STOP_BEHAVIOR,
+        family="OTHER_SUPPORTED", source_lookup=lambda _: prefix + quote + suffix)
+    assert result.status is NormalizationStatus.REJECTED
+
+
+def test_reviewed_cases_use_complete_pinned_chunk_context():
+    import json
+    import sqlite3
+
+    from tests.test_book_natural_language_sources import CATALOG
+    if not CATALOG.exists():
+        pytest.skip("pinned Phase 7 catalog absent")
+    with sqlite3.connect(CATALOG.as_uri() + "?mode=ro", uri=True) as con:
+        for case in source_cases()[:2]:
+            text = json.loads(con.execute("SELECT provenance_json FROM knowledge_chunks WHERE chunk_id=?", (case["evidence"]["chunk_id"],)).fetchone()[0])["text"]
+            e = EvidenceSpan(**case["evidence"])
+            result = resolver().normalize_rule(EvidenceBundle((e,)), stage=RuleStage(case["stage"]), family=case["family"], source_lookup=lambda _, text=text: text)
+            assert result.status is NormalizationStatus.SUPPORTED_NONEXECUTABLE

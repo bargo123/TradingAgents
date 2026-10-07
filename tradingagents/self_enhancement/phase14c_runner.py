@@ -1346,8 +1346,10 @@ def run_phase14c_discovery(
 
         if normalization_schema == "book-normalization-v2":
             from .book_v2_artifacts import pinned_source_lookup, publish_v2
-            lookup = pinned_source_lookup(knowledge, generation_id=generation_pin.generation_id, population_hash=generation_pin.population_hash)
             catalog_before = _source_file_fingerprint(knowledge / "catalog.sqlite3")
+            lookup = pinned_source_lookup(knowledge, generation_id=generation_pin.generation_id,
+                population_hash=generation_pin.population_hash,
+                generation_fingerprint=generation_pin.generation_fingerprint, catalog_sha256=catalog_before)
             start_call = len(get_teacher().calls) if unique_actionable else 0
             results = get_teacher().extract_actionable_v2(tuple(unique_actionable.values()), source_lookup=lookup) if unique_actionable else ()
             pin_after, inventory_after = read_phase7_inventory(knowledge, expected_generation_id=expected_generation_id, expected_generation_fingerprint=expected_generation_fingerprint, expected_population_hash=expected_population_hash)
@@ -1699,7 +1701,12 @@ def run_phase14c_evaluation(
         manifest = _read_json_object(root / "book-v2-manifest.json")
         location = _read_json_object(root / "v2-source-location.json")
         identity = manifest["identity"]
-        lookup = pinned_source_lookup(Path(location["knowledge_root"]), generation_id=identity["generation_id"], population_hash=identity["population_hash"])
+        source_pin = manifest.get("source_pin")
+        if not isinstance(source_pin, dict) or str(Path(location["knowledge_root"]).resolve(strict=True)) != source_pin.get("knowledge_root"):
+            raise ValueError("V2 source location differs from verified pin")
+        lookup = pinned_source_lookup(Path(location["knowledge_root"]), generation_id=identity["generation_id"],
+            population_hash=identity["population_hash"], generation_fingerprint=identity["generation_fingerprint"],
+            catalog_sha256=source_pin["catalog_sha256"])
         if _fingerprint_sources(source_paths) != identity.get("source_fingerprints"):
             raise ValueError("V2 replay source fingerprints changed")
         return evaluate_v2_artifacts(root, source_lookup=lookup)

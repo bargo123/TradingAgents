@@ -14,7 +14,15 @@ The genuine bounded local-model run completed but produced **no supported
 rule and no eligible candidate**. This is not a successful strategy discovery
 or evidence of profitable HFT.
 
-Artifact root: `C:/phase14c/runs/run-20261007-natural-language-v2`.
+Reviewed artifact root: `C:/phase14c/runs/run-20261007-natural-language-v2-reviewed`.
+The original `run-20261007-natural-language-v2` remains sealed and unmodified.
+Its results and safe telemetry were republished with verified source-pin metadata
+after review; no additional model call or manual relabeling occurred. The strict
+reader now rejects the original pre-review files because they lack this pin.
+The model batch used the original shorter stop span ending at `entry`. The
+complete `entry price.` span was corrected during review and validated against
+the genuine catalog in tests, but was not sent through a second model batch.
+Thus model extraction quality for that extended span is not yet demonstrated.
 Artifacts retain selected source addresses, safe call metadata, all rejection
 counts and before/after pinned-source hashes. Raw model reasoning is not stored.
 
@@ -57,11 +65,36 @@ All four pinned files had identical hashes before and after qualification:
 
 ## Engineering evidence and remaining limits
 
-Focused regression: 287 passed, 2 Windows symlink-privilege skips. Genuine
+Focused post-review regression: 299 passed, 2 Windows symlink-privilege skips. Genuine
 catalog-address tests ran without skips. Tests independently prove that the
 reviewed 10-pip target and 20-pip stop constructions normalize when correctly
 selected; both remain `SUPPORTED_NONEXECUTABLE`, including after reload and
 mapping. Model selection did not correctly select both labels in this run.
+
+Full post-review suite: `python -m pytest -q` — 4325 passed, 13 skipped,
+71 subtests passed in 562.55 seconds. Skips cover optional provider/training
+dependencies, unset live acceptance/API flags, opt-in MT5 integration and
+Windows symlink privilege. They are not live broker proof. Ruff checks pass
+on every changed Python file; runtime-scoped diff remains empty.
+
+Independent review found two important evidence-validation defects: partial
+instruction/context acceptance and disconnected generation fingerprints on
+reload. Both were reproduced with failing tests and corrected in one fix pass.
+The genuine stop address now includes the full newline-split `entry price.`
+clause. Context negatives cover hypothetical and criticized instructions across
+sentence boundaries, prohibition, suffix conditions and newline continuations.
+Full catalog text is used for genuine positive resolver checks.
+
+Publication and reload now require a pin-bound lookup, verify the actual active
+generation fingerprint through the existing read-only inventory API, and check
+the catalog content SHA256. Tests cover rehashed wrong fingerprints, generation
+metadata drift, content-only drift with unchanged chunk text, and the actual V2
+runner evaluation dispatch with a substituted source location. The reviewed
+qualification artifacts reload and evaluate as `NOT_RUN` successfully.
+
+One minor remains deferred: regular-run rejected selections retain reason counts
+but not a per-selection address/stage/family audit record. This limits diagnostic
+traceability; it does not authorize execution.
 
 Only the reviewed numeric-distance construction is enabled. Numeric-feature
 comparison and holding-limit patterns have no reviewed genuine positive case

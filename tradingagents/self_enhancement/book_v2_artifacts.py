@@ -24,8 +24,23 @@ def identity_digest(identity):
     return hashlib.sha256(_bytes(identity)).hexdigest()
 
 
-def pinned_source_lookup(knowledge_root, *, generation_id, population_hash):
-    catalog = Path(knowledge_root).resolve(strict=True) / "catalog.sqlite3"
+def pinned_source_lookup(knowledge_root, *, generation_id, population_hash, generation_fingerprint, catalog_sha256):
+    from .phase14c_inventory import read_phase7_inventory
+    root = Path(knowledge_root).resolve(strict=True)
+    catalog = root / "catalog.sqlite3"
+    pin = {"knowledge_root": str(root), "generation_id": generation_id,
+           "generation_fingerprint": generation_fingerprint,
+           "population_hash": population_hash, "catalog_sha256": catalog_sha256}
+    def verify_identity(identity):
+        if any(identity.get(key) != pin[key] for key in ("generation_id", "generation_fingerprint", "population_hash")):
+            raise ValueError("source pin differs from artifact identity")
+        read_phase7_inventory(root, expected_generation_id=generation_id,
+            expected_generation_fingerprint=generation_fingerprint, expected_population_hash=population_hash)
+        with catalog.open("rb") as stream:
+            current = hashlib.file_digest(stream, "sha256").hexdigest()
+        if current != catalog_sha256:
+            raise ValueError("pinned catalog content fingerprint changed")
+    verify_identity(pin)
     def lookup(span):
         if span.generation_id != generation_id:
             raise ValueError("unpinned generation")
@@ -39,7 +54,20 @@ def pinned_source_lookup(knowledge_root, *, generation_id, population_hash):
             raise ValueError("pinned evidence identity mismatch")
         payload = json.loads(row[4])
         return payload["text"]
+    lookup.pin = dict(pin)
+    lookup.verify_identity = verify_identity
     return lookup
+
+
+def _verify_source_pin(source_lookup, identity, expected=None):
+    validator = getattr(source_lookup, "verify_identity", None)
+    pin = getattr(source_lookup, "pin", None)
+    if not callable(validator) or not isinstance(pin, dict):
+        raise ValueError("artifact source lookup requires a verified source pin")
+    if expected is not None and expected != pin:
+        raise ValueError("artifact source pin mismatch")
+    validator(identity)
+    return dict(pin)
 
 
 def _unique(pairs):
@@ -60,6 +88,7 @@ def _read(path):
 def publish_v2(root, *, identity, results, source_lookup, telemetry=(), coverage=None, existing_run=False):
     from .phase14c_runner import _safe_telemetry_record
     safe_telemetry = [_safe_telemetry_record(item) for item in telemetry]
+    source_pin = _verify_source_pin(source_lookup, identity)
     root = Path(root).resolve()
     if existing_run:
         run = _read(root / "run-manifest.json")
@@ -113,7 +142,7 @@ def publish_v2(root, *, identity, results, source_lookup, telemetry=(), coverage
     }
     manifest = {"schema_version": SCHEMA_VERSION, "grammar_version": GRAMMAR_VERSION,
                 "feature_contract_version": FEATURE_CONTRACT_VERSION,
-                "identity": identity, "identity_sha256": identity_digest(identity)}
+                "identity": identity, "identity_sha256": identity_digest(identity), "source_pin": source_pin}
     for name, data in (("book-v2-manifest.json", _bytes(manifest)), ("normalized-rules.json", encoded), ("phase14c-report.json", _bytes(report))):
         with (root / name).open("xb") as stream:
             stream.write(data)
@@ -127,6 +156,9 @@ def load_v2_discovery_artifacts(artifact_root, *, source_lookup):
     if (manifest.get("schema_version"), manifest.get("grammar_version"), manifest.get("feature_contract_version")) != (SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION):
         raise ValueError("unsupported V2 artifact version")
     identity = manifest["identity"]
+    if "source_pin" not in manifest:
+        raise ValueError("artifact lacks verified source pin")
+    _verify_source_pin(source_lookup, identity, manifest["source_pin"])
     digest = identity_digest(identity)
     if manifest["identity_sha256"] != digest or report["identity_sha256"] != digest:
         raise ValueError("V2 run identity mismatch")

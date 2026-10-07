@@ -29,7 +29,7 @@ _TARGET = re.compile(
 )
 _STOP = re.compile(
     r"Place an initial protective (?P<stage>stop) (?P<operator>no more than) "
-    + _VALUE + r" (?P<unit>pip|pips) (?P<side>below) the (?P<operand>entry)\.?", re.I,
+    + _VALUE + r" (?P<unit>pip|pips) (?P<side>below) the (?P<operand>entry)(?: price)?\.?", re.I,
 )
 
 
@@ -93,7 +93,18 @@ def normalize_rule(bundle: EvidenceBundle, *, stage: RuleStage, family: str,
         return _rejected("FAMILY_NOT_ESTABLISHED")
     # Nearby text can disqualify an isolated quoted example, never supply fields.
     prefix = texts[0][max(0, source.start_offset - 160):source.start_offset]
-    if re.search(r"\b(example|hypothetical|criticiz\w*|incorrect|mistaken|do not use)\b[^.!?]*$", prefix, re.I):
+    suffix = texts[0][source.end_offset:source.end_offset + 160]
+    # A reviewed span must contain the entire instruction, not an isolated
+    # positive substring inside a negation or a qualified continuation.
+    before = prefix.rstrip()
+    after = suffix.lstrip()
+    if before and before[-1] not in ".!?:":
+        return _rejected("CONTEXT_NOT_INSTRUCTION")
+    if after and not source.quote.rstrip().endswith((".", "!", "?")) and not after.startswith((".", "!", "?")):
+        return _rejected("CONTEXT_NOT_INSTRUCTION")
+    if after.startswith((",", ";", ":")) or re.match(r"(?:unless|only|provided|if|when)\b", after, re.I):
+        return _rejected("CONTEXT_NOT_INSTRUCTION")
+    if re.search(r"\b(example|hypothetical|criticiz\w*|incorrect|mistaken|do not|don't|never|not recommended|disagree)\b", prefix + "\n" + suffix, re.I):
         return _rejected("CONTEXT_NOT_INSTRUCTION")
     proofs = []
     for field, group in (("stage", "stage"), ("operation", "stage"), ("operator", "operator"), ("value", "value"), ("unit", "unit"), ("operands", "operand")):
