@@ -1,0 +1,70 @@
+[
+  {
+    "case_id": "target_10_pip",
+    "stage": "EXPECTED_MOVE",
+    "family": "OTHER_SUPPORTED",
+    "expected_operation": "price_distance",
+    "expected_status": "SUPPORTED_NONEXECUTABLE",
+    "expected_blockers": ["UNSUPPORTED_PRIMITIVE", "SOURCE_UNIT_MISMATCH", "MISSING_HORIZON"],
+    "evidence": {
+      "generation_id": "gen_607de64268a04a6ab09ffa1e160fc280",
+      "document_id": "doc_907e8c89dc0f3e2ad7c8f2eedb1da58fbd5cc9e41a0264c81be393bb65b10953",
+      "chunk_id": "chk_932b80f60dbd1fd549a96bb1c0c63f25059047e71c003a71294a356cf15f8f83",
+      "source_hash": "907e8c89dc0f3e2ad7c8f2eedb1da58fbd5cc9e41a0264c81be393bb65b10953",
+      "start_offset": 104,
+      "end_offset": 181,
+      "quote": "The target on each trade is a non-adjustable one and set to 10 pip of profit."
+    }
+  },
+  {
+    "case_id": "stop_limit_20_pips",
+    "stage": "STOP_BEHAVIOR",
+    "family": "OTHER_SUPPORTED",
+    "expected_operation": "price_distance",
+    "expected_status": "SUPPORTED_NONEXECUTABLE",
+    "expected_blockers": ["UNSUPPORTED_PRIMITIVE", "SOURCE_UNIT_MISMATCH", "MISSING_DIRECTION"],
+    "evidence": {
+      "generation_id": "gen_607de64268a04a6ab09ffa1e160fc280",
+      "document_id": "doc_60740a6fa6cd71a435330e35cef030a3cc7c1cf6bed50362588fa1b47cedc8af",
+      "chunk_id": "chk_ded232e76eec2f15e7af0f0afbf0325019db194e1b2c6d858a589c771231652e",
+      "source_hash": "60740a6fa6cd71a435330e35cef030a3cc7c1cf6bed50362588fa1b47cedc8af",
+      "start_offset": 1197,
+      "end_offset": 1266,
+      "quote": "Place an initial protective stop no more than 20 pips below the entry"
+    }
+  },
+  {
+    "case_id": "development_stop_limit",
+    "stage": "STOP_BEHAVIOR",
+    "family": "OTHER_SUPPORTED",
+    "expected_operation": null,
+    "expected_status": "REJECTED",
+    "expected_blockers": ["GRAMMAR_UNSUPPORTED"],
+    "evidence": {
+      "generation_id": "gen_607de64268a04a6ab09ffa1e160fc280",
+      "document_id": "doc_ccf1c0548049b9646a5fadd6ceed5be397f98129982b9e32d5d1b9961a02f8b8",
+      "chunk_id": "chk_06d6851b2811bd03dc6dba8f9501d9d4a7c23c016de2f03f810458397c3c1bf2",
+      "source_hash": "ccf1c0548049b9646a5fadd6ceed5be397f98129982b9e32d5d1b9961a02f8b8",
+      "start_offset": 1506,
+      "end_offset": 1613,
+      "quote": "When I go to detailed development, I will allow this stop amount to be lower than 34 ticks, but never more."
+    }
+  },
+  {
+    "case_id": "chart_bar_entry",
+    "stage": "ENTRY",
+    "family": "OTHER_SUPPORTED",
+    "expected_operation": null,
+    "expected_status": "REJECTED",
+    "expected_blockers": ["GRAMMAR_UNSUPPORTED"],
+    "evidence": {
+      "generation_id": "gen_607de64268a04a6ab09ffa1e160fc280",
+      "document_id": "doc_af83c661ad6aed5c3fd8a9cdaee11b85117b5cba5ac19ebb231aea24e696321c",
+      "chunk_id": "chk_25b5a36e87e95932eb2abb290cc9ca4708dfff27c984005a19d76db751f27cfb",
+      "source_hash": "af83c661ad6aed5c3fd8a9cdaee11b85117b5cba5ac19ebb231aea24e696321c",
+      "start_offset": 1482,
+      "end_offset": 1777,
+      "quote": "When trading Countertrend against a strong trend, it is imperative to wait for the signal bar to close before you place your order, and then only enter on a stop at 1 tick beyond the bar in the direction of your trade (if you are buying, buy at 1 tick above the high of the prior bar on a stop)."
+    }
+  }
+]
