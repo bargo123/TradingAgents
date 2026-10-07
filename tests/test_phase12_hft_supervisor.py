@@ -298,6 +298,95 @@ def test_worker_validator_rejects_source_decision_before_plan_creation(tmp_path:
     assert plans.current(datetime.now(UTC), "EURUSD", require_provenance=True) is None
 
 
+def _demo_recovery_worker(tmp_path, *, backoff=0, attempts=3):
+    artifact = tmp_path / "recovery.sqlite3"
+    return HftShadowWorker(
+        lambda **_: _Provider(), AtomicPlanStore(),
+        config=HftShadowConfig(
+            artifact_path=artifact, execution_mode="DEMO",
+            max_reconnect_attempts=attempts, reconnect_backoff_seconds=backoff,
+        ), store=HftShadowStore(artifact), runtime_factory=lambda _: None,
+    )
+
+
+def test_demo_recovery_survives_attempt_budget_and_initialization_error(tmp_path):
+    from tradingagents.dataflows.mt5.errors import Mt5InitializationError
+
+    worker = _demo_recovery_worker(tmp_path)
+
+    class Provider(_Provider):
+        def initialize(self):
+            self.calls += 1
+            if self.calls <= 8:
+                raise Mt5InitializationError("unavailable")
+            return True
+
+    provider = Provider()
+    assert worker._is_recoverable("MT5INITIALIZATIONERROR")
+    assert worker._recover_provider(provider, "MT5INITIALIZATIONERROR")
+    assert provider.calls == 9
+    assert worker.health["last_recovery_result"] == "RECOVERED"
+
+
+def test_demo_recovery_backoff_caps_and_is_interruptible(tmp_path):
+    worker = _demo_recovery_worker(tmp_path, backoff=5)
+    delays = []
+
+    class Stop:
+        def wait(self, delay):
+            delays.append(delay)
+            return len(delays) == 1100
+
+    class Provider(_Provider):
+        def initialize(self):
+            raise MT5ACCOUNTDISCONNECTEDERROR("unavailable")
+
+    worker._stop = Stop()
+    assert not worker._recover_provider(Provider(), "MT5ACCOUNTDISCONNECTEDERROR")
+    assert delays[:6] == [5, 10, 20, 40, 60, 60]
+    assert len(delays) == 1100
+    assert worker.health["status"] == "STOPPED"
+
+
+def test_demo_recovery_does_not_retry_unsafe_broker_error(tmp_path):
+    worker = _demo_recovery_worker(tmp_path)
+
+    class Provider(_Provider):
+        def initialize(self):
+            self.calls += 1
+            raise RuntimeError("DEMO_ACCOUNT_REQUIRED")
+
+    provider = Provider()
+    assert not worker._recover_provider(provider, "MT5ACCOUNTDISCONNECTEDERROR")
+    assert provider.calls == 1
+    assert worker.health["status"] == "OPERATOR_REVIEW_REQUIRED"
+
+
+def test_demo_recovery_zero_attempts_remains_disabled(tmp_path):
+    worker = _demo_recovery_worker(tmp_path, attempts=0)
+    assert not worker._recover_provider(_Provider(), "MT5ACCOUNTDISCONNECTEDERROR")
+    assert worker.health["recovery_count"] == 0
+
+
+def test_demo_worker_repeated_connection_faults_do_not_end_worker(tmp_path):
+    worker = _demo_recovery_worker(tmp_path)
+    calls = []
+
+    class Runtime:
+        def run(self, *, stop_event):
+            calls.append(1)
+            if len(calls) <= 8:
+                raise MT5ACCOUNTDISCONNECTEDERROR("unavailable")
+            return {"broker_order_sent": 0}
+
+    worker.runtime_factory = lambda _: Runtime()
+    worker.start()
+    assert worker.join(timeout=10)
+    assert len(calls) == 9
+    assert worker.result == {"broker_order_sent": 0}
+    assert worker.health["recovery_count"] == 8
+
+
 def test_worker_clears_directional_plan_when_temporal_update_is_invalid(tmp_path: Path):
     artifact = tmp_path / "hft.sqlite3"
     plans = AtomicPlanStore()

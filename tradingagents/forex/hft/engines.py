@@ -469,7 +469,13 @@ class HftExecutionEngine:
             tracked.micro_reversal = True
             tracked.profit_protection_state = "EXIT_PENDING"
             return "STRATEGY_INVALIDATION"
-        if reversal and tracked.mfe_points < micro_threshold:
+        # A range-rejection position is expected to tolerate a small
+        # countertrend fluctuation while price returns from the range edge.
+        # It still exits on meaningful adverse movement above, on confirmed
+        # giveback after favorable progress, or through the bounded no-progress
+        # and duration rules below.  Immediate momentum reversal remains an
+        # exit only for momentum-continuation positions.
+        if reversal and tracked.mfe_points < micro_threshold and "momentum" in tracked.strategy_id.lower():
             return "MOMENTUM_REVERSAL"
         elapsed = max(0.0, (features.timestamp - tracked.entry_at).total_seconds())
         last_mfe_elapsed = max(0.0, (features.timestamp - (tracked.last_mfe_at or tracked.entry_at)).total_seconds())

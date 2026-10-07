@@ -217,6 +217,81 @@ def test_expected_move_scales_no_progress_and_range_is_tighter_than_momentum():
     assert momentum_decision.reason != "NO_PROGRESS"
 
 
+def test_range_rejection_holds_through_unconfirmed_countertrend_momentum():
+    features = _features((1.10000, 1.10002, 1.10004, 1.10006, 1.10008))
+    state = _state(features.timestamp - timedelta(seconds=1))
+    countertrend = _position_features(
+        features,
+        bid=features.bid,
+        ask=features.ask,
+        momentum=-features.point,
+        persistence=0.3,
+    )
+
+    decision = HftExecutionEngine().on_tick(
+        state,
+        countertrend,
+        position_state=PositionState.LONG,
+        entry_price=features.bid,
+        entry_at=features.timestamp,
+        expected_move_points=8.0,
+        strategy_id="range_rejection",
+    )
+
+    assert decision.action is FastAction.NO_ACTION
+    assert decision.reason == "POSITION_HELD"
+
+
+def test_range_rejection_still_exits_after_adverse_momentum_and_price_invalidation():
+    features = _features((1.10000, 1.10002, 1.10004, 1.10006, 1.10008))
+    state = _state(features.timestamp - timedelta(seconds=1))
+    adverse = _position_features(
+        features,
+        bid=features.bid - 3 * features.point,
+        ask=features.ask - 3 * features.point,
+        momentum=-features.point,
+        persistence=0.3,
+    )
+
+    decision = HftExecutionEngine().on_tick(
+        state,
+        adverse,
+        position_state=PositionState.LONG,
+        entry_price=features.bid,
+        entry_at=features.timestamp,
+        expected_move_points=8.0,
+        strategy_id="range_rejection",
+    )
+
+    assert decision.action is FastAction.EXIT
+    assert decision.reason == "STRATEGY_INVALIDATION"
+
+
+def test_momentum_strategy_still_exits_on_countertrend_momentum_before_favorable_progress():
+    features = _features((1.10000, 1.10002, 1.10004, 1.10006, 1.10008))
+    state = _state(features.timestamp - timedelta(seconds=1))
+    countertrend = _position_features(
+        features,
+        bid=features.bid,
+        ask=features.ask,
+        momentum=-features.point,
+        persistence=0.4,
+    )
+
+    decision = HftExecutionEngine().on_tick(
+        state,
+        countertrend,
+        position_state=PositionState.LONG,
+        entry_price=features.bid,
+        entry_at=features.timestamp,
+        expected_move_points=8.0,
+        strategy_id="momentum_continuation",
+    )
+
+    assert decision.action is FastAction.EXIT
+    assert decision.reason == "MOMENTUM_REVERSAL"
+
+
 def test_hft_decision_telemetry_is_safe_and_bounded():
     features = _features((1.10000, 1.10002, 1.10004, 1.10008, 1.10012))
     state = _state(

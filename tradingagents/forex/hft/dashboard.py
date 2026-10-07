@@ -50,6 +50,7 @@ class HftDashboardSnapshot:
     out_of_order_ticks: int = 0
     last_error_code: str | None = None
     runtime_status: str = "NOT_INITIALIZED"
+    active_runs: int = 0
     last_disconnect_at: str | None = None
     last_recovery_attempt_at: str | None = None
     recovery_count: int = 0
@@ -65,6 +66,7 @@ class HftDashboardSnapshot:
     dataset_invalid_ticks: int = 0
     dataset_duplicate_ticks: int = 0
     dataset_large_gap_count: int = 0
+    last_tick_age_seconds: float | None = None
 
 
 def _percentile(values: list[float], fraction: float) -> float | None:
@@ -75,8 +77,14 @@ def _percentile(values: list[float], fraction: float) -> float | None:
     return values[index]
 
 
-def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
+def read_hft_dashboard(
+    path: str | Path, *, observed_at: datetime | None = None
+) -> HftDashboardSnapshot:
     source = Path(path)
+    as_of = observed_at or datetime.now(timezone.utc)
+    if as_of.tzinfo is None or as_of.utcoffset() != timezone.utc.utcoffset(as_of):
+        raise ValueError("observed_at must be timezone-aware UTC")
+    as_of = as_of.astimezone(timezone.utc)
     empty = {
         "path": str(source),
         "status": "NOT_INITIALIZED",
@@ -113,6 +121,7 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
         "out_of_order_ticks": 0,
         "last_error_code": None,
         "runtime_status": "NOT_INITIALIZED",
+        "active_runs": 0,
         "last_disconnect_at": None,
         "last_recovery_attempt_at": None,
         "recovery_count": 0,
@@ -128,6 +137,7 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
         "dataset_invalid_ticks": 0,
         "dataset_duplicate_ticks": 0,
         "dataset_large_gap_count": 0,
+        "last_tick_age_seconds": None,
     }
     if not source.is_file():
         return HftDashboardSnapshot(**empty)
@@ -165,6 +175,9 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                         "last_recovery_result": runtime_row[5],
                     }
             counts = {name: int(db.execute(f"SELECT COUNT(*) FROM hft_{name}").fetchone()[0]) for name in ("runs", "ticks", "actions")}
+            active_runs = int(
+                db.execute("SELECT COUNT(*) FROM hft_runs WHERE ended_at IS NULL").fetchone()[0]
+            )
             entries = int(db.execute("SELECT COUNT(*) FROM hft_actions WHERE action IN ('ENTER_LONG','ENTER_SHORT')").fetchone()[0])
             exits = int(db.execute("SELECT COUNT(*) FROM hft_actions WHERE action IN ('EXIT','REDUCE')").fetchone()[0])
             open_positions = int(db.execute("SELECT COUNT(*) FROM hft_positions WHERE state IN ('LONG','SHORT','PENDING_ENTRY','PENDING_EXIT')").fetchone()[0])
@@ -239,7 +252,11 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 dashboard_status = runtime_status
             elif runtime_status in {"DEGRADED", "RECOVERING", "STARTING"}:
                 dashboard_status = "DEGRADED"
-            elif lease_status == "ACTIVE" and runtime_status in {"RUNNING", "NOT_INITIALIZED"}:
+            elif lease_status == "ACTIVE" and runtime_status == "RUNNING":
+                dashboard_status = "RUNNING" if active_runs > 0 else "DEGRADED"
+            elif lease_status == "ACTIVE" and runtime_status == "NOT_INITIALIZED":
+                # Preserve legacy artifacts where runtime-state rows predate
+                # the run ledger, but make modern RUNNING-without-run explicit.
                 dashboard_status = "RUNNING"
             elif runtime_status == "RUNNING":
                 # A worker claiming to be alive without its lease is not
@@ -251,6 +268,31 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 # Preserve legacy artifacts that predate runtime-state rows.
                 dashboard_status = "RUNNING" if lease_status == "ACTIVE" else "HEALTHY"
             tick_report = read_tick_dataset(source)
+            last_tick_age_seconds = None
+            if tick_report.last_timestamp is not None:
+                try:
+                    last_tick = datetime.fromisoformat(
+                        tick_report.last_timestamp.replace("Z", "+00:00")
+                    )
+                    if (
+                        last_tick.tzinfo is not None
+                        and last_tick.utcoffset() == timezone.utc.utcoffset(last_tick)
+                    ):
+                        last_tick_age_seconds = (
+                            as_of - last_tick.astimezone(timezone.utc)
+                        ).total_seconds()
+                except ValueError:
+                    last_tick_age_seconds = None
+            # Lease liveness is not evidence that the tick pipeline progresses.
+            # Keep the raw runtime state visible, but never advertise a stale
+            # persisted feed as healthy RUNNING (no broker query is implied).
+            if dashboard_status == "RUNNING" and (
+                last_tick_age_seconds is None or last_tick_age_seconds > 120.0
+                or last_tick_age_seconds < -2.0
+            ):
+                dashboard_status = "DEGRADED"
+                if last_error_code is None:
+                    last_error_code = "TICK_FEED_STALE" if last_tick_age_seconds is not None else "NO_TICK_EVIDENCE"
             actual = None if compound_return is None else float(compound_return)
             benchmark_difference = None if actual is None else actual - 0.10
             return HftDashboardSnapshot(
@@ -275,6 +317,7 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 out_of_order_ticks=out_of_order_ticks,
                 last_error_code=last_error_code,
                 runtime_status=runtime_status,
+                active_runs=active_runs,
                 last_disconnect_at=runtime_state["last_disconnect_at"],
                 last_recovery_attempt_at=runtime_state["last_recovery_attempt_at"],
                 recovery_count=int(runtime_state["recovery_count"]),
@@ -290,6 +333,7 @@ def read_hft_dashboard(path: str | Path) -> HftDashboardSnapshot:
                 dataset_invalid_ticks=tick_report.invalid_ticks,
                 dataset_duplicate_ticks=tick_report.duplicate_ticks,
                 dataset_large_gap_count=tick_report.large_gap_count,
+                last_tick_age_seconds=last_tick_age_seconds,
             )
     except sqlite3.Error:
         return HftDashboardSnapshot(**{**empty, "status": "UNAVAILABLE"})

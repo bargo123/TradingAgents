@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import threading
 from collections.abc import Callable
 from contextlib import suppress
@@ -26,10 +27,12 @@ from .store import HftShadowStore
 _RECOVERABLE_MT5_ERROR_CODES = frozenset(
     {
         "MT5ACCOUNTDISCONNECTEDERROR",
+        "MT5BROKERCLOCKERROR",
         "MT5BROKERDISCONNECTEDERROR",
         "MT5TERMINALDISCONNECTEDERROR",
         "MT5NOTINITIALIZEDERROR",
         "MT5INITIALIZATIONFAILED",
+        "MT5INITIALIZATIONERROR",
         "MT5REINITIALIZATIONFAILED",
     }
 )
@@ -76,6 +79,7 @@ class HftShadowWorker:
         self.runtime_factory = runtime_factory
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._reconciliation_lock = threading.Lock()
         self._result: dict[str, object] | None = None
         self._error_code: str | None = None
         self._active_provider: Any | None = None
@@ -221,37 +225,124 @@ class HftShadowWorker:
             if not provider.initialize():
                 raise RuntimeError("MT5_REINITIALIZATION_FAILED")
 
-    def _recover_provider(self, provider: Any, code: str) -> bool:
-        """Perform a bounded reconnect sequence for one disconnect incident."""
+    def _refresh_broker_clock(self, provider: Any, runtime: Any | None = None) -> None:
+        """Reinitialize once, then require a verified account and fresh broker tick."""
+
+        reinitialize = getattr(provider, "reinitialize", None)
+        calibrate = getattr(provider, "calibrate_broker_clock", None)
+        connected = getattr(provider, "is_connected", None)
+        get_tick = getattr(provider, "get_tick", None)
+        if not all(callable(item) for item in (reinitialize, calibrate, connected, get_tick)):
+            raise RuntimeError("MT5_CLOCK_RECOVERY_APIS_UNAVAILABLE")
+
+        with self.mt5_gate.acquire("hft_clock_reinitialize"):
+            if not reinitialize():
+                raise RuntimeError("MT5_REINITIALIZATION_FAILED")
+            if not connected():
+                raise RuntimeError("MT5_CONNECTION_UNVERIFIED")
+
+        if runtime is not None and str(getattr(self.config, "execution_mode", "SHADOW")).upper() == "DEMO":
+            gateway = getattr(runtime, "gateway", None)
+            verify_account = getattr(gateway, "verify_demo_account", None)
+            if not callable(verify_account):
+                raise RuntimeError("DEMO_ACCOUNT_VERIFICATION_UNAVAILABLE")
+            account = verify_account()
+            expected_mode = getattr(gateway, "demo_trade_mode", None)
+            if (
+                str(getattr(account, "server", "") or "").strip().casefold()
+                != "metaquotes-demo"
+                or getattr(account, "trade_mode", None) != expected_mode
+            ):
+                raise RuntimeError("DEMO_ACCOUNT_IDENTITY_MISMATCH")
+
+        symbol = str(getattr(getattr(runtime, "config", None), "symbol", "") or self.config.symbol)
+        with self.mt5_gate.acquire("hft_clock_calibration"):
+            calibration = calibrate(symbol)
+            clock = getattr(provider, "broker_clock", None) or calibration
+            if str(getattr(clock, "status", "")).upper() != "CALIBRATED":
+                raise RuntimeError("BROKER_CLOCK_CALIBRATION_UNHEALTHY")
+            tick = get_tick(symbol)
+
+        timestamp = getattr(tick, "timestamp", None)
+        if not isinstance(timestamp, datetime) or timestamp.tzinfo is None:
+            raise RuntimeError("BROKER_TICK_TIMESTAMP_INVALID")
+        if timestamp.utcoffset() != timezone.utc.utcoffset(timestamp):
+            raise RuntimeError("BROKER_TICK_TIMESTAMP_NOT_UTC")
+        tick_symbol = str(getattr(tick, "symbol", "")).strip().upper()
+        bid, ask = getattr(tick, "bid", None), getattr(tick, "ask", None)
+        if tick_symbol != symbol.upper() or bid is None or ask is None:
+            raise RuntimeError("BROKER_TICK_INVALID")
+        try:
+            if not (0 < float(bid) <= float(ask)):
+                raise RuntimeError("BROKER_TICK_INVALID")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("BROKER_TICK_INVALID") from exc
+
+        clock_config = getattr(provider, "clock_config", None)
+        try:
+            max_age = float(clock_config.max_tick_age_seconds)
+            max_future = float(clock_config.max_future_skew_seconds)
+        except (AttributeError, TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("BROKER_TICK_FRESHNESS_BOUNDS_UNAVAILABLE") from exc
+        if (
+            not math.isfinite(max_age)
+            or not math.isfinite(max_future)
+            or max_age < 0
+            or max_future < 0
+        ):
+            raise RuntimeError("BROKER_TICK_FRESHNESS_BOUNDS_UNAVAILABLE")
+        age = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
+        if age > float(max_age) or age < -float(max_future):
+            raise RuntimeError("BROKER_TICK_STALE")
+
+    def _recover_provider(self, provider: Any, code: str, runtime: Any | None = None) -> bool:
+        """Retry DEMO connection faults until recovery or an explicit stop.
+
+        Shadow runs retain their bounded budget; zero disables recovery.
+        Non-connection faults always require review, including during retry.
+        """
 
         self._last_disconnect_at = datetime.now(timezone.utc)
-        if self._consecutive_recovery_attempts >= self.config.max_reconnect_attempts:
+        persistent = self.config.execution_mode == "DEMO" and self.config.max_reconnect_attempts > 0
+        if not self._is_recoverable(code) or (
+            not persistent
+            and self._consecutive_recovery_attempts >= self.config.max_reconnect_attempts
+        ):
             self._last_recovery_result = "OPERATOR_REVIEW_REQUIRED"
             self._set_health("OPERATOR_REVIEW_REQUIRED", error_code=code)
             return False
-        while self._consecutive_recovery_attempts < self.config.max_reconnect_attempts:
+        # Cap the exponent before computing it, even after months of retries.
+        delay = min(60.0, self.config.reconnect_backoff_seconds)
+        for _ in range(min(self._consecutive_recovery_attempts, 1074)):
+            delay = min(60.0, delay * 2.0)
+            if delay == 60.0 or delay == 0.0:
+                break
+        while persistent or self._consecutive_recovery_attempts < self.config.max_reconnect_attempts:
             self._consecutive_recovery_attempts += 1
             self._recovery_count += 1
             self._last_recovery_attempt_at = datetime.now(timezone.utc)
             self._last_recovery_result = "RETRYING"
             self._set_health("DEGRADED", error_code=code)
-            delay = min(
-                60.0,
-                self.config.reconnect_backoff_seconds
-                * (2 ** (self._consecutive_recovery_attempts - 1)),
-            )
             if self._stop.wait(delay):
                 self._last_recovery_result = "STOPPED"
                 self._set_health("STOPPED", error_code=code)
                 return False
             self._set_health("RECOVERING", error_code=code)
             try:
-                self._reinitialize_provider(provider)
+                if code == "MT5BROKERCLOCKERROR":
+                    self._refresh_broker_clock(provider, runtime)
+                else:
+                    self._reinitialize_provider(provider)
             except Exception as exc:
                 code = self._classify_error(exc)
                 self._error_code = code
+                if not self._is_recoverable(code):
+                    self._last_recovery_result = "OPERATOR_REVIEW_REQUIRED"
+                    self._set_health("OPERATOR_REVIEW_REQUIRED", error_code=code)
+                    return False
                 self._last_recovery_result = "RETRYING"
                 self._set_health("DEGRADED", error_code=code)
+                delay = min(60.0, delay * 2.0)
                 continue
             self._error_code = None
             self._last_recovery_result = "RECOVERED"
@@ -314,7 +405,7 @@ class HftShadowWorker:
                         self._last_recovery_result = "OPERATOR_REVIEW_REQUIRED"
                         self._set_health(terminal_status, error_code=code)
                         return
-                    if not self._recover_provider(provider, code):
+                    if not self._recover_provider(provider, code, runtime):
                         terminal_status = "OPERATOR_REVIEW_REQUIRED"
                         return
         except HftLeaseBusyError:
@@ -339,21 +430,75 @@ class HftShadowWorker:
                         self._error_code = "MT5_SHUTDOWN_FAILED"
 
     def reconcile_demo_position(self, ticket: int) -> dict[str, Any]:
-        """Run one owner-side reconciliation, then resume HFT only on success."""
+        """Pause this worker, reconcile through its runtime, and resume on success.
 
-        if self.running:
-            raise RuntimeError("HFT_RECONCILIATION_BUSY")
-        runtime = self._runtime
-        reconcile = getattr(runtime, "reconcile_position", None)
-        if not callable(reconcile):
-            raise RuntimeError("HFT_RECONCILIATION_RUNTIME_UNAVAILABLE")
-        result = dict(reconcile(ticket))
-        if str(result.get("status", "")).upper() != "RECONCILED":
-            self._set_health("OPERATOR_REVIEW_REQUIRED", error_code="RECONCILIATION_REQUIRED")
-            return result
-        self._set_health("RECOVERING", error_code=None)
-        self.start()
-        return {**result, "resumed": True}
+        Reconciliation shares the worker's MT5 session, so it must never run
+        concurrently with its tick loop.  The owned worker is stopped and
+        joined before the existing runtime performs any broker reads.
+        """
+
+        with self._reconciliation_lock:
+            runtime = self._runtime
+            reconcile = getattr(runtime, "reconcile_position", None)
+            if not callable(reconcile):
+                raise RuntimeError("HFT_RECONCILIATION_RUNTIME_UNAVAILABLE")
+            was_running = self.running
+            if was_running:
+                self.stop(timeout=10.0)
+                if self.running:
+                    raise RuntimeError("HFT_RECONCILIATION_STOP_TIMEOUT")
+            result = dict(reconcile(ticket))
+            recovered_clock = False
+            if (
+                str(result.get("status", "")).upper() != "RECONCILED"
+                and str(result.get("reason", "")).upper() == "BROKER_READ_FAILED"
+                and str(result.get("error_type", "")).upper() == "MT5BROKERCLOCKERROR"
+            ):
+                try:
+                    self._refresh_broker_clock(self._active_provider, runtime)
+                    result = dict(reconcile(ticket))
+                    recovered_clock = True
+                except Exception as exc:
+                    self._set_health("OPERATOR_REVIEW_REQUIRED", error_code="RECONCILIATION_REQUIRED")
+                    return {
+                        "status": "RECONCILIATION_REQUIRED",
+                        "reason": "BROKER_RECOVERY_FAILED",
+                        "error_type": type(exc).__name__,
+                    }
+            if str(result.get("status", "")).upper() != "RECONCILED":
+                self._set_health("OPERATOR_REVIEW_REQUIRED", error_code="RECONCILIATION_REQUIRED")
+                return result
+            validate = getattr(runtime, "_validate_market_reopen", None)
+            if not callable(validate):
+                self._set_health("OPERATOR_REVIEW_REQUIRED", error_code="RECONCILIATION_REQUIRED")
+                return {
+                    "status": "RECONCILIATION_REQUIRED",
+                    "reason": "POST_RECONCILIATION_VALIDATION_UNAVAILABLE",
+                }
+            try:
+                validate()
+            except Exception as exc:
+                self._set_health("OPERATOR_REVIEW_REQUIRED", error_code="RECONCILIATION_REQUIRED")
+                return {
+                    "status": "RECONCILIATION_REQUIRED",
+                    "reason": "POST_RECONCILIATION_VALIDATION_FAILED",
+                    "error_type": type(exc).__name__,
+                }
+            self._set_health("RECOVERING", error_code=None)
+            try:
+                self.start()
+            except Exception as exc:
+                self._set_health("OPERATOR_REVIEW_REQUIRED", error_code="HFT_RESUME_FAILED")
+                return {
+                    "status": "RECONCILIATION_REQUIRED",
+                    "reason": "HFT_RESUME_FAILED",
+                    "error_type": type(exc).__name__,
+                }
+            return {
+                **result,
+                **({"recovery": "BROKER_CLOCK_REINITIALIZED"} if recovered_clock else {}),
+                "resumed": True,
+            }
 
     def start(self) -> None:
         if self.running:

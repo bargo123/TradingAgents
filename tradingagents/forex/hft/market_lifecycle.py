@@ -53,6 +53,7 @@ class MarketLifecycleController:
         account_healthy: bool,
         tick_fresh: bool,
         error_reason: MarketReason | str | None = None,
+        require_validation: bool = False,
     ) -> MarketObservation:
         if error_reason in {
             MarketReason.CALENDAR_UNAVAILABLE,
@@ -78,7 +79,14 @@ class MarketLifecycleController:
                 state, reason = MarketState.MARKET_CLOSED, None
         elif calendar_status is CalendarStatus.OPEN:
             if tick_fresh:
-                state, reason = MarketState.MARKET_OPENING_VALIDATION, None
+                # An already validated session needs recovery validation only
+                # after a closure, stale feed, or health failure.
+                state = (
+                    MarketState.MARKET_OPEN
+                    if self._observation.state is MarketState.MARKET_OPEN and not require_validation
+                    else MarketState.MARKET_OPENING_VALIDATION
+                )
+                reason = None
             else:
                 state, reason = MarketState.MARKET_UNKNOWN, MarketReason.STALE_DATA
         else:

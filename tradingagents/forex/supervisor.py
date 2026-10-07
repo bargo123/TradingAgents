@@ -55,12 +55,6 @@ class HftShadowSupervisorContext:
             return
         while not self._control_stop.is_set():
             request = None
-            ready = getattr(self.worker, "reconciliation_ready", None)
-            if callable(ready):
-                with suppress(Exception):
-                    if not bool(ready()):
-                        self._control_stop.wait(max(0.01, float(self.control_poll_interval_seconds)))
-                        continue
             with suppress(Exception):
                 request = store.claim_control_request(claimed_by=self._control_owner)
             if request is not None:
@@ -520,9 +514,9 @@ class ForexSupervisor:
             )
             demo_store = DemoExecutionStore(resolved_demo_path)
             control_store = demo_store
-            demo_run_id = str(uuid.uuid4())
 
             def demo_runtime_factory(provider: Any) -> Any:
+                demo_run_id = str(uuid.uuid4())
                 broker_api = shared_provider.demo_api()
                 demo_trade_mode = getattr(broker_api, "ACCOUNT_TRADE_MODE_DEMO", None)
                 if isinstance(demo_trade_mode, bool) or not isinstance(demo_trade_mode, int):
@@ -553,6 +547,7 @@ class ForexSupervisor:
                         poll_interval_seconds=poll_interval_seconds,
                         hft_first=True,
                         no_regime_policy="BOOTSTRAP_NEUTRAL",
+                        automatic_loss_pauses=False,
                         market_calendar_path=(
                             None
                             if market_session_calendar is None
@@ -716,6 +711,7 @@ class ForexSupervisor:
                 "real_money": False,
                 "orders": 0,
                 "positions": 0,
+                "open_positions": 0,
                 "reconciliation": 0,
             }
         from tradingagents.forex.hft.demo_store import DemoExecutionStore
@@ -728,6 +724,7 @@ class ForexSupervisor:
                 "real_money": False,
                 "orders": 0,
                 "positions": 0,
+                "open_positions": 0,
                 "reconciliation": 0,
                 "database_path": str(path),
             }
@@ -742,6 +739,7 @@ class ForexSupervisor:
                 "real_money": False,
                 "orders": 0,
                 "positions": 0,
+                "open_positions": 0,
                 "reconciliation": 0,
                 "database_path": str(path),
             }
@@ -750,7 +748,7 @@ class ForexSupervisor:
             status = "RECONCILIATION_REQUIRED"
         elif str(circuit.get("status", "READY")) not in {"READY", "OPEN"}:
             status = "DEGRADED"
-        elif counts.get("positions", 0):
+        elif counts.get("open_positions", 0):
             status = "POSITION_OPEN"
         return {
             "status": status,
@@ -803,10 +801,12 @@ class ForexSupervisor:
             "out_of_order_ticks": snapshot.out_of_order_ticks,
             "last_error_code": snapshot.last_error_code,
             "runtime_status": snapshot.runtime_status,
+            "active_runs": snapshot.active_runs,
             "last_disconnect_at": snapshot.last_disconnect_at,
             "last_recovery_attempt_at": snapshot.last_recovery_attempt_at,
             "recovery_count": snapshot.recovery_count,
             "last_recovery_result": snapshot.last_recovery_result,
+            "last_tick_age_seconds": snapshot.last_tick_age_seconds,
             "unique_ticks": snapshot.unique_ticks,
             "tick_quality_status": snapshot.tick_quality_status,
             "dataset_first_timestamp": snapshot.dataset_first_timestamp,

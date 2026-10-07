@@ -22,6 +22,7 @@ class AccountSimulator:
         self.balance = float(initial_balance)
         self.equity = float(initial_balance)
         self.peak_equity = float(initial_balance)
+        self.max_drawdown = 0.0
         self.risk_fraction = float(risk_fraction)
         self.mode = CompoundingMode(mode)
         self.max_position_size = float(max_position_size)
@@ -44,6 +45,8 @@ class AccountSimulator:
         self.balance += pnl
         self.equity = self.balance
         self.peak_equity = max(self.peak_equity, self.equity)
+        drawdown = max(0.0, (self.peak_equity - self.equity) / self.peak_equity)
+        self.max_drawdown = max(self.max_drawdown, drawdown)
         self._trades.append(pnl)
         self._daily[timestamp.date()] += pnl
 
@@ -52,13 +55,12 @@ class AccountSimulator:
         wins = [value for value in trades if value > 0]
         losses = [value for value in trades if value < 0]
         daily_returns = [(value / self.initial_balance) for value in self._daily.values()]
-        drawdown = max(0.0, (self.peak_equity - self.equity) / self.peak_equity) if self.peak_equity else 0.0
         profit_factor = sum(wins) / abs(sum(losses)) if losses else None
         return {
             "balance": self.balance,
             "equity": self.equity,
             "compound_return": self.balance / self.initial_balance - 1.0,
-            "max_drawdown": drawdown,
+            "max_drawdown": self.max_drawdown,
             "worst_day": min(daily_returns) if daily_returns else None,
             "best_day": max(daily_returns) if daily_returns else None,
             "benchmark_10pct_days": sum(value >= 0.10 for value in daily_returns),

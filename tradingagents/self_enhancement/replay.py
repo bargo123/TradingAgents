@@ -74,6 +74,8 @@ class ReplayMetrics:
     trades_per_hour: float | None = None
     sharpe_like: float | None = None
     commission_known: bool = False
+    open_positions: int = 0
+    unrealized_pnl: float = 0.0
 
     def to_dict(self) -> dict[str, object]:
         return {field: getattr(self, field) for field in self.__dataclass_fields__}
@@ -156,32 +158,46 @@ def chronological_splits(
     return ChronologicalSplits(development, validation, unseen, gap)
 
 
-def _profile(base: DynamicExitProfile, config: ExitPolicyConfig) -> DynamicExitProfile:
-    floor = min(base.no_progress_floor_seconds, config.no_progress_cap_seconds)
-    return replace(
-        base,
-        micro_reversal_mfe_fraction=config.micro_reversal_fraction,
-        micro_reversal_giveback_fraction=config.micro_reversal_fraction,
-        protection_arm_fraction=config.protection_arm_fraction,
-        trailing_activation_fraction=max(base.trailing_activation_fraction, config.protection_arm_fraction),
-        giveback_fraction=config.giveback_fraction,
-        trailing_distance_fraction=config.trailing_distance_fraction,
-        no_progress_floor_seconds=floor,
-        no_progress_cap_seconds=max(floor, config.no_progress_cap_seconds),
-        max_duration_seconds=max(config.max_duration_seconds, floor),
-    )
+def _profile(base: DynamicExitProfile, config: ExitPolicyConfig, parent: ExitPolicyConfig) -> DynamicExitProfile:
+    """Apply candidate mutations while preserving the incumbent's live profile.
+
+    The generic policy defaults are mutation coordinates, not a replacement
+    for the distinct range/momentum profiles used by HftExecutionEngine.
+    """
+    changes: dict[str, float] = {}
+    for name in ("protection_arm_fraction", "giveback_fraction", "trailing_distance_fraction"):
+        if getattr(config, name) != getattr(parent, name):
+            changes[name] = getattr(config, name)
+    if config.micro_reversal_fraction != parent.micro_reversal_fraction:
+        changes["micro_reversal_mfe_fraction"] = config.micro_reversal_fraction
+        changes["micro_reversal_giveback_fraction"] = config.micro_reversal_fraction
+    if "protection_arm_fraction" in changes:
+        changes["trailing_activation_fraction"] = max(base.trailing_activation_fraction, config.protection_arm_fraction)
+    if config.no_progress_cap_seconds != parent.no_progress_cap_seconds:
+        changes["no_progress_floor_seconds"] = min(base.no_progress_floor_seconds, config.no_progress_cap_seconds)
+        changes["no_progress_cap_seconds"] = config.no_progress_cap_seconds
+    if config.max_duration_seconds != parent.max_duration_seconds:
+        changes["max_duration_seconds"] = config.max_duration_seconds
+    return replace(base, **changes)
 
 
 class ReplayEvaluator:
     """Run one candidate through the same causal feature/risk/fill primitives."""
 
-    def __init__(self, *, slippage_points: float = 0.0, latency_ms: float = 0.0) -> None:
+    def __init__(self, *, slippage_points: float = 0.0, latency_ms: float = 0.0, cost_safety_margin_points: float = 1.0, commission_round_trip_points: float = 0.0) -> None:
         if slippage_points < 0 or latency_ms < 0 or not math.isfinite(float(slippage_points)) or not math.isfinite(float(latency_ms)):
             raise ValueError("replay cost assumptions must be finite and non-negative")
         self.slippage_points = float(slippage_points)
         self.latency_ms = float(latency_ms)
+        if not math.isfinite(float(cost_safety_margin_points)) or cost_safety_margin_points < 1.0:
+            raise ValueError("research cost margin must preserve or strengthen the existing one-point gate")
+        self.cost_safety_margin_points = float(cost_safety_margin_points)
+        if not math.isfinite(commission_round_trip_points) or commission_round_trip_points < 0:
+            raise ValueError("modeled commission must be finite and non-negative")
+        self.commission_round_trip_points = float(commission_round_trip_points)
 
-    def evaluate(self, ticks: Iterable[Tick], candidate: CandidateSpec, *, split: str | None = None) -> ReplayMetrics:
+    def evaluate(self, ticks: Iterable[Tick], candidate: CandidateSpec, *, split: str | None = None,
+                 entry_filter=None, outcome_observer=None) -> ReplayMetrics:
         if not isinstance(candidate, CandidateSpec):
             raise TypeError("candidate must be a CandidateSpec")
         values = _validate_ticks(ticks)
@@ -197,9 +213,14 @@ class ReplayEvaluator:
         elif candidate.strategy_id.startswith("book-spec-"):
             raise ReplayError("book candidate requires its validated StrategySpec")
         config = candidate.exit_policy
-        range_profile = _profile(RANGE_EXIT_PROFILE, config)
-        momentum_profile = _profile(MOMENTUM_EXIT_PROFILE, config)
+        policy_keys = set(ExitPolicyConfig().to_dict())
+        parent_policy = ExitPolicyConfig.from_mapping({
+            key: value for key, value in candidate.parent.parameters.items() if key in policy_keys
+        })
+        range_profile = _profile(RANGE_EXIT_PROFILE, config, parent_policy)
+        momentum_profile = _profile(MOMENTUM_EXIT_PROFILE, config, parent_policy)
         engine = HftExecutionEngine(
+            arbiter=SignalArbiter(cost_safety_margin_points=self.cost_safety_margin_points),
             profit_target_fraction=config.profit_target_fraction,
             time_stop_seconds=max(1, int(config.max_duration_seconds)),
             hard_max_duration_seconds=config.max_duration_seconds,
@@ -223,7 +244,7 @@ class ReplayEvaluator:
             momentum_enabled=permitted_family == "momentum_continuation",
             range_enabled=permitted_family == "range_rejection",
         )
-        arbiter = SignalArbiter()
+        arbiter = SignalArbiter(cost_safety_margin_points=self.cost_safety_margin_points)
         position_state = PositionState.FLAT
         entry_price = entry_at = None
         expected_move_points: float | None = None
@@ -234,8 +255,8 @@ class ReplayEvaluator:
         long_trades = 0
         short_trades = 0
         exit_reasons: dict[str, int] = {}
-        previous_positive = False
         profit_to_loss_flips = 0
+        mfe_pnl_units: list[float] = []
         spread_cost = 0.0
         for tick in values:
             snapshot = features.update(tick)
@@ -288,6 +309,10 @@ class ReplayEvaluator:
                 decision_strategy_id = None if selected is None else selected.strategy_id
                 decision_expected_move = 0.0 if selected is None else selected.expected_move_points
             if action in (FastAction.ENTER_LONG, FastAction.ENTER_SHORT):
+                # Research-only callback sees the current causal snapshot, never
+                # the complete tick sequence. Exit decisions are never filtered.
+                if entry_filter is not None and not entry_filter(action, snapshot):
+                    continue
                 account_metrics = account.report()
                 gate = risk.evaluate(
                     action,
@@ -314,24 +339,44 @@ class ReplayEvaluator:
             elif action is FastAction.EXIT and position_state in (PositionState.LONG, PositionState.SHORT):
                 fill = fills.fill(action, tick, size=1.0, position_state=position_state)
                 closed = positions.close(tick, reason=decision_reason, exit_price=fill.price)
-                account.record_trade(tick.timestamp, closed.net_pnl)
-                pnls.append(closed.net_pnl)
+                net_pnl = closed.net_pnl - self.commission_round_trip_points * tick.point * closed.size
+                account.record_trade(tick.timestamp, net_pnl)
+                pnls.append(net_pnl)
+                if outcome_observer is not None:
+                    outcome_observer({"timestamp": tick.timestamp.isoformat(),
+                                      "net_points": net_pnl / tick.point,
+                                      "boundary_mark": False})
                 if closed.direction == "LONG":
                     long_trades += 1
                 elif closed.direction == "SHORT":
                     short_trades += 1
                 durations.append(closed.holding_seconds)
                 mfe.append(closed.mfe / tick.point)
+                mfe_pnl_units.append(closed.mfe * closed.size)
                 mae.append(closed.mae / tick.point)
                 exit_reasons[decision_reason] = exit_reasons.get(decision_reason, 0) + 1
-                if previous_positive and closed.net_pnl < 0:
+                if closed.mfe > 0 and net_pnl < 0:
                     profit_to_loss_flips += 1
-                previous_positive = closed.net_pnl > 0
                 position_state = PositionState.FLAT
                 entry_price = entry_at = None
                 expected_move_points = None
         wins = [value for value in pnls if value > 0]
         losses = [value for value in pnls if value < 0]
+        terminal_position = positions.position
+        open_positions = int(position_state in (PositionState.LONG, PositionState.SHORT))
+        unrealized_pnl = 0.0
+        if open_positions and terminal_position is not None:
+            terminal_tick = values[-1]
+            move = (
+                terminal_tick.bid - terminal_position.entry_price
+                if position_state is PositionState.LONG
+                else terminal_position.entry_price - terminal_tick.ask
+            )
+            unrealized_pnl = (move - (self.slippage_points + self.commission_round_trip_points) * terminal_tick.point) * terminal_position.size
+            if outcome_observer is not None:
+                outcome_observer({"timestamp": terminal_tick.timestamp.isoformat(),
+                                  "net_points": unrealized_pnl / terminal_tick.point,
+                                  "boundary_mark": True})
         report = account.report()
         elapsed_seconds = max(0.0, (values[-1].timestamp - values[0].timestamp).total_seconds())
         standard_deviation = statistics.pstdev(pnls) if len(pnls) > 1 else 0.0
@@ -356,7 +401,7 @@ class ReplayEvaluator:
             median_holding_seconds=sorted(durations)[len(durations) // 2] if durations else None,
             mfe_points=sum(mfe) / len(mfe) if mfe else 0.0,
             mae_points=sum(mae) / len(mae) if mae else 0.0,
-            mfe_capture_ratio=(sum(pnls) / sum(mfe) if mfe and sum(mfe) > 0 else None),
+            mfe_capture_ratio=(sum(pnls) / sum(mfe_pnl_units) if sum(mfe_pnl_units) > 0 else None),
             profit_to_loss_flips=profit_to_loss_flips,
             spread_cost_points=spread_cost,
             slippage_points=self.slippage_points,
@@ -367,5 +412,7 @@ class ReplayEvaluator:
             trades_per_hour=(len(pnls) * 3600.0 / elapsed_seconds) if elapsed_seconds > 0 else None,
             sharpe_like=sharpe_like,
             commission_known=False,
+            open_positions=open_positions,
+            unrealized_pnl=unrealized_pnl,
         )
 __all__ = ["ChronologicalSplits", "ReplayError", "ReplayEvaluator", "ReplayMetrics", "chronological_splits", "load_hft_ticks"]
