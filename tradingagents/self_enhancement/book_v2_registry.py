@@ -1,7 +1,11 @@
 """Research-only binding gate; normalized distances are not feature thresholds."""
-from .book_v2_pipeline import validate_envelope
 from .book_normalization_models import CandidateValidationV2, NormalizationStatus
-from .phase14c_mapping import capture_current_strategy_contracts, map_current_strategies, StrategyContractDriftError
+from .book_v2_pipeline import validate_envelope
+from .phase14c_mapping import (
+    StrategyContractDriftError,
+    capture_current_strategy_contracts,
+    map_current_strategies,
+)
 
 
 def create_research_strategy(candidate: CandidateValidationV2, *, source_lookup):

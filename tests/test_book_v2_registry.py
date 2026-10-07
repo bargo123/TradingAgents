@@ -1,11 +1,14 @@
-from dataclasses import replace
 import importlib
+from dataclasses import replace
 
 import pytest
 
-from tests.test_book_v2_pipeline import envelope
 from tests.test_book_natural_language import source_lookup
-from tradingagents.self_enhancement.book_normalization_models import CandidateValidationV2, NormalizationStatus
+from tests.test_book_v2_pipeline import envelope
+from tradingagents.self_enhancement.book_normalization_models import (
+    CandidateValidationV2,
+    NormalizationStatus,
+)
 from tradingagents.self_enhancement.phase14c_mapping import capture_current_strategy_contracts
 
 

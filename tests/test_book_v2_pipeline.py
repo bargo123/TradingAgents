@@ -1,11 +1,15 @@
-from dataclasses import replace
 import importlib
+from dataclasses import replace
 
 from tests.test_book_natural_language import resolve, source_lookup
 from tests.test_book_natural_language_sources import source_cases
 from tests.test_book_v2_extraction import _Transport, selection, sentence
 from tradingagents.self_enhancement.book_drafter import OllamaStrategyDrafter
-from tradingagents.self_enhancement.book_normalization_models import StrategyEnvelopeV2, SCHEMA_VERSION, NormalizationStatus
+from tradingagents.self_enhancement.book_normalization_models import (
+    SCHEMA_VERSION,
+    NormalizationStatus,
+    StrategyEnvelopeV2,
+)
 from tradingagents.self_enhancement.strategy_specs import RuleStage
 
 

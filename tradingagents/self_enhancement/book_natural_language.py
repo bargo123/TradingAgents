@@ -1,14 +1,20 @@
 """Finite source-grounded normalization. No model-generated semantics or orders."""
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
-import re
 
 from .book_normalization_models import (
-    EvidenceBundle, FieldProof, NormalizationResult, NormalizationStatus,
-    NormalizedRuleV2, SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION,
+    FEATURE_CONTRACT_VERSION,
+    GRAMMAR_VERSION,
+    SCHEMA_VERSION,
+    EvidenceBundle,
+    FieldProof,
+    NormalizationResult,
+    NormalizationStatus,
+    NormalizedRuleV2,
     normalization_identity,
 )
 from .strategy_specs import EvidenceSpan, RuleDirection, RuleOperator, RuleStage
@@ -63,7 +69,7 @@ def normalize_rule(bundle: EvidenceBundle, *, stage: RuleStage, family: str,
         texts.append(text)
     if any(t != texts[0] for t in texts):
         return _rejected("SOURCE_TEXT_CONFLICT")
-    if any(a.end_offset < b.start_offset and texts[0][a.end_offset:b.start_offset].strip() for a, b in zip(bundle.spans, bundle.spans[1:])):
+    if any(a.end_offset < b.start_offset and texts[0][a.end_offset:b.start_offset].strip() for a, b in zip(bundle.spans, bundle.spans[1:], strict=False)):
         return _rejected("NONCONTIGUOUS_CONTEXT")
     # No context-defining pattern has been reviewed yet. Never ignore extra clauses.
     if len(bundle.spans) != 1:

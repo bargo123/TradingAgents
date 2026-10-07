@@ -1,14 +1,17 @@
 """Versioned offline artifacts and pinned read-only evidence reload."""
-from collections import Counter
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
+from collections import Counter
+from pathlib import Path
 
 from .book_natural_language import verify_rule
 from .book_normalization_models import (
-    SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION,
-    NormalizationResult, NormalizationStatus,
+    FEATURE_CONTRACT_VERSION,
+    GRAMMAR_VERSION,
+    SCHEMA_VERSION,
+    NormalizationResult,
+    NormalizationStatus,
 )
 from .book_v2_pipeline import assemble_v2
 
@@ -55,6 +58,8 @@ def _read(path):
 
 
 def publish_v2(root, *, identity, results, source_lookup, telemetry=(), coverage=None, existing_run=False):
+    from .phase14c_runner import _safe_telemetry_record
+    safe_telemetry = [_safe_telemetry_record(item) for item in telemetry]
     root = Path(root).resolve()
     if existing_run:
         run = _read(root / "run-manifest.json")
@@ -99,7 +104,10 @@ def publish_v2(root, *, identity, results, source_lookup, telemetry=(), coverage
         "missing_stages": {c.envelope.strategy_id: [s.value for s in c.missing_stages] for c in candidates},
         "rules_sha256": hashlib.sha256(encoded).hexdigest(),
         "identity_sha256": identity_digest(identity),
-        "coverage": coverage or {}, "telemetry": list(telemetry),
+        "coverage": coverage or {}, "telemetry": safe_telemetry,
+        "llm_calls": sum(not item["cache_hit"] for item in safe_telemetry),
+        "cache_hits": sum(item["cache_hit"] for item in safe_telemetry),
+        "call_outcomes": dict(sorted(Counter(item["outcome"] for item in safe_telemetry).items())),
         "evaluation": {"status": "NOT_RUN", "reason_code": "NO_ELIGIBLE_CANDIDATES"},
         "real_money": False,
     }

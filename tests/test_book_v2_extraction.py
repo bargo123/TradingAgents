@@ -1,12 +1,15 @@
-from dataclasses import replace
 import json
+from dataclasses import replace
 
 import pytest
 
-from tests.test_phase14b_book_atomic_extraction import _Transport
 from tests.test_book_natural_language_sources import source_cases
+from tests.test_phase14b_book_atomic_extraction import _Transport
 from tradingagents.knowledge.models import KnowledgeHit
-from tradingagents.self_enhancement.book_atomic_extraction import AtomicStrategyExtractor, EvidenceSentence
+from tradingagents.self_enhancement.book_atomic_extraction import (
+    AtomicStrategyExtractor,
+    EvidenceSentence,
+)
 
 
 def sentence(case=None):

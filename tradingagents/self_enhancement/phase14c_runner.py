@@ -923,7 +923,11 @@ def _build_run_identity(
     }
     stage_budgets = {key: value for key, value in AtomicStrategyExtractor._STAGE_BUDGETS.items() if key != "NATURAL_RULE_EXTRACTION"}
     if normalization_schema != "canonical-v1":
-        from .book_normalization_models import SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION
+        from .book_normalization_models import (
+            FEATURE_CONTRACT_VERSION,
+            GRAMMAR_VERSION,
+            SCHEMA_VERSION,
+        )
         artifact_schema["normalization"] = (SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION)
         stage_budgets["NATURAL_RULE_EXTRACTION"] = AtomicStrategyExtractor._STAGE_BUDGETS["NATURAL_RULE_EXTRACTION"]
     source_path_map = _source_path_map(source_paths)

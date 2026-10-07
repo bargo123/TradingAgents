@@ -1,10 +1,15 @@
+import importlib
 from dataclasses import replace
 from decimal import Decimal
-import importlib
 
 import pytest
 
-from tradingagents.self_enhancement.strategy_specs import EvidenceSpan, RuleDirection, RuleOperator, RuleStage
+from tradingagents.self_enhancement.strategy_specs import (
+    EvidenceSpan,
+    RuleDirection,
+    RuleOperator,
+    RuleStage,
+)
 
 
 def models():

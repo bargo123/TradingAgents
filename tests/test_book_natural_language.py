@@ -1,12 +1,15 @@
+import importlib
 from dataclasses import replace
 from decimal import Decimal
-import importlib
 
 import pytest
 
 from tests.test_book_natural_language_sources import source_cases
-from tradingagents.self_enhancement.book_normalization_models import EvidenceBundle, NormalizationStatus
-from tradingagents.self_enhancement.strategy_specs import EvidenceSpan, RuleStage, RuleOperator
+from tradingagents.self_enhancement.book_normalization_models import (
+    EvidenceBundle,
+    NormalizationStatus,
+)
+from tradingagents.self_enhancement.strategy_specs import EvidenceSpan, RuleOperator, RuleStage
 
 
 def resolver():
@@ -74,7 +77,7 @@ def test_unreviewed_or_changed_constructions_reject(quote):
 def test_stale_source_and_wrong_stage_reject():
     case = source_cases()[0]
     e = EvidenceSpan(**case["evidence"])
-    kwargs = dict(family=case["family"], stage=RuleStage.EXPECTED_MOVE)
+    kwargs = {"family": case["family"], "stage": RuleStage.EXPECTED_MOVE}
     assert resolver().normalize_rule(EvidenceBundle((e,)), source_lookup=lambda _: "wrong", **kwargs).reason_codes == ("SPAN_MISMATCH",)
     assert resolver().normalize_rule(EvidenceBundle((e,)), source_lookup=source_lookup, **{**kwargs, "stage": RuleStage.ENTRY}).reason_codes == ("STAGE_MISMATCH",)
 

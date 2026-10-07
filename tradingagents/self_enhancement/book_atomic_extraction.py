@@ -1034,8 +1034,12 @@ class AtomicStrategyExtractor:
         from .book_drafter import _loopback_endpoint
         from .book_natural_language import normalize_rule
         from .book_normalization_models import (
-            EvidenceBundle, NormalizationResult, NormalizationStatus,
-            SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION,
+            FEATURE_CONTRACT_VERSION,
+            GRAMMAR_VERSION,
+            SCHEMA_VERSION,
+            EvidenceBundle,
+            NormalizationResult,
+            NormalizationStatus,
         )
         from .strategy_specs import EvidenceSpan
 
@@ -1059,7 +1063,7 @@ class AtomicStrategyExtractor:
                         s.start_offset, s.end_offset, s.text,
                     ) for s in unit)
                     EvidenceBundle(spans)
-                    if any(s.hit.text[e.start_offset:e.end_offset] != e.quote for s, e in zip(unit, spans)):
+                    if any(s.hit.text[e.start_offset:e.end_offset] != e.quote for s, e in zip(unit, spans, strict=True)):
                         raise ValueError("source sentence mismatch")
                 except (ValueError, TypeError):
                     results.append(NormalizationResult(NormalizationStatus.REJECTED, None, ("PROVENANCE_INVALID",)))
@@ -1084,8 +1088,8 @@ class AtomicStrategyExtractor:
                         except (ValueError, TypeError):
                             results.append(NormalizationResult(NormalizationStatus.REJECTED, None, ("INVALID_CONTEXT_BUNDLE",)))
                             continue
-                        def trusted_text(e):
-                            for s in selected:
+                        def trusted_text(e, selected_sentences=selected):
+                            for s in selected_sentences:
                                 if (s.hit.document_id, s.hit.chunk_id, s.hit.source_hash, (s.hit.extra or {}).get("projection_generation")) == (e.document_id, e.chunk_id, e.source_hash, e.generation_id):
                                     return s.hit.text
                             raise ValueError("unknown evidence")

@@ -1,12 +1,15 @@
 """Proof revalidation and conservative assembly for offline V2 book research."""
+import hashlib
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-import hashlib
 
 from .book_natural_language import verify_rule
 from .book_normalization_models import (
-    CandidateValidationV2, NormalizationResult, NormalizationStatus,
-    StrategyEnvelopeV2, SCHEMA_VERSION,
+    SCHEMA_VERSION,
+    CandidateValidationV2,
+    NormalizationResult,
+    NormalizationStatus,
+    StrategyEnvelopeV2,
 )
 from .strategy_specs import EXECUTABLE_REQUIRED_STAGES, EvidenceSpan
 

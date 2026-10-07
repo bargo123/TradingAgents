@@ -1,12 +1,12 @@
 """Immutable, strict research-only V2 rule proofs; no trading authority."""
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
-from decimal import Decimal
-from enum import Enum
 import hashlib
 import json
 import re
+from dataclasses import dataclass, fields
+from decimal import Decimal
+from enum import Enum
 from typing import Any
 
 from .strategy_specs import EvidenceSpan, RuleDirection, RuleOperator, RuleStage
@@ -72,7 +72,7 @@ class EvidenceBundle(_Record):
             raise ValueError("invalid evidence span or character bound")
         if len({(s.generation_id, s.document_id, s.chunk_id, s.source_hash) for s in self.spans}) != 1:
             raise ValueError("evidence must share exact source identity")
-        if any(a.end_offset > b.start_offset for a, b in zip(self.spans, self.spans[1:])):
+        if any(a.end_offset > b.start_offset for a, b in zip(self.spans, self.spans[1:], strict=False)):
             raise ValueError("evidence must be ordered and disjoint")
 
     @classmethod
