@@ -117,6 +117,16 @@ class AtomicRuleBatch(_StrictStageModel):
     rules: list[AtomicRuleReference] = Field(max_length=_MAX_ATOMIC_RULES)
 
 
+class NaturalRuleReference(_StrictStageModel):
+    family: ConceptFamily
+    stage: AtomicRuleStage
+    evidence_indices: list[StrictInt] = Field(min_length=1, max_length=8)
+
+
+class NaturalRuleBatch(_StrictStageModel):
+    rules: list[NaturalRuleReference] = Field(max_length=8)
+
+
 @dataclass(frozen=True, slots=True)
 class EvidenceSentence:
     evidence_id: str
@@ -586,11 +596,18 @@ class AtomicStrategyExtractor:
     """Run presence, compact concept grouping and atomic evidence-index extraction locally."""
 
     _STAGE_BUDGETS = {
+        "NATURAL_RULE_EXTRACTION": 256,
         "PRESENCE": 64,
         "CONCEPT_GROUPING": 256,
         "ATOMIC_RULE_EXTRACTION": 256,
     }
     _STAGE_TASKS = {
+        "NATURAL_RULE_EXTRACTION": (
+            "Select explicit natural-language trading rules using only supplied evidence indexes. "
+            "Return stage, family and evidence_indices only, no numeric values or rewritten text. "
+            "Use OTHER_SUPPORTED for isolated target or stop rules with no established strategy family. "
+            "Do not select examples, criticism or incomplete discretionary advice."
+        ),
         "PRESENCE": (
             "Classify whether this small source evidence group explicitly contains an actionable trading rule. "
             "Return only ACTIONABLE, NONE, or AMBIGUOUS. Do not explain."
@@ -702,6 +719,10 @@ class AtomicStrategyExtractor:
             schema["properties"]["rules"]["maxItems"] = min(
                 _MAX_ATOMIC_RULES, evidence_count
             )
+        elif stage == "NATURAL_RULE_EXTRACTION":
+            reference = schema["$defs"]["NaturalRuleReference"]
+            reference["properties"]["evidence_indices"]["items"]["enum"] = allowed_indexes
+            reference["properties"]["evidence_indices"]["maxItems"] = min(8, evidence_count)
         return schema
 
     @staticmethod
@@ -717,6 +738,11 @@ class AtomicStrategyExtractor:
             refs = [item.evidence_index for item in value.rules]
             invalid += int(len(refs) != len(set(refs)))
             invalid += sum(index < 0 or index >= index_limit for index in refs)
+        elif isinstance(value, NaturalRuleBatch):
+            for rule in value.rules:
+                refs = rule.evidence_indices
+                invalid += int(len(refs) != len(set(refs)))
+                invalid += sum(index < 0 or index >= index_limit for index in refs)
         return invalid
 
     def _prompt(self, stage: str, variant: str, items: Sequence[EvidenceSentence]) -> str:
@@ -742,7 +768,7 @@ class AtomicStrategyExtractor:
     ) -> _T | None:
         response_schema = self._response_schema(stage, response_model, len(items))
         schema_fingerprint = None
-        if stage in {"CONCEPT_GROUPING", "ATOMIC_RULE_EXTRACTION"}:
+        if stage in {"CONCEPT_GROUPING", "ATOMIC_RULE_EXTRACTION", "NATURAL_RULE_EXTRACTION"}:
             schema_fingerprint = hashlib.sha256(
                 _canonical_json(response_schema).encode("utf-8")
             ).hexdigest()
@@ -1002,6 +1028,69 @@ class AtomicStrategyExtractor:
         if len(values) > _MAX_SELECTED_SENTENCES_HARD:
             raise ValueError("actionable evidence exceeds the hard sentence bound")
         return tuple(values)
+
+    def extract_actionable_v2(self, sentences: Sequence[EvidenceSentence], *, source_lookup=None):
+        """Offline model selection followed by independent, proof-bound normalization."""
+        from .book_drafter import _loopback_endpoint
+        from .book_natural_language import normalize_rule
+        from .book_normalization_models import (
+            EvidenceBundle, NormalizationResult, NormalizationStatus,
+            SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION,
+        )
+        from .strategy_specs import EvidenceSpan
+
+        self.endpoint = _loopback_endpoint(self.endpoint)
+        items = self._validated_sentences(sentences)
+        buckets = defaultdict(list)
+        for item in items:
+            hit = item.hit
+            extra = getattr(hit, "extra", {}) or {}
+            key = (extra.get("projection_generation"), hit.document_id, hit.chunk_id, hit.source_hash)
+            buckets[key].append(item)
+        results = []
+        for bucket in buckets.values():
+            bucket.sort(key=lambda s: s.start_offset)
+            for first in range(0, len(bucket), 8):
+                unit = bucket[first:first + 8]
+                try:
+                    spans = tuple(EvidenceSpan(
+                        str((s.hit.extra or {}).get("projection_generation", "")),
+                        s.hit.document_id, s.hit.chunk_id, s.hit.source_hash,
+                        s.start_offset, s.end_offset, s.text,
+                    ) for s in unit)
+                    EvidenceBundle(spans)
+                    if any(s.hit.text[e.start_offset:e.end_offset] != e.quote for s, e in zip(unit, spans)):
+                        raise ValueError("source sentence mismatch")
+                except (ValueError, TypeError):
+                    results.append(NormalizationResult(NormalizationStatus.REJECTED, None, ("PROVENANCE_INVALID",)))
+                    continue
+                variant = hashlib.sha256(_canonical_json({
+                    "schema": SCHEMA_VERSION, "grammar": GRAMMAR_VERSION,
+                    "feature_contract": FEATURE_CONTRACT_VERSION,
+                    "prompt": "book-natural-selection-v1", "spans": [e.to_dict() for e in spans],
+                }).encode()).hexdigest()
+                batches = self._run_stage("NATURAL_RULE_EXTRACTION", variant, unit, NaturalRuleBatch)
+                if not batches:
+                    results.append(NormalizationResult(NormalizationStatus.REJECTED, None, ("MODEL_SELECTION_FAILED",)))
+                for selected_unit, batch in batches:
+                    for selection in batch.rules:
+                        selected = tuple(selected_unit[i] for i in selection.evidence_indices)
+                        try:
+                            bundle = EvidenceBundle(tuple(EvidenceSpan(
+                                str((s.hit.extra or {}).get("projection_generation", "")),
+                                s.hit.document_id, s.hit.chunk_id, s.hit.source_hash,
+                                s.start_offset, s.end_offset, s.text,
+                            ) for s in selected))
+                        except (ValueError, TypeError):
+                            results.append(NormalizationResult(NormalizationStatus.REJECTED, None, ("INVALID_CONTEXT_BUNDLE",)))
+                            continue
+                        def trusted_text(e):
+                            for s in selected:
+                                if (s.hit.document_id, s.hit.chunk_id, s.hit.source_hash, (s.hit.extra or {}).get("projection_generation")) == (e.document_id, e.chunk_id, e.source_hash, e.generation_id):
+                                    return s.hit.text
+                            raise ValueError("unknown evidence")
+                        results.append(normalize_rule(bundle, stage=RuleStage(selection.stage.value), family=selection.family.value, source_lookup=source_lookup or trusted_text))
+        return tuple(results)
 
     def extract_actionable(
         self, sentences: Sequence[EvidenceSentence]
