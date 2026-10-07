@@ -49,6 +49,11 @@ _STATUS_REPORT_FIELDS = frozenset(
         "selected_groups_by_family",
         "deferred_groups_by_family",
         "reason_code_counts",
+        "supported_rule_count",
+        "rejected_rule_count",
+        "nonexecutable_candidate_count",
+        "eligible_candidate_count",
+        "candidate_reason_code_counts",
     }
 )
 
@@ -263,6 +268,7 @@ def _parser() -> argparse.ArgumentParser:
     discover.add_argument("--max-output-tokens", type=_positive_int, default=512)
     discover.add_argument("--context-tokens", type=_positive_int, default=8192)
     discover.add_argument("--resume", action="store_true")
+    discover.add_argument("--normalization-schema", choices=("canonical-v1", "book-normalization-v2"), default="canonical-v1")
     discover.add_argument("--json", action="store_true")
 
     evaluate = commands.add_parser(
@@ -395,6 +401,7 @@ def _discover(args: argparse.Namespace) -> int:
         context_tokens=args.context_tokens,
         resume=args.resume,
         teacher_factory=lambda: create_local_teacher(args),
+        **({"normalization_schema": args.normalization_schema} if args.normalization_schema != "canonical-v1" else {}),
     )
     print(json.dumps(dict(identity), sort_keys=True, separators=(",", ":")))
     return _EXIT_OK

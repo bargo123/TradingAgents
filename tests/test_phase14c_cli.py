@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+
+def test_discover_accepts_explicit_v2_schema_without_loading_runtime():
+    from cli.phase14c import _parser
+    parser = _parser()
+    required = ["discover", "--knowledge-root", "knowledge", "--expected-generation", "gen", "--expected-fingerprint", "a" * 64,
+        "--expected-population-hash", "sha256:" + "b" * 64, "--phase14c-artifact-root", "new-run",
+        "--embedding-model-path", "embedding", "--atomic-cache-path", "cache.db", "--model", "qwen3.5:2b",
+        "--model-version", "digest", "--ollama-endpoint", "http://127.0.0.1:11434", "--phase14a-db", "p14.db",
+        "--hft-db", "hft.db", "--demo-db", "demo.db"]
+    assert parser.parse_args(required).normalization_schema == "canonical-v1"
+    assert parser.parse_args(required + ["--normalization-schema", "book-normalization-v2"]).normalization_schema == "book-normalization-v2"
+    with pytest.raises(SystemExit):
+        parser.parse_args(required + ["--normalization-schema", "unknown"])
+
 import builtins
 import json
 from pathlib import Path

@@ -912,6 +912,7 @@ def _build_run_identity(
     atomic_cache_path: Path,
     source_paths: Phase14CSourcePaths,
     source_fingerprints: Mapping[str, str],
+    normalization_schema: str = "canonical-v1",
 ) -> Phase14CRunIdentity:
 
     artifact_schema = {
@@ -920,7 +921,11 @@ def _build_run_identity(
         "validated_specs": VALIDATED_SPEC_SCHEMA_VERSION,
         "resume": RESUME_SCHEMA_VERSION,
     }
-    stage_budgets = dict(AtomicStrategyExtractor._STAGE_BUDGETS)
+    stage_budgets = {key: value for key, value in AtomicStrategyExtractor._STAGE_BUDGETS.items() if key != "NATURAL_RULE_EXTRACTION"}
+    if normalization_schema != "canonical-v1":
+        from .book_normalization_models import SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION
+        artifact_schema["normalization"] = (SCHEMA_VERSION, GRAMMAR_VERSION, FEATURE_CONTRACT_VERSION)
+        stage_budgets["NATURAL_RULE_EXTRACTION"] = AtomicStrategyExtractor._STAGE_BUDGETS["NATURAL_RULE_EXTRACTION"]
     source_path_map = _source_path_map(source_paths)
     return Phase14CRunIdentity(
         generation_id=pin.generation_id,
@@ -933,7 +938,7 @@ def _build_run_identity(
         selection_version=DISCOVERY_SELECTION_VERSION,
         selection_config_fingerprint=_sha256_json(selection_limits),
         assembly_version=PHASE14C_ASSEMBLY_VERSION,
-        assembly_schema_version=PHASE14C_ASSEMBLY_SCHEMA_VERSION,
+        assembly_schema_version=PHASE14C_ASSEMBLY_SCHEMA_VERSION if normalization_schema == "canonical-v1" else normalization_schema,
         artifact_schema_fingerprint=_sha256_json(artifact_schema),
         provider="ollama-local",
         ollama_endpoint=endpoint,
@@ -947,7 +952,7 @@ def _build_run_identity(
         atomic_cache_schema_version=ATOMIC_CACHE_SCHEMA_VERSION,
         presence_prompt_version=_PRESENCE_PROMPT_CACHE_VERSION,
         presence_schema_version=_PRESENCE_SCHEMA_CACHE_VERSION,
-        extraction_prompt_version=ATOMIC_PROMPT_VERSION,
+        extraction_prompt_version=ATOMIC_PROMPT_VERSION if normalization_schema == "canonical-v1" else "book-natural-selection-v1",
         segmentation_version=EVIDENCE_SEGMENTATION_VERSION,
         stage_budgets_fingerprint=_sha256_json(stage_budgets),
         resume_schema_version=RESUME_SCHEMA_VERSION,
@@ -1162,8 +1167,14 @@ def run_phase14c_discovery(
     resume: bool,
     teacher_factory: Any,
     top_k_per_formulation: int = 10,
+    normalization_schema: str = "canonical-v1",
 ) -> dict[str, Any]:
     """Run pinned local discovery, writing only structured evidence and safe telemetry."""
+
+    if normalization_schema not in {"canonical-v1", "book-normalization-v2"}:
+        raise ValueError("unknown book normalization schema")
+    if normalization_schema != "canonical-v1" and resume:
+        raise ValueError("V2 discovery requires a fresh run; cannot resume a V1 run")
 
     if not isinstance(source_paths, Phase14CSourcePaths):
         raise TypeError("source_paths must be Phase14CSourcePaths")
@@ -1247,6 +1258,7 @@ def run_phase14c_discovery(
         atomic_cache_path=cache_path,
         source_paths=source_paths,
         source_fingerprints=source_fingerprints,
+        normalization_schema=normalization_schema,
     )
 
     if resume:
@@ -1327,6 +1339,24 @@ def run_phase14c_discovery(
         unique_actionable: dict[str, Any] = {}
         for sentence in actionable_sentences:
             unique_actionable.setdefault(sentence.evidence_id, sentence)
+
+        if normalization_schema == "book-normalization-v2":
+            from .book_v2_artifacts import pinned_source_lookup, publish_v2
+            lookup = pinned_source_lookup(knowledge, generation_id=generation_pin.generation_id, population_hash=generation_pin.population_hash)
+            catalog_before = _source_file_fingerprint(knowledge / "catalog.sqlite3")
+            start_call = len(get_teacher().calls) if unique_actionable else 0
+            results = get_teacher().extract_actionable_v2(tuple(unique_actionable.values()), source_lookup=lookup) if unique_actionable else ()
+            pin_after, inventory_after = read_phase7_inventory(knowledge, expected_generation_id=expected_generation_id, expected_generation_fingerprint=expected_generation_fingerprint, expected_population_hash=expected_population_hash)
+            if pin_after != generation_pin or inventory_after != inventory or _fingerprint_sources(source_paths) != dict(source_fingerprints) or _source_file_fingerprint(knowledge / "catalog.sqlite3") != catalog_before:
+                raise ValueError("pinned sources changed during V2 normalization")
+            v2_calls = tuple(get_teacher().calls[start_call:]) if unique_actionable else ()
+            report = publish_v2(root, identity=identity.to_dict(), results=results, source_lookup=lookup,
+                telemetry=[c.to_dict() for c in (*presence_telemetry, *v2_calls)],
+                coverage={"selected_group_count": len(selection.groups), "deferred_group_count": selection.deferred_group_count, "unique_retrieved_chunks": retrieval.unique_hit_count, "catalog_sha256": catalog_before}, existing_run=True)
+            # Record trusted lookup location separately; it grants no execution authority.
+            _write_artifact(root, "v2-source-location.json", _json_bytes({"knowledge_root": str(knowledge)}))
+            update_run_manifest_status(root, identity, "FAILED")
+            return report
 
         if unique_actionable:
             extraction = get_teacher().extract_actionable(tuple(unique_actionable.values()))
@@ -1660,6 +1690,15 @@ def run_phase14c_evaluation(
     """Evaluate only integrity-checked HFT specs under the existing replay gate."""
 
     root = Path(artifact_root).expanduser().resolve(strict=True)
+    if (root / "book-v2-manifest.json").exists():
+        from .book_v2_artifacts import evaluate_v2_artifacts, pinned_source_lookup
+        manifest = _read_json_object(root / "book-v2-manifest.json")
+        location = _read_json_object(root / "v2-source-location.json")
+        identity = manifest["identity"]
+        lookup = pinned_source_lookup(Path(location["knowledge_root"]), generation_id=identity["generation_id"], population_hash=identity["population_hash"])
+        if _fingerprint_sources(source_paths) != identity.get("source_fingerprints"):
+            raise ValueError("V2 replay source fingerprints changed")
+        return evaluate_v2_artifacts(root, source_lookup=lookup)
     specs, discovery_report = load_complete_discovery_artifacts(root)
     evaluation_root = root / "evaluations"
     if evaluation_root.exists():
