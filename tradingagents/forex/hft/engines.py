@@ -215,6 +215,7 @@ class HftExecutionEngine:
         stop_distance_points: float = 20.0,
         take_profit_distance_points: float = 30.0,
         profit_target_fraction: float = 1.5,
+        stop_loss_fraction: float = 1.0,
         time_stop_seconds: int = 30,
         emergency_stop_distance_points: float = 100.0,
         hard_max_duration_seconds: float | None = None,
@@ -228,6 +229,7 @@ class HftExecutionEngine:
             stop_distance_points <= 0
             or take_profit_distance_points <= 0
             or profit_target_fraction <= 0
+            or stop_loss_fraction <= 0
             or time_stop_seconds <= 0
             or emergency_stop_distance_points <= 0
             or max_exit_spread_points <= 0
@@ -246,6 +248,7 @@ class HftExecutionEngine:
         self.stop_distance_points = float(stop_distance_points)
         self.take_profit_distance_points = float(take_profit_distance_points)
         self.profit_target_fraction = float(profit_target_fraction)
+        self.stop_loss_fraction = float(stop_loss_fraction)
         self.time_stop_seconds = int(time_stop_seconds)
         self.emergency_stop_distance_points = float(emergency_stop_distance_points)
         self.hard_max_duration_seconds = hard_max
@@ -434,6 +437,14 @@ class HftExecutionEngine:
         if tracked.current_pnl_points >= max(1.0, expected * self.profit_target_fraction):
             tracked.profit_protection_state = "EXIT_PENDING"
             return "TAKE_PROFIT"
+        # Symmetric counterpart to TAKE_PROFIT: without this, an adverse move
+        # that never produces a confirmed momentum reversal (see
+        # STRATEGY_INVALIDATION below) has no size-based exit until the
+        # far-away EMERGENCY_BROKER_STOP, letting losers run many times
+        # larger than winners are ever allowed to keep.
+        if tracked.current_pnl_points <= -max(1.0, expected * self.stop_loss_fraction):
+            tracked.profit_protection_state = "EXIT_PENDING"
+            return "MAE_STOP"
         arm_threshold = max(1.0, expected * profile.protection_arm_fraction)
         micro_threshold = max(1.0, expected * profile.micro_reversal_mfe_fraction)
         reversal = (

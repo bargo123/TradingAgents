@@ -92,6 +92,7 @@ class DemoRuntimeConfig:
     cost_safety_margin_points: float = 1.0
     stop_distance_points: float = 20.0
     take_profit_distance_points: float = 30.0
+    stop_loss_fraction: float = 1.0
     emergency_stop_distance_points: float = 100.0
     emergency_take_profit_distance_points: float = 500.0
     time_stop_seconds: int = 30
@@ -146,6 +147,7 @@ class DemoRuntimeConfig:
         for name in (
             "stop_distance_points",
             "take_profit_distance_points",
+            "stop_loss_fraction",
             "emergency_stop_distance_points",
             "emergency_take_profit_distance_points",
             "max_exit_spread_points",
@@ -230,6 +232,7 @@ class DemoHftRuntime:
             arbiter=SignalArbiter(cost_safety_margin_points=config.cost_safety_margin_points),
             stop_distance_points=config.stop_distance_points,
             take_profit_distance_points=config.take_profit_distance_points,
+            stop_loss_fraction=config.stop_loss_fraction,
             time_stop_seconds=config.time_stop_seconds,
             emergency_stop_distance_points=config.emergency_stop_distance_points,
             hard_max_duration_seconds=config.max_hft_duration_seconds,
@@ -1395,6 +1398,8 @@ class DemoHftRuntime:
             self._order_latencies.append((time.perf_counter() - order_started) * 1000.0)
             self._record_submission(tick.timestamp)
             if result.classification in {"FILLED", "PARTIAL"}:
+                if self.gateway.last_exit_realized_pnl is not None:
+                    self.circuit.record_closed_trade(self.gateway.last_exit_realized_pnl)
                 self._owned_position = None
                 if self.shadow_store is not None:
                     self._persist(

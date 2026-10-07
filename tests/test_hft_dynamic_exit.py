@@ -190,6 +190,40 @@ def test_dynamic_exit_takes_profit_when_expected_move_is_reached():
     assert decision.current_pnl_points > 12.5
 
 
+def test_dynamic_exit_mae_stop_is_symmetric_with_take_profit_without_requiring_confirmed_reversal():
+    """A losing position with no confirmed reversal signal (momentum/persistence
+    both zero) must still be cut once it has moved against entry by roughly as
+    much as TAKE_PROFIT allows winners to run. Before this exit existed, such a
+    position had no size-based stop short of the far-away EMERGENCY_BROKER_STOP,
+    letting losers run many times larger than winners were ever allowed to keep."""
+    features = _features((1.10000, 1.10002, 1.10004, 1.10006, 1.10008))
+    state = _state(features.timestamp - timedelta(seconds=1))
+    engine = HftExecutionEngine()
+    entry_price = features.ask
+    adverse_bid = entry_price - 10 * features.point
+    adverse = _position_features(
+        features,
+        bid=adverse_bid,
+        ask=adverse_bid + features.spread,
+        momentum=0.0,
+        persistence=0.0,
+    )
+
+    decision = engine.on_tick(
+        state,
+        adverse,
+        position_state=PositionState.LONG,
+        entry_price=entry_price,
+        entry_at=features.timestamp,
+        expected_move_points=8.0,
+        strategy_id="range_rejection",
+    )
+
+    assert decision.action is FastAction.EXIT
+    assert decision.reason == "MAE_STOP"
+    assert decision.current_pnl_points < -7.5
+
+
 def test_expected_move_scales_no_progress_and_range_is_tighter_than_momentum():
     features = _features((1.10000, 1.10002, 1.10004, 1.10006, 1.10008))
     state = _state(features.timestamp - timedelta(seconds=1))

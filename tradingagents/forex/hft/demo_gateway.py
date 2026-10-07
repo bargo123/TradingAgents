@@ -133,6 +133,7 @@ class VerifiedDemoExecutionGateway:
         self.comment = comment.strip()[:31]
         self.volume_cap = float(volume_cap)
         self.gate = gate
+        self.last_exit_realized_pnl: float | None = None
 
     def _operation(self, name: str):
         if self.gate is None:
@@ -424,6 +425,7 @@ class VerifiedDemoExecutionGateway:
                 realized_pnl, pnl_status, pnl_deal_count, pnl_error_type = (
                     self._realized_position_pnl(position_ticket)
                 )
+                self.last_exit_realized_pnl = realized_pnl
                 self.store.record_exit(
                     ticket=int(owned_position["ticket"]),
                     reason=exit_reason,

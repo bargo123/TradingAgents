@@ -302,6 +302,60 @@ def test_successful_close_persists_net_pnl_from_all_position_deals(tmp_path: Pat
     assert payload["realized_pnl_source"] == "MT5_POSITION_DEALS"
 
 
+def test_submit_exposes_last_exit_realized_pnl_for_circuit_breaker_wiring(tmp_path: Path):
+    """The runtime's loss-streak circuit breaker only has a chance to work if a
+    closed trade's realized P&L is actually observable right after submit();
+    this was previously computed and persisted to the store but never surfaced
+    anywhere the runtime could feed it back into DemoCircuitBreaker."""
+    gateway, _ = _gateway(tmp_path)
+    assert gateway.last_exit_realized_pnl is None
+    entry = gateway.submit(_intent())
+    assert gateway.last_exit_realized_pnl is None
+    gateway.store.record_position(
+        {
+            "ticket": entry.order_ticket,
+            "position_ticket": entry.order_ticket,
+            "intent_id": "intent-1",
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "volume": 0.01,
+            "price_open": 1.1002,
+            "stop_loss": 1.0991,
+            "take_profit": 1.1021,
+            "state": "OPEN",
+        }
+    )
+    gateway.provider.get_history_deals = lambda ticket: (
+        {
+            "ticket": 21,
+            "position_id": entry.order_ticket,
+            "entry": 0,
+            "profit": 0.0,
+            "commission": -0.15,
+            "swap": 0.0,
+            "fee": 0.0,
+        },
+        {
+            "ticket": 22,
+            "position_id": entry.order_ticket,
+            "entry": 1,
+            "profit": -0.80,
+            "commission": -0.15,
+            "swap": -0.01,
+            "fee": 0.0,
+        },
+    )
+
+    result = gateway.submit(
+        _intent(intent_id="exit-1", direction="SHORT", requested_price=1.1),
+        position_ticket=entry.order_ticket,
+        exit_reason="EMERGENCY_BROKER_STOP",
+    )
+
+    assert result.classification == "FILLED"
+    assert gateway.last_exit_realized_pnl == pytest.approx(-1.11)
+
+
 def test_close_keeps_realized_pnl_unknown_when_broker_history_is_unavailable(tmp_path: Path):
     gateway, _ = _gateway(tmp_path)
     entry = gateway.submit(_intent())
