@@ -50,3 +50,27 @@ def test_risk_engine_enforces_explicit_session_constraints():
     decision = engine.evaluate(FastAction.ENTER_LONG, _tick(), _context(session="ASIA"), allowed_sessions=("LONDON",))
     assert decision.accepted is False
     assert decision.reason_code == "SESSION_LIMIT"
+
+
+def test_manual_pause_policy_ignores_loss_stops_but_keeps_entry_validation():
+    engine = RiskEngine(RiskConfig(enforce_loss_limits=False, max_daily_loss=0.02, max_drawdown=0.1, max_consecutive_losses=3))
+    losing_context = _context(daily_loss=0.25, drawdown=0.25, consecutive_losses=20)
+
+    decision = engine.evaluate(FastAction.ENTER_LONG, _tick(), losing_context)
+
+    assert decision.accepted is True
+    assert decision.risk_fraction == 0.01
+
+
+def test_manual_pause_policy_does_not_disable_spread_or_exposure_gates():
+    engine = RiskEngine(RiskConfig(enforce_loss_limits=False, max_spread_points=20, max_open_exposure=1.0))
+
+    spread_decision = engine.evaluate(FastAction.ENTER_LONG, _tick(spread=0.001), _context(daily_loss=0.5))
+    exposure_decision = engine.evaluate(
+        FastAction.ENTER_LONG,
+        _tick(),
+        _context(open_exposure=1.0, daily_loss=0.5),
+    )
+
+    assert spread_decision.reason_code == "SPREAD_LIMIT"
+    assert exposure_decision.reason_code == "EXPOSURE_LIMIT"

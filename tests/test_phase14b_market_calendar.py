@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -113,6 +114,34 @@ def test_dst_local_ambiguity_is_not_accepted_as_calendar_input(tmp_path) -> None
     assert calendar.status_at(
         ambiguous, broker_server="Example-Demo", symbol="EURUSD.a"
     ) is CalendarStatus.UNKNOWN
+
+
+def test_versioned_metaquotes_demo_eurusd_calendar_matches_observed_week_and_dst() -> None:
+    path = Path(__file__).parents[1] / "config" / "broker_sessions" / "metaquotes-demo-eurusd.json"
+    calendar = BrokerSessionCalendar.from_json(path)
+
+    assert calendar.calendar_version == "metaquotes-demo-eurusd-new-york-fx-week-v1-observed-2026-10-04"
+    assert calendar.timezone.key == "America/New_York"
+    assert calendar.status_at(
+        datetime(2026, 10, 4, 21, 0, tzinfo=UTC),
+        broker_server="MetaQuotes-Demo",
+        symbol="EURUSD",
+    ) is CalendarStatus.OPEN
+    assert calendar.status_at(
+        datetime(2026, 10, 2, 21, 0, tzinfo=UTC),
+        broker_server="MetaQuotes-Demo",
+        symbol="EURUSD",
+    ) is CalendarStatus.CLOSED
+    assert calendar.status_at(
+        datetime(2026, 11, 1, 22, 0, tzinfo=UTC),
+        broker_server="MetaQuotes-Demo",
+        symbol="EURUSD",
+    ) is CalendarStatus.OPEN
+    assert calendar.status_at(
+        datetime(2026, 10, 3, 15, 0, tzinfo=UTC),
+        broker_server="MetaQuotes-Demo",
+        symbol="EURUSD",
+    ) is CalendarStatus.CLOSED
 
 
 @pytest.mark.parametrize(

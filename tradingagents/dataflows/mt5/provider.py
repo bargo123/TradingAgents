@@ -614,6 +614,7 @@ class MT5Provider:
             "profit",
             "swap",
             "commission",
+            "fee",
             "magic",
             "comment",
         )

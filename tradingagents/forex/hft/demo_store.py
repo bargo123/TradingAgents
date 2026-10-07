@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -689,6 +690,101 @@ class DemoExecutionStore:
             row = db.execute("SELECT * FROM demo_circuit_state WHERE singleton_id=1").fetchone()
             return {} if row is None else dict(row)
 
+    def count_recent_broker_submissions(self, since: datetime) -> int:
+        """Count recorded DEMO broker submissions at/after an aware UTC cutoff."""
+
+        if not isinstance(since, datetime) or since.tzinfo is None or since.utcoffset() is None:
+            raise ValueError("submission cutoff must be timezone-aware")
+        cutoff = _iso(since)
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                """
+                SELECT COUNT(*) FROM demo_order_results
+                 WHERE observed_at>=? AND broker_order_sent=1
+                   AND execution_mode='DEMO' AND real_money=0
+                """,
+                (cutoff,),
+            ).fetchone()
+        return int(row[0])
+
+    def recover_expired_order_rate_circuit(
+        self,
+        *,
+        now: datetime,
+        cooldown_seconds: float,
+        max_submissions: int,
+    ) -> bool:
+        """CAS-recover only the expired bounded broker-submission circuit.
+
+        Daily risk fields are intentionally preserved.  Recovery is denied
+        unless the exact rate-circuit reason is present, its cooldown elapsed,
+        and the recorded broker submissions in that same window are below the
+        existing runtime limit.
+        """
+
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("circuit recovery time must be timezone-aware")
+        try:
+            cooldown = float(cooldown_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("cooldown_seconds must be finite and positive") from exc
+        if not math.isfinite(cooldown) or cooldown <= 0:
+            raise ValueError("cooldown_seconds must be finite and positive")
+        if isinstance(max_submissions, bool) or not isinstance(max_submissions, int) or max_submissions <= 0:
+            raise ValueError("max_submissions must be a positive integer")
+        now_utc = now.astimezone(timezone.utc)
+        now_text = _iso(now_utc)
+        cutoff_text = _iso(now_utc - timedelta(seconds=cooldown))
+        self.initialize()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT status,reason,updated_at FROM demo_circuit_state WHERE singleton_id=1"
+            ).fetchone()
+            if (
+                row is None
+                or row[0] != "HFT_ORDER_RATE_CIRCUIT_OPEN"
+                or row[1] != "bounded broker submission rate exceeded"
+            ):
+                db.rollback()
+                return False
+            try:
+                triggered_at = datetime.fromisoformat(str(row[2]).replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                db.rollback()
+                return False
+            if triggered_at.tzinfo is None or now_utc < triggered_at.astimezone(timezone.utc) + timedelta(seconds=cooldown):
+                db.rollback()
+                return False
+            submissions = int(
+                db.execute(
+                    """
+                    SELECT COUNT(*) FROM demo_order_results
+                     WHERE observed_at>=? AND broker_order_sent=1
+                       AND execution_mode='DEMO' AND real_money=0
+                    """,
+                    (cutoff_text,),
+                ).fetchone()[0]
+            )
+            if submissions >= max_submissions:
+                db.rollback()
+                return False
+            changed = db.execute(
+                """
+                UPDATE demo_circuit_state
+                   SET status='READY',reason=NULL,updated_at=?
+                 WHERE singleton_id=1 AND status='HFT_ORDER_RATE_CIRCUIT_OPEN'
+                   AND reason='bounded broker submission rate exceeded' AND updated_at=?
+                """,
+                (now_text, str(row[2])),
+            ).rowcount
+            if changed != 1:
+                db.rollback()
+                return False
+            db.commit()
+        return True
+
     def set_circuit_state(
         self,
         *,
@@ -756,7 +852,16 @@ class DemoExecutionStore:
             available = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if not set(tables.values()).issubset(available):
                 return {}
-            return {name: int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for name, table in tables.items()}
+            snapshot = {
+                name: int(db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for name, table in tables.items()
+            }
+            snapshot["open_positions"] = int(
+                db.execute(
+                    "SELECT COUNT(*) FROM demo_positions WHERE state='OPEN'"
+                ).fetchone()[0]
+            )
+            return snapshot
 
     def read_only_circuit_state(self) -> dict[str, Any]:
         resolved = self.path.expanduser().resolve()

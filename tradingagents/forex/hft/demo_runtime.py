@@ -30,7 +30,7 @@ from tradingagents.forex.hft.market_lifecycle import (
 )
 from tradingagents.forex.watcher import Mt5OperationBusy, SerializedMt5OperationGate
 
-from .demo_gateway import VerifiedDemoExecutionGateway
+from .demo_gateway import VerifiedDemoExecutionGateway, _net_pnl_from_position_deals
 from .demo_models import DemoAccountSnapshot, DemoOrderIntent
 from .demo_risk import DemoCircuitBreaker, normalize_volume, validate_stop_levels
 from .demo_store import DemoExecutionStore
@@ -80,6 +80,7 @@ class DemoRuntimeConfig:
     deviation_points: int = 20
     initial_daily_loss_limit: float = 0.02
     max_consecutive_losses: int = 3
+    automatic_loss_pauses: bool = True
     magic: int = 12012012
     comment: str = "TradingAgents-P12D-DEMO"
     hft_first: bool = False
@@ -122,6 +123,8 @@ class DemoRuntimeConfig:
             raise ValueError("DEMO volume/deviation bounds are invalid")
         if self.initial_daily_loss_limit <= 0 or self.max_consecutive_losses <= 0:
             raise ValueError("DEMO circuit bounds are invalid")
+        if not isinstance(self.automatic_loss_pauses, bool):
+            raise ValueError("automatic_loss_pauses must be boolean")
         if not isinstance(self.hft_first, bool):
             raise ValueError("hft_first must be boolean")
         policy = str(self.no_regime_policy).strip().upper()
@@ -241,11 +244,13 @@ class DemoHftRuntime:
                 max_risk_fraction=config.risk_ceiling,
                 max_daily_loss=config.initial_daily_loss_limit,
                 max_consecutive_losses=config.max_consecutive_losses,
+                enforce_loss_limits=config.automatic_loss_pauses,
             )
         )
         self.circuit = DemoCircuitBreaker(
             daily_loss_limit=config.initial_daily_loss_limit,
             max_consecutive_losses=config.max_consecutive_losses,
+            pause_on_loss=config.automatic_loss_pauses,
         )
         self._started = False
         self._last_tick: datetime | None = None
@@ -261,14 +266,17 @@ class DemoHftRuntime:
         self._last_submission_at: datetime | None = None
         self._order_rate_circuit_open = False
         self._persistence: AsyncPersistenceQueue | None = None
-        self._decision_latencies: list[float] = []
-        self._order_latencies: list[float] = []
+        # Continuous runs must not retain one Python object per lifetime tick.
+        self._decision_latencies: deque[float] = deque(maxlen=4096)
+        self._order_latencies: deque[float] = deque(maxlen=4096)
         self._market_controller = (
             MarketLifecycleController() if config.market_calendar_path is not None else None
         )
         self._market_calendar: BrokerSessionCalendar | None = None
         self._market_calendar_error: str | None = None
         self._market_last_tick_identity: tuple[str, int] | None = None
+        self._market_last_quote_change_at: datetime | None = None
+        self._market_last_position_check_at: datetime | None = None
         if config.market_calendar_path is not None:
             try:
                 self._market_calendar = BrokerSessionCalendar.from_json(config.market_calendar_path)
@@ -342,7 +350,7 @@ class DemoHftRuntime:
                     error_reason=MarketReason.BROKER_DISCONNECTED,
                 )
                 raise Mt5AccountDisconnectedError("MT5 disconnected during market probe")
-            account = self._account(force=True)
+            account = self._account()
             account_healthy = getattr(account, "trade_mode", None) == self.gateway.demo_trade_mode
             with self.mt5_gate.acquire("market_tick_probe"):
                 probe = self.provider.probe_tick(self.config.symbol)
@@ -362,6 +370,18 @@ class DemoHftRuntime:
             )
             if identity is not None:
                 self._market_last_tick_identity = identity
+            probe_now = utc(self.clock(), "market_probe_now")
+            if fresh_identity:
+                self._market_last_quote_change_at = probe_now
+            # Duplicate polls are not a feed outage. Retain OPEN only within
+            # the provider's existing freshness bound after an observed change.
+            max_age = float(getattr(getattr(self.provider, "clock_config", None), "max_tick_age_seconds", 120.0))
+            recent_change = (
+                controller.observation.state is MarketState.MARKET_OPEN
+                and getattr(probe, "available", False)
+                and self._market_last_quote_change_at is not None
+                and 0 <= (probe_now - self._market_last_quote_change_at).total_seconds() <= max_age
+            )
             if first_identity and getattr(probe, "available", False):
                 return self._market_idle_result(
                     controller.observe(
@@ -376,9 +396,21 @@ class DemoHftRuntime:
                 calendar_status,
                 terminal_healthy=True,
                 account_healthy=account_healthy,
-                tick_fresh=fresh_identity,
+                tick_fresh=fresh_identity or recent_change,
                 error_reason=None if account_healthy else MarketReason.DATA_FAILURE,
+                require_validation=self._order_rate_circuit_open,
             )
+            if observation.state is MarketState.MARKET_OPEN:
+                # _tick still applies calibrated broker time/freshness checks;
+                # the execution gateway still checks DEMO immediately at send.
+                if self._open_position() is not None and (
+                    self._market_last_position_check_at is None
+                    or (probe_now - self._market_last_position_check_at).total_seconds()
+                    >= self.config.account_refresh_seconds
+                ):
+                    self._validate_market_reconciliation()
+                    self._market_last_position_check_at = probe_now
+                return self._tick()
             if observation.state is not MarketState.MARKET_OPENING_VALIDATION:
                 return self._market_idle_result(observation)
             try:
@@ -409,6 +441,7 @@ class DemoHftRuntime:
                     controller.complete_opening_validation(False, reason=MarketReason.DATA_FAILURE)
                 )
             controller.complete_opening_validation(True, reason=observation.reason)
+            self._market_last_position_check_at = probe_now
             return tick
         except Mt5OperationBusy:
             return {
@@ -463,13 +496,74 @@ class DemoHftRuntime:
         if account_snapshot.server is None or account_snapshot.trade_mode != self.gateway.demo_trade_mode:
             raise Mt5DataError("authoritative DEMO account identity is unavailable")
         self._account(force=True)
-        self._validate_market_reconciliation()
+        persisted_circuit = self.store.read_circuit_state()
+        if persisted_circuit.get("status") == "HFT_ORDER_RATE_CIRCUIT_OPEN":
+            if not self._recover_expired_order_rate_circuit(
+                now=now,
+                broker_tick_timestamp=tick.timestamp,
+            ):
+                raise Mt5DataError("DEMO order-rate circuit recovery conditions are not met")
+        else:
+            self._validate_market_reconciliation()
         if self.circuit.status != "READY" or self._order_rate_circuit_open:
             raise Mt5DataError("DEMO risk or order-rate circuit is not ready")
         persisted_circuit = self.store.read_circuit_state()
         if persisted_circuit.get("status") not in (None, "READY"):
             raise Mt5DataError("persisted DEMO risk circuit is not ready")
         return tick
+
+    def _recover_expired_order_rate_circuit(
+        self,
+        *,
+        now: datetime,
+        broker_tick_timestamp: datetime,
+    ) -> bool:
+        """Recover only the expired rate circuit after DEMO/reconciliation gates.
+
+        Called only after the current tick has passed market-open validation.
+        It independently rechecks account and broker/local reconciliation
+        before the narrowly scoped store transition.
+        """
+
+        state = self.store.read_circuit_state()
+        status = state.get("status")
+        if status in (None, "READY"):
+            return True
+        if status != "HFT_ORDER_RATE_CIRCUIT_OPEN":
+            return False
+        if state.get("reason") != "bounded broker submission rate exceeded":
+            return False
+        try:
+            triggered_at = datetime.fromisoformat(
+                str(state.get("updated_at", "")).replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+        if (
+            triggered_at.tzinfo is None
+            or utc(now, "order_rate_recovery_now")
+            < triggered_at.astimezone(timezone.utc)
+            + timedelta(seconds=self.config.order_rate_window_seconds)
+        ):
+            return False
+        broker_cutoff = broker_tick_timestamp.timestamp() - self.config.order_rate_window_seconds
+        while self._submission_times and self._submission_times[0].timestamp() < broker_cutoff:
+            self._submission_times.popleft()
+        if len(self._submission_times) >= self.config.max_order_submissions:
+            return False
+        account = self.gateway.verify_demo_account()
+        if account.server is None or account.trade_mode != self.gateway.demo_trade_mode:
+            return False
+        self._validate_market_reconciliation()
+        recovered = self.store.recover_expired_order_rate_circuit(
+            now=now,
+            cooldown_seconds=self.config.order_rate_window_seconds,
+            max_submissions=self.config.max_order_submissions,
+        )
+        if recovered:
+            self._order_rate_circuit_open = False
+            self.circuit.status = "READY"
+        return recovered
 
     def _validate_market_reconciliation(self) -> None:
         reconciliation = self.store.read_reconciliation_state()
@@ -490,6 +584,16 @@ class DemoHftRuntime:
             if str(row.get("state", "")).upper() == "OPEN"
         )
         if not broker_positions and not owned:
+            return
+        if not broker_positions and len(owned) == 1:
+            # Only exact broker exit history may clear an owned OPEN record
+            # automatically. Missing/foreign/ambiguous history stays blocked.
+            result = self.reconcile_position(int(owned[0]["ticket"]), require_closed_history=True)
+            if result.get("status") != "RECONCILED" or result.get("terminal_state") != "CLOSED":
+                raise Mt5DataError("DEMO reconciliation requires exact closed-position history")
+            with self.mt5_gate.acquire("market_reconciliation_confirm_flat"):
+                if tuple(position_reader(self.config.symbol) or ()) or tuple(order_reader(self.config.symbol) or ()):
+                    raise Mt5DataError("broker state changed during reconciliation")
             return
         if len(broker_positions) != 1 or len(owned) != 1:
             raise Mt5DataError("broker and local open-position state is ambiguous")
@@ -762,7 +866,13 @@ class DemoHftRuntime:
             self._submission_times.popleft()
         if len(self._submission_times) >= self.config.max_order_submissions:
             self._order_rate_circuit_open = True
-            self.store.set_circuit_state(status="HFT_ORDER_RATE_CIRCUIT_OPEN", reason="bounded broker submission rate exceeded")
+            self.store.set_circuit_state(
+                status="HFT_ORDER_RATE_CIRCUIT_OPEN",
+                daily_start_equity=self.circuit.daily_start_equity,
+                daily_loss_fraction=self.circuit.daily_loss_fraction,
+                consecutive_losses=self.circuit.consecutive_losses,
+                reason="bounded broker submission rate exceeded",
+            )
             return False
         return not (
             self._last_submission_at is not None
@@ -801,7 +911,7 @@ class DemoHftRuntime:
             return False
         return True
 
-    def reconcile_position(self, ticket: int) -> dict[str, Any]:
+    def reconcile_position(self, ticket: int, *, require_closed_history: bool = False) -> dict[str, Any]:
         """Reconcile one stale DEMO ledger position using this owner's MT5 session.
 
         All broker reads are performed under the existing serialized gate.  A
@@ -1013,6 +1123,13 @@ class DemoHftRuntime:
         def history_matches(record: Any) -> bool:
             if not symbol_matches(record):
                 return False
+            if require_closed_history:
+                # A previous trade's identical magic/comment is not proof for
+                # this ticket. Include the mapped position id when available.
+                return (
+                    _broker_field(record, "magic") == self.config.magic
+                    and bool(numeric_ids(record) & (broker_ids | {self._broker_position_ticket(ledger)}))
+                )
             return bool(numeric_ids(record) & broker_ids) or metadata_matches(record)
 
         history_orders = tuple(item for item in history_orders if history_matches(item))
@@ -1040,11 +1157,19 @@ class DemoHftRuntime:
             for item in history_orders
             if "FILL" in text_state(item) or "DONE" in text_state(item)
         ]
+        if require_closed_history and not close_deals:
+            self.store.record_reconciliation(
+                status="RECONCILIATION_REQUIRED",
+                reason="exact owned position exit history is unavailable",
+                details={"ticket": ticket, "symbol": symbol},
+            )
+            return {"status": "RECONCILIATION_REQUIRED", "reason": "EXACT_CLOSE_HISTORY_REQUIRED"}
         if close_deals:
-            realized = sum(
-                float(_broker_field(item, "profit", 0.0) or 0.0)
-                for item in close_deals
-                if isinstance(_broker_field(item, "profit", 0.0), (int, float))
+            realized, pnl_status, pnl_deal_count, pnl_error_type = (
+                _net_pnl_from_position_deals(
+                    history_deals,
+                    self._broker_position_ticket(ledger),
+                )
             )
             exit_price = _broker_field(close_deals[-1], "price")
             self.store.record_exit(
@@ -1055,13 +1180,26 @@ class DemoHftRuntime:
                     "deal_tickets": [int(_broker_field(item, "ticket", 0) or 0) for item in close_deals],
                     "history_order_count": len(history_orders),
                     "exit_price": exit_price,
+                    "realized_pnl_status": pnl_status,
+                    "realized_pnl_source": (
+                        "MT5_POSITION_DEALS" if realized is not None else None
+                    ),
+                    "realized_pnl_deal_count": pnl_deal_count,
+                    "realized_pnl_error_type": pnl_error_type,
                 },
             )
             self.store.record_position(
                 {**ledger, "state": "CLOSED", "realized_pnl": realized, "exit_price": exit_price, "exit_reason": "BROKER_HISTORY_RECONCILIATION"}
             )
             terminal_state = "CLOSED"
-            result = {"status": "RECONCILED", "terminal_state": terminal_state, "ticket": ticket, "realized_pnl": realized, "exit_price": exit_price}
+            result = {
+                "status": "RECONCILED",
+                "terminal_state": terminal_state,
+                "ticket": ticket,
+                "realized_pnl": realized,
+                "realized_pnl_status": pnl_status,
+                "exit_price": exit_price,
+            }
         elif rejection_records:
             self.store.record_position({**ledger, "state": "REJECTED", "realized_pnl": None, "exit_price": None, "exit_reason": "BROKER_REJECTED"})
             terminal_state = "REJECTED"
@@ -1508,6 +1646,7 @@ class DemoHftRuntime:
         started = time.perf_counter()
         status = "STOPPED"
         observations = 0
+        mt5_operation_busy_drops = 0
         persistence_dropped = 0
         persistence_error: str | None = None
         lease_token: str | None = None
@@ -1529,7 +1668,22 @@ class DemoHftRuntime:
         self._persistence.start()
         try:
             while (limit == 0 or observations < limit) and not (stop_event is not None and stop_event.is_set()):
-                observation = self.run_once()
+                try:
+                    observation = self.run_once()
+                except Mt5OperationBusy:
+                    # The shared MT5 gate is intentionally non-blocking. A
+                    # concurrent read-only watcher operation can therefore
+                    # drop this tick before any MT5 call/order_send occurs.
+                    # Keep the worker and lease alive; the next poll gets a
+                    # fresh tick and reevaluates the position/strategy.
+                    mt5_operation_busy_drops += 1
+                    observation = {
+                        "status": "DROPPED",
+                        "action": "NO_ACTION",
+                        "reason_code": "MT5_OPERATION_BUSY",
+                        "execution_mode": "DEMO",
+                        "broker_order_sent": False,
+                    }
                 observations += 1
                 if lease_token is not None:
                     self.lease_store.heartbeat_lease(lease_token, datetime.now(timezone.utc))
@@ -1564,6 +1718,7 @@ class DemoHftRuntime:
             "market_status": None if self.market_status is None else self.market_status.value,
             "market_reason": None if self.market_reason is None else self.market_reason.value,
             "observed_ticks": observations,
+            "mt5_operation_busy_drops": mt5_operation_busy_drops,
             "runtime_seconds": max(0.0, time.perf_counter() - started),
             "broker_order_sent": self.store.snapshot()["orders"],
             "local_decision_p50_ms": percentile(0.50),
@@ -1572,7 +1727,9 @@ class DemoHftRuntime:
             "local_decision_max_ms": max(ordered) if ordered else None,
             "order_submission_p50_ms": _percentile(order_latencies, 0.50),
             "order_submission_p95_ms": _percentile(order_latencies, 0.95),
+            "order_submission_p99_ms": _percentile(order_latencies, 0.99),
             "order_submission_max_ms": max(order_latencies) if order_latencies else None,
+            "latency_sample_capacity": 4096,
             "persistence_dropped": persistence_dropped,
             "persistence_error": persistence_error,
             "challenger_observation_failures": self.challenger_observation_failures,

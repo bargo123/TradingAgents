@@ -234,6 +234,88 @@ def test_reopen_validation_failure_stays_fail_closed(tmp_path: Path) -> None:
     assert api.order_calls == 0
 
 
+def test_validated_session_does_not_recalibrate_on_each_quote(tmp_path):
+    provider = _Provider(((100, 100_000), (101, 101_000), (102, 102_000)))
+    runtime, api = _runtime(tmp_path, provider, calendar_path=_calendar_file(tmp_path / "calendar.json"))
+    runtime._ensure_run()
+    runtime._market_preflight()
+    runtime._market_preflight()
+    runtime._market_preflight()
+    assert runtime.market_status is MarketState.MARKET_OPEN
+    assert provider.calls.count("calibrate") == 1
+    assert provider.calls.count("positions") == 1
+    assert api.order_calls == 0
+
+
+def test_order_rate_circuit_forces_revalidation_in_an_open_session(tmp_path):
+    provider = _Provider(((100, 100_000), (101, 101_000), (102, 102_000)))
+    runtime, api = _runtime(tmp_path, provider, calendar_path=_calendar_file(tmp_path / "calendar.json"))
+    runtime._ensure_run()
+    runtime._market_preflight()
+    runtime._market_preflight()
+    runtime._order_rate_circuit_open = True
+    runtime.store.set_circuit_state(
+        status="HFT_ORDER_RATE_CIRCUIT_OPEN", daily_start_equity=10000,
+        daily_loss_fraction=0, consecutive_losses=0,
+        reason="bounded broker submission rate exceeded",
+    )
+    result = runtime._market_preflight()
+    assert isinstance(result, dict), "an open rate circuit must not return an executable tick"
+    assert result["status"] == "MARKET_DATA_ERROR"
+    assert runtime._order_rate_circuit_open is True
+    assert provider.calls.count("calibrate") == 2
+    assert api.order_calls == 0
+
+
+def test_duplicate_probe_does_not_invalidate_a_recently_validated_session(tmp_path):
+    from datetime import timedelta
+
+    provider = _Provider(((100, 100_000), (101, 101_000), (101, 101_000)))
+    runtime, api = _runtime(tmp_path, provider, calendar_path=_calendar_file(tmp_path / "calendar.json"))
+    runtime._ensure_run()
+    runtime._market_preflight()
+    runtime._market_preflight()
+    runtime.clock = lambda: UTC_NOW + timedelta(seconds=1)
+    runtime._market_preflight()
+    assert runtime.market_status is MarketState.MARKET_OPEN
+    assert provider.calls.count("calibrate") == 1
+    runtime.clock = lambda: UTC_NOW + timedelta(seconds=121)
+    result = runtime._market_preflight()
+    assert result["status"] == "MARKET_UNKNOWN"
+    assert runtime.market_reason is MarketReason.STALE_DATA
+    assert api.order_calls == 0
+
+
+def test_open_position_checks_follow_maintenance_cadence_not_quote_cadence(tmp_path):
+    from datetime import timedelta
+    from tests.test_phase12d_reconciliation_control import _seed_open_position
+
+    class PositionProvider(_Provider):
+        def get_positions(self, _symbol=None):
+            self.calls.append("positions")
+            return (SimpleNamespace(
+                ticket=152717255467, symbol="EURUSD", type=0, volume=0.01,
+                magic=12012012, comment="TradingAgents-P12D-DEMO",
+            ),)
+
+    provider = PositionProvider(((100, 100_000), (101, 101_000), (102, 102_000), (103, 103_000), (104, 104_000)))
+    runtime, api = _runtime(tmp_path, provider, calendar_path=_calendar_file(tmp_path / "calendar.json"))
+    _seed_open_position(runtime.store)
+    runtime._ensure_run()
+    runtime._market_preflight()
+    runtime._market_preflight()
+    for elapsed in (0.2, 0.4):
+        runtime.clock = lambda elapsed=elapsed: UTC_NOW + timedelta(seconds=elapsed)
+        runtime._market_preflight()
+    assert provider.calls.count("positions") == 1
+    runtime.clock = lambda: UTC_NOW + timedelta(seconds=1.1)
+    runtime._market_preflight()
+    assert provider.calls.count("positions") == 2
+    assert provider.calls.count("calibrate") == 1
+    assert runtime.market_status is MarketState.MARKET_OPEN
+    assert api.order_calls == 0
+
+
 def test_market_closed_poll_interval_is_bounded_and_positive(tmp_path: Path) -> None:
     from tradingagents.forex.hft.demo_runtime import DemoRuntimeConfig
 

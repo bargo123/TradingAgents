@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "calendar_version": "metaquotes-demo-eurusd-new-york-fx-week-v1-observed-2026-10-04",
+  "broker_server": "MetaQuotes-Demo",
+  "symbol": "EURUSD",
+  "timezone": "America/New_York",
+  "valid_from": "2026-09-13",
+  "valid_through": "2027-12-31",
+  "weekly_sessions": {
+    "sun": [{"open": "17:00", "close": "23:59"}],
+    "mon": [{"open": "00:00", "close": "23:59"}],
+    "tue": [{"open": "00:00", "close": "23:59"}],
+    "wed": [{"open": "00:00", "close": "23:59"}],
+    "thu": [{"open": "00:00", "close": "23:59"}],
+    "fri": [{"open": "00:00", "close": "17:00"}],
+    "sat": []
+  },
+  "holidays": [],
+  "date_overrides": {}
+}

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -123,3 +123,72 @@ def test_demo_store_does_not_reopen_closed_position_from_delayed_telemetry(tmp_p
     store.record_position({**position, "state": "OPEN", "current_pnl_points": 3.0})
 
     assert store.read_owned_positions("EURUSD")[0]["state"] == "CLOSED"
+
+
+def _record_broker_submission(store: DemoExecutionStore, *, sent: bool = True) -> None:
+    store.initialize()
+    store.start_run("run-1", git_commit="abc123")
+    intent = _intent()
+    store.record_order_intent("run-1", intent)
+    store.record_order_result(
+        intent_id=intent.intent_id,
+        classification="REJECTED",
+        retcode=10030,
+        order_ticket=None,
+        deal_ticket=None,
+        fill_price=None,
+        fill_volume=None,
+        broker_comment="unsupported filling mode",
+        broker_timestamp=None,
+        request_payload={"symbol": "EURUSD"},
+        broker_order_sent=sent,
+    )
+
+
+def test_order_rate_recovery_requires_exact_reason_elapsed_cooldown_and_preserves_risk(tmp_path: Path):
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    store.set_circuit_state(
+        status="HFT_ORDER_RATE_CIRCUIT_OPEN",
+        daily_start_equity=1234.5,
+        daily_loss_fraction=0.012,
+        consecutive_losses=2,
+        reason="bounded broker submission rate exceeded",
+    )
+
+    assert store.recover_expired_order_rate_circuit(
+        now=now + timedelta(seconds=59), cooldown_seconds=60, max_submissions=20
+    ) is False
+    assert store.recover_expired_order_rate_circuit(
+        now=now + timedelta(seconds=61), cooldown_seconds=60, max_submissions=20
+    ) is True
+
+    state = store.read_circuit_state()
+    assert state["status"] == "READY"
+    assert state["reason"] is None
+    assert state["daily_start_equity"] == 1234.5
+    assert state["daily_loss_fraction"] == pytest.approx(0.012)
+    assert state["consecutive_losses"] == 2
+
+
+def test_order_rate_recovery_fails_closed_for_recent_sends_or_other_circuits(tmp_path: Path):
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    store.initialize()
+    now = datetime.now(UTC)
+    store.set_circuit_state(
+        status="HFT_ORDER_RATE_CIRCUIT_OPEN",
+        reason="bounded broker submission rate exceeded",
+    )
+    _record_broker_submission(store, sent=True)
+
+    assert store.count_recent_broker_submissions(now - timedelta(seconds=60)) == 1
+    assert store.recover_expired_order_rate_circuit(
+        now=now + timedelta(seconds=60), cooldown_seconds=60, max_submissions=1
+    ) is False
+
+    store.set_circuit_state(status="DAILY_LOSS_LIMIT", reason="daily loss limit")
+    assert store.recover_expired_order_rate_circuit(
+        now=now + timedelta(hours=1), cooldown_seconds=60, max_submissions=20
+    ) is False
+    assert store.read_circuit_state()["status"] == "DAILY_LOSS_LIMIT"

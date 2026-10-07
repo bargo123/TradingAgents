@@ -241,6 +241,109 @@ def test_close_requires_owned_broker_position_and_uses_opposite_order(tmp_path: 
     assert "provenance" in payload
 
 
+def test_successful_close_persists_net_pnl_from_all_position_deals(tmp_path: Path):
+    gateway, _ = _gateway(tmp_path)
+    entry = gateway.submit(_intent())
+    gateway.store.record_position(
+        {
+            "ticket": entry.order_ticket,
+            "position_ticket": entry.order_ticket,
+            "intent_id": "intent-1",
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "volume": 0.01,
+            "price_open": 1.1002,
+            "stop_loss": 1.0991,
+            "take_profit": 1.1021,
+            "state": "OPEN",
+        }
+    )
+    history_calls = []
+    gateway.provider.get_history_deals = lambda ticket: (
+        history_calls.append(ticket)
+        or (
+            {
+                "ticket": 21,
+                "position_id": entry.order_ticket,
+                "entry": 0,
+                "profit": 0.0,
+                "commission": -0.15,
+                "swap": 0.0,
+                "fee": 0.01,
+            },
+            {
+                "ticket": 22,
+                "position_id": entry.order_ticket,
+                "entry": 1,
+                "profit": 0.40,
+                "commission": -0.15,
+                "swap": -0.01,
+                "fee": 0.01,
+            },
+        )
+    )
+
+    result = gateway.submit(
+        _intent(intent_id="exit-1", direction="SHORT", requested_price=1.1),
+        position_ticket=entry.order_ticket,
+        exit_reason="TAKE_PROFIT",
+    )
+
+    assert result.classification == "FILLED"
+    assert history_calls == [entry.order_ticket]
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as db:
+        row = db.execute(
+            "SELECT realized_pnl, payload_json FROM demo_exits ORDER BY observed_at DESC LIMIT 1"
+        ).fetchone()
+    assert row[0] == pytest.approx(0.11)
+    payload = json.loads(row[1])
+    assert payload["realized_pnl"] == pytest.approx(0.11)
+    assert payload["realized_pnl_status"] == "AVAILABLE"
+    assert payload["realized_pnl_source"] == "MT5_POSITION_DEALS"
+
+
+def test_close_keeps_realized_pnl_unknown_when_broker_history_is_unavailable(tmp_path: Path):
+    gateway, _ = _gateway(tmp_path)
+    entry = gateway.submit(_intent())
+    gateway.store.record_position(
+        {
+            "ticket": entry.order_ticket,
+            "position_ticket": entry.order_ticket,
+            "intent_id": "intent-1",
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "volume": 0.01,
+            "price_open": 1.1002,
+            "stop_loss": 1.0991,
+            "take_profit": 1.1021,
+            "state": "OPEN",
+        }
+    )
+
+    def history_failure(_ticket):
+        raise RuntimeError("private provider details must not be persisted")
+
+    gateway.provider.get_history_deals = history_failure
+
+    result = gateway.submit(
+        _intent(intent_id="exit-1", direction="SHORT", requested_price=1.1),
+        position_ticket=entry.order_ticket,
+        exit_reason="TAKE_PROFIT",
+    )
+
+    assert result.classification == "FILLED"
+    with sqlite3.connect(tmp_path / "demo.sqlite3") as db:
+        row = db.execute(
+            "SELECT realized_pnl, payload_json FROM demo_exits ORDER BY observed_at DESC LIMIT 1"
+        ).fetchone()
+    assert row[0] is None
+    payload = json.loads(row[1])
+    assert payload["realized_pnl"] is None
+    assert payload["realized_pnl_status"] == "HISTORY_READ_FAILED"
+    assert payload["realized_pnl_error_type"] == "RuntimeError"
+    assert "private provider details" not in row[1]
+
+
 def test_close_of_unowned_position_is_rejected(tmp_path: Path):
     gateway, api = _gateway(tmp_path)
 

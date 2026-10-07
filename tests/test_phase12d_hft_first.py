@@ -160,6 +160,29 @@ def test_range_rejection_strategy_emits_reversal_at_lower_edge():
     assert signal.strategy_id == "range_rejection"
 
 
+def test_range_rejection_expected_move_is_distance_to_midrange_target():
+    features = _features((1.10000, 1.09980, 1.09970, 1.09972, 1.09978))
+
+    signal = RangeRejectionStrategy(edge_fraction=0.30).evaluate(features)
+
+    assert signal is not None
+    assert signal.expected_move_points == pytest.approx(7.0)
+
+
+def test_range_rejection_cost_gate_uses_reachable_midrange_distance():
+    features = _features((1.10000, 1.09980, 1.09970, 1.09972, 1.09978))
+    signal = RangeRejectionStrategy(edge_fraction=0.30).evaluate(features)
+    assert signal is not None
+    state = _state(features.timestamp - timedelta(seconds=1))
+
+    selected, reason = SignalArbiter().select(
+        (signal,), state, spread_points=features.spread_points
+    )
+
+    assert selected is None
+    assert reason == "TRANSACTION_COST"
+
+
 def test_arbiter_rejects_directionally_forbidden_signals_and_costly_entries():
     features = _features((1.10000, 1.10002, 1.10004, 1.10008, 1.10012))
     signal = MomentumContinuationStrategy(minimum_momentum_points=4.0).evaluate(features)
@@ -390,7 +413,12 @@ def _hft_demo_runtime(
         store=store,
         regime_store=regimes,
         challenger_observer=challenger_observer,
-        config=DemoRuntimeConfig(artifact_path=tmp_path / "demo.sqlite3", symbol="EURUSD", hft_first=True),
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            automatic_loss_pauses=False,
+        ),
         clock=lambda: datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
     )
     return runtime, api, store
@@ -405,6 +433,40 @@ def test_demo_hft_runtime_uses_regime_filter_and_real_demo_gateway(tmp_path: Pat
     assert any(result["action"] == "ENTER_LONG" for result in results)
     assert len(api.calls) == 1
     assert store.snapshot()["orders"] == 1
+
+
+def test_non_hft_demo_runtime_keeps_automatic_loss_pauses_by_default():
+    assert DemoRuntimeConfig().automatic_loss_pauses is True
+
+
+def test_demo_hft_runtime_continues_entries_after_loss_thresholds_without_weakening_other_gates(tmp_path: Path):
+    state = _state(
+        datetime(2026, 10, 1, 11, 59, 59, tzinfo=UTC),
+        regime=Regime.BULLISH,
+        direction_policy=DirectionPolicy.LONG_ONLY,
+        momentum_enabled=True,
+        range_enabled=False,
+        mean_reversion_enabled=False,
+    )
+    runtime, api, store = _hft_demo_runtime(
+        tmp_path,
+        (1.10000, 1.10002, 1.10004, 1.10008, 1.10012),
+        state,
+    )
+    runtime.circuit.start_day(2000.0, datetime(2026, 10, 1, 12, 0, tzinfo=UTC))
+    for _ in range(3):
+        runtime.circuit.record_closed_trade(-1.0)
+
+    results = [runtime.run_once() for _ in range(5)]
+
+    assert any(result["action"] == "ENTER_LONG" for result in results)
+    assert len(api.calls) == 1
+    assert store.snapshot()["orders"] == 1
+    assert api.calls[0]["volume"] <= 0.01
+    assert api.calls[0]["sl"] < api.calls[0]["price"] < api.calls[0]["tp"]
+    assert runtime.config.automatic_loss_pauses is False
+    assert runtime.risk.config.enforce_loss_limits is False
+    assert runtime.circuit.pause_on_loss is False
 
 
 def test_optional_challenger_observer_does_not_change_incumbent_order_behavior(tmp_path: Path):
@@ -674,6 +736,52 @@ def test_demo_runtime_drops_tick_when_serialized_account_read_is_busy(tmp_path: 
     assert api.calls == []
 
 
+def test_demo_runtime_continues_after_transient_mt5_gate_contention(tmp_path: Path):
+    provider = _DemoProvider((1.10000,))
+    api = _DemoApi()
+    store = DemoExecutionStore(tmp_path / "demo.sqlite3")
+    runtime = DemoHftRuntime(
+        provider,
+        AtomicPlanStore(),
+        gateway=VerifiedDemoExecutionGateway(
+            provider, api, store, run_id="demo-run", demo_trade_mode=0, magic=12012012
+        ),
+        store=store,
+        regime_store=AtomicRegimeStore(),
+        config=DemoRuntimeConfig(
+            artifact_path=tmp_path / "demo.sqlite3",
+            symbol="EURUSD",
+            hft_first=True,
+            no_regime_policy="BOOTSTRAP_NEUTRAL",
+        ),
+    )
+    attempts = 0
+
+    def busy_once():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise Mt5OperationBusy("MT5 operation busy: demo_order_send")
+        return {
+            "status": "PROCESSED",
+            "action": "NO_ACTION",
+            "execution_mode": "DEMO",
+            "broker_order_sent": False,
+        }
+
+    runtime.run_once = busy_once
+
+    result = runtime.run(max_ticks=2)
+
+    assert attempts == 2
+    assert result["observed_ticks"] == 2
+    assert result["mt5_operation_busy_drops"] == 1
+    assert result["execution_mode"] == "DEMO"
+    assert result["real_money"] is False
+    assert api.calls == []
+    assert store.snapshot()["orders"] == 0
+
+
 def test_demo_hft_runtime_never_bootstraps_for_non_demo_account(tmp_path: Path):
     provider = _DemoProvider((1.10000,))
     provider.get_account_info = lambda: SimpleNamespace(
@@ -792,11 +900,69 @@ def test_demo_order_rate_circuit_is_bounded_and_fail_closed(tmp_path: Path):
     )
     runtime._ensure_run()
     first = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+    runtime.circuit.start_day(1000.0, first)
+    runtime.circuit.daily_loss_fraction = 0.01
+    runtime.circuit.consecutive_losses = 1
 
     assert runtime._order_allowed(first) is True
     runtime._record_submission(first)
     assert runtime._order_allowed(first + timedelta(seconds=1)) is False
     assert runtime._order_rate_circuit_open is True
+    assert store.read_circuit_state()["status"] == "HFT_ORDER_RATE_CIRCUIT_OPEN"
+    persisted = store.read_circuit_state()
+    assert persisted["daily_start_equity"] == 1000.0
+    assert persisted["daily_loss_fraction"] == pytest.approx(0.01)
+    assert persisted["consecutive_losses"] == 1
+
+
+def test_expired_order_rate_circuit_recovers_only_after_demo_and_reconciliation_checks(tmp_path: Path):
+    runtime, _, store = _hft_demo_runtime(
+        tmp_path, (1.10000,), _state(datetime(2026, 10, 1, 12, 0, tzinfo=UTC))
+    )
+    runtime.config = replace(
+        runtime.config,
+        max_order_submissions=20,
+        order_rate_window_seconds=60,
+    )
+    store.initialize()
+    store.set_circuit_state(
+        status="HFT_ORDER_RATE_CIRCUIT_OPEN",
+        reason="bounded broker submission rate exceeded",
+    )
+    now = datetime.now(UTC) + timedelta(seconds=61)
+    checks = []
+    runtime._validate_market_reconciliation = lambda: checks.append("reconciliation")
+
+    recovered = runtime._recover_expired_order_rate_circuit(
+        now=now,
+        broker_tick_timestamp=now,
+    )
+
+    assert recovered is True
+    assert checks == ["reconciliation"]
+    assert runtime._order_rate_circuit_open is False
+    assert store.read_circuit_state()["status"] == "READY"
+
+
+def test_unexpired_order_rate_circuit_stays_closed_without_reconciliation_side_effects(tmp_path: Path):
+    runtime, _, store = _hft_demo_runtime(
+        tmp_path, (1.10000,), _state(datetime(2026, 10, 1, 12, 0, tzinfo=UTC))
+    )
+    runtime.config = replace(runtime.config, order_rate_window_seconds=60)
+    store.initialize()
+    store.set_circuit_state(
+        status="HFT_ORDER_RATE_CIRCUIT_OPEN",
+        reason="bounded broker submission rate exceeded",
+    )
+    now = datetime.now(UTC)
+    runtime._validate_market_reconciliation = lambda: pytest.fail(
+        "reconciliation is not attempted before the cooldown expires"
+    )
+
+    assert runtime._recover_expired_order_rate_circuit(
+        now=now,
+        broker_tick_timestamp=now,
+    ) is False
     assert store.read_circuit_state()["status"] == "HFT_ORDER_RATE_CIRCUIT_OPEN"
 
 

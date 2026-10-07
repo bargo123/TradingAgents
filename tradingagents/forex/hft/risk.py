@@ -18,8 +18,11 @@ class RiskConfig:
     max_spread_points: float = 20.0
     max_slippage_points: float = 5.0
     stale_after_seconds: float = 5.0
+    enforce_loss_limits: bool = True
 
     def __post_init__(self) -> None:
+        if not isinstance(self.enforce_loss_limits, bool):
+            raise ValueError("enforce_loss_limits must be boolean")
         for name in ("max_risk_fraction", "max_drawdown"):
             value = float(getattr(self, name))
             if not 0.0 < value <= 1.0:
@@ -84,12 +87,13 @@ class RiskEngine:
             return RiskDecision(False, "SPREAD_LIMIT", "spread exceeds risk ceiling")
         if context.slippage_points > self.config.max_slippage_points:
             return RiskDecision(False, "SLIPPAGE_LIMIT", "slippage assumption exceeds risk ceiling")
-        if context.daily_loss >= self.config.max_daily_loss:
-            return RiskDecision(False, "DAILY_LOSS_LIMIT", "daily loss limit reached")
-        if context.drawdown >= self.config.max_drawdown:
-            return RiskDecision(False, "DRAWDOWN_LIMIT", "drawdown limit reached")
-        if context.consecutive_losses >= self.config.max_consecutive_losses:
-            return RiskDecision(False, "CONSECUTIVE_LOSS_LIMIT", "consecutive-loss limit reached")
+        if self.config.enforce_loss_limits:
+            if context.daily_loss >= self.config.max_daily_loss:
+                return RiskDecision(False, "DAILY_LOSS_LIMIT", "daily loss limit reached")
+            if context.drawdown >= self.config.max_drawdown:
+                return RiskDecision(False, "DRAWDOWN_LIMIT", "drawdown limit reached")
+            if context.consecutive_losses >= self.config.max_consecutive_losses:
+                return RiskDecision(False, "CONSECUTIVE_LOSS_LIMIT", "consecutive-loss limit reached")
         if context.open_exposure >= self.config.max_open_exposure:
             return RiskDecision(False, "EXPOSURE_LIMIT", "open exposure limit reached")
         return RiskDecision(True, "ACCEPTED", "all deterministic risk gates passed", self.config.max_risk_fraction)

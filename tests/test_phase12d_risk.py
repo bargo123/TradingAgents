@@ -42,6 +42,22 @@ def test_daily_loss_and_consecutive_loss_circuits_pause_new_entries():
     assert breaker.status == "DEMO_RISK_COOLDOWN"
 
 
+def test_demo_circuit_can_record_losses_without_automatically_pausing_entries():
+    breaker = DemoCircuitBreaker(
+        daily_loss_limit=0.02,
+        max_consecutive_losses=3,
+        pause_on_loss=False,
+    )
+    breaker.start_day(1000.0, datetime(2026, 9, 30, tzinfo=UTC))
+    for _ in range(3):
+        breaker.record_closed_trade(-1.0)
+
+    assert breaker.entry_allowed(970.0) is True
+    assert breaker.daily_loss_fraction == pytest.approx(0.03)
+    assert breaker.consecutive_losses == 3
+    assert breaker.status == "READY"
+
+
 def test_symbol_metadata_retains_demo_volume_and_stop_constraints():
     info = Mt5SymbolInfo(
         name="EURUSD",

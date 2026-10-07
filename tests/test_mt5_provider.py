@@ -195,6 +195,9 @@ class FakeMT5:
                 symbol="USDJPY",
                 entry=1,
                 profit=-1.25,
+                commission=-0.02,
+                swap=0.0,
+                fee=0.01,
                 time=1_700_000_001,
             ),
         )
@@ -235,6 +238,9 @@ def test_history_reads_are_normalized_read_only(fake_api):
     assert orders[0]["state"] == "FILLED"
     assert deals[0]["entry"] == 1
     assert deals[0]["position_id"] == 303
+    assert deals[0]["commission"] == -0.02
+    assert deals[0]["swap"] == 0.0
+    assert deals[0]["fee"] == 0.01
     assert fake_api.shutdown_called is False
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from collections.abc import Mapping
 from contextlib import nullcontext
@@ -29,6 +30,48 @@ def _field(value: Any, name: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(name, default)
     return getattr(value, name, default)
+
+
+def _net_pnl_from_position_deals(
+    deals: tuple[Any, ...], position_ticket: int
+) -> tuple[float | None, str, int, str | None]:
+    """Calculate net account P&L only from complete, position-matched deals."""
+
+    if not deals:
+        return None, "HISTORY_NOT_YET_AVAILABLE", 0, None
+
+    total = 0.0
+    has_close_deal = False
+    for deal in deals:
+        deal_position = _field(deal, "position_id")
+        if (
+            isinstance(deal_position, bool)
+            or not isinstance(deal_position, int)
+            or deal_position != int(position_ticket)
+        ):
+            return None, "HISTORY_POSITION_MISMATCH", len(deals), None
+
+        entry = _field(deal, "entry")
+        if entry in (1, 2, 3) or str(entry).upper() in {"OUT", "OUT_BY", "INOUT"}:
+            has_close_deal = True
+
+        for field in ("profit", "commission", "swap", "fee"):
+            value = _field(deal, field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None, "HISTORY_PNL_INVALID", len(deals), None
+            try:
+                amount = float(value)
+            except (OverflowError, ValueError):
+                return None, "HISTORY_PNL_INVALID", len(deals), None
+            if not math.isfinite(amount):
+                return None, "HISTORY_PNL_INVALID", len(deals), None
+            total += amount
+
+    if not has_close_deal:
+        return None, "HISTORY_CLOSE_NOT_FOUND", len(deals), None
+    if not math.isfinite(total):
+        return None, "HISTORY_PNL_INVALID", len(deals), None
+    return total, "AVAILABLE", len(deals), None
 
 
 def _position_ticket(row: Mapping[str, Any]) -> int:
@@ -283,6 +326,20 @@ class VerifiedDemoExecutionGateway:
             broker_order_sent=broker_order_sent,
         )
 
+    def _realized_position_pnl(
+        self, position_ticket: int
+    ) -> tuple[float | None, str, int, str | None]:
+        """Read complete net P&L from broker deal history without guessing."""
+
+        get_history_deals = getattr(self.provider, "get_history_deals", None)
+        if not callable(get_history_deals):
+            return None, "HISTORY_API_UNAVAILABLE", 0, None
+        try:
+            deals = tuple(get_history_deals(int(position_ticket)) or ())
+        except Exception as exc:
+            return None, "HISTORY_READ_FAILED", 0, type(exc).__name__
+        return _net_pnl_from_position_deals(deals, int(position_ticket))
+
     def submit(
         self,
         intent: DemoOrderIntent,
@@ -364,19 +421,30 @@ class VerifiedDemoExecutionGateway:
                 and parsed.classification in {"FILLED", "PARTIAL"}
                 and owned_position is not None
             ):
+                realized_pnl, pnl_status, pnl_deal_count, pnl_error_type = (
+                    self._realized_position_pnl(position_ticket)
+                )
                 self.store.record_exit(
                     ticket=int(owned_position["ticket"]),
                     reason=exit_reason,
-                    realized_pnl=None,
+                    realized_pnl=realized_pnl,
                     payload={
                         "intent_id": intent.intent_id,
                         "classification": parsed.classification,
                         "deal_ticket": parsed.deal_ticket,
                         "position_ticket": int(owned_position["ticket"]),
+                        "broker_position_ticket": int(position_ticket),
                         "fill_price": parsed.fill_price,
                         "fill_volume": parsed.fill_volume,
                         "broker_timestamp": parsed.broker_timestamp,
-                        "realized_pnl": parsed.request_payload.get("broker_realized_pnl"),
+                        "realized_pnl": realized_pnl,
+                        "realized_pnl_status": pnl_status,
+                        "realized_pnl_source": (
+                            "MT5_POSITION_DEALS" if realized_pnl is not None else None
+                        ),
+                        "realized_pnl_deal_count": pnl_deal_count,
+                        "realized_pnl_error_type": pnl_error_type,
+                        "broker_result_profit": parsed.request_payload.get("broker_realized_pnl"),
                         "provenance": dict(intent.provenance),
                     },
                 )

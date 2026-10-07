@@ -226,6 +226,8 @@ def _aggregate_replay_metrics(reports: tuple[ReplayMetrics, ...]) -> ReplayMetri
         trades_per_hour=(sum(report.trades_per_hour or 0.0 for report in reports) / len(reports)),
         sharpe_like=(sum(report.sharpe_like or 0.0 for report in reports) / len(reports)) if any(report.sharpe_like is not None for report in reports) else None,
         commission_known=all(report.commission_known for report in reports),
+        open_positions=sum(report.open_positions for report in reports),
+        unrealized_pnl=sum(report.unrealized_pnl for report in reports),
     )
 
 
@@ -240,7 +242,9 @@ def cost_sensitivity(
         raise ValueError("cost scenarios must be finite and non-negative")
     values_ticks = tuple(ticks)
     reports = {
-        scenario: ReplayEvaluator(slippage_points=scenario, latency_ms=evaluator.latency_ms).evaluate(values_ticks, candidate)
+        scenario: ReplayEvaluator(slippage_points=scenario, latency_ms=evaluator.latency_ms,
+                                  cost_safety_margin_points=evaluator.cost_safety_margin_points,
+                                  commission_round_trip_points=evaluator.commission_round_trip_points).evaluate(values_ticks, candidate)
         for scenario in values
     }
     return CostSensitivityReport(values, reports)
@@ -309,7 +313,9 @@ def cost_sensitivity_segments(
             continue
         for scenario in values:
             reports[scenario].append(
-                ReplayEvaluator(slippage_points=scenario, latency_ms=evaluator.latency_ms).evaluate(ticks, candidate)
+                ReplayEvaluator(slippage_points=scenario, latency_ms=evaluator.latency_ms,
+                                cost_safety_margin_points=evaluator.cost_safety_margin_points,
+                                commission_round_trip_points=evaluator.commission_round_trip_points).evaluate(ticks, candidate)
             )
     if any(not items for items in reports.values()):
         raise ReplayError("no causal segments are available for cost sensitivity")

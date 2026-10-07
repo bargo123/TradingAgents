@@ -91,6 +91,92 @@ def test_demo_supervisor_fails_closed_before_runtime_without_market_calendar(tmp
     assert constructed == []
 
 
+def test_hft_first_demo_factory_disables_only_automatic_loss_pauses(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    import tradingagents.dataflows.mt5.provider as provider_module
+    import tradingagents.forex.hft.demo_gateway as demo_gateway_module
+    import tradingagents.forex.hft.demo_runtime as demo_runtime_module
+    import tradingagents.forex.hft.demo_store as demo_store_module
+    import tradingagents.forex.hft.plan_store as plan_store_module
+    import tradingagents.forex.hft.regime_store as regime_store_module
+    import tradingagents.forex.hft.runtime as hft_runtime_module
+    import tradingagents.forex.hft.store as hft_store_module
+    import tradingagents.forex.hft.supervisor as hft_supervisor_module
+    import tradingagents.forex.runtime_config as runtime_config_module
+    import tradingagents.forex.shadow as shadow_module
+
+    class Provider:
+        _api = SimpleNamespace(ACCOUNT_TRADE_MODE_DEMO=0)
+
+        def __init__(self, terminal_path=None):
+            self.terminal_path = terminal_path
+
+    class Gate:
+        def acquire(self, _operation):
+            return nullcontext()
+
+    class Gateway:
+        @staticmethod
+        def read_account(_provider):
+            return SimpleNamespace(server="MetaQuotes-Demo", trade_mode=0)
+
+        @staticmethod
+        def require_demo_account(account, demo_trade_mode):
+            assert account.trade_mode == demo_trade_mode == 0
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+    class CapturedRuntime:
+        def __init__(self, *_args, config, **_kwargs):
+            self.config = config
+
+    class CapturedWorker:
+        def __init__(self, *_args, runtime_factory, **_kwargs):
+            self.runtime_factory = runtime_factory
+
+    class ShadowStore:
+        def __init__(self, *_args):
+            pass
+
+        def latest_eligible(self, _symbol):
+            return None
+
+        def is_execution_eligible(self, _decision):
+            return False
+
+    monkeypatch.setattr(provider_module, "MT5Provider", Provider)
+    monkeypatch.setattr(demo_gateway_module, "VerifiedDemoExecutionGateway", Gateway)
+    monkeypatch.setattr(demo_runtime_module, "DemoHftRuntime", CapturedRuntime)
+    monkeypatch.setattr(demo_store_module, "DemoExecutionStore", ShadowStore)
+    monkeypatch.setattr(plan_store_module, "AtomicPlanStore", lambda: object())
+    monkeypatch.setattr(regime_store_module, "AtomicRegimeStore", lambda: object())
+    monkeypatch.setattr(hft_runtime_module, "HftShadowConfig", lambda **kwargs: SimpleNamespace(**kwargs))
+    monkeypatch.setattr(hft_store_module, "HftShadowStore", lambda *_args: object())
+    monkeypatch.setattr(hft_supervisor_module, "HftShadowWorker", CapturedWorker)
+    monkeypatch.setattr(runtime_config_module, "collect_runtime_provenance", lambda _config: {"git_commit": "test"})
+    monkeypatch.setattr(shadow_module, "ShadowDecisionStore", ShadowStore)
+
+    context = ForexSupervisor()._hft_context(
+        terminal_path=None,
+        source_db_path=tmp_path / "source.sqlite3",
+        symbol="EURUSD",
+        hft_db_path=tmp_path / "hft.sqlite3",
+        max_ticks=0,
+        poll_interval_seconds=0.05,
+        gate=Gate(),
+        demo_execute=True,
+        demo_db_path=tmp_path / "demo.sqlite3",
+        market_session_calendar=tmp_path / "calendar.json",
+    )
+    runtime = context.worker.runtime_factory(context.provider_factory())
+
+    assert runtime.config.hft_first is True
+    assert runtime.config.automatic_loss_pauses is False
+
+
 def test_supervisor_status_accepts_phase12_model_override():
     args = build_parser().parse_args(
         ["status", "--phase12-strategic", "--phase12-deep-model", "qwen3.5:2b"]

@@ -106,6 +106,19 @@ def test_demo_runtime_none_plan_never_sends_order(tmp_path: Path):
     assert api.calls == []
 
 
+def test_continuous_demo_runtime_bounds_latency_history(tmp_path):
+    runtime, _, _ = _runtime(tmp_path)
+    for sample in range(10000):
+        runtime._decision_latencies.append(float(sample))
+        runtime._order_latencies.append(float(sample))
+    assert len(runtime._decision_latencies) == 4096
+    assert len(runtime._order_latencies) == 4096
+    assert list(runtime._decision_latencies)[0] == 5904.0
+    report = runtime.run(max_ticks=1)
+    assert report["order_submission_p99_ms"] == 9958.0
+    assert report["latency_sample_capacity"] == 4096
+
+
 def test_demo_runtime_natural_long_uses_demo_gateway(tmp_path: Path):
     now = datetime.now(UTC)
     runtime, api, store = _runtime(tmp_path, _plan(now))

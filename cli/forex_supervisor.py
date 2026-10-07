@@ -140,6 +140,12 @@ def main(
                 print(f"CONTEXT: {ollama.get('context_length') or 'unknown'}")
                 print(f"WATCHER: {report['watcher'].get('lifecycle_status', 'STOPPED')}")
                 print(f"HFT SHADOW: {report['hft_engine_health']}")
+                print(
+                    "LATEST HFT TICK AGE: "
+                    f"{report['hft'].get('last_tick_age_seconds') or 0:.2f}s"
+                    if report["hft"].get("last_tick_age_seconds") is not None
+                    else "LATEST HFT TICK AGE: unknown"
+                )
                 print(f"DEMO EXECUTION: {report.get('demo_execution_health', 'DISABLED')}")
                 print(f"MT5 READ-ONLY: {report['mt5_read_only_health']}")
                 print("NO ORDER WILL BE SENT")

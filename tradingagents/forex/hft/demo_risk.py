@@ -78,11 +78,20 @@ def validate_stop_levels(
 class DemoCircuitBreaker:
     """In-memory bounded entry circuits; persistence is owned by DemoExecutionStore."""
 
-    def __init__(self, *, daily_loss_limit: float = 0.02, max_consecutive_losses: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        daily_loss_limit: float = 0.02,
+        max_consecutive_losses: int = 3,
+        pause_on_loss: bool = True,
+    ) -> None:
         self.daily_loss_limit = _positive(daily_loss_limit, "daily_loss_limit")
         if isinstance(max_consecutive_losses, bool) or not isinstance(max_consecutive_losses, int) or max_consecutive_losses <= 0:
             raise ValueError("max_consecutive_losses must be positive")
+        if not isinstance(pause_on_loss, bool):
+            raise ValueError("pause_on_loss must be boolean")
         self.max_consecutive_losses = max_consecutive_losses
+        self.pause_on_loss = pause_on_loss
         self.daily_start_equity: float | None = None
         self.daily_loss_fraction = 0.0
         self.consecutive_losses = 0
@@ -105,10 +114,10 @@ class DemoCircuitBreaker:
             return False
         current = _positive(equity, "equity")
         self.daily_loss_fraction = max(0.0, (self.daily_start_equity - current) / self.daily_start_equity)
-        if self.daily_loss_fraction >= self.daily_loss_limit:
+        if self.pause_on_loss and self.daily_loss_fraction >= self.daily_loss_limit:
             self.status = "DAILY_LOSS_LIMIT"
             return False
-        if self.consecutive_losses >= self.max_consecutive_losses:
+        if self.pause_on_loss and self.consecutive_losses >= self.max_consecutive_losses:
             self.status = "DEMO_RISK_COOLDOWN"
             return False
         self.status = "READY"
@@ -122,7 +131,7 @@ class DemoCircuitBreaker:
             self.consecutive_losses += 1
         elif value > 0:
             self.consecutive_losses = 0
-        if self.consecutive_losses >= self.max_consecutive_losses:
+        if self.pause_on_loss and self.consecutive_losses >= self.max_consecutive_losses:
             self.status = "DEMO_RISK_COOLDOWN"
 
 

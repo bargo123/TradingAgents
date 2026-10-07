@@ -57,13 +57,19 @@ class RangeRejectionStrategy:
         self.minimum_ticks = int(minimum_ticks)
 
     def evaluate(self, features: TickFeatures) -> StrategySignal | None:
-        if features.tick_count < self.minimum_ticks or features.rolling_range / features.point < self.minimum_range_points:
+        range_points = features.rolling_range / features.point
+        if features.tick_count < self.minimum_ticks or range_points < self.minimum_range_points:
             return None
         position = features.range_position
+        # The target for a range rejection is the range midpoint, not the
+        # entire observed high-to-low width.  This value also drives the
+        # transaction-cost gate and dynamic exit sizing, so using full width
+        # would overstate the move available from the current edge.
+        expected_move_points = abs(0.5 - position) * range_points
         if position <= self.edge_fraction and features.return_1 > 0:
-            return StrategySignal(self.strategy_id, FastAction.ENTER_LONG, min(1.0, 1.0 - position), features.rolling_range / features.point, "RANGE_REJECTION_LOW")
+            return StrategySignal(self.strategy_id, FastAction.ENTER_LONG, min(1.0, 1.0 - position), expected_move_points, "RANGE_REJECTION_LOW")
         if position >= 1.0 - self.edge_fraction and features.return_1 < 0:
-            return StrategySignal(self.strategy_id, FastAction.ENTER_SHORT, min(1.0, position), features.rolling_range / features.point, "RANGE_REJECTION_HIGH")
+            return StrategySignal(self.strategy_id, FastAction.ENTER_SHORT, min(1.0, position), expected_move_points, "RANGE_REJECTION_HIGH")
         return None
 
 
